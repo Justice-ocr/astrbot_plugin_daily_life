@@ -143,42 +143,14 @@ class ProactiveLifecycleMixin:
     def _normalize_proactive_utility(
         self,
         payload: dict[str, Any],
-        *,
-        confidence: float,
     ) -> tuple[int, bool]:
-        """规范五项评分并计算主动回复净收益。
-
-        旧模型完全未返回五项评分时，以置信度生成保守兼容值；只要返回了任意
-        一项，就要求五项全部存在且均为 0 至 100 的有限数值。
-
-        Args:
-            payload: 模型主动裁定载荷。
-            confidence: 已规范到 0 至 1 的置信度。
-
-        Returns:
-            ``(utility, valid)``，其中 utility 为正收益三项减去风险两项。
-        """
-        explicit = any(field in payload for field in self._PROACTIVE_UTILITY_FIELDS)
+        """五项评分必须完整有效；缺项时主动发送裁定无效。"""
         valid = True
-        if explicit:
-            for field in self._PROACTIVE_UTILITY_FIELDS:
-                field_present = field in payload
-                score, field_valid = self._proactive_score(payload.get(field))
-                payload[field] = score
-                valid = valid and field_present and field_valid
-        else:
-            confidence_score = max(0, min(100, round(confidence * 100)))
-            risk_score = 100 - confidence_score
-            payload.update(
-                {
-                    "benefit": confidence_score,
-                    "timeliness": confidence_score,
-                    "continuity": confidence_score,
-                    "disruption": risk_score,
-                    "uncertainty": risk_score,
-                    "utility_fallback": True,
-                }
-            )
+        for field in self._PROACTIVE_UTILITY_FIELDS:
+            field_present = field in payload
+            score, field_valid = self._proactive_score(payload.get(field))
+            payload[field] = score
+            valid = valid and field_present and field_valid
         utility = (
             int(payload["benefit"])
             + int(payload["timeliness"])

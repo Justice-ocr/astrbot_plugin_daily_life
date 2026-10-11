@@ -3748,6 +3748,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(event._daily_life_prepared_visual_media, [])
 
     async def test_visual_context_uses_prepared_copy_after_event_temp_cleanup(self):
+        from PIL import Image
+
         vision_provider = Provider(
             [
                 '{"summary":"动图里有人挥手打招呼","is_emoji_asset":false,"status":"ready"}'
@@ -3782,7 +3784,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             tmp_root = Path(tmpdir)
             runtime.data_path = tmp_root / "daily_life.db"
             source_path = tmp_root / "media_image_temporary.gif"
-            source_path.write_bytes(b"GIF89a-vision-image")
+            frames = [Image.new("RGB", (40, 40), color) for color in ("red", "blue")]
+            frames[0].save(source_path, save_all=True, append_images=frames[1:], duration=100)
             event = Event(
                 sender_name="阿林",
                 sender_id="10001",
@@ -3801,9 +3804,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
             context = runtime.format_structured_message_context(event)
             self.assertIn("看看这个 [图片：动图里有人挥手打招呼]", context)
-            self.assertEqual(
-                vision_provider.vision_prompts[0]["image"], str(cached_path)
+            self.assertTrue(
+                vision_provider.vision_prompts[0]["image"].startswith("data:image/jpeg;base64,")
             )
+            self.assertIn("原动图共 2 帧", vision_provider.vision_prompts[0]["prompt"])
             self.assertTrue(cached_path.is_file())
 
     async def test_visual_context_falls_back_to_current_default_provider(self):
@@ -3850,6 +3854,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(closed_sessions[1].endswith("_fallback"))
 
     async def test_gif_visual_bridge_replaces_provider_image_with_text_summary(self):
+        from PIL import Image
+
         vision_provider = Provider(
             ['{"summary":"小猫伸出双爪比心","is_emoji_asset":true,"status":"ready"}'],
             provider_id="vision-model",
@@ -3880,7 +3886,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             tmp_root = Path(tmpdir)
             runtime.data_path = tmp_root / "daily_life.db"
             source_path = tmp_root / "incoming-animation.jpg"
-            source_path.write_bytes(b"GIF89a-animated-image")
+            frames = [Image.new("RGB", (40, 40), color) for color in ("red", "blue")]
+            frames[0].save(source_path, format="GIF", save_all=True, append_images=frames[1:], duration=100)
             event = Event(
                 sender_name="测试用户",
                 sender_id="10001",

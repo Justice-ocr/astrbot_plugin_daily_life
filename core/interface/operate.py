@@ -61,6 +61,9 @@ class OperateCommandMixin:
     async def _clear(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         async with self.runtime.generation_lock:
             await self.runtime.archive.reset_all()
+            clear_timing = getattr(self.runtime, "clear_conversation_timing", None)
+            if callable(clear_timing):
+                clear_timing()
             self.runtime.failed_dates.clear()
             self.runtime.composer._reference_name_cache.clear()
         yield event.plain_result("✅ 已清空全部日常生活背景数据。")

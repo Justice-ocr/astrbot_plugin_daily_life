@@ -184,6 +184,8 @@ async def _download_remote_video_with_reason_once(
         )
     )
     if cached_ready:
+        if max_bytes > 0 and await asyncio.to_thread(lambda: target.stat().st_size > max_bytes):
+            return None, f"缓存视频超过大小上限（>{_bytes_text(max_bytes)}）"
         return target, ""
 
     if not await is_http_url_allowed_async(source):
@@ -241,6 +243,9 @@ async def _download_remote_video_with_reason_once(
                     await asyncio.to_thread(temp_target.unlink, missing_ok=True)
                     return None, f"视频文件超过大小上限（>{_bytes_text(max_bytes)}）"
                 await asyncio.to_thread(temp_target.replace, target)
+    except asyncio.CancelledError:
+        await asyncio.to_thread(temp_target.unlink, missing_ok=True)
+        raise
     except Exception as exc:
         await asyncio.to_thread(temp_target.unlink, missing_ok=True)
         return None, f"下载异常：{type(exc).__name__}"

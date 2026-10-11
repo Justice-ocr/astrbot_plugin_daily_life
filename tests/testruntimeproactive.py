@@ -42,6 +42,29 @@ from astrbot.core.agent.message import TextPart
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
+    def test_proactive_utility_rejects_missing_scores_instead_of_guessing(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        missing = {}
+        utility, valid = runtime._normalize_proactive_utility(missing)
+        self.assertEqual(utility, 0)
+        self.assertFalse(valid)
+        self.assertNotIn("utility_fallback", missing)
+
+        partial = {"benefit": 90}
+        _, valid = runtime._normalize_proactive_utility(partial)
+        self.assertFalse(valid)
+
+        complete = {
+            "benefit": 90,
+            "timeliness": 80,
+            "continuity": 75,
+            "disruption": 20,
+            "uncertainty": 15,
+        }
+        utility, valid = runtime._normalize_proactive_utility(complete)
+        self.assertTrue(valid)
+        self.assertEqual(utility, 210)
+
     def test_proactive_voice_call_intent_is_gated_by_private_ready_channel(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime._event_is_group_message = lambda _event: False
@@ -1118,7 +1141,7 @@ class RuntimeProactiveAsyncTest(
     async def test_evaluate_proactive_reply_can_generate_short_reply(self):
         provider = Provider(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "群里聊到看展，顺手接一句", "inner_monologue": "想接话", '
                 '"reply_strategy": "轻插话", "reply_text": "我也想去看这个展", "memory_note": "闲时续话"}'
             ],
@@ -1291,7 +1314,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_reply_does_not_guess_short_term_focus_progress(self):
         runtime, _ = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.91, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.91, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "早睡恢复已经参与判断，只轻轻接一句不展开久聊", '
                 '"target_topic": "早睡恢复", "reply_strategy": "轻量收束", '
                 '"reply_text": "我今天会早点收住", "memory_note": "早睡恢复下的轻量续话"}'
@@ -1364,7 +1387,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_prompt_includes_recent_conversation_context(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "还不够自然", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -1423,7 +1446,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_prompt_marks_saved_pronouns_as_non_gender_evidence(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "还不够自然", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -1468,7 +1491,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_prompt_includes_air_state_and_target_candidates(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "先观察", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -1532,6 +1555,11 @@ class RuntimeProactiveAsyncTest(
                     {
                         "should_reply": True,
                         "confidence": 0.95,
+                        "benefit": 90,
+                        "timeliness": 90,
+                        "continuity": 90,
+                        "disruption": 10,
+                        "uncertainty": 10,
                         "decision": "reply",
                         "reason": "下午场这个话题自然可以接一句",
                         "reply_text": "那就下午场吧，听起来没那么赶。",
@@ -1594,7 +1622,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_readiness_skips_model_when_state_is_cold(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.99, "decision": "reply", "reply_text": "我来了"}'
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.99, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", "reply_text": "我来了"}'
             ],
             provider_id="proactive-model",
         )
@@ -1645,7 +1673,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_readiness_allows_model_when_feedback_is_warm(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "模型继续观察", "reply_text": ""}'
             ],
             provider_id="proactive-model",
@@ -1765,7 +1793,7 @@ class RuntimeProactiveAsyncTest(
     async def test_evaluate_proactive_reply_supports_private_message(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "私聊里自然回应", "inner_monologue": "想回一句", '
                 '"reply_strategy": "轻松回应", "reply_text": "那我也记一下这个点", "memory_note": "私聊闲时回应"}'
             ],
@@ -1845,7 +1873,7 @@ class RuntimeProactiveAsyncTest(
     async def test_idle_proactive_candidate_sends_after_silence(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "群聊安静后自然续一句", "inner_monologue": "可以轻轻接", '
                 '"reply_strategy": "轻插话", "reply_text": "这个展听起来确实挺适合慢慢逛", "memory_note": "沉默后接话"}'
             ],
@@ -1982,10 +2010,10 @@ class RuntimeProactiveAsyncTest(
     async def test_idle_proactive_wait_keeps_candidate_and_delays_retry(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.66, "decision": "wait", '
+                '{"should_reply": false, "confidence": 0.66, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "wait", '
                 '"reason": "话题像还没说完", "reply_text": "", "memory_note": "先等一下", '
                 '"wait_reason": "等群里再补一句"}',
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "现在有自然落点", "reply_text": "下午场确实舒服点", "memory_note": ""}',
             ],
             provider_id="proactive-model",
@@ -2038,9 +2066,9 @@ class RuntimeProactiveAsyncTest(
     async def test_idle_proactive_observe_keeps_candidate_and_holds_retry(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.4, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.4, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "low energy, keep watching", "reply_text": "", "memory_note": ""}',
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.92, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "state is warmer now", "reply_text": "then we can keep it simple", "memory_note": ""}',
             ],
             provider_id="proactive-model",
@@ -2101,11 +2129,11 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_observe_backoff_can_be_bypassed_by_new_messages(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "不自然", "reply_text": "", "memory_note": ""}',
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "还是不自然", "reply_text": "", "memory_note": ""}',
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "新消息多了，有自然落点", "reply_text": "那就下午场吧", "memory_note": ""}',
             ],
             provider_id="proactive-model",
@@ -2168,7 +2196,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_prompt_marks_full_timeline_as_background(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "当前还在外面吃东西，先不硬接", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -2189,7 +2217,8 @@ class RuntimeProactiveAsyncTest(
                 outfit="奶白睡裙",
                 timeline=[
                     TimelineItem(
-                        time="13:20", activity="坐在雨边长椅吃炸串", status="慵懒满足"
+                        time="13:20", activity="坐在雨边长椅吃炸串", status="慵懒满足",
+                        execution_state="active",
                     ),
                     TimelineItem(
                         time="21:00", activity="洗完澡换睡裙准备睡前放松", status="困倦"
@@ -2217,7 +2246,7 @@ class RuntimeProactiveAsyncTest(
 
         prompt = provider.prompts[0]
         self.assertIn("此刻日期时间：2026-05-24 13:42", prompt)
-        self.assertIn("此刻活动：📍 正在: 坐在雨边长椅吃炸串", prompt)
+        self.assertIn("此刻活动：当前计划: 坐在雨边长椅吃炸串", prompt)
         self.assertIn("全天日程背景（连续性参考）：", prompt)
         self.assertLess(
             prompt.index("此刻活动："), prompt.index("全天日程背景（连续性参考）：")
@@ -2227,7 +2256,7 @@ class RuntimeProactiveAsyncTest(
     async def test_proactive_prompt_uses_learned_expression_and_patterns(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "先观察", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -2380,7 +2409,7 @@ class RuntimeProactiveAsyncTest(
         )
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.2, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "先观察", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -2641,7 +2670,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_idle_reply_observes_when_people_are_co_present(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"decision":"reply","reply_text":"线上再问一句"}'
+                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision":"reply","reply_text":"线上再问一句"}'
             ]
         )
         runtime.resolve_interaction_context = lambda **kwargs: async_return(
@@ -2666,7 +2695,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_skips_model_when_people_are_co_present(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"decision":"reply","reply_text":"再发一条"}'
+                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision":"reply","reply_text":"再发一条"}'
             ]
         )
         runtime.resolve_interaction_context = lambda **kwargs: async_return(
@@ -3141,7 +3170,7 @@ class RuntimeProactiveAsyncTest(
     ):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "街边找店很自然", '
                 '"reply_text": "你人呢，\\n我看到前面好像有一家点心铺，\\n快来帮我看看是不是这家。", '
                 '"memory_note": ""}'
@@ -3939,7 +3968,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_sends_message_to_private_target(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "关系里有自然回访点", "reply_text": "刚想起你上次说的那个展，后来有新进展吗？", '
                 '"memory_note": "主动回访看展话题"}',
                 '{"segments":[{"text":"刚想起你上次说的那个展，后来有新进展吗？","relation":"standalone","pause":"none"}]}',
@@ -4024,7 +4053,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_waits_for_private_idle_window(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "继续刚才的话题", "reply_text": "刚才那张看到了吗？"}'
             ],
             provider_id="proactive-model",
@@ -4069,7 +4098,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_rejects_ungrounded_media_and_state_claims(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "照片刚发完，洗澡也结束了", '
                 '"reply_text": "照片发你啦，我洗好了，该你去啦。"}',
                 '{"valid": false, "reason": "旧照片不是本轮发送，当前仍在糖水铺且洗澡尚未发生", '
@@ -4156,7 +4185,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_continuity_audit_allows_grounded_question(self):
         runtime, _ = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "自然关心近况", "reply_text": "最近雨一直下，你那边还好吗？"}',
                 '{"valid": true, "reason": "只是开放式问候，没有改写当前事实", "conflicts": []}',
                 '{"valid": true, "reason": "人物指代一致", "conflicts": [], "replacements": []}',
@@ -4206,7 +4235,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_cancels_when_context_changes_during_audit(self):
         runtime, _ = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.95, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "自然问候", "reply_text": "刚想起你，今天过得怎么样？"}',
                 '{"valid": true, "reason": "人物指代一致", "conflicts": [], "replacements": []}',
             ],
@@ -4290,7 +4319,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_prompt_includes_recent_private_context(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.3, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.3, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "没有自然落点", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -4342,7 +4371,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_uses_recent_chat_as_anchor_before_memos(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.3, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.3, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "最近是睡前拍照收尾，旧水果记忆不该单独拉回当前场景", '
                 '"reply_text": "", "memory_note": ""}'
             ],
@@ -4430,7 +4459,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_does_not_query_memos_without_recent_chat(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.3, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.3, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "没有最近真实互动支撑", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -4484,7 +4513,7 @@ class RuntimeProactiveAsyncTest(
     ):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.3, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.3, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "没有自然落点", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -4529,7 +4558,7 @@ class RuntimeProactiveAsyncTest(
         )
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": false, "confidence": 0.3, "decision": "observe", '
+                '{"should_reply": false, "confidence": 0.3, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
                 '"reason": "没有自然落点", "reply_text": "", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -4568,7 +4597,7 @@ class RuntimeProactiveAsyncTest(
     async def test_private_revisit_skips_group_only_relationship(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "有回访点", "reply_text": "还在忙那个宏吗？", "memory_note": ""}'
             ],
             provider_id="proactive-model",
@@ -4606,7 +4635,7 @@ class RuntimeProactiveAsyncTest(
     ):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "decision": "reply", '
+                '{"should_reply": true, "expression_review": {"passed": true}, "confidence": 0.9, "benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision": "reply", '
                 '"reason": "有回访点", "reply_text": "还在忙那个宏吗？", "memory_note": ""}'
             ],
             provider_id="proactive-model",

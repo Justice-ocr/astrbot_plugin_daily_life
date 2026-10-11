@@ -13,6 +13,7 @@ from ...life.surroundings import (
 
 
 class LayerChainMixin:
+    _CHAT_MEMORY_RANK_BUDGET_SECONDS = 1.5
     _EXPERIENCE_RELEVANCE_FIELDS = (
         "title",
         "summary",
@@ -117,7 +118,7 @@ class LayerChainMixin:
         parts = getattr(req, "extra_user_content_parts", None)
         if not isinstance(parts, list):
             parts = []
-            setattr(req, "extra_user_content_parts", parts)
+            req.extra_user_content_parts = parts
         text = (
             "[HiddenVisualInputRule] 本轮消息包含真实图片输入或引用图片。"
             "回答与图片内容、人物、物品、场景、文字或身份判断相关的问题时，"
@@ -178,11 +179,7 @@ class LayerChainMixin:
         if not self.config.state.enabled:
             return
         if event is not None:
-            setattr(
-                event,
-                "_daily_life_pending_chat_state_refresh",
-                (target_date_str, now),
-            )
+            event._daily_life_pending_chat_state_refresh = (target_date_str, now)
             return
         self._schedule_background_task(
             self._refresh_state_for_chat_background(
@@ -196,7 +193,7 @@ class LayerChainMixin:
         pending = getattr(event, "_daily_life_pending_chat_state_refresh", None)
         if not isinstance(pending, tuple) or len(pending) != 2:
             return False
-        setattr(event, "_daily_life_pending_chat_state_refresh", None)
+        event._daily_life_pending_chat_state_refresh = None
         target_date_str, now = pending
         return self._schedule_background_task(
             self._refresh_state_for_chat_background(
@@ -285,11 +282,19 @@ class LayerChainMixin:
             )
             if str(value or "").strip()
         )
-        selected = await self.rank_semantic_groups(
-            query,
-            groups,
-            {**world_limits, **experience_limits},
-        )
+        limits = {**world_limits, **experience_limits}
+        try:
+            selected = await asyncio.wait_for(
+                self.rank_semantic_groups(query, groups, limits),
+                timeout=self._CHAT_MEMORY_RANK_BUDGET_SECONDS,
+            )
+        except TimeoutError:
+            # 普通聊天不等远端向量/排序模型；保留原有顺序与独立的长期记忆召回。
+            selected = {
+                kind: [item for _, _, item in values[: max(0, limits[kind])]]
+                for kind, values in groups.items()
+            }
+            logger.debug("[上下文注入] 记忆语义排序超时，本轮使用已有记录顺序")
         world_context = format_hidden_world_context(
             selected["relationships"],
             selected["places"],
@@ -368,6 +373,13 @@ class LayerChainMixin:
         """
 
         sections: list[str] = []
+        from ...life.entities import living_context
+
+        living = living_context(
+            [item for item in list(snapshot.get("living_entities") or []) if isinstance(item, dict)]
+        )
+        if living:
+            sections.append(living)
         fact_lines = []
         for item in list(snapshot.get("temporal_facts") or [])[:12]:
             if str(getattr(item, "predicate", "") or "").strip() == "interaction_mode":
@@ -536,6 +548,7 @@ class LayerChainMixin:
             return
 
         now = self._life_injection_now()
+        timing_context = await self.build_conversation_timing_context(event)
         today_str = now.strftime("%Y-%m-%d")
         target_date_str, using_extended_night = await self.resolve_injection_target(now)
         data = await self.ensure_injection_day_data(target_date_str, now)
@@ -585,7 +598,7 @@ class LayerChainMixin:
             )
             if self._voice_expression_channel_enabled(event):
                 self.mark_voice_switch_available(event)
-            self._apply_life_request_context(req, missing_context)
+            self._apply_life_request_context(req, missing_context + timing_context)
             self._append_visual_input_anchor(req)
             self._append_video_input_anchor(req, event)
             logger.debug("[上下文注入] 当前暂无日常生活记录，已注入防编造约束")
@@ -601,7 +614,7 @@ class LayerChainMixin:
         hidden_context += self.friend_reference_injection_context(event)
         if self._voice_expression_channel_enabled(event):
             self.mark_voice_switch_available(event)
-        self._apply_life_request_context(req, hidden_context)
+        self._apply_life_request_context(req, hidden_context + timing_context)
         self._append_visual_input_anchor(req)
         self._append_video_input_anchor(req, event)
         logger.debug("[上下文注入] 已注入日常生活背景上下文")

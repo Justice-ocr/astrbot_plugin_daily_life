@@ -2,7 +2,7 @@ import datetime
 import sqlite3
 from typing import Any
 
-from ..clock import today as life_today
+from ..clock import TIMEZONE, today as life_today
 from .categories import STORAGE_CATEGORIES, StorageCategory, normalize_storage_category
 
 
@@ -224,6 +224,10 @@ class StorageArchiveMixin:
         cutoff = self._cutoff_date(keep_days)
         deleted = self._delete_statements_unlocked(
             (
+                (
+                    "DELETE FROM conversation_receipts WHERE sent_at < ?",
+                    (datetime.datetime.fromisoformat(cutoff).replace(tzinfo=TIMEZONE).timestamp(),),
+                ),
                 (
                     """
                     DELETE FROM chat_summary_people

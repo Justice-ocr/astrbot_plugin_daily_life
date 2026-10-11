@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 from .categories import STORAGE_CATEGORIES
 from .knowledge import CognitionArchiveMixin
 from .continuance import ContinuityArchiveMixin
+from .possessions import LivingArchiveMixin
 from .common import CommonArchiveMixin
 from .activity import DomainArchiveMixin
 from .experience import ExperienceArchiveMixin
@@ -67,6 +68,7 @@ _CONTEXT_SNAPSHOT_KEYS = (
 
 
 class LifeArchive(
+    LivingArchiveMixin,
     ContinuityArchiveMixin,
     StyleCatalogArchiveMixin,
     GarmentArchiveMixin,
@@ -290,6 +292,7 @@ class LifeArchive(
             snapshot["affective_states"] = list(
                 snapshot.get("affective_states") or []
             ) + list(snapshot.pop("scoped_affective_states", []) or [])
+            snapshot["living_entities"] = await self.get_living_entities(session_id or experience_scope)
             return snapshot
 
         def collect_in_worker() -> dict[str, Any]:

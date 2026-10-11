@@ -253,6 +253,9 @@ class StageFrameMixin:
         ):
             messages.append({"role": "user", "content": current_message, "name": ""})
         text_context = self._media_director_format_recent_messages(messages[-limit:])
+        living_reader = getattr(self, "living_context_for_scope", None)
+        if callable(living_reader):
+            text_context += "\n\n" + await living_reader(scope)
         structured = self.format_structured_message_context(event, limit=8)
         if structured:
             return f"{text_context}\n\n结构化消息流（优先判断谁对谁说话、引用和@关系）：\n{structured}"

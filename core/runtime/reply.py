@@ -437,29 +437,40 @@ class SemanticSegmentRuntimeMixin:
             index += 1
         return "".join(cleaned).strip()
 
+    def _semantic_segment_punctuation_chars(
+        self,
+        event: Any,
+        source_text: str,
+    ) -> str:
+        """普通聊天仅在文本发送阈值内清洗标点。"""
+        config = self._chat_style_astrbot_send_config(event)
+        if not isinstance(config, dict) or "t2i_word_threshold" not in config:
+            return ""
+        threshold = self._chat_style_int_config(
+            config.get("t2i_word_threshold"), 150, minimum=50
+        )
+        if len(str(source_text or "")) > threshold:
+            return ""
+        style = getattr(getattr(self, "config", None), "chat_style", None)
+        if style is None or not bool(
+            getattr(style, "punctuation_cleanup_enabled", True)
+        ):
+            return ""
+        cleanup_chars = str(getattr(style, "punctuation_cleanup_chars", "") or "")
+        if not cleanup_chars:
+            return ""
+        if self._chat_style_text_is_structural(source_text):
+            return ""
+        return cleanup_chars
+
     def _semantic_segment_clean_plan_punctuation(
         self,
         event: Any,
         plan: SemanticSegmentPlan,
         source_text: str,
     ) -> SemanticSegmentPlan:
-        config = self._chat_style_astrbot_send_config(event)
-        if not isinstance(config, dict) or "t2i_word_threshold" not in config:
-            return plan
-        threshold = self._chat_style_int_config(
-            config.get("t2i_word_threshold"), 150, minimum=50
-        )
-        if len(str(source_text or "")) > threshold:
-            return plan
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        if style is None or not bool(
-            getattr(style, "punctuation_cleanup_enabled", True)
-        ):
-            return plan
-        cleanup_chars = str(getattr(style, "punctuation_cleanup_chars", "") or "")
+        cleanup_chars = self._semantic_segment_punctuation_chars(event, source_text)
         if not cleanup_chars:
-            return plan
-        if self._chat_style_text_is_structural(source_text):
             return plan
         segments = tuple(
             SegmentPart(

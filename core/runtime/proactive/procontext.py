@@ -455,7 +455,11 @@ JSON 输出要求：
         self, target_scope: str, limit: int = 6
     ) -> str:
         messages = await self._read_recent_context_messages(target_scope, limit=limit)
-        return self._format_recent_context_messages(messages)
+        text = self._format_recent_context_messages(messages)
+        living_reader = getattr(self, "living_context_for_scope", None)
+        if callable(living_reader):
+            text += "\n" + await living_reader(target_scope)
+        return text
 
     def _format_expression_profiles_for_proactive(self, profiles: list[Any]) -> str:
         lines: list[str] = []

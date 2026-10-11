@@ -6,12 +6,13 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 
+from ..clock import today as life_today
 from .tables.living import DOMAIN_INDEX_SQL, DOMAIN_SQL
 from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 24
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -63,7 +64,9 @@ PREVIOUS_V18_SCHEMA_FINGERPRINT = (
 PREVIOUS_V19_SCHEMA_FINGERPRINT = "5c85572e593924bac14c74f5e9de4fb3e30f07966678db9301b274b209dda20b"
 PREVIOUS_V20_SCHEMA_FINGERPRINT = "43e2b090847b932c95ad312a19ad66a6c109b7283b2959c5dc2e4fc55e61c180"
 
-CURRENT_SCHEMA_FINGERPRINT = "1dcab14830e01b324d3bac191506af09e1fc2fc092effb4ab6eb04e4405d4cdf"
+PREVIOUS_V21_SCHEMA_FINGERPRINT = "1dcab14830e01b324d3bac191506af09e1fc2fc092effb4ab6eb04e4405d4cdf"
+PREVIOUS_V22_SCHEMA_FINGERPRINT = "b8f268ce4aba19b956f1a14e4a9b567227a6d011390d62c6ef8a8c2ea716e066"
+CURRENT_SCHEMA_FINGERPRINT = "a05e55bdfdab44033c105d6c2bb560da7e2beeb50721344f8193815c6ead4ed7"
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -135,7 +138,9 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V18_SCHEMA_FINGERPRINT: 18,
     PREVIOUS_V19_SCHEMA_FINGERPRINT: 19,
     PREVIOUS_V20_SCHEMA_FINGERPRINT: 20,
-    CURRENT_SCHEMA_FINGERPRINT: 21,
+    PREVIOUS_V21_SCHEMA_FINGERPRINT: 21,
+    PREVIOUS_V22_SCHEMA_FINGERPRINT: 22,
+    CURRENT_SCHEMA_FINGERPRINT: 23,
 }
 
 
@@ -627,7 +632,7 @@ def _migrate_timeline_day_offsets(conn: sqlite3.Connection) -> None:
                 item.day_offset = int(minutes < anchor) if minutes is not None else 0
         else:
             normalize_timeline_day_offsets(items)
-        ordered = sorted(zip(rows, items), key=lambda pair: timeline_item_minutes(pair[1]) or 0)
+        ordered = sorted(zip(rows, items, strict=True), key=lambda pair: timeline_item_minutes(pair[1]) or 0)
         if not any(item.day_offset for item in items):
             continue
         # 临时使用负数位置，避免复合主键冲突。
@@ -705,6 +710,89 @@ def _migrate_wardrobe_life(conn: sqlite3.Connection) -> None:
             buffer = ""
 
 
+def _migrate_conversation_receipts(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_receipts (
+            scope TEXT NOT NULL,
+            sent_at REAL NOT NULL,
+            PRIMARY KEY(scope, sent_at)
+        )
+    """)
+
+
+def _migrate_living_memory_index(conn: sqlite3.Connection) -> None:
+    """修复普通 FTS5 表的删除操作，并增加生活实体查询索引。"""
+    conn.execute("DROP TRIGGER IF EXISTS long_term_memories_ad")
+    conn.execute("DROP TRIGGER IF EXISTS long_term_memories_au")
+    conn.execute("""CREATE TRIGGER long_term_memories_ad AFTER DELETE ON long_term_memories
+        BEGIN DELETE FROM long_term_memories_fts WHERE rowid=old.id; END""")
+    conn.execute("""CREATE TRIGGER long_term_memories_au
+        AFTER UPDATE OF title,content,category,status ON long_term_memories
+        BEGIN
+            DELETE FROM long_term_memories_fts WHERE rowid=old.id;
+            INSERT INTO long_term_memories_fts(rowid,title,content,category)
+            SELECT new.id,new.title,new.content,new.category WHERE new.status='active';
+        END""")
+    conn.execute("DELETE FROM long_term_memories_fts")
+    conn.execute("""INSERT INTO long_term_memories_fts(rowid,title,content,category)
+        SELECT id,title,content,category FROM long_term_memories WHERE status='active'""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_continuous_entities_scope
+        ON continuous_life_entries(scope,kind,date,occurred_at DESC)""")
+
+
+def _migrate_clock_only_active_timelines(conn: sqlite3.Connection) -> None:
+    """撤销旧时钟写出的假执行态，保留有结构化自主行动记录的节点。"""
+    active_rows = conn.execute(
+        "SELECT date, sort_order FROM timelines WHERE execution_state = 'active'"
+    ).fetchall()
+    if not active_rows:
+        return
+    current_date = life_today().isoformat()
+    changed_dates: set[str] = set()
+    for date, index in active_rows:
+        stored = conn.execute(
+            "SELECT value FROM day_meta WHERE date = ? AND key = 'continuous_execution'",
+            (date,),
+        ).fetchone()
+        try:
+            run = json.loads(stored[0]) if stored else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            run = {}
+        action = run.get("action") if isinstance(run, dict) else None
+        if (
+            isinstance(action, dict)
+            and run.get("date") == date
+            and run.get("status") in {"running", "paused", "ready", "settling"}
+            and type(action.get("timeline_index")) is int
+            and action["timeline_index"] == index
+        ):
+            continue
+        target = "elapsed" if date < current_date else "planned"
+        conn.execute(
+            "UPDATE timelines SET execution_state = ?, execution_reason = ?, "
+            "execution_evidence = '', execution_updated_at = '' "
+            "WHERE date = ? AND sort_order = ?",
+            (target, "计划时段已过，尚未收到执行证据" if target == "elapsed" else "尚未收到执行证据", date, index),
+        )
+        changed_dates.add(date)
+        for session_id, metadata_json in conn.execute(
+            "SELECT id, metadata_json FROM activity_sessions "
+            "WHERE date = ? AND status = 'active'",
+            (date,),
+        ).fetchall():
+            try:
+                session_meta = json.loads(metadata_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(session_meta, dict) and session_meta.get("timeline_index") == index:
+                conn.execute(
+                    "UPDATE activity_sessions SET status = ?, evidence_json = '[]' WHERE id = ?",
+                    (target, session_id),
+                )
+    for date in changed_dates:
+        conn.execute("UPDATE days SET revision = revision + 1 WHERE date = ?", (date,))
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -727,6 +815,9 @@ MIGRATIONS: dict[int, MigrationStep] = {
     19: _migrate_timeline_day_offsets,
     20: _migrate_continuous_life_entries,
     21: _migrate_wardrobe_life,
+    22: _migrate_conversation_receipts,
+    23: _migrate_living_memory_index,
+    24: _migrate_clock_only_active_timelines,
 }
 
 

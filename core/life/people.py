@@ -48,8 +48,6 @@ INVITE_PERSON_TEXT_PATHS: tuple[PathPattern, ...] = (
     ("impact",),
     ("timeline_edits", "*", "item", "activity"),
     ("timeline_edits", "*", "item", "status"),
-    ("new_future_timeline", "*", "activity"),
-    ("new_future_timeline", "*", "status"),
     ("life_events", "*", "title"),
     ("life_events", "*", "detail"),
     ("life_events", "*", "effect"),

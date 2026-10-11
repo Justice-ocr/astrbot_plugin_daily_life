@@ -20,7 +20,7 @@ from ..models import (
 from .amap import AmapWebServiceClient
 from .audit import DailyLocationAuditMixin
 from .locator import DailyLocationPlanningMixin
-from .tools import get_week_id, timeline_item_datetime
+from .tools import get_week_id, timeline_execution_run, timeline_item_datetime
 
 _TRAVEL_SPEED_METERS_PER_SECOND = {
     "walking": 1.25,
@@ -445,6 +445,18 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             and self._map.available
         )
 
+    def home_location_resolution_due(self) -> bool:
+        """只在地图可用且需要重新定位时安排后台预热。"""
+
+        return bool(
+            self.settings.enabled
+            and self.settings.location_enabled
+            and str(self.settings.home_address or "").strip()
+            and self._map.available
+            and self._home_location is None
+            and asyncio.get_running_loop().time() >= self._home_location_retry_after
+        )
+
     def residence_status(self) -> str:
         configured = bool(str(self.settings.home_address or "").strip())
         if configured:
@@ -514,6 +526,10 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                 "cancelled": "cancelled",
                 "skipped": "skipped",
             }.get(item.execution_state, "planned")
+            if status == "active" and not timeline_execution_run(
+                day.meta, day.date, action.timeline_index
+            ):
+                status = "planned"
             await saver(
                 {
                     "action_id": action.action_id,

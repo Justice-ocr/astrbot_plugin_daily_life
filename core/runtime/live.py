@@ -12,7 +12,9 @@ from .background import BackgroundTaskMixin
 from .capture import CaptureMixin
 from .context import InteractionContextMixin
 from .continuous import ContinuousLifeMixin
+from .participation import LivingRuntimeMixin
 from .clothier import ClothierMixin
+from .elapsed import ConversationTimingMixin
 from .forward import TextForwardMixin
 from .gate import ResponseGateMixin
 from .gateway import ModelCallOptions, ModelGateway
@@ -39,6 +41,8 @@ from .turns import ContinuousTurnMixin
 
 
 class DailyLifeRuntime(
+    LivingRuntimeMixin,
+    ConversationTimingMixin,
     ContinuousLifeMixin,
     ClothierMixin,
     MeaningRuntimeMixin,

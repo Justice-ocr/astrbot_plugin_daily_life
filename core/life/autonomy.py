@@ -176,6 +176,11 @@ class LifeAutonomyMixin:
         getter = getattr(self.archive, "get_continuous_life", None)
         if callable(getter):
             sections.append(execution_context(await getter()))
+        living_reader = getattr(self.archive, "get_living_entities", None)
+        if callable(living_reader):
+            from .entities import living_context
+
+            sections.append(living_context(await living_reader("global")))
         return "\n\n".join(section for section in sections if section)
 
     async def _save_life_decision_record(

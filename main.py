@@ -25,6 +25,7 @@ from .core.interface import (
     LifeActionScope,
 )
 from .core.logguard import ProviderLogGuard
+from .core.sources.location import enrich_location_message
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.sender import install_expressive_send_message_tool
@@ -121,6 +122,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         + _AFTER_SENT_NOTE_HOOKS
         + _INCOMING_NOTE_HOOKS
         + (
+            "note_conversation_incoming",
             "note_recalled_message",
             "note_runtime_scope_activity",
             "note_continuous_turn_incoming",
@@ -444,10 +446,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         *,
         task_key: str,
         contains_character: bool = False,
+        target_umo: str = "",
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
             return await runtime.generate_share_image_task(
-                event, prompt, task_key=task_key, contains_character=contains_character
+                event, prompt, task_key=task_key, contains_character=contains_character,
+                target_umo=target_umo,
             )
 
     async def get_share_image_task(self, task_key: str) -> dict:
@@ -461,10 +465,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         *,
         task_key: str,
         reference_image: str = "",
+        target_umo: str = "",
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
             return await runtime.generate_share_video_task(
-                event, prompt, task_key=task_key, reference_image=reference_image
+                event, prompt, task_key=task_key, reference_image=reference_image,
+                target_umo=target_umo,
             )
 
     async def get_share_video_task(self, task_key: str) -> dict:
@@ -491,13 +497,36 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
             return str(getattr(result, "path", "") or "").strip()
 
-    async def prepare_share_expression(self, text: str, *, scene: str = "") -> dict:
+    async def prepare_share_expression(
+        self, text: str, *, scene: str = "", requirements: dict | None = None
+    ) -> dict:
         async with self._external_runtime_lease() as runtime:
-            return await runtime.prepare_share_expression(text, scene=scene)
+            options = {"requirements": requirements} if requirements is not None else {}
+            return await runtime.prepare_share_expression(text, scene=scene, **options)
+
+    async def clean_share_punctuation(self, text: str, *, scene: str = "") -> str:
+        async with self._external_runtime_lease() as runtime:
+            return runtime.clean_share_punctuation(text, scene=scene)
+
+    async def prepare_share_image(self, source: str) -> dict:
+        from .core.sight.sharemedia import prepare_share_image
+
+        async with self._external_runtime_lease():
+            return await prepare_share_image(str(source or ""))
+
+    async def describe_share_video(self, source: str) -> dict:
+        from .core.sight.sharemedia import describe_share_video
+
+        async with self._external_runtime_lease() as runtime:
+            return await describe_share_video(runtime, str(source or ""))
 
     async def record_public_activity(self, receipt: dict) -> bool:
         async with self._external_runtime_lease() as runtime:
             return await runtime.record_public_activity(dict(receipt))
+
+    async def record_share_delivery(self, receipt: dict) -> bool:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.record_share_delivery(dict(receipt))
 
     async def record_external_activity(
         self,
@@ -672,6 +701,121 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             normalized_target,
             days=self._tool_int(days, 7),
             date=str(date or "").strip(),
+        )
+
+    @filter.llm_tool(name="life_shared_activity")
+    @_runtime_guard
+    async def tool_life_shared_activity(
+        self,
+        event: AstrMessageEvent,
+        action: str = "list",
+        activity_id: str = "",
+        detail: str = "",
+        progress: str = "",
+        evidence: str = "",
+        revision: int = 0,
+    ):
+        """管理已经确认的共同活动的准备、进行、暂停、恢复和结束状态。
+
+        只有当前用户整条消息明确提供了进展时才更新，不能凭时间轴认定已经参与或完成。
+
+        Args:
+            action(string): list 查询；prepare 准备；start 开始；pause 暂停；resume 恢复；progress 更新进度；finish 结束；cancel 取消。
+            activity_id(string): list 返回的共同活动编号；新邀约先用 accept_user_invite。
+            detail(string): 本轮状态变化的明确依据，不能编造双方行为。
+            progress(string): 用户明确确认的播放或活动进度；没有证据留空。
+            evidence(string): 逐字引用当前用户完整原话，不能引用历史或截取片段。
+            revision(int): 查询返回的当前 revision，防止覆盖并发变化。
+        """
+        denial = self._life_permission_denial(
+            event, "shared_activity:update", LifeActionScope.PRIVATE
+        )
+        if denial and action != "list":
+            return denial
+        return await self.runtime.manage_shared_activity(
+            event,
+            action=str(action or "list").strip(),
+            activity_id=str(activity_id or "").strip(),
+            detail=str(detail or "").strip(),
+            progress=str(progress or "").strip(),
+            evidence=str(evidence or "").strip(),
+            revision=self._tool_int(revision, 0),
+        )
+
+    @filter.llm_tool(name="life_object")
+    @_runtime_guard
+    async def tool_life_object(
+        self,
+        event: AstrMessageEvent,
+        action: str = "list",
+        object_id: str = "",
+        title: str = "",
+        state: str = "",
+        location: str = "",
+        progress: str = "",
+        content: str = "",
+        evidence: str = "",
+        revision: int = 0,
+    ):
+        """记录或查询已经真实出现的生活物品、作品、草稿和未完成事项。
+
+        不替代衣橱和食材管理，不把计划中的物品、购买或生成请求当作实际拥有。
+
+        Args:
+            action(string): list 查询；record 新增明确物品；update 更新已存在物品。
+            object_id(string): 已有物品或作品编号；新增留空。
+            title(string): 明确名称；更新时可留空保留原值。
+            state(string): available 可用；in_use 使用中；stored 收纳；unavailable 暂不可用；finished 完成；archived 归档。
+            location(string): 有明确依据的位置；未知留空。
+            progress(string): 已确认阅读或整理进度；不按经过时间推算。
+            content(string): 明确保存的笔记或草稿正文；不能伪造外部文件或媒体。
+            evidence(string): 当前用户整条原话；缺少明确证据时仅查询。
+            revision(int): 已有记录当前 revision；新增为 0。
+        """
+        denial = self._life_permission_denial(
+            event, "life_object:update", LifeActionScope.PRIVATE
+        )
+        if denial and action != "list":
+            return denial
+        return await self.runtime.manage_life_object(
+            event,
+            action=str(action or "list").strip(),
+            object_id=str(object_id or "").strip(),
+            title=str(title or "").strip(),
+            state=str(state or "").strip(),
+            location=str(location or "").strip(),
+            progress=str(progress or "").strip(),
+            content=str(content or "").strip(),
+            evidence=str(evidence or "").strip(),
+            revision=self._tool_int(revision, 0),
+        )
+
+    @filter.llm_tool(name="life_memory_correct")
+    @_runtime_guard
+    async def tool_life_memory_correct(
+        self,
+        event: AstrMessageEvent,
+        memory_id: int,
+        correction: str,
+        evidence: str,
+    ):
+        """用户明确纠正某条长期生活记忆时调用，保留原始历史并让后续召回采用新事实。
+
+        Args:
+            memory_id(int): life_memory_search 返回的记忆编号，禁止猜测。
+            correction(string): 纠正后的完整事实，保留未被否定的内容和事件时间。
+            evidence(string): 当前用户完整原话；普通话题变化不构成纠正。
+        """
+        denial = self._life_permission_denial(
+            event, "memory:correct", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
+        return await self.runtime.correct_memory_from_event(
+            event,
+            memory_id=self._tool_int(memory_id, 0),
+            correction=str(correction or "").strip(),
+            evidence=str(evidence or "").strip(),
         )
 
     @filter.llm_tool(name="life_adjust")
@@ -1777,7 +1921,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         """
         理解用户当前发送、引用或指定的视频，并把可确认的画面信息用于后续对话。
         适合用户问“这个视频里是什么”“刚才视频怎么看”“帮我看看这段视频”等场景；不要凭生活背景猜视频内容。
-        调用前可以根据聊天语境先用角色口吻自然回应一句；工具结果返回后再基于可确认的视频内容回答用户。
+        调用前可以根据聊天语境先用角色口吻自然回应一句。
+        Gemini 原生视频分析在后台处理；返回 pending 时结束本次工具轮次，结果会独立送达，后续消息可正常聊天。
+        只有已完成的真实分析可以用于回答，不提前猜测视频内容。
         Args:
             target(string): 可选的视频文件路径或直链；留空时自动使用当前消息或引用消息里的视频。
         """
@@ -1797,7 +1943,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         把用户当前发送、引用、指定或最近已理解的视频整理成专业 Markdown 长文总结，并交给 AstrBot 文转图发送。
         只在用户明确需要“专业总结、长文总结、详细分析、总结成图、转图总结”时调用；普通询问视频内容时使用 life_video_understand。
         工具会在后台识别、转写、生成并发送总结；返回 pending 时结束本次工具轮次，不要等待、重复调用或声称总结已完成，后续消息正常聊天。
-        专业总结按照视频转写配置使用本地 ASR 或必剪，并结合关键画面证据；按视频实际议题组织背景、论点、事实、数据、分析、风险和建议，以段落、重点列表和引用形成紧凑笔记。长内容会逐个处理全部时间窗，广告与无关片段不会生成章节；关键画面不会插入成品，没有音频但画面可确认时仍可生成。
+        Gemini 识别普通视频时使用完整视频及音轨证据；其他模型与 B站长视频按照转写配置使用本地 ASR 或必剪，并结合关键画面证据。按视频实际议题组织背景、论点、事实、数据、分析、风险和建议，以段落、重点列表和引用形成紧凑笔记。长内容会逐个处理全部时间窗，广告与无关片段不会生成章节；关键画面不会插入成品，没有音频但画面可确认时仍可生成。
         调用后不要再额外复述总结正文。
 
         Args:
@@ -1966,6 +2112,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.on_llm_request()
     @_runtime_guard
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        enrich_location_message(event, req)
         prepare_turn = self._runtime_hook("prepare_continuous_turn_llm_request")
         if prepare_turn and not prepare_turn(event, req):
             return
@@ -2022,10 +2169,21 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                     toolset.remove_tool(name)
             domains = getattr(self.runtime, "domains", None)
             ensure_map_context = getattr(domains, "ensure_map_context", None)
-            if callable(ensure_map_context):
-                await ensure_map_context()
             map_available = getattr(domains, "map_tools_available", None)
             if not callable(map_available) or not map_available():
+                resolution_due = getattr(domains, "home_location_resolution_due", None)
+                schedule_background = getattr(self.runtime, "_schedule_background_task", None)
+                if (
+                    callable(ensure_map_context)
+                    and callable(resolution_due)
+                    and resolution_due()
+                    and callable(schedule_background)
+                ):
+                    schedule_background(
+                        ensure_map_context(),
+                        label="居住地定位预热",
+                        key="map_context:home",
+                    )
                 for name in MAP_LLM_TOOL_NAMES:
                     toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
@@ -2374,9 +2532,6 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
-        voice_receipt = self._runtime_hook("note_voice_switch_message_sent")
-        if voice_receipt:
-            await voice_receipt(event)
         outbound_logger = getattr(self.runtime, "log_outbound_result_async", None)
         if not callable(outbound_logger):
             outbound_logger = getattr(self.runtime, "log_outbound_result", None)
@@ -2384,6 +2539,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             outbound_result = outbound_logger(event, source="reply")
             if inspect.isawaitable(outbound_result):
                 await outbound_result
+        voice_receipt = self._runtime_hook("note_voice_switch_message_sent")
+        if voice_receipt:
+            await voice_receipt(event)
         self._runtime_hook_call("complete_continuous_turn", event)
         reaction = getattr(self.runtime, "note_tool_reaction_message_sent", None)
         if callable(reaction):
@@ -2424,6 +2582,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
+        self._runtime_hook_call("note_conversation_incoming", event)
+        enrich_location_message(event)
         self._runtime_hook_call("note_continuous_turn_incoming", event)
         try:
             await self._runtime_hook_apply(

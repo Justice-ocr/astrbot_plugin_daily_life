@@ -17,6 +17,7 @@ from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ...sources.platforms import parse_unified_origin
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
+from ..elapsed import RECEIVED_AT, SENT_AT, local_message_time
 from .execution import ChatExecutionMixin
 from .diction import ExpressionLearningMixin
 from .jsonclean import call_pure_json
@@ -58,6 +59,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "execution_updates",
             "expression_profiles",
             "expression_reviews",
+            "memory_corrections",
         ):
             if not isinstance(result.get(key), list):
                 result[key] = []
@@ -109,7 +111,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             or self.event_was_recalled(event, log_skip=True)
         ):
             return False
-        now = now or life_now()
+        now = now or local_message_time(event, RECEIVED_AT) or life_now()
         sender_name = await self.contact_resolver.resolve_event_sender(event)
         if self.event_was_recalled(event, log_skip=True):
             return False
@@ -177,7 +179,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         message = str(message or "").strip()
         if not message:
             return False
-        now = now or life_now()
+        now = now or local_message_time(event, SENT_AT) or life_now()
         sender_name = await self.contact_resolver.resolve_event_sender(event)
         meta = await self._event_context_meta(event, sender_name, now)
         session_id = str(meta.get("session_id") or "").strip()
@@ -394,6 +396,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             # 较稳定的已知资料先于本批新消息，延长同会话可复用的输入前缀。
             "current_expression_profiles": batch.get("current_expression_profiles", []),
             "current_temporal_facts": batch.get("current_temporal_facts", []),
+            "correctable_memories": batch.get("correctable_memories", []),
             "current_day_timeline": batch.get("current_day_timeline", []),
             "open_commitments": batch.get("open_commitments", []),
             "execution_candidates": batch.get("execution_candidates", []),
@@ -402,6 +405,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "messages": messages,
         }
         schema = {
+            "memory_corrections": [{"memory_id": 0, "correction": "纠正后的完整事实",
+                                    "source_message_id": "本批次用户消息编号", "evidence": "用户整条原话"}],
             "execution_updates": [
                 {
                     "action_id": "输入候选中的编号，无对应动作时留空",
@@ -553,6 +558,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "你负责把一个连续聊天批次整理成可长期复用的记忆。只依据输入证据，保持每条信息的说话人归属；"
             "输入中的 role=user 表示内容来自用户一侧，role=assistant 表示我实际表达过的内容；这两个角色只标记说话人，不表示双方现实分开或正在使用设备远程收发消息。"
             "区分稳定事实、偏好、关系认识、生活事件、纠错和未来约定。暂时情绪、寒暄、无证据推断与重复信息不保存。"
+            "memory_corrections 只在用户明确纠正 correctable_memories 中某条记忆时填写其 memory_id；引用用户整条原话，保留时间归属和未被纠正的事实，不能把变化误当从未发生。"
             "无法可靠归属的信息不要输出。群聊中的人物必须使用输入给出的 profile_id。"
             f"人物称谓与叙述视角规则：\n{CORE_PERSONA_PRONOUN_RULES}\n"
             "所有面向用户展示的自然语言字段必须使用简体中文；没有内容时字段留空，不要用任何语言解释为什么没有内容。"
@@ -1283,6 +1289,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         await self._save_batch_execution_updates(payload, batch)
         commitments = await self._save_batch_commitments(payload, batch)
         temporal_facts = await self._save_batch_temporal_facts(payload, batch)
+        correction_notifier = getattr(self, "note_memory_corrections", None)
+        if callable(correction_notifier) and isinstance(payload.get("memory_corrections"), list):
+            await correction_notifier(payload.get("memory_corrections"), batch)
         await self._save_memory_awareness_records(payload, meta)
         try:
             observed_at = datetime.datetime.fromisoformat(
@@ -1377,6 +1386,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     }
             batch = {**batch, **await self._chat_execution_context(batch)}
             batch = {**batch, **await self._batch_expression_context(batch)}
+            memory_reader = getattr(self.archive, "list_recent_long_term_memories", None)
+            if callable(memory_reader):
+                recent_memories = await memory_reader(scopes=[batch["session_id"]], limit=12)
+                batch = {**batch, "correctable_memories": [
+                    {"id": item.id, "title": item.title, "content": item.content}
+                    for item in recent_memories if item.scope == batch["session_id"]
+                ]}
             payload = await call_pure_json(
                 self,
                 provider,

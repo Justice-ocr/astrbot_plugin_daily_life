@@ -11,6 +11,8 @@ from typing import Any
 from astrbot.api import logger
 
 from ..life.body import ContinuousBody, instant, project_body
+from ..life.achievement import apply_reviews, review_candidates
+from ..life.interests import apply_interest_updates, bind_interest
 from ..life.goals import apply_goal_decisions, credit_goal, ready_steps
 from ..life.presence import (
     apply_action_reflections,
@@ -179,6 +181,13 @@ class ContinuousLifeMixin:
         sources.update(f"focus:{item.id}" for item in focus)
         sources.update(f"preference:{item.id}" for item in preferences)
         kernel = world.get("kernel") if isinstance(world.get("kernel"), dict) else {}
+        model = kernel.get("self_model") if isinstance(kernel.get("self_model"), dict) else {}
+        sources.update(
+            f"interest:{item['id']}"
+            for item in model.get("interests", [])
+            if isinstance(item, dict) and item.get("id") and item.get("status") == "supported"
+            and item.get("disposition", "active") == "active"
+        )
         unreflected_outcomes = [
             item
             for item in kernel.get("action_outcomes", [])
@@ -228,6 +237,7 @@ class ContinuousLifeMixin:
             or last_review is None
             or now - last_review >= datetime.timedelta(hours=6)
         )
+        achievement_candidates = review_candidates(world)
         # 同一组事实先决定动作，再校验；模型不直接写入执行结果或身体数值。
         fixed = """为当前角色选择接下来实际要执行的一项内部数字生活行动，并维护少量能持续数周的自身目标。
 只输出 JSON：
@@ -253,6 +263,13 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
 "self_model_updates":[{"owner":"self","field":"interest|value|boundary","id":"稳定编号","text":"自己的兴趣、价值或边界","source_ids":["allowed_source_ids 中的完整编号"],"reason":"证据怎样支持这一认识"}]。
 仅在 goal_review_due=true 时审视自我模型，每次最多四项，小步变化。自我认识必须属于当前角色，普通话题和用户自身愿望不构成角色兴趣。新认知可以暂定，持续的不同证据才逐步稳定；不得把练习时间直接解释成能力认证。
 """
+        fixed += """
+目标阶段另填 acceptance（具体成果验收条件）、evidence_kind（artifact 数字作品或 action 实际执行回执）。练习时间只记录投入；数字作品型目标必须有已保存作品才能验收。
+可使用已支持的 interest 来源建立目标，并在行动选择中填写 interest_id、motive（自身动机）；允许保持偏好、商量或休息，不为讨好对方重置兴趣。
+可用 interest_updates=[{"id":"已有兴趣编号","disposition":"active|paused|retired","source_ids":["本轮实际证据编号"],"reason":"自己的意愿变化","next_step":"下次具体想继续什么"}] 维护持续兴趣；沉默不表示失去兴趣。
+achievement_reviews=[{"goal_id":"候选编号","step_id":"候选编号","revision":"候选 revision","verdict":"passed|needs_practice|uncertain","reason":"依据成果的判断","evidence":[{"action_id":"候选证据编号","quote":"逐字引用作品或回执内容"}],"next_step":"需要继续练习的具体方向"}]。
+只复核 achievement_candidates 已保存的证据，不能验收本轮才提议或才写出的作品。不确定时保留未知；自我复核只表明阶段成果达到条件，不代表客观技能认证。
+"""
         try:
             recent_chats = await asyncio.wait_for(
                 self.composer._collect_recent_chat_context(persona), timeout=5
@@ -268,6 +285,7 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
             "life_kernel": kernel_context(world),
             "self_model": kernel.get("self_model") or {},
             "unreflected_outcomes": unreflected_outcomes,
+            "achievement_candidates": achievement_candidates,
             "open_threads": [
                 item
                 for item in (
@@ -311,6 +329,9 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
                                     "required_minutes",
                                     "practice_minutes",
                                     "depends_on",
+                                    "acceptance",
+                                    "evidence_kind",
+                                    "next_step",
                                 )
                             }
                             for step in goal["steps"]
@@ -359,6 +380,7 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
                 payload["_reflection_action_ids"] = {
                     item["action_id"] for item in unreflected_outcomes
                 }
+                payload["_achievement_candidates"] = achievement_candidates
                 payload["_self_model"] = {
                     "persona": persona,
                     "preferences": dynamic["preferences"],
@@ -864,6 +886,12 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
                 allowed_action_ids=payload.get("_reflection_action_ids", set()),
                 now=now,
             )
+            apply_reviews(
+                world, payload.get("achievement_reviews"),
+                offered=payload.get("_achievement_candidates", []), now=now,
+            )
+            apply_interest_updates(world, payload.get("interest_updates"),
+                                   sources=payload.get("_sources", set()), now=now)
             if payload.get("_goal_review_due", True):
                 apply_self_model_updates(
                     world,
@@ -945,6 +973,7 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
                 if action.timeline_index is not None:
                     item = latest.timeline[action.timeline_index]
                     item.execution_state = "active"
+                    item.execution_reason = "自主行动已开始"
                     item.execution_evidence = reason
                     item.execution_updated_at = now.isoformat(sep=" ")
                 action.requested_at = now.isoformat(sep=" ")
@@ -999,6 +1028,7 @@ new_action.payload 保留明确领域参数：cook.ingredients 必须来自现�
                 )
                 if step:
                     world["run"].update(goal_id=goal["id"], step_id=step["id"])
+                bind_interest(world, world["run"], payload)
             running = world.get("run") or {}
             world["sleeping"] = (
                 running.get("status") == "running"

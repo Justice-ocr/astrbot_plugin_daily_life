@@ -332,14 +332,22 @@
         "description": "记忆批次最大重试次数",
         "type": "int",
         "default": 4,
-        "slider": {"min": 1, "max": 10, "step": 1},
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
         "hint": "模型持续失败达到次数后进入死信并推进队列，避免无限重复调用。"
       },
       "batch_retry_base_seconds": {
         "description": "记忆批次重试退避",
         "type": "int",
         "default": 30,
-        "slider": {"min": 5, "max": 3600, "step": 5},
+        "slider": {
+          "min": 5,
+          "max": 3600,
+          "step": 5
+        },
         "hint": "首次失败后的重试等待秒数，后续按指数退避。"
       },
       "max_generation_items": {
@@ -2145,7 +2153,7 @@
   "sight_config": {
     "description": "视频理解",
     "type": "object",
-    "hint": "让机器人能够理解用户发送、引用或提供链接的视频，并支持 B 站链接自动总结、专业长文总结和文转图发送。",
+    "hint": "普通视频选择 Gemini 后直接理解完整画面和声音，无需抽帧或 ASR；B 站长视频保留关键画面、音频转写、专业总结和文转图。",
     "items": {
       "summary_provider": {
         "description": "视频总结",
@@ -2155,11 +2163,11 @@
         "hint": "指定普通视频内容融合、B站自动总结和专业长文总结使用的模型，留空则使用当前默认模型。"
       },
       "frame_provider": {
-        "description": "关键画面理解",
+        "description": "视频识别",
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "指定视频关键画面识别使用的模型；支持时会一次分析多张画面。留空则使用当前默认模型。"
+        "hint": "Gemini 模型自动用原生接口理解完整视频及声音，复用该模型的地址与 Key，无需另填。附件或直链支持 MP4/MOV/WebM；本插件内联文件限制为 12 MiB，并非 Gemini 能力上限。接口分组需支持原生视频。其他模型和 B 站长视频使用关键画面与转写。留空使用当前默认模型。"
       },
       "bili_auto_summary": {
         "description": "B站自动总结",
@@ -2182,7 +2190,7 @@
           "max": 1800,
           "step": 30
         },
-        "hint": "素材准备完成后，关键画面提取、画面理解、普通内容融合或专业总结的最长处理时间。音频转写和视频文件下载使用各自的超时。"
+        "hint": "完整视频原生请求，或关键画面提取、理解与内容总结的最长处理时间。下载和音频转写使用各自的超时。Gemini 原生请求不自动重试。"
       },
       "max_transcript_chars": {
         "description": "转写字数上限",
@@ -2204,7 +2212,7 @@
           "max": 24,
           "step": 1
         },
-        "hint": "系统会按视频时长和画面变化自动去除近似画面，此数值只限制最终关键画面上限，并不代表每次固定分析这么多张。"
+        "hint": "用于 B 站长视频等抽帧流程；Gemini 普通视频不使用此设置。系统会按视频时长和画面变化去除近似画面，此数值只限制最终关键画面上限。"
       },
       "video_download_max_mb": {
         "description": "抽帧视频下载上限（MB）",
@@ -2215,7 +2223,7 @@
           "max": 1024,
           "step": 1
         },
-        "hint": "远程视频或 B 站视频为了抽帧临时下载时允许的最大文件大小；填 0 表示不限制大小。只影响画面抽帧，不影响音频转写。"
+        "hint": "关键画面与 B 站总结流程的临时视频下载上限；填 0 表示不限制大小。Gemini 完整视频内联另有 12 MiB 原文件限制，下载时同步限流。"
       },
       "video_download_timeout_seconds": {
         "description": "视频文件下载超时（秒）",
@@ -2226,7 +2234,7 @@
           "max": 600,
           "step": 30
         },
-        "hint": "远程视频或 B 站视频为了抽帧临时下载时的最长等待时间。只影响画面抽帧，不影响音频转写。"
+        "hint": "Gemini 完整视频或 B 站画面素材的文件下载时限。音频转写另有超时设置。"
       },
       "video_cache_ttl_hours": {
         "description": "视频缓存保留（小时）",
@@ -2273,7 +2281,7 @@
           "local": "本地ASR",
           "bcut": "必剪"
         },
-        "hint": "默认优先使用本地ASR；请在框架管理面板的“更多 → 平台日志 → 安装 Pip 库”中安装 funasr、modelscope、torch、torchaudio，模型会在首次使用时准备；依赖缺失或转写失败时自动切换到必剪。"
+        "hint": "用于 B 站长视频等抽帧流程；Gemini 普通视频直接理解音轨，无需安装 ASR。转写默认优先使用本地ASR；请在框架管理面板的“更多 → 平台日志 → 安装 Pip 库”中安装 funasr、modelscope、torch、torchaudio，模型会在首次使用时准备；依赖缺失或转写失败时自动切换到必剪。"
       },
       "local_asr_timeout_seconds": {
         "description": "本地ASR超时（秒）",

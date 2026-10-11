@@ -1,10 +1,60 @@
 from __future__ import annotations
 
 import datetime
+import math
 from typing import Any
+
+from ..clock import TIMEZONE
 
 
 class ChatMemoryQueueArchiveMixin:
+    async def save_conversation_receipt(self, scope: str, sent_at: float) -> None:
+        if not scope or not math.isfinite(sent_at) or sent_at <= 0:
+            return
+
+        def write() -> None:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO conversation_receipts(scope, sent_at) VALUES (?, ?)",
+                (scope, sent_at),
+            )
+            self._conn.execute(
+                "DELETE FROM conversation_receipts WHERE scope = ? AND sent_at NOT IN "
+                "(SELECT sent_at FROM conversation_receipts WHERE scope = ? ORDER BY sent_at DESC LIMIT 32)",
+                (scope, scope),
+            )
+
+        await self._run_db(write)
+
+    async def get_conversation_receipt_before(self, scope: str, received_at: float) -> float:
+        def read() -> float:
+            row = self._conn.execute(
+                "SELECT sent_at FROM conversation_receipts WHERE scope = ? AND sent_at <= ? "
+                "ORDER BY sent_at DESC LIMIT 1",
+                (scope, received_at),
+            ).fetchone()
+            if row:
+                return float(row["sent_at"])
+            # 首次启用时仅使用已有的真实发送归档，缺少记录就保持未知。
+            rows = self._conn.execute(
+                "SELECT occurred_at FROM chat_memory_messages WHERE session_id = ? "
+                "AND role = 'assistant' ORDER BY id DESC LIMIT 32",
+                (scope,),
+            ).fetchall()
+            times = []
+            for item in rows:
+                try:
+                    value = datetime.datetime.fromisoformat(item["occurred_at"])
+                    if value.tzinfo is None:
+                        value = value.replace(tzinfo=TIMEZONE)
+                    stamp = value.timestamp()
+                    if 0 < stamp <= received_at:
+                        times.append(stamp)
+                except (ValueError, TypeError, OverflowError):
+                    continue
+            return max(times, default=0.0)
+
+        return await self._run_db(read)
+
     def _purge_completed_chat_memory_messages_unlocked(
         self, *, cutoff: str = "", keep_recent: int = 200
     ) -> int:

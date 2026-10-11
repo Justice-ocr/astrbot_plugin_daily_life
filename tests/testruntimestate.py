@@ -30,6 +30,34 @@ from runtimehelpers import (
 
 
 class RuntimeStateTest(unittest.TestCase):
+    def test_planned_activity_is_not_presented_as_underway(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        now = datetime.datetime(2026, 5, 24, 18, 5)
+        day = DayRecord(
+            date="2026-05-24",
+            timeline=[TimelineItem(time="18:00", activity="一起看电影")],
+        )
+        planned = runtime.build_hidden_activity_hint(day, now, False)[1]
+        self.assertIn("当前计划: 一起看电影", planned)
+        self.assertNotIn("正在:", planned)
+        day.timeline[0].execution_state = "active"
+        active = runtime.build_hidden_activity_hint(day, now, False)[1]
+        self.assertIn("当前计划: 一起看电影", active)
+        day.meta["continuous_execution"] = json.dumps({
+            "date": day.date, "status": "running",
+            "action": {"timeline_index": 0, "action_id": "run-1"},
+        })
+        running = runtime.build_hidden_activity_hint(day, now, False)[1]
+        self.assertIn("正在: 一起看电影", running)
+        run = json.loads(day.meta["continuous_execution"])
+        run["status"] = "paused"
+        day.meta["continuous_execution"] = json.dumps(run)
+        self.assertIn("当前行动已暂停: 一起看电影", runtime.build_hidden_activity_hint(day, now, False)[1])
+        run["status"] = "ready"
+        day.meta["continuous_execution"] = json.dumps(run)
+        self.assertIn("当前行动待结算: 一起看电影", runtime.build_hidden_activity_hint(day, now, False)[1])
+
     def test_hidden_context_uses_daily_life_tag(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -483,7 +511,7 @@ class RuntimeStateTest(unittest.TestCase):
         )
 
         self.assertIn("[HiddenScheduleWindow]", text)
-        self.assertIn("当前: 12:00 在厨房煮清汤面 [温和]", text)
+        self.assertIn("当前计划: 12:00 在厨房煮清汤面 [温和]", text)
         self.assertIn("接下来: 20:30 回家整理餐桌 [清爽]", text)
         self.assertIn(
             "出行：从测试美食广场前往家 · 驾车约 16 分钟 · 5.1 公里",
@@ -492,7 +520,7 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotIn("高德地图", text)
         self.assertIn("全天索引", text)
         self.assertLess(
-            text.index("全天索引"), text.index("当前: 12:00 在厨房煮清汤面 [温和]")
+            text.index("全天索引"), text.index("当前计划: 12:00 在厨房煮清汤面 [温和]")
         )
         self.assertNotIn("[HiddenScheduleMemory]", text)
 
@@ -569,6 +597,24 @@ class RuntimeStateTest(unittest.TestCase):
 
 
 class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_slow_memory_ranking_cannot_delay_chat_context_indefinitely(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        runtime._CHAT_MEMORY_RANK_BUDGET_SECONDS = 0.01
+
+        async def slow_rank(query, groups, limits):
+            await asyncio.sleep(1)
+            return {key: [] for key in groups}
+
+        runtime.rank_semantic_groups = slow_rank
+        started = asyncio.get_running_loop().time()
+        world, experience = await runtime._select_life_memory_contexts(
+            {}, DayRecord(date="2026-05-24"), "现在聊聊"
+        )
+        self.assertLess(asyncio.get_running_loop().time() - started, 0.2)
+        self.assertEqual(world, "")
+        self.assertEqual(experience, "")
+
     async def test_model_semantic_memory_ranking_honors_zero_limit(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(

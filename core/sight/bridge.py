@@ -23,6 +23,8 @@ from ..runtime.markers import LOG_PREFIX
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief
 from .clip import SightClip, SightInsight
+from .cinematics import NativeSightMixin
+from .native import NativeVideoError
 from .cookie import BiliCookieJar
 from .digest import (
     VIDEO_ANSWER_BOUNDARY_RULE,
@@ -105,7 +107,7 @@ def _sight_file_content_fingerprint(path: str) -> str:
     return digest.hexdigest()
 
 
-class SightMixin(SightCleanupMixin, SightIdentityMixin):
+class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     def _init_sight(self) -> None:
         self._sight_vault = SightVault(
             getattr(self, "archive", None),
@@ -603,9 +605,6 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         if not scope:
             return False
         clip_identity = clips[0].key
-        if self._sight_completed_key_is_fresh(clip_identity):
-            logger.debug(f"{LOG_PREFIX} 视频理解跳过：缓存已完成")
-            return False
         return self._schedule_background_task(
             self._collect_sight_context_background(event),
             label="视频上下文理解",
@@ -644,8 +643,7 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         for clip in (await self._sight_clips_from_event_async(event))[:2]:
             if self.event_was_recalled(event, log_skip=True):
                 return
-            cached = await self._sight_vault_for_runtime().get(clip.key)
-            insight = cached or await self._understand_sight_clip(event, clip)
+            insight = await self._understand_sight_clip(event, clip)
             if insight and insight.summary:
                 self._mark_sight_completed_key(clip.key)
                 self._apply_sight_insight_to_structured(insight)
@@ -825,6 +823,7 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
             "single": "单图",
             "multi_image": "多图",
             "fallback_parallel": "单帧并发",
+            "native_video": "原生完整视频",
         }.get(str(metrics.get("vision_mode") or ""), "未使用")
         logger.info(
             f"{LOG_PREFIX} 视频专业总结完成：缓存={'命中' if cache_hit else '未命中'}；"
@@ -935,6 +934,13 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         )
 
     async def life_video_understand(self, event: Any, target: str = "") -> str:
+        candidates = self._sight_clips_from_event(event, target)
+        try:
+            route = await self._native_sight_route(candidates[0] if candidates else None)
+        except NativeVideoError as exc:
+            return ToolResultText(str(exc), status="failed", media="video_understanding")
+        if route is not None:
+            return await self._submit_native_video_tool(event, target)
         clips = await self._sight_clips_from_event_async(event, target)
         if not clips:
             recent = await self._sight_recent_for_event(event, limit=1)
@@ -1073,6 +1079,12 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
     ) -> SightInsight:
         purpose = "professional" if purpose == "professional" else "chat"
         clip = await self._resolve_sight_clip_source(event, clip)
+        try:
+            route = await self._native_sight_route(clip)
+        except NativeVideoError as exc:
+            return SightInsight(clip=clip, status="failed", error=str(exc))
+        if route is not None:
+            return await self._understand_native_video(event, clip, route, force=force)
         if not force:
             cached = await self._cached_sight_insight_for_clip(clip)
             if cached:
@@ -1145,7 +1157,7 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         self, clip: SightClip
     ) -> SightInsight | None:
         cached = await self._sight_vault_for_runtime().get(clip.key)
-        if cached and cached.status == "ready":
+        if cached and cached.status == "ready" and cached.metadata.get("video_input_mode") != "gemini_native":
             return cached
         keys = set(sight_resource_keys(clip))
         if not keys:
@@ -1154,7 +1166,7 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         for item in await self._sight_vault_for_runtime().recent(
             clip.scope, limit=limit
         ):
-            if item.status == "ready" and sight_resource_matches(clip, item.clip):
+            if item.status == "ready" and item.metadata.get("video_input_mode") != "gemini_native" and sight_resource_matches(clip, item.clip):
                 return self._sight_insight_for_clip(item, clip)
         return None
 
@@ -1748,9 +1760,19 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         origin: str,
         text: str = "",
     ) -> SightClip | None:
+        # Gemini 完整视频由插件执行有字节上限的下载；其他流程仍复用平台的异步文件解析。
+        payload_source = source_from_value(payload_from_item(item))
         source = ""
+        if payload_source.startswith(("http://", "https://")):
+            try:
+                route = await self._native_sight_route(SightClip(source=payload_source))
+                if route is not None:
+                    source = payload_source
+            except NativeVideoError:
+                # 配置错误留给理解入口报告，此时也不启动无上限的远程下载。
+                source = payload_source
         getter = getattr(item, "get_file", None)
-        if callable(getter):
+        if callable(getter) and not source:
             try:
                 resolved = getter()
                 if hasattr(resolved, "__await__"):

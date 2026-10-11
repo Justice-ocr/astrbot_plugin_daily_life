@@ -17,4 +17,4 @@ class VideoTaskError(RuntimeError):
 
 
 class VideoTaskFailed(VideoTaskError):
-    """The upstream task explicitly reached a failed terminal state."""
+    """上游任务已明确进入失败终态。"""

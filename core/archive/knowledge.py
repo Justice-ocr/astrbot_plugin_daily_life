@@ -28,7 +28,7 @@ class CognitionArchiveMixin:
     """持久化时间化认知、任务、情绪和动作结算。"""
 
     async def record_public_activity(self, receipt: dict[str, Any]) -> bool:
-        """Keep a durable, idempotent publication receipt without chat side effects."""
+        """持久化幂等的发布回执，不触发聊天侧效果。"""
         event_id = str(receipt.get("event_id") or "").strip()
         if not event_id:
             return False

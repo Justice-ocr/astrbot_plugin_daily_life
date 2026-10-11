@@ -5,6 +5,7 @@ from typing import Any
 
 from ...sources.events import event_attr, event_call, iter_event_sources, safe_invoke
 from ...sources.platforms import parse_unified_origin
+from ...sources.location import location_parts
 from ...paths import expand_path, path_is_file
 
 
@@ -400,6 +401,14 @@ class CaptureEventMixin:
                 return ""
             if isinstance(value, str):
                 return value.strip()
+            locations = location_parts([value], quoted=True)
+            if locations:
+                texts = []
+                for key in ("message_str", "text", "content"):
+                    current = value.get(key) if isinstance(value, dict) else getattr(value, key, None)
+                    if isinstance(current, str) and current.strip():
+                        texts.append(current.strip())
+                return "\n".join(dict.fromkeys([*texts, *locations]))
             if isinstance(value, dict):
                 for key in ("message_str", "message", "text", "content", "raw_message"):
                     text = str(value.get(key) or "").strip()
@@ -421,8 +430,14 @@ class CaptureEventMixin:
             if callable(getter):
                 messages = safe_invoke(getter) or []
                 for item in messages:
-                    type_name = item.__class__.__name__.lower()
+                    type_name = cls._event_component_kind(item)
                     if "reply" not in type_name and "quote" not in type_name:
+                        continue
+                    locations = location_parts([item], quoted=True)
+                    if locations:
+                        text = "\n".join(locations)
+                        if text and text not in items:
+                            items.append(text)
                         continue
                     text = text_from(item)
                     if text and text not in items:

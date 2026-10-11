@@ -2485,6 +2485,27 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         places = await self.archive.get_recent_places(0)
         self.assertEqual(places[0].coordinate_source, "amap_home_address")
 
+    async def test_home_location_preheat_enables_map_tools_after_resolution(self):
+        service = LifeDomainService(
+            LifeDomainSettings(
+                home_address="测试省测试市测试区测试路1号",
+                amap_api_key="test-key",
+            ),
+            self.archive,
+        )
+        service._map.geocode = AsyncMock(
+            return_value={
+                "latitude": 23.02,
+                "longitude": 113.11,
+                "city": "测试市",
+            }
+        )
+        self.assertTrue(service.home_location_resolution_due())
+        self.assertFalse(service.map_tools_available())
+        self.assertTrue(await service.ensure_map_context())
+        self.assertTrue(service.map_tools_available())
+        self.assertFalse(service.home_location_resolution_due())
+
     async def test_v4_database_migrates_without_losing_existing_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/migration.db"

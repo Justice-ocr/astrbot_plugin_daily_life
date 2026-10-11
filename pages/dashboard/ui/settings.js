@@ -499,7 +499,7 @@ const CONFIG_GROUP_LABELS = new Map([
   }],
   ["sight_config", {
     description: "视频理解",
-    hint: "配置视频内容理解、B 站自动总结、专业长文总结、抽帧和转写处理。",
+    hint: "普通视频用 Gemini 直接理解画面和声音，无需抽帧或 ASR；B 站长视频保留关键画面、音频转写与专业总结。",
   }],
 ]);
 

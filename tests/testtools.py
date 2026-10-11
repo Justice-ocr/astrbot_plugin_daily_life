@@ -1,4 +1,5 @@
 import datetime
+import json
 import random
 import unittest
 
@@ -96,8 +97,8 @@ class LifeToolsTest(unittest.TestCase):
             datetime.datetime(2026, 5, 24, 10, 0),
             "2026-05-24",
         )
-        self.assertTrue(changed)
-        self.assertEqual(timeline[0].execution_state, "active")
+        self.assertFalse(changed)
+        self.assertEqual(timeline[0].execution_state, "planned")
         self.assertEqual(timeline[1].execution_state, "planned")
         self.assertEqual(timeline[2].execution_state, "skipped")
 
@@ -108,8 +109,29 @@ class LifeToolsTest(unittest.TestCase):
         )
         self.assertEqual(timeline[0].execution_state, "elapsed")
         self.assertIn("尚未收到执行证据", timeline[0].execution_reason)
-        self.assertEqual(timeline[1].execution_state, "active")
+        self.assertEqual(timeline[1].execution_state, "planned")
         self.assertEqual(timeline[2].execution_state, "skipped")
+
+    def test_clock_only_active_is_retracted_but_real_run_stays_active(self):
+        item = TimelineItem(
+            time="09:00", activity="整理照片", execution_state="active",
+            execution_reason="已到达计划开始时间", execution_evidence="时间轴时钟",
+            duration_minutes=5,
+        )
+        self.assertTrue(reconcile_timeline_execution(
+            [item], datetime.datetime(2026, 5, 24, 9, 2), "2026-05-24"
+        ))
+        self.assertEqual(item.execution_state, "planned")
+        self.assertEqual(item.execution_evidence, "")
+        meta = {"continuous_execution": json.dumps({
+            "date": "2026-05-24", "status": "running", "reason": "已记录开始",
+            "action": {"timeline_index": 0, "action_id": "run-1"},
+        })}
+        self.assertTrue(reconcile_timeline_execution(
+            [item], datetime.datetime(2026, 5, 24, 9, 11), "2026-05-24", meta=meta
+        ))
+        self.assertEqual(item.execution_state, "active")
+        self.assertEqual(item.execution_evidence, "已记录开始")
 
     def test_timeline_execution_respects_activity_window_and_daily_end(self):
         timeline = [

@@ -544,13 +544,14 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"should_apply":true,"reason":"双方已经确认傍晚同行",'
-                '"new_future_timeline":['
-                '{"time":"17:10","activity":"换好外出衣服并确认随身物品","status":"准备",'
+                '"timeline_edits":['
+                '{"operation":"remove","target_time":"17:30"},'
+                '{"operation":"insert","item":{"time":"17:10","activity":"换好外出衣服并确认随身物品","status":"准备",'
                 '"place":"家","place_kind":"home","place_scope":"local","place_city":"",'
-                '"place_hint":"","travel_mode":""},'
-                '{"time":"17:40","activity":"和朋友一起去老街散步拍照","status":"期待",'
+                '"place_hint":"","travel_mode":""}},'
+                '{"operation":"insert","item":{"time":"17:40","activity":"和朋友一起去老街散步拍照","status":"期待",'
                 '"place":"老街","place_kind":"poi","place_scope":"local","place_city":"",'
-                '"place_hint":"适合步行拍照的街区","travel_mode":"transit"}],'
+                '"place_hint":"适合步行拍照的街区","travel_mode":"transit"}}],'
                 '"outfit_instruction":"清爽利落、适合傍晚同行的外出穿搭",'
                 '"outfit_effective_time":"17:10","impact":"傍晚改为共同外出"}'
             ]
@@ -584,13 +585,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"should_apply":true,"reason":"已确认傍晚同行",'
-                '"new_future_timeline":['
-                '{"time":"17:30","activity":"和测试对象去测试书店","status":"期待",'
+                '"timeline_edits":['
+                '{"operation":"insert","item":{"time":"17:30","activity":"和测试对象去测试书店","status":"期待",'
                 '"place":"测试书店","place_kind":"poi","place_scope":"local",'
-                '"place_city":"","place_hint":"测试路1号","travel_mode":"walking"},'
-                '{"time":"20:00","activity":"回家休息","status":"放松",'
+                '"place_city":"","place_hint":"测试路1号","travel_mode":"walking"}},'
+                '{"operation":"insert","item":{"time":"20:00","activity":"回家休息","status":"放松",'
                 '"place":"家","place_kind":"home","place_scope":"local",'
-                '"place_city":"","place_hint":"","travel_mode":""}],'
+                '"place_city":"","place_hint":"","travel_mode":""}}],'
                 '"outfit_instruction":"","outfit_effective_time":"",'
                 '"impact":"傍晚改为共同外出"}'
             ]
@@ -943,13 +944,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await composer._get_provider(), default_provider)
         self.assertIs(await composer._get_provider("selected"), selected_provider)
 
-    def test_openai_reasoning_alias_compatibility_preserves_standard_value(self):
+    def test_reasoning_alias_uses_isolated_provider_and_prefers_standard_value(self):
         provider = types.SimpleNamespace(reasoning_key="reasoning_content")
         provider._extract_reasoning_content = lambda completion: getattr(
             completion.choices[0].message, "reasoning_content", None
         )
 
-        LifeBackgroundComposer._enable_reasoning_alias_compat(provider)
+        isolated = LifeBackgroundComposer._isolated_reasoning_alias_provider(provider)
         completion = types.SimpleNamespace(
             choices=[
                 types.SimpleNamespace(
@@ -963,15 +964,17 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            provider._extract_reasoning_content(completion),
+            isolated._extract_reasoning_content(completion),
             '{"source":"standard"}',
         )
+        self.assertIsNot(isolated, provider)
+        self.assertFalse(hasattr(provider, "_daily_life_reasoning_alias_compat"))
 
-    def test_openai_reasoning_alias_compatibility_recovers_reasoning(self):
+    def test_reasoning_alias_recovers_only_on_isolated_provider(self):
         provider = types.SimpleNamespace(reasoning_key="reasoning_content")
         provider._extract_reasoning_content = lambda completion: None
 
-        LifeBackgroundComposer._enable_reasoning_alias_compat(provider)
+        isolated = LifeBackgroundComposer._isolated_reasoning_alias_provider(provider)
         completion = types.SimpleNamespace(
             choices=[
                 types.SimpleNamespace(
@@ -985,37 +988,41 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            provider._extract_reasoning_content(completion),
+            isolated._extract_reasoning_content(completion),
             '{"valid":true}',
         )
+        self.assertIsNone(provider._extract_reasoning_content(completion))
 
-    async def test_llm_call_enables_reasoning_alias_before_provider_parsing(self):
+    async def test_llm_call_recovers_reasoning_without_mutating_shared_provider(self):
         composer, _, _, _ = make_composer([])
-        provider = types.SimpleNamespace(reasoning_key="reasoning_content")
-        provider._extract_reasoning_content = lambda completion: None
 
-        async def text_chat(*args, **kwargs):
-            del args, kwargs
-            completion = types.SimpleNamespace(
-                choices=[
-                    types.SimpleNamespace(
-                        message=types.SimpleNamespace(
-                            model_fields_set={"reasoning"},
-                            content="",
-                            reasoning='{"valid":true}',
+        class ProviderWithAlias:
+            reasoning_key = "reasoning_content"
+
+            def _extract_reasoning_content(self, completion):
+                return None
+
+            async def text_chat(self, *args, **kwargs):
+                del args, kwargs
+                completion = types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(
+                            message=types.SimpleNamespace(
+                                model_fields_set={"reasoning"},
+                                content="",
+                                reasoning='{"valid":true}',
+                            )
                         )
-                    )
-                ]
-            )
-            reasoning = provider._extract_reasoning_content(completion)
-            if not reasoning:
-                raise RuntimeError("OpenAI completion has no usable output")
-            return types.SimpleNamespace(
-                completion_text="",
-                reasoning_content=reasoning,
-            )
+                    ]
+                )
+                reasoning = self._extract_reasoning_content(completion)
+                if not reasoning:
+                    raise RuntimeError("OpenAI completion has no usable output")
+                return types.SimpleNamespace(
+                    completion_text="", reasoning_content=reasoning
+                )
 
-        provider.text_chat = text_chat
+        provider = ProviderWithAlias()
         text = await composer._call_llm_text(
             provider,
             "测试 reasoning 别名",
@@ -1024,6 +1031,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(text, '{"valid":true}')
+        self.assertFalse(hasattr(provider, "_daily_life_reasoning_alias_compat"))
 
     async def test_configured_provider_401_immediately_falls_back_to_config_default_provider(
         self,
@@ -3119,6 +3127,50 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["makeup"], "清透淡妆")
         self.assertEqual(stored.meta["nails"], "奶白色短圆甲")
 
+    async def test_keep_promoted_to_partial_uses_footwear_without_replacing_main_clothing(self):
+        composer, provider, _, archive = make_composer([])
+        footwear = await archive.upsert_style_catalog_item({
+            "kind": "footwear", "title": "室内棉拖鞋", "description": "米白色室内棉拖鞋",
+            "attributes": {"home_presence": "home"},
+            "source_image_hash": "partial-footwear" * 5,
+            "confidence": 0.9,
+        })
+        await archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "备用居家裙", "description": "粉色棉质居家连衣裙",
+            "source_image_hash": "other-home-outfit" * 4, "confidence": 0.9,
+        })
+        provider.responses.append(json.dumps({
+            "outfit_decision": "keep", "current_outfit_basis": "stored",
+            "scene_category": "home", "style_pool": "mixed",
+            "component_review": {"main_clothing": "keep", "footwear": "adjust"},
+            "outfit": "蓝色衬衫配白色长裤，换成米白色室内棉拖鞋",
+            "outfit_components": {"footwear": {
+                "state": "worn", "description": "米白色室内棉拖鞋",
+            }},
+            "catalog_reference_ids": [footwear.id],
+            "reason": "只换室内鞋",
+        }, ensure_ascii=False))
+        await archive.save_day(DayRecord(
+            date="2026-08-20",
+            outfit="蓝色衬衫配白色长裤，脚穿帆布鞋",
+            timeline=[TimelineItem(time="18:00", activity="回家休息", place="家", place_kind="home")],
+            meta={"outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "蓝色衬衫配白色长裤"},
+                "footwear": {"state": "worn", "description": "帆布鞋"},
+            }, ensure_ascii=False)},
+        ))
+
+        updated = await composer.update_outfit(
+            "2026-08-20", "evening", current_time=datetime.datetime(2026, 8, 20, 18, 10)
+        )
+
+        self.assertIsNotNone(updated)
+        stored = await archive.get_day("2026-08-20")
+        components = json.loads(stored.meta["outfit_components"])
+        self.assertEqual(components["main_clothing"]["description"], "蓝色衬衫配白色长裤")
+        self.assertIn("米白色室内棉拖鞋", stored.outfit)
+        self.assertEqual(stored.meta["outfit_decision"], "partial_change")
+
     async def test_home_outfit_stages_unclassified_catalog_optional_components(self):
         full_outfit = "浅蓝上衣配白色短裙，米白色厚底单鞋，珍珠脚链"
         composer, _, _, archive = make_composer(
@@ -4165,7 +4217,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_invite_uses_dedicated_invite_provider(self):
         invite_provider = Provider(
             [
-                '{"decision":"accept","accept":true,"reason":"当前状态适合轻松出门","response_stance":"开心答应","response_tone":"自然期待","new_future_timeline":[{"time":"16:00","activity":"和阿林一起去书店","status":"期待"}]}'
+                '{"decision":"accept","accept":true,"reason":"当前状态适合轻松出门","response_stance":"开心答应","response_tone":"自然期待","timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"和阿林一起去书店","status":"期待"}}]}'
             ],
             provider_id="invite-model",
         )
@@ -4194,10 +4246,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"decision":"accept","accept":true,"reason":"愿意一起去",'
-                '"new_future_timeline":[{"time":"16:00","activity":"一起去测试书店",'
+                '"timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"一起去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"","place_hint":"测试区",'
-                '"travel_mode":"walking"}]}'
+                '"travel_mode":"walking"}}]}'
             ]
         )
 
@@ -4272,10 +4324,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"decision":"accept","accept":true,"reason":"愿意一起去",'
-                '"new_future_timeline":[{"time":"16:00","activity":"一起去测试书店",'
+                '"timeline_edits":[{"operation":"replace","target_time":"16:00","item":{"time":"16:00","activity":"一起去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"","place_hint":"测试区",'
-                '"travel_mode":"walking"}]}'
+                '"travel_mode":"walking"}}]}'
             ]
         )
         audit_payloads = []
@@ -4484,7 +4536,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(
             [
-                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","new_future_timeline":[]}'
+                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","timeline_edits":[]}'
             ]
         )
 
@@ -4603,7 +4655,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         invite_provider = Provider(
             [
-                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","new_future_timeline":[]}'
+                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","timeline_edits":[]}'
             ],
             provider_id="invite-model",
         )

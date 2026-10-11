@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from astrbot.api import logger
@@ -204,12 +205,23 @@ class OutboundLogMixin:
         source_event: Any = None,
         source: str = "",
         bot_name: str = "",
+        sent_at: float | None = None,
+        persist_receipt: bool = True,
     ) -> bool:
         """统一记录已经完成投递的机器人出站正文。"""
 
         content = message_outline(chain)
         if not content:
             return False
+        sent_at = time.time() if sent_at is None else sent_at
+        scope = scope or str(getattr(source_event, "unified_msg_origin", "") or "")
+        note = getattr(self, "note_conversation_sent", None)
+        if callable(note):
+            note(scope, sent_at, source_event)
+        record = getattr(self, "record_conversation_delivery", None)
+        schedule = getattr(self, "_schedule_background_task", None)
+        if persist_receipt and callable(record) and callable(schedule):
+            schedule(record(scope, sent_at), label="保存对话发送时间")
         # 出站日志只记录机器人昵称/QQ号和正文，不记录用户身份或会话标识。
         bot_identity = self._outbound_bot_identity_value(bot_name) or "机器人"
         logger.info(
@@ -224,44 +236,55 @@ class OutboundLogMixin:
         return True
 
     async def log_outbound_message_async(self, chain: Any, **kwargs: Any) -> bool:
-        name = await self.prepare_outbound_bot_name(
-            scope=str(kwargs.get("scope", "") or ""),
-            source_event=kwargs.get("source_event"),
+        if not message_outline(chain):
+            return False
+        sent_at = time.time()
+        source_event = kwargs.get("source_event")
+        scope = str(kwargs.get("scope") or getattr(source_event, "unified_msg_origin", "") or "")
+        # 先记录发送回执，再查询昵称，防止这段等待期间的新消息丢失时间锚点。
+        record = getattr(self, "record_conversation_delivery", None)
+        if callable(record):
+            await record(scope, sent_at, source_event)
+        name = await self.prepare_outbound_bot_name(scope=scope, source_event=source_event)
+        return self.log_outbound_message(
+            chain, bot_name=name, sent_at=sent_at, persist_receipt=False, **kwargs
         )
-        return self.log_outbound_message(chain, bot_name=name, **kwargs)
+
+    def _outbound_result_chain(self, event: Any) -> Any:
+        if hasattr(event, "_has_send_oper") and not event._has_send_oper:
+            return None
+        result = getattr(event, "get_result", lambda: None)()
+        chain = getattr(result, "chain", None)
+        content = message_outline(chain)
+        if not content:
+            return None
+        direct_bodies = self._outbound_direct_bodies(event)
+        if content in direct_bodies:
+            direct_bodies.remove(content)
+            return None
+        return chain
 
     async def log_outbound_result_async(
         self, event: Any, *, source: str = "reply"
     ) -> bool:
-        name = await self.prepare_outbound_bot_name(
-            scope=str(getattr(event, "unified_msg_origin", "") or ""),
-            source_event=event,
+        chain = self._outbound_result_chain(event)
+        if chain is None:
+            return False
+        return await self.log_outbound_message_async(
+            chain, scope=str(getattr(event, "unified_msg_origin", "") or ""),
+            source_event=event, source=source,
         )
-        return self.log_outbound_result(event, source=source, bot_name=name)
 
     def log_outbound_result(
         self, event: Any, *, source: str = "reply", bot_name: str = ""
     ) -> bool:
         """记录核心回包；已由插件直发记录的正文只消费去重标记。"""
-        if hasattr(event, "_has_send_oper") and not bool(
-            getattr(event, "_has_send_oper", False)
-        ):
-            return False
-        result = getattr(event, "get_result", lambda: None)()
-        chain = getattr(result, "chain", None)
-        content = message_outline(chain)
-        if not content:
-            return False
-        direct_bodies = self._outbound_direct_bodies(event)
-        if content in direct_bodies:
-            direct_bodies.remove(content)
+        chain = self._outbound_result_chain(event)
+        if chain is None:
             return False
         return self.log_outbound_message(
-            chain,
-            scope=str(getattr(event, "unified_msg_origin", "") or ""),
-            source_event=event,
-            source=source,
-            bot_name=bot_name,
+            chain, scope=str(getattr(event, "unified_msg_origin", "") or ""),
+            source_event=event, source=source, bot_name=bot_name,
         )
 
 __all__ = ["OutboundLogMixin", "message_outline"]

@@ -640,6 +640,83 @@ class OutfitMixin:
         }"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="穿搭现场")
 
+    async def _resolve_outfit_catalog_appearance(
+        self,
+        reference_ids: list[int],
+        *,
+        scene_category: str,
+        component_only: bool,
+        requires_catalog_clothing: bool,
+        context: dict,
+    ) -> tuple[list[int], dict] | None:
+        """选择衣橱候选，并限制局部调整可以替换的服装组成。"""
+        if component_only:
+            appearance = await self._style_catalog_reference_appearance(
+                reference_ids,
+                scene_category="" if context.get("instruction") else scene_category,
+            )
+            appearance.pop("outfit", None)
+            components = normalize_outfit_components(appearance.get("outfit_components"))
+            components.pop("main_clothing", None)
+            if components:
+                appearance["outfit_components"] = serialize_outfit_components(components)
+            else:
+                appearance.pop("outfit_components", None)
+        elif requires_catalog_clothing and not context.get("instruction"):
+            resolved_ids = await self._style_catalog_resolve_new_outfit_reference_ids(
+                reference_ids, scene_category=scene_category
+            )
+            if resolved_ids != reference_ids:
+                logger.info(
+                    "[穿搭更新] 模型未提供完整衣橱编号，已自动采用候选："
+                    + ",".join(str(item) for item in resolved_ids)
+                )
+                reference_ids = resolved_ids
+            appearance, issue = await self._style_catalog_new_outfit_selection(
+                reference_ids, scene_category=scene_category
+            )
+            if issue:
+                logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{issue}")
+                context["catalog_selection_issue"] = issue
+                return None
+        else:
+            appearance = await self._style_catalog_reference_appearance(
+                reference_ids,
+                scene_category="" if context.get("instruction") else scene_category,
+            )
+        return reference_ids, appearance
+
+    async def _record_outfit_update_decision(
+        self, data, *, date_str: str, target_period: str, decision: str,
+        result: dict, context: dict,
+    ) -> None:
+        """记录已保存的服饰结果，让保持原样与换装都有可追溯的决定。"""
+        meta = data.meta
+        outcome_parts = [f"风格：{meta.get('style', '')}"]
+        for key, label in (
+            ("hair_style", "发型名称"), ("hair", "发型细节"),
+            ("makeup_style", "妆容名称"), ("makeup", "妆容细节"),
+            ("nails_style", "美甲名称"), ("nails", "美甲细节"),
+        ):
+            if meta.get(key):
+                outcome_parts.append(f"{label}：{meta[key]}")
+        outcome_parts.extend((
+            f"场景：{outfit_scene_category_label(meta.get('outfit_scene_category'))}",
+            f"风格池：{outfit_style_pool_label(meta.get('outfit_style_pool'))}",
+        ))
+        await self._save_life_decision_record(
+            kind="outfit",
+            date=date_str,
+            subject=f"{date_str}:{target_period}",
+            decision=f"{decision or 'keep'}｜{data.outfit[:160]}",
+            reason=self._localize_outfit_reason(result.get("reason")),
+            evidence=(
+                f"当前：{context['current_timeline']}；下一项：{context['next_timeline']}；"
+                f"天气：{context['weather']}；本轮要求：{context['instruction'] or '无'}"
+            ),
+            outcome="；".join(outcome_parts),
+        )
+
     async def _apply_outfit_update_result(
         self,
         result: dict,
@@ -719,9 +796,6 @@ class OutfitMixin:
             for key, value in component_review.items()
         }
         main_clothing_review = component_states.get("main_clothing", "unknown")
-        component_only_partial_change = (
-            decision == "partial_change" and main_clothing_review != "adjust"
-        )
         clothing_component_adjusted = any(
             component_states.get(key) == "adjust"
             for key in (
@@ -768,6 +842,9 @@ class OutfitMixin:
         if reviewed_partial_change:
             decision = "partial_change"
             logger.debug("[穿搭更新] 已按组成部分审视结果校正穿搭决定：决定=局部调整")
+        component_only_partial_change = (
+            decision == "partial_change" and main_clothing_review != "adjust"
+        )
         reference_ids = (
             self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
             if decision != "keep"
@@ -783,53 +860,16 @@ class OutfitMixin:
                 )
             )
         )
-        if component_only_partial_change:
-            catalog_appearance = await self._style_catalog_reference_appearance(
-                reference_ids,
-                scene_category="" if context.get("instruction") else scene_category,
-            )
-            # 局部换装可以采用鞋履、外搭或随身物品，
-            # 但衣橱候选不能替换需要保留的主体服装。
-            catalog_appearance.pop("outfit", None)
-            catalog_components = normalize_outfit_components(
-                catalog_appearance.get("outfit_components")
-            )
-            catalog_components.pop("main_clothing", None)
-            if catalog_components:
-                catalog_appearance["outfit_components"] = serialize_outfit_components(
-                    catalog_components
-                )
-            else:
-                catalog_appearance.pop("outfit_components", None)
-        elif requires_catalog_clothing and not context.get("instruction"):
-            resolved_reference_ids = (
-                await self._style_catalog_resolve_new_outfit_reference_ids(
-                    reference_ids,
-                    scene_category=scene_category,
-                )
-            )
-            if resolved_reference_ids != reference_ids:
-                logger.info(
-                    "[穿搭更新] 模型未提供完整衣橱编号，已自动采用候选："
-                    + ",".join(str(item) for item in resolved_reference_ids)
-                )
-                reference_ids = resolved_reference_ids
-            (
-                catalog_appearance,
-                catalog_issue,
-            ) = await self._style_catalog_new_outfit_selection(
-                reference_ids,
-                scene_category=scene_category,
-            )
-            if catalog_issue:
-                logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{catalog_issue}")
-                context["catalog_selection_issue"] = catalog_issue
-                return None
-        else:
-            catalog_appearance = await self._style_catalog_reference_appearance(
-                reference_ids,
-                scene_category="" if context.get("instruction") else scene_category,
-            )
+        selection = await self._resolve_outfit_catalog_appearance(
+            reference_ids,
+            scene_category=scene_category,
+            component_only=component_only_partial_change,
+            requires_catalog_clothing=requires_catalog_clothing,
+            context=context,
+        )
+        if selection is None:
+            return None
+        reference_ids, catalog_appearance = selection
         old_components = normalize_outfit_components(old_meta.get("outfit_components"))
         generated_components = normalize_outfit_components(
             result.get("outfit_components")
@@ -1163,38 +1203,9 @@ class OutfitMixin:
             await wear_recorder(old_data, event_id="outfit:" + str(old_data.meta.get("outfit_fact_confirmed_at")) + ":" + str(old_data.meta.get("style_catalog_reference_ids")))
         if appearance_changed and reference_ids:
             await self._mark_style_catalog_references(reference_ids)
-        outcome_parts = [f"风格：{final_style}"]
-        if final_hair_style:
-            outcome_parts.append(f"发型名称：{final_hair_style}")
-        if final_hair:
-            outcome_parts.append(f"发型细节：{final_hair}")
-        if final_makeup_style:
-            outcome_parts.append(f"妆容名称：{final_makeup_style}")
-        if final_makeup:
-            outcome_parts.append(f"妆容细节：{final_makeup}")
-        if final_nails_style:
-            outcome_parts.append(f"美甲名称：{final_nails_style}")
-        if final_nails:
-            outcome_parts.append(f"美甲细节：{final_nails}")
-        outcome_parts.extend(
-            (
-                f"场景：{outfit_scene_category_label(scene_category)}",
-                f"风格池：{outfit_style_pool_label(style_pool)}",
-            )
-        )
-        # 保持原穿搭同样是一次已审计的生活决策。记录它能说明为何没有
-        # 换装，也让后续日程重排、回顾和穿搭连续性判断拥有完整证据链。
-        await self._save_life_decision_record(
-            kind="outfit",
-            date=date_str,
-            subject=f"{date_str}:{target_period}",
-            decision=f"{decision or 'keep'}｜{new_outfit[:160]}",
-            reason=self._localize_outfit_reason(result.get("reason")),
-            evidence=(
-                f"当前：{context['current_timeline']}；下一项：{context['next_timeline']}；"
-                f"天气：{context['weather']}；本轮要求：{context['instruction'] or '无'}"
-            ),
-            outcome="；".join(outcome_parts),
+        await self._record_outfit_update_decision(
+            old_data, date_str=date_str, target_period=target_period,
+            decision=decision, result=result, context=context,
         )
         return old_data
 

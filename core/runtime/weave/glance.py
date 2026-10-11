@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import datetime
 import html
-import time
 from typing import Any
 
+from ...clock import TIMEZONE
 from .grain import StructuredMessage
 
 
@@ -65,6 +65,8 @@ class StructuredGlanceMixin:
         )
 
     def note_structured_sent_result(self, event: Any) -> StructuredMessage | None:
+        if hasattr(event, "_has_send_oper") and not event._has_send_oper:
+            return None
         scope = self._event_session_id(event)
         if not scope:
             return None
@@ -104,8 +106,8 @@ class StructuredGlanceMixin:
         attrs = {
             "id": item.message_id or item.fallback_key,
             "time": datetime.datetime.fromtimestamp(
-                item.timestamp or time.time()
-            ).strftime("%H:%M"),
+                item.timestamp, TIMEZONE
+            ).isoformat(timespec="seconds") if item.timestamp > 0 else "",
             "role": "assistant" if item.is_bot else "user",
             "user_id": item.sender_id,
             "user": item.display_sender,

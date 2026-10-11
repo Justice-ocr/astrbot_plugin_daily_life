@@ -4,6 +4,8 @@ import time
 from typing import Any
 
 from ...sources.platforms import parse_unified_origin
+from ...sources.location import enrich_location_message
+from ..elapsed import RECEIVED_AT, SENT_AT, event_time
 from .grain import StructuredMessage
 
 
@@ -12,6 +14,7 @@ class StructuredForgeMixin:
         scope = self._event_session_id(event)
         if not scope or self._proactive_is_self_message(event):
             return None
+        enrich_location_message(event)
         content = str(getattr(event, "message_str", "") or "").strip()
         items = self._event_message_items(event)
         if not content and not items:
@@ -33,7 +36,7 @@ class StructuredForgeMixin:
             group_id=group_id,
             group_name=group_name,
             content=self._structured_content_with_media(content, items),
-            timestamp=time.time(),
+            timestamp=event_time(event, RECEIVED_AT) or time.time(),
             is_bot=False,
             reply_to_id=reply.get("message_id", ""),
             reply_to_sender_id=reply.get("sender_id", ""),
@@ -81,7 +84,7 @@ class StructuredForgeMixin:
             group_id=group_id,
             group_name=group_name,
             content=content,
-            timestamp=time.time(),
+            timestamp=event_time(source_event, SENT_AT) or time.time(),
             is_bot=True,
             media=media,
             reply_to_id=reply_to_id,

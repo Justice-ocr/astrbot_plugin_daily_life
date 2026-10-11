@@ -127,33 +127,6 @@ class RefreshMixin:
         return (now - last).total_seconds() >= interval * 60
 
     @staticmethod
-    def _has_legacy_outfit_expiration(data: DayRecord) -> bool:
-        """判断是否有旧版本误标为过期的换装动作需要修复。"""
-        raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
-        raw_expirations = str((data.meta or {}).get("life_action_expirations") or "")
-        try:
-            actions = json.loads(raw_actions) if raw_actions else []
-            expirations = json.loads(raw_expirations) if raw_expirations else {}
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return False
-        if not isinstance(actions, list) or not isinstance(expirations, dict):
-            return False
-        for action in actions:
-            if not isinstance(action, dict):
-                continue
-            if str(action.get("action_type") or "").strip().lower() != "change_outfit":
-                continue
-            action_id = str(action.get("action_id") or "").strip()
-            expiration = expirations.get(action_id)
-            if (
-                action_id
-                and isinstance(expiration, dict)
-                and str(expiration.get("status") or "").strip().lower() == "expired"
-            ):
-                return True
-        return False
-
-    @staticmethod
     def _state_stability_signature(data: DayRecord) -> tuple:
         state = data.state
         if state is None:
@@ -491,15 +464,10 @@ class RefreshMixin:
         )
         if commitment_changed:
             data = await self.archive.get_day(target_date_str) or data
-        execution_source = {
-            "auto": "后台巡检",
-            "chat": "聊天触发",
-        }.get(source, source or "生活巡检")
         execution_changed = reconcile_timeline_execution(
             data.timeline,
             now,
             data.date,
-            evidence=f"{execution_source}：时间轴时钟",
             timeline_end=(data.meta or {}).get("life_window_end"),
             meta=data.meta,
         )
@@ -514,7 +482,6 @@ class RefreshMixin:
             and not execution_changed
             and not outfit_context_changed
             and not schedule_outfit_sync_needed
-            and not self._has_legacy_outfit_expiration(data)
         ):
             return data
 
@@ -530,7 +497,6 @@ class RefreshMixin:
                 data.timeline,
                 now,
                 data.date,
-                evidence=f"{execution_source}：时间轴时钟",
                 timeline_end=(data.meta or {}).get("life_window_end"),
                 meta=data.meta,
             )

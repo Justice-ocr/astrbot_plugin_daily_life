@@ -300,8 +300,8 @@ class ContinuousGoalsTest(unittest.TestCase):
         run["step_id"] = "基础"
         credit_goal(world, run, self.now)
         credit_goal(world, run, self.now)
-        self.assertEqual(goal["steps"][0]["status"], "completed")
-        self.assertEqual([step["id"] for step in ready_steps(goal)], ["进阶"])
+        self.assertEqual(goal["steps"][0]["status"], "awaiting_review")
+        self.assertEqual([step["id"] for step in ready_steps(goal)], ["基础"])
         self.assertEqual(world["skills"]["构图练习"]["sessions"], 1)
 
     def test_replan_keeps_completed_and_partially_practised_stages(self):

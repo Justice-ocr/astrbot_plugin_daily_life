@@ -332,6 +332,41 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ShareChatStyleTests(unittest.TestCase):
+    def test_chat_share_scenes_export_current_length_without_send_segmentation(
+        self,
+    ):
+        snapshot = _Snapshot()
+        snapshot.config = types.SimpleNamespace(
+            chat_style=types.SimpleNamespace(
+                enabled=True,
+                casual_short_prompt="少用感叹号。",
+                private_casual_max_chars=15,
+                punctuation_cleanup_enabled=True,
+                segment_delay_range="1.5,3.5",
+            )
+        )
+        for scene, audience, limit in (
+            ("share_private", "当前私聊对象", 15),
+            ("share_group", "群友", 30),
+        ):
+            result = snapshot.get_share_chat_style(scene=scene)
+            self.assertTrue(result["enabled"])
+            for term in (
+                "少用感叹号",
+                audience,
+                "分享插件自己的排版",
+                f"约 {limit} 字",
+                "统一清洗",
+            ):
+                self.assertIn(term, result["prompt"])
+            for term in ("1.5,3.5", "最多80字", "最多50字"):
+                self.assertNotIn(term, result["prompt"])
+        snapshot.config.chat_style.enabled = False
+        self.assertEqual(
+            snapshot.get_share_chat_style(scene="share_group"),
+            {"enabled": False, "prompt": ""},
+        )
+
     def test_qzone_scene_exports_public_post_expression_without_chat_processing(self):
         snapshot = _Snapshot()
         snapshot.config = types.SimpleNamespace(
@@ -403,6 +438,28 @@ class ShareChatStyleTests(unittest.TestCase):
 
 
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_share_review_forwards_requirements_under_runtime_lease(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        observed = []
+        requirements = {"output_format": "两段", "required_terms": ["蜂蜜"]}
+
+        class Runtime:
+            async def prepare_share_expression(self, text, **kwargs):
+                observed.append((text, kwargs, plugin._external_users))
+                return {"text": text}
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+        result = await plugin.prepare_share_expression(
+            "蜂蜜", scene="share_private", requirements=requirements
+        )
+        self.assertEqual(result, {"text": "蜂蜜"})
+        self.assertEqual(
+            observed,
+            [("蜂蜜", {"scene": "share_private", "requirements": requirements}, 1)],
+        )
+        self.assertEqual(plugin._external_users, 0)
+
     async def test_share_chat_style_contract_holds_external_lease(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         observed = []

@@ -11,6 +11,7 @@ import hashlib
 from typing import Any
 
 from ..clock import now as life_now
+from .goals import remember_goal_review_evidence
 
 KERNEL_VERSION = 1
 _EVENT_LIMIT = 80
@@ -449,6 +450,7 @@ def record_action_outcome(
         "observed": True,
     }
     _bounded_append(outcomes, outcome, _OUTCOME_LIMIT)
+    remember_goal_review_evidence(world, outcome)
     record_event(
         world,
         kind="action_outcome",
@@ -528,6 +530,9 @@ def record_action_outcome(
             evidence_ids=[action_id],
             at=completed_at,
         )
+    from .interests import credit_interest
+
+    credit_interest(world, run or {}, outcome)
     return outcome
 
 
@@ -584,6 +589,7 @@ def apply_action_reflections(
                     "source": "post_action_generation",
                     "evidence_ids": [action_id],
                 }
+        remember_goal_review_evidence(world, outcome)
         thread = next(
             (
                 item
@@ -732,6 +738,16 @@ def kernel_context(world: dict[str, Any]) -> str:
     ]
     if interests:
         lines.append(f"- 自我模型中的持续关注：{'、'.join(interests[-6:])}。")
+    for item in model.get("interests", [])[-6:]:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- 兴趣 {item.get('label', '')}："
+            f"{ {'active': '持续关注', 'paused': '暂缓', 'retired': '已放下'}.get(item.get('disposition', 'active'), '待确认')}；"
+            f"已关联实际行动 {item.get('sessions', 0)} 次；"
+            f"最近动机：{_text(item.get('last_motive'), 120) or '尚未记录'}；"
+            f"下一步：{_text(item.get('next_step'), 120) or '尚未确定'}。"
+        )
     affect_layers = kernel.get("affect_layers") or {}
     if isinstance(affect_layers, dict) and affect_layers:
         lines.append(

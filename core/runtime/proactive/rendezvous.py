@@ -115,6 +115,9 @@ class SharedActivityContactMixin:
             or commitment.status not in {"active", "scheduled"}
         ):
             return False
+        registrar = getattr(self.archive, "ensure_shared_activity", None)
+        if callable(registrar):
+            await registrar(commitment)
         try:
             date = datetime.date.fromisoformat(
                 commitment.trigger_date or observed_at.strftime("%Y-%m-%d")

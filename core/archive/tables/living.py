@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS conversation_action_items (
 
 
 DOMAIN_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_continuous_entities_scope
+ON continuous_life_entries(scope,kind,date,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_continuous_life_entries_date
 ON continuous_life_entries(date, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_sessions_recent ON activity_sessions(date DESC, updated_at DESC, id DESC);

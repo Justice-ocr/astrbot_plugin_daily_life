@@ -111,9 +111,7 @@ class ProductionScenarioEvaluator:
         self, case: ScenarioCase
     ) -> ScenarioObservation:
         payload = dict(case.input_data)
-        utility, valid = self.domain._normalize_proactive_utility(
-            payload, confidence=0.25
-        )
+        utility, valid = self.domain._normalize_proactive_utility(payload)
         decision = "observe" if not valid or utility < 60 else "reply"
         return ScenarioObservation(
             decision=decision,

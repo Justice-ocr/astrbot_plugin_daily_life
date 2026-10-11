@@ -128,64 +128,6 @@ class InviteMixin:
         return TimelineItem.from_value(TimelineItem.from_value(value).as_dict())
 
     @classmethod
-    def _legacy_timeline_edits(
-        cls,
-        current_future: list[TimelineItem],
-        raw_future: list,
-    ) -> list[dict]:
-        """把旧版完整时间轴结果收敛为最小编辑集合。"""
-
-        candidates: list[TimelineItem] = []
-        for raw in raw_future:
-            item = TimelineItem.from_value(raw)
-            if cls._timeline_minutes(item.time) is None or not item.activity:
-                continue
-            candidates.append(item)
-        if not candidates:
-            return []
-        originals = {item.time: item for item in current_future}
-        candidate_by_time = {item.time: item for item in candidates}
-        candidate_minutes = [cls._timeline_minutes(item.time) for item in candidates]
-        valid_minutes = [value for value in candidate_minutes if value is not None]
-        lower = min(valid_minutes)
-        upper = max(valid_minutes)
-        edits: list[dict] = []
-        for original in current_future:
-            candidate = candidate_by_time.get(original.time)
-            if candidate is None:
-                minute = cls._timeline_minutes(original.time)
-                if minute is not None and lower <= minute <= upper:
-                    edits.append({"operation": "remove", "target_time": original.time})
-                continue
-            material_change = (
-                candidate.activity != original.activity
-                or candidate.status != original.status
-                or (candidate.place and candidate.place != original.place)
-                or (
-                    candidate.travel_mode
-                    and candidate.travel_mode != original.travel_mode
-                )
-            )
-            if material_change:
-                edits.append(
-                    {
-                        "operation": "replace",
-                        "target_time": original.time,
-                        "item": candidate.as_dict(),
-                    }
-                )
-        for candidate in candidates:
-            if candidate.time not in originals:
-                edits.append(
-                    {
-                        "operation": "insert",
-                        "target_time": "",
-                        "item": candidate.as_dict(),
-                    }
-                )
-        return edits
-
-    @classmethod
     def _apply_timeline_edits(
         cls,
         current_future: list[TimelineItem],
@@ -391,7 +333,9 @@ class InviteMixin:
         if route_anchor is not None:
             raw_timeline = raw_timeline[1:]
         audited_future = [TimelineItem.from_value(item) for item in raw_timeline]
-        for audited_item, original_item in zip(audited_future, mutable_timeline):
+        for audited_item, original_item in zip(
+            audited_future, mutable_timeline, strict=True
+        ):
             audited_item.activity_kind = original_item.activity_kind
         restored_future = self._restore_protected_timeline(
             audited_future,
@@ -524,15 +468,9 @@ JSON 输出要求：
                 new_timeline = None
                 if accepted:
                     raw_edits = result.get("timeline_edits")
-                    if not isinstance(raw_edits, list) or not raw_edits:
-                        raw_future = result.get("new_future_timeline")
-                        if isinstance(raw_future, list):
-                            raw_edits = self._legacy_timeline_edits(
-                                future_timeline, raw_future
-                            )
                     if isinstance(raw_edits, list) and raw_edits:
                         # 后续的日程合并、行前联系与重启恢复应共用同一份
-                        # 结构化编辑，不因模型返回兼容字段而丢失执行依据。
+                        # 结构化编辑，保持后续日程合并的执行依据。
                         result["timeline_edits"] = raw_edits
                     merged_future, protected_future, edit_issue = (
                         self._apply_timeline_edits(future_timeline, raw_edits)
@@ -715,10 +653,6 @@ JSON 输出要求：
                 return None, {}
             result = audit.payload
             raw_edits = result.get("timeline_edits")
-            if not isinstance(raw_edits, list) or not raw_edits:
-                raw_future = result.get("new_future_timeline")
-                if isinstance(raw_future, list):
-                    raw_edits = self._legacy_timeline_edits(future_timeline, raw_future)
             merged_future, protected_future, edit_issue = self._apply_timeline_edits(
                 future_timeline, raw_edits
             )

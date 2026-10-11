@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...sources.location import location_parts
 from .grain import StructuredMessage, StructuredTarget
 
 
@@ -62,6 +63,9 @@ class StructuredRouteMixin:
                 data.get("text"),
                 data.get("content"),
             )
+            locations = location_parts([item], quoted=True)
+            if locations:
+                reply["content"] = "\n".join(locations)
             break
 
         reply_id = reply.get("message_id", "")

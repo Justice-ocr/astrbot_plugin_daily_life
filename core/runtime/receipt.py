@@ -4,6 +4,8 @@ import asyncio
 import datetime
 import hashlib
 import inspect
+import math
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +25,7 @@ class RuntimeActionReceiptMixin:
     @staticmethod
     def _share_asset_key(task_key: str, kind: str = "image") -> str:
         if not task_key.strip():
-            raise ValueError("Sharing media tasks need an owner key")
+            raise ValueError("分享媒体任务缺少所属标识")
         return f"share_{kind}:" + hashlib.sha256(task_key.encode()).hexdigest()
 
     async def get_share_image_task(self, task_key: str) -> dict:
@@ -39,6 +41,10 @@ class RuntimeActionReceiptMixin:
         if task is None:
             return {"status": "missing", "task_key": task_key}
         if task.status == "completed":
+            try:
+                await self.archive.record_share_media_object(task.id)
+            except Exception as exc:
+                logger.warning(f"[日常生活] 分享成品归档暂未完成：{type(exc).__name__}")
             return {
                 "status": "ready",
                 "task_key": task_key,
@@ -60,6 +66,7 @@ class RuntimeActionReceiptMixin:
         *,
         task_key: str,
         contains_character: bool = False,
+        target_umo: str = "",
     ) -> dict:
         return await self._generate_share_asset_task(
             event,
@@ -67,10 +74,12 @@ class RuntimeActionReceiptMixin:
             task_key=task_key,
             kind="image",
             contains_character=contains_character,
+            target_umo=target_umo,
         )
 
     async def generate_share_video_task(
-        self, event: Any, prompt: str, *, task_key: str, reference_image: str = ""
+        self, event: Any, prompt: str, *, task_key: str, reference_image: str = "",
+        target_umo: str = "",
     ) -> dict:
         return await self._generate_share_asset_task(
             event,
@@ -78,6 +87,7 @@ class RuntimeActionReceiptMixin:
             task_key=task_key,
             kind="video",
             reference_image=reference_image,
+            target_umo=target_umo,
         )
 
     async def _generate_share_asset_task(
@@ -89,14 +99,15 @@ class RuntimeActionReceiptMixin:
         kind: str,
         contains_character: bool = False,
         reference_image: str = "",
+        target_umo: str = "",
     ) -> dict:
-        """External assets are recovered as assets, never delivered to a chat scope."""
+        """外部媒体任务恢复后仍作为媒体素材处理，不发送到聊天会话。"""
         label = "图片" if kind == "image" else "视频"
         owner = f"share_{kind}:" + uuid.uuid4().hex
         record = await self.archive.enqueue_durable_task(
             self._share_asset_key(task_key, kind),
             f"share_{kind}_generation",
-            {"external_owner": "daily_share", "task_key": task_key},
+            {"external_owner": "daily_share", "task_key": task_key, "scope": str(target_umo or "")},
             lease_owner=owner,
             lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
             max_attempts=10000,
@@ -180,6 +191,30 @@ class RuntimeActionReceiptMixin:
             if not isinstance(exc, (ImageTaskError, VideoTaskError)) and not progress:
                 raise
         return await self._get_share_asset_task(task_key, kind)
+
+    async def record_share_delivery(self, receipt: dict) -> bool:
+        """记录明确的分享发送回执；不补发消息、不将作品生成视为送达。"""
+        scope = str(receipt.get("target_umo") or "").strip()
+        stamp = receipt.get("sent_at")
+        if not scope or not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+            return False
+        if not math.isfinite(stamp) or not 0 < stamp <= time.time() + 60:
+            return False
+        if ":FriendMessage:" in scope or ":GroupMessage:" in scope:
+            # 持久化失败由分享 outbox 重试，不能吞错后确认回执。
+            await self.archive.save_conversation_receipt(scope, stamp)
+            self.note_conversation_sent(scope, stamp)
+        elif scope != "qzone_broadcast":
+            return False
+        keys = receipt.get("media_tasks") or {}
+        for kind in ("image", "video"):
+            task_key = keys.get(kind) if isinstance(keys, dict) else None
+            if not isinstance(task_key, str) or not task_key:
+                continue
+            task = await self.archive.get_durable_task(self._share_asset_key(task_key, kind))
+            if task is not None and task.payload.get("scope") == scope:
+                await self.archive.record_share_media_object(task.id, delivered_at=stamp)
+        return True
 
     async def resume_share_image_generation(self, task: Any) -> dict:
         return await self._resume_share_asset_generation(task, "image")
@@ -576,6 +611,12 @@ class RuntimeActionReceiptMixin:
                 lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
             )
             pending = getattr(source_event, "_daily_life_async_image_tasks", [])
+            object_recorder = getattr(archive, "record_media_object", None)
+            if callable(object_recorder):
+                try:
+                    await object_recorder(delivery.id)
+                except Exception as exc:
+                    logger.warning(f"[日常生活] 媒体作品归档暂未完成，投递任务继续保留：{type(exc).__name__}")
             for task in list(pending):
                 metadata = task.payload.get("photo_suite", {})
                 if metadata and int(metadata.get("slot_index") or 0) not in getattr(

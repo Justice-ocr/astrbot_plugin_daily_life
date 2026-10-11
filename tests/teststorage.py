@@ -584,6 +584,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     set(snapshot),
                     {
                         "relationships",
+                        "living_entities",
                         "places",
                         "events",
                         "summaries",
@@ -1049,9 +1050,59 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(version, str(SCHEMA_VERSION))
                 self.assertTrue(set(location_columns) <= columns)
                 self.assertEqual(item.activity, "保留的外出日程")
-                self.assertEqual(item.execution_state, "active")
+                self.assertIn(item.execution_state, {"planned", "elapsed"})
                 self.assertEqual(item.place, "")
                 self.assertEqual(item.place_kind, "none")
+            finally:
+                await migrated.aclose()
+
+    async def test_v24_migration_retracts_clock_only_active_without_erasing_real_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            try:
+                await archive.save_day(DayRecord(
+                    date="2026-10-08",
+                    timeline=[TimelineItem(
+                        time="23:00", activity="准备休息", execution_state="active",
+                        execution_reason="已到达计划开始时间",
+                        execution_evidence="时间轴时钟",
+                    )],
+                ))
+                await archive.save_day(DayRecord(
+                    date="2026-10-11",
+                    timeline=[TimelineItem(
+                        time="12:00", activity="整理照片", execution_state="active",
+                        execution_evidence="已记录开始",
+                    )],
+                    meta={"continuous_execution": json.dumps({
+                        "date": "2026-10-11", "status": "running",
+                        "action": {"timeline_index": 0, "action_id": "run-1"},
+                    })},
+                ))
+            finally:
+                await archive.aclose()
+            conn = sqlite3.connect(db_path)
+            conn.execute("UPDATE meta SET value = '23' WHERE key = 'schema_version'")
+            conn.execute(
+                "INSERT INTO activity_sessions(action_id,date,status,metadata_json) VALUES(?,?,?,?)",
+                ("clock-1", "2026-10-08", "active", '{"timeline_index":0}'),
+            )
+            conn.commit()
+            conn.close()
+
+            with patch("core.archive.migrations.life_today", return_value=datetime.date(2026, 10, 11)):
+                migrated = LifeArchive(db_path)
+            try:
+                clock_day = await migrated.get_day("2026-10-08")
+                run_day = await migrated.get_day("2026-10-11")
+                self.assertEqual(clock_day.timeline[0].execution_state, "elapsed")
+                self.assertEqual(clock_day.timeline[0].execution_evidence, "")
+                self.assertEqual(run_day.timeline[0].execution_state, "active")
+                session_status = migrated._conn.execute(
+                    "SELECT status FROM activity_sessions WHERE action_id='clock-1'"
+                ).fetchone()[0]
+                self.assertEqual(session_status, "elapsed")
             finally:
                 await migrated.aclose()
 
@@ -1182,7 +1233,8 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             for script in iter_schema_sql():
                 conn.executescript(script)
             self.assertEqual(schema_fingerprint(conn), CURRENT_SCHEMA_FINGERPRINT)
-            self.assertEqual(infer_schema_version(conn), SCHEMA_VERSION)
+            # v24 只清理旧数据，结构指纹仍指向最早安全版本 v23。
+            self.assertEqual(infer_schema_version(conn), SCHEMA_VERSION - 1)
             conn.commit()
             conn.close()
 
@@ -1238,7 +1290,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    def test_unversioned_current_schema_requires_no_migration(self):
+    def test_unversioned_current_schema_runs_data_cleanup_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             conn = sqlite3.connect(db_path)
@@ -1266,7 +1318,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(metadata["schema_version"], str(SCHEMA_VERSION))
                 self.assertNotIn("migration_marker", metadata)
-                self.assertEqual(migration_order, [])
+                self.assertEqual(migration_order, [24])
             finally:
                 archive.close()
 

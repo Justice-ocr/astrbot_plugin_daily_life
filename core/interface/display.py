@@ -325,6 +325,9 @@ class DisplayCommandMixin:
                     )
                     return
                 result = await self.runtime.archive.clear_storage_category(category)
+                clear_timing = getattr(self.runtime, "clear_conversation_timing", None)
+                if result.get("category") == "conversation" and callable(clear_timing):
+                    clear_timing()
                 await self._cleanup_emoji_cache()
                 yield event.plain_result(
                     f"✅ 已清空{result['label']}：删除 {result['deleted_rows']} 行。"

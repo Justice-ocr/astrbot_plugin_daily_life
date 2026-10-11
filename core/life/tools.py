@@ -731,12 +731,36 @@ def get_current_timeline_status(
     return current_item, next_item
 
 
+def timeline_execution_run(
+    meta: dict | None, timeline_date: Any, timeline_index: int | None = None
+) -> dict[str, Any] | None:
+    """读取与日程节点绑定的真实自主行动；单纯到点不算执行。"""
+    if not isinstance(meta, dict):
+        return None
+    try:
+        run = json.loads(meta.get("continuous_execution") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(run, dict) or run.get("status") not in {
+        "running", "paused", "ready", "settling"
+    }:
+        return None
+    action = run.get("action")
+    if not isinstance(action, dict) or run.get("date") != str(timeline_date)[:10]:
+        return None
+    index = action.get("timeline_index")
+    if type(index) is not int or index < 0:
+        return None
+    if timeline_index is not None and index != timeline_index:
+        return None
+    return run
+
+
 def reconcile_timeline_execution(
     timeline: list,
     current_time: datetime.datetime,
     timeline_date: Any,
     *,
-    evidence: str = "时间轴时钟",
     timeline_end: Any = None,
     meta: dict | None = None,
 ) -> bool:
@@ -748,6 +772,9 @@ def reconcile_timeline_execution(
 
     now_key = current_time
     changed = False
+    active_run = timeline_execution_run(meta, date)
+    active_index = active_run["action"]["timeline_index"] if active_run else None
+    active_item = timeline[active_index] if active_index is not None and active_index < len(timeline) else None
     timed_items = []
     for item in timeline:
         item_time = timeline_item_datetime(item, date, meta=meta)
@@ -778,6 +805,9 @@ def reconcile_timeline_execution(
         if deferred_until is not None and now_key < deferred_until:
             target = "planned"
             reason = "休息已顺延：用户希望晚点再休息"
+        elif item is active_item:
+            target = "active"
+            reason = "自主行动已开始"
         elif item_time > now_key:
             target = "planned"
             reason = "等待计划开始"
@@ -788,17 +818,19 @@ def reconcile_timeline_execution(
             target = "elapsed"
             reason = "计划日期已过，尚未收到执行证据"
         else:
-            target = "active"
-            reason = "已到达计划开始时间"
+            target = "planned"
+            reason = "当前处于计划时段，尚未收到执行证据"
         if previous in {"completed", "expired"} and target != previous:
             continue
         was_deferred = _timeline_field(item, "execution_reason", "").startswith("休息已顺延")
         if previous == target and not (was_deferred and not deferred_until):
             continue
-        setattr(item, "execution_state", target)
-        setattr(item, "execution_reason", reason)
-        setattr(item, "execution_evidence", evidence)
-        setattr(item, "execution_updated_at", updated_at)
+        item.execution_state = target
+        item.execution_reason = reason
+        item.execution_evidence = (
+            str(active_run.get("reason") or "") if target == "active" and active_run else ""
+        )
+        item.execution_updated_at = updated_at
         changed = True
     return changed
 

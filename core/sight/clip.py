@@ -42,9 +42,11 @@ class SightClip:
             (
                 self.scope,
                 identity,
-                self.origin,
+                "native" if self.metadata.get("native_signature") else self.origin,
             )
         )
+        if self.metadata.get("native_signature"):
+            raw += "|" + str(self.metadata["native_signature"])
         return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
 
     def as_dict(self) -> dict[str, Any]:

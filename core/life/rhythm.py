@@ -834,7 +834,6 @@ class LifecycleMixin:
                 current_day.timeline,
                 review_end,
                 current_day.date,
-                evidence="夜间复盘：时间轴观察",
                 timeline_end=(current_day.meta or {}).get("life_window_end"),
                 meta=current_day.meta,
             )

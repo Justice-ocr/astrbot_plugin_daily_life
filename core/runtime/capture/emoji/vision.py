@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import uuid
 from pathlib import Path
 from typing import Any
@@ -8,10 +10,14 @@ from ....life.tools import extract_json_from_text
 from ....models import EmojiAssetRecord
 from ....models.primitive import optional_bool
 from ....prompts import cache_friendly_prompt
+from ....sight.animated import prepare_animated_image
 from ...markers import LOG_PREFIX
 
 
 class EmojiVisionMixin:
+    _EMOJI_VISION_TIMEOUT_SECONDS = 35.0
+    _EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS = 20.0
+
     @staticmethod
     def _emoji_asset_is_inline_source(path: str) -> bool:
         return str(path or "").startswith(("data:image/", "base64://"))
@@ -50,6 +56,12 @@ class EmojiVisionMixin:
             if not callable(method):
                 continue
             try:
+                parameters = inspect.signature(method).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if "request_max_retries" in parameters:
+                kwargs["request_max_retries"] = 1
+            try:
                 result = method(**kwargs)
             except (TypeError, NotImplementedError, AttributeError):
                 continue
@@ -62,6 +74,24 @@ class EmojiVisionMixin:
         return None
 
     async def _call_emoji_vision_payload(
+        self,
+        prompt: str,
+        image: str,
+        *,
+        session_prefix: str,
+        task_label: str,
+    ) -> dict[str, Any]:
+        async with asyncio.timeout(self._EMOJI_VISION_TIMEOUT_SECONDS):
+            image, animation_hint = await asyncio.to_thread(
+                prepare_animated_image, image
+            )
+            if animation_hint:
+                prompt = f"{prompt}\n\n{animation_hint}"
+            return await self._call_prepared_emoji_vision_payload(
+                prompt, image, session_prefix=session_prefix, task_label=task_label
+            )
+
+    async def _call_prepared_emoji_vision_payload(
         self,
         prompt: str,
         image: str,
@@ -87,8 +117,11 @@ class EmojiVisionMixin:
                     for name in ("text_chat", "image_chat", "vision_chat")
                 ):
                     raise RuntimeError("视觉模型不支持图片输入")
-                result = await self._call_emoji_vision_provider(
-                    provider, prompt, image, session_id
+                result = await asyncio.wait_for(
+                    self._call_emoji_vision_provider(
+                        provider, prompt, image, session_id
+                    ),
+                    timeout=self._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS,
                 )
                 if result is None:
                     raise RuntimeError("视觉模型未返回结果")
@@ -103,6 +136,11 @@ class EmojiVisionMixin:
                 return payload
             except Exception as exc:
                 last_error = exc
+                logger.warning(
+                    f"{LOG_PREFIX} {task_label}模型识别失败："
+                    f"{type(exc).__name__}；单模型上限="
+                    f"{self._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS:.0f}秒"
+                )
             finally:
                 await self.close_text_session(session_id)
             index += 1
@@ -483,7 +521,10 @@ class EmojiVisionMixin:
                 cache_sources=cache_sources,
             )
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：{exc}")
+            logger.warning(
+                f"{LOG_PREFIX} 图片上下文识别未完成：{type(exc).__name__}；"
+                f"总上限={self._EMOJI_VISION_TIMEOUT_SECONDS:.0f}秒"
+            )
 
     async def _mark_emoji_asset_failed(
         self, asset: EmojiAssetRecord, reason: str = ""

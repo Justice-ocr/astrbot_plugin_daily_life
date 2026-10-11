@@ -9,6 +9,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..config.options.basis import chat_style_length_limit
 from .delay import ChatDelayMixin
 from .delivery import EventDeliveryRequest, ReplyDeliveryService
 from .markers import LOG_PREFIX
@@ -133,12 +134,9 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         style = getattr(getattr(self, "config", None), "chat_style", None)
         if not self._chat_style_enabled() or not style:
             return 0
-        casual_limit = int(getattr(style, "casual_max_chars", 50) or 50)
-        if event is not None and self._event_is_group_message(event):
-            channel_limit = int(getattr(style, "group_casual_max_chars", 30) or 30)
-        else:
-            channel_limit = int(getattr(style, "private_casual_max_chars", 15) or 15)
-        return min(casual_limit, channel_limit) if casual_limit > 0 else channel_limit
+        return chat_style_length_limit(
+            style, is_group=event is not None and self._event_is_group_message(event)
+        )
 
     def _build_chat_style_decision_hint(
         self, event: Any, context: dict[str, str]

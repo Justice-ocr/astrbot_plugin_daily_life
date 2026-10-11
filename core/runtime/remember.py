@@ -47,7 +47,7 @@ class RuntimeMemoryMixin:
                 source_table = str(getattr(item, "source_table", "") or "").strip()
                 source_id = str(getattr(item, "source_id", "") or "").strip()
                 date = str(getattr(item, "date", "") or "").strip()
-                bits = [bit for bit in (date, source_table, source_id) if bit]
+                bits = [bit for bit in (f"记忆编号 {getattr(item, 'id', 0)}", date, source_table, source_id) if bit]
                 source = f"（来源：{' / '.join(bits)}）" if bits else ""
             lines.append(f"- {label}：{content}{source}")
         return "\n".join(lines)

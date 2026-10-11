@@ -500,14 +500,12 @@ CREATE TRIGGER IF NOT EXISTS long_term_memories_ai
 CREATE TRIGGER IF NOT EXISTS long_term_memories_ad
             AFTER DELETE ON long_term_memories
             BEGIN
-                INSERT INTO long_term_memories_fts(long_term_memories_fts, rowid, title, content, category)
-                VALUES ('delete', old.id, old.title, old.content, old.category);
+                DELETE FROM long_term_memories_fts WHERE rowid = old.id;
             END;
 CREATE TRIGGER IF NOT EXISTS long_term_memories_au
             AFTER UPDATE OF title, content, category, status ON long_term_memories
             BEGIN
-                INSERT INTO long_term_memories_fts(long_term_memories_fts, rowid, title, content, category)
-                VALUES ('delete', old.id, old.title, old.content, old.category);
+                DELETE FROM long_term_memories_fts WHERE rowid = old.id;
                 INSERT INTO long_term_memories_fts(rowid, title, content, category)
                 SELECT new.id, new.title, new.content, new.category
                 WHERE new.status = 'active';

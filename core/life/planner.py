@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import inspect
 from types import MethodType
 from typing import Any
@@ -236,16 +237,20 @@ class LifeBackgroundComposer(
         return "" if field_seen else None
 
     @staticmethod
-    def _enable_reasoning_alias_compat(provider: object) -> None:
-        """让插件调用兼容上游把最终 JSON 错放在 reasoning 的响应。"""
+    def _isolated_reasoning_alias_provider(provider: object) -> object:
+        """仅为本次内部调用复制 provider，不修改 AstrBot 共享实例。"""
 
-        if getattr(provider, "_daily_life_reasoning_alias_compat", False):
-            return
         if getattr(provider, "reasoning_key", None) != "reasoning_content":
-            return
+            return provider
         original = getattr(provider, "_extract_reasoning_content", None)
         if not callable(original):
-            return
+            return provider
+        try:
+            isolated = copy.copy(provider)
+        except Exception:
+            return provider
+        if isolated is provider:
+            return provider
 
         def compatible(_self_provider, completion):
             primary = original(completion)
@@ -254,9 +259,11 @@ class LifeBackgroundComposer(
             alias = LifeBackgroundComposer._reasoning_alias_value(completion)
             return primary if alias is None else alias
 
-        provider._extract_reasoning_content = MethodType(compatible, provider)
-        provider._daily_life_reasoning_alias_compat = True
-        logger.debug("[日常生活] 已为 OpenAI 兼容模型启用 reasoning 字段兼容")
+        try:
+            isolated._extract_reasoning_content = MethodType(compatible, isolated)
+        except (AttributeError, TypeError):
+            return provider
+        return isolated
 
     async def _call_llm_text(
         self,
@@ -306,9 +313,11 @@ class LifeBackgroundComposer(
             if attempt > 0 and attempt == empty_retries:
                 await switch_to_temporary_provider("达到空响应重试上限")
             try:
-                self._enable_reasoning_alias_compat(current_provider)
+                request_provider = self._isolated_reasoning_alias_provider(
+                    current_provider
+                )
                 resp = await asyncio.wait_for(
-                    current_provider.text_chat(
+                    request_provider.text_chat(
                         prompt,
                         session_id=session_id,
                         system_prompt=CORE_INTERNAL_SYSTEM_PROMPT,

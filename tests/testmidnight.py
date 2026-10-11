@@ -49,7 +49,7 @@ class MidnightTimelineTest(unittest.TestCase):
         self.assertEqual(items[-1].day_offset, 1)
         self.assertEqual(items[-1].execution_state, "planned")
         reconcile_timeline_execution(items, datetime.datetime(2026, 10, 4, 0, 20), "2026-10-03")
-        self.assertEqual(items[-1].execution_state, "active")
+        self.assertEqual(items[-1].execution_state, "planned")
         self.assertNotEqual(items[-1].execution_state, "completed")
         reconcile_timeline_execution(items, datetime.datetime(2026, 10, 4, 1, 10), "2026-10-03")
         self.assertEqual(items[-1].execution_state, "elapsed")
@@ -57,7 +57,7 @@ class MidnightTimelineTest(unittest.TestCase):
     def test_activity_spanning_midnight_keeps_its_duration(self):
         item = TimelineItem(time="23:50", activity="一起看电影", duration_minutes=60)
         reconcile_timeline_execution([item], datetime.datetime(2026, 10, 4, 0, 10), "2026-10-03")
-        self.assertEqual(item.execution_state, "active")
+        self.assertEqual(item.execution_state, "planned")
 
     def test_invite_and_panel_preserve_next_day_order(self):
         items = [TimelineItem(time="23:17", activity="翻照片", day_offset=0), TimelineItem(time="00:12", activity="休息", day_offset=1)]

@@ -10,6 +10,7 @@ from astrbot.api.message_components import Image
 from astrbot.core.agent.message import TextPart
 
 from .markers import LOG_PREFIX
+from .elapsed import RECEIVED_AT, TURN_RECEIVED_AT, event_time
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class ContinuousTurnBatch:
     first_at: float
     last_at: float
     deadline: float
+    received_at: float = 0.0
     phase: str = "collecting"
     messages: list[str] = field(default_factory=list)
     message_ids: list[str] = field(default_factory=list)
@@ -384,6 +386,7 @@ class ContinuousTurnMixin:
                 )
         batch = ContinuousTurnBatch(
             revision=revision,
+            received_at=(previous.received_at if active else event_time(event, RECEIVED_AT)),
             first_at=first_at,
             last_at=now,
             deadline=(
@@ -400,6 +403,8 @@ class ContinuousTurnMixin:
             video_reference_source=previous.video_reference_source if active else None,
         )
         batch_bucket[participant] = batch
+        if batch.received_at:
+            setattr(event, TURN_RECEIVED_AT, batch.received_at)
         setattr(event, self._CONTINUOUS_TURN_SCOPE_ATTR, scope)
         setattr(event, self._CONTINUOUS_TURN_PARTICIPANT_ATTR, participant)
         setattr(event, self._CONTINUOUS_TURN_REVISION_ATTR, revision)

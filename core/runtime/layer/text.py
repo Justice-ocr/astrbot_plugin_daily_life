@@ -11,6 +11,7 @@ from ...life.tools import (
     build_time_context,
     format_timeline_travel,
     get_current_timeline_status,
+    timeline_execution_run,
     timeline_deferred_until,
     timeline_item_datetime,
 )
@@ -190,6 +191,9 @@ class LayerTextMixin:
 
         date = timeline_date or now.date()
         current, _ = get_current_timeline_status(timeline, now, date, meta=meta)
+        run = timeline_execution_run(meta, date)
+        run_index = run["action"]["timeline_index"] if run else None
+        run_item = timeline[run_index] if run_index is not None and run_index < len(timeline) else None
         timed = sorted(
             (time, index, item) for index, item in enumerate(timeline)
             if (time := timeline_item_datetime(item, date, meta=meta)) is not None
@@ -223,8 +227,14 @@ class LayerTextMixin:
                 label = "已确认完成"
             elif execution_state in {"skipped", "cancelled", "expired"}:
                 label = "已跳过或取消"
+            elif item is run_item and run["status"] == "running":
+                label = "正在进行"
+            elif item is run_item and run["status"] == "paused":
+                label = "已暂停"
+            elif item is run_item:
+                label = "待结算行动"
             elif item is current:
-                label = "当前"
+                label = "当前计划"
             else:
                 label = "已过计划" if timed[pos][0] <= now else "接下来"
             previous_item = timed[pos - 1][2] if pos > 0 else None
@@ -240,7 +250,7 @@ class LayerTextMixin:
                 timeline_date=date,
                 meta=meta,
             )
-            current_marker = "（当前计划）" if item is current else ""
+            current_marker = "（已记录开始）" if item is run_item and run["status"] == "running" else ""
             lines.append(f"- {label}: {compact}{current_marker}")
 
         return (
@@ -294,13 +304,25 @@ class LayerTextMixin:
 
         status_desc = self._get_time_status(now)
         curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
+        run = timeline_execution_run(data.meta, data.date)
+        run_index = run["action"]["timeline_index"] if run else None
+        run_act = data.timeline[run_index] if run_index is not None and run_index < len(data.timeline) else None
         next_time = timeline_item_datetime(next_act, data.date, meta=data.meta)
         next_hint = f" | 🔜 待办: {next_time:%m-%d %H:%M} {next_act.activity}" if next_act and next_time else ""
-        if curr_act:
+        if run_act is not None and run["status"] == "running":
+            if is_rest_activity(run_act):
+                activity = f"当前休息进程: {run_act.activity}；是否已入睡应结合实时状态和最新对话，不能仅凭日程断言"
+            else:
+                activity = f"📍 正在: {run_act.activity} (状态: {run_act.status or '平和'})"
+        elif run_act is not None and run["status"] == "paused":
+            activity = f"当前行动已暂停: {run_act.activity}"
+        elif run_act is not None:
+            activity = f"当前行动待结算: {run_act.activity}；结果尚未确认"
+        elif curr_act:
             if is_rest_activity(curr_act):
                 activity = f"当前休息计划: {curr_act.activity}；是否已入睡应结合实时状态和最新对话，不能按钟点断言"
             else:
-                activity = f"📍 正在: {curr_act.activity} (状态: {curr_act.status or '平和'})"
+                activity = f"当前计划: {curr_act.activity}；尚无执行证据"
         else:
             activity = "⏳ 碎片时间 (无特定安排)"
         activity += next_hint

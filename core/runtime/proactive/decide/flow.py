@@ -120,9 +120,7 @@ class ProactiveFlowMixin:
         payload["_expression_candidate_text"] = reply_text
         requested = self._proactive_bool(payload.get("should_reply"))
         expression_passed = self._expression_review_passed(payload)
-        utility, utility_valid = self._normalize_proactive_utility(
-            payload, confidence=confidence
-        )
+        utility, utility_valid = self._normalize_proactive_utility(payload)
         reason_code = "proposal_approved"
         if not requested:
             reason_code = "model_declined"

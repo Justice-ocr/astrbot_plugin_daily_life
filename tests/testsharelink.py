@@ -11,7 +11,7 @@ import support  # noqa: F401
 from core.archive import LifeArchive
 from core.media.picture.polling import ImageTaskError, ImageTaskFailed
 from core.media.video.errors import VideoTaskError, VideoTaskFailed
-from core.models import DayRecord
+from core.models import DayRecord, TimelineItem
 from core.runtime.integration import ExternalIntegrationMixin
 from core.runtime.mirror.export import SnapshotExportMixin
 from core.runtime.receipt import RuntimeActionReceiptMixin
@@ -218,6 +218,13 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
         day.meta["residence_context_stale"] = "true"
         self.assertIs(SnapshotExportMixin._share_current_facts(day)["valid"], False)
 
+    def test_snapshot_does_not_promote_clock_only_active_plan(self):
+        day = DayRecord(
+            date="2026-10-11",
+            timeline=[TimelineItem(time="12:00", activity="准备午餐", execution_state="active")],
+        )
+        self.assertEqual(SnapshotExportMixin._share_current_facts(day)["current_action"], {})
+
     async def test_voice_semantics_keep_original_and_validate_style(self):
         class Runtime(ExternalIntegrationMixin):
             config = types.SimpleNamespace(chat_style=None)
@@ -277,6 +284,94 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(runtime.calls, 1)
                 finally:
                     archive.close()
+
+    async def test_chat_share_review_preserves_facts_and_format_without_qzone_length_limit(
+        self,
+    ):
+        class Runtime(ExternalIntegrationMixin):
+            config = types.SimpleNamespace(chat_style=None)
+            get_text_provider = AsyncMock(return_value=object())
+            call_text_model = AsyncMock(return_value="response")
+
+            def get_share_chat_style(self, **kwargs):
+                return {"enabled": True, "prompt": "轻松自然"}
+
+            def _semantic_segment_parse_payload(self, raw):
+                return self.payload
+
+        runtime = Runtime()
+        original = "【蜂蜜】\n" + "蜂蜜的储存要避免水分混入，并非所有人都适合食用。" * 5
+        rewritten = (
+            "【蜂蜜】\n" + "保存蜂蜜时记得避免混入水分，也不是所有人都适合食用。" * 4
+        )
+        requirements = {
+            "share_type": "knowledge",
+            "output_format": "标题独占一行",
+            "required_terms": ["【蜂蜜】"],
+        }
+        for scene in ("share_private", "share_group"):
+            with self.subTest(scene=scene):
+                runtime.payload = {
+                    "text": rewritten,
+                    "facts_preserved": True,
+                    "format_preserved": True,
+                }
+                result = await runtime.prepare_share_expression(
+                    original, scene=scene, requirements=requirements
+                )
+                self.assertEqual(result["text"], rewritten)
+                self.assertGreater(len(result["text"]), 80)
+                prompt = runtime.call_text_model.await_args.args[1]
+                self.assertIn("标题独占一行", prompt)
+                self.assertIn("不套用QQ空间或评论字数上限", prompt)
+                self.assertIn("不读取任何其他会话", prompt)
+                self.assertNotIn("说说最多80字", prompt)
+                for payload in (
+                    {"text": rewritten},
+                    {
+                        "text": rewritten,
+                        "facts_preserved": False,
+                        "format_preserved": True,
+                    },
+                    {
+                        "text": rewritten,
+                        "facts_preserved": True,
+                        "format_preserved": False,
+                    },
+                    {
+                        "text": rewritten.replace("【蜂蜜】", "其他标题"),
+                        "facts_preserved": True,
+                        "format_preserved": True,
+                    },
+                    {
+                        "text": rewritten.replace("\n", ""),
+                        "facts_preserved": True,
+                        "format_preserved": True,
+                    },
+                    {
+                        "text": ["invalid"],
+                        "facts_preserved": True,
+                        "format_preserved": True,
+                    },
+                ):
+                    runtime.payload = payload
+                    self.assertEqual(
+                        (
+                            await runtime.prepare_share_expression(
+                                original, scene=scene, requirements=requirements
+                            )
+                        )["text"],
+                        original,
+                    )
+        runtime.call_text_model.reset_mock()
+        runtime.get_share_chat_style = lambda **kwargs: {"enabled": False, "prompt": ""}
+        self.assertEqual(
+            (await runtime.prepare_share_expression(original, scene="share_private"))[
+                "text"
+            ],
+            original,
+        )
+        runtime.call_text_model.assert_not_awaited()
 
     async def test_expression_review_keeps_source_on_malformed_or_failed_response(self):
         class Runtime(ExternalIntegrationMixin):

@@ -17,7 +17,7 @@ def ready_steps(goal: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         step
         for step in steps
-        if step.get("status") == "pending"
+        if step.get("status") in {"pending", "awaiting_review", "needs_practice"}
         and set(step.get("depends_on", [])) <= completed
     ]
 
@@ -57,6 +57,12 @@ def normalize_steps(
                 "depends_on": [str(value) for value in dependencies],
                 "status": "pending",
                 "evidence": [],
+                "acceptance": compact_text(item.get("acceptance") or title, 300),
+                "evidence_kind": (
+                    str(item["evidence_kind"]) if item.get("evidence_kind") in {"artifact", "action"}
+                    else "artifact" if action_type in {"work", "study"} else "action"
+                ),
+                "reviews": [],
             }
         )
     by_id = {step["id"]: step for step in steps}
@@ -96,7 +102,7 @@ def apply_goal_decisions(
             or source_id not in sources
             or not (
                 source_id == "persona"
-                or source_id.startswith(("preference:", "focus:"))
+                or source_id.startswith(("preference:", "focus:", "interest:"))
             )
         ):
             continue
@@ -122,6 +128,7 @@ def apply_goal_decisions(
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
             "obstacle": "",
+            "interest_id": source_id.removeprefix("interest:") if source_id.startswith("interest:") else "",
         }
         goals.append(goal)
         active.append(goal)
@@ -193,11 +200,14 @@ def credit_goal(
         or step["action_type"] != run["action"]["action_type"]
     ):
         return
+    action_id = str(run["action"].get("action_id") or "")
+    if not action_id or any(item.get("action_id") == action_id for item in step.get("evidence", [])):
+        return
     minutes = nonnegative(run.get("active_seconds")) / 60
     if not minutes:
         return
     step["practice_minutes"] = round(
-        min(step["required_minutes"], step["practice_minutes"] + minutes), 2
+        step["practice_minutes"] + minutes, 2
     )
     step["evidence"].append(
         {
@@ -207,12 +217,12 @@ def credit_goal(
         }
     )
     step["evidence"] = step["evidence"][-60:]
+    for outcome in (world.get("kernel") or {}).get("action_outcomes", []):
+        if outcome.get("action_id") == action_id:
+            remember_goal_review_evidence(world, outcome)
+            break
     if step["practice_minutes"] >= step["required_minutes"]:
-        step["status"] = "completed"
-    if goal.get("status") in {"active", "blocked"} and all(
-        item["status"] == "completed" for item in goal["steps"]
-    ):
-        goal["status"] = "completed"
+        step["status"] = "awaiting_review"
     goal["updated_at"] = now.isoformat()
     run["goal_credited"] = True
     if goal.get("skill"):
@@ -222,6 +232,40 @@ def credit_goal(
         skill["practice_minutes"] = round(skill["practice_minutes"] + minutes, 2)
         skill["sessions"] += 1
         skill["last_evidence"] = run["action"]["action_id"]
+
+
+def remember_goal_review_evidence(
+    world: dict[str, Any], outcome: dict[str, Any]
+) -> None:
+    """在目标阶段保留已提交成果；近期行动检查点裁剪不丢复核依据。"""
+
+    action_id = str(outcome.get("action_id") or "")
+    if not action_id or outcome.get("status") != "committed":
+        return
+    artifact = outcome.get("artifact") or {}
+    content = str(artifact.get("content") or "")
+    for goal in world.get("goals", []):
+        if goal.get("status") not in {"active", "blocked"}:
+            continue
+        for step in goal.get("steps", []):
+            if step.get("status") == "completed" or not any(
+                item.get("action_id") == action_id for item in step.get("evidence", [])
+            ):
+                continue
+            if step.get("evidence_kind", "action") == "artifact" and not content:
+                continue
+            saved = step.setdefault("review_evidence", [])
+            saved[:] = [item for item in saved if item.get("action_id") != action_id]
+            saved.append(
+                {
+                    "action_id": action_id,
+                    "status": "committed",
+                    "content": content,
+                    "result": str(outcome.get("result") or ""),
+                    "at": str(outcome.get("at") or ""),
+                }
+            )
+            step["review_evidence"] = saved[-4:]
 
 
 def goals_context(world: dict[str, Any]) -> str:
@@ -239,7 +283,7 @@ def goals_context(world: dict[str, Any]) -> str:
         )
         for step in ready_steps(goal)[:2]:
             lines.append(
-                f"  可继续阶段 goal_id={goal['id']} step_id={step['id']}：{step['title']}；{step['practice_minutes']}/{step['required_minutes']} 分钟；动作 {step['action_type']}"
+                f"  可继续阶段 goal_id={goal['id']} step_id={step['id']}：{step['title']}；{step['practice_minutes']}/{step['required_minutes']} 分钟；动作 {step['action_type']}；验收：{step.get('acceptance') or step['title']}；{'等待成果复核' if step.get('status') == 'awaiting_review' else '可继续练习'}"
             )
     for name, value in world.get("skills", {}).items():
         lines.append(

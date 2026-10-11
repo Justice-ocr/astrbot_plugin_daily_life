@@ -858,6 +858,7 @@ class SpineBootMixin:
         await self._close_runtime_component(flight, "视频任务")
         prepare_flight = getattr(self, "_sight_prepare_flight", None)
         await self._close_runtime_component(prepare_flight, "视频素材准备任务")
+        await self._close_runtime_component(getattr(self, "_native_video_client", None), "Gemini 视频识别服务")
         await self._close_runtime_services(
             RuntimeServices(
                 config=getattr(self, "config", None),

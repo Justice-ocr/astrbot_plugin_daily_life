@@ -105,7 +105,6 @@ def activate_rest_delay(
         now,
         data.date,
         meta=meta,
-        evidence=meta["rest_delay_evidence"],
         timeline_end=meta.get("life_window_end"),
     )
     return True

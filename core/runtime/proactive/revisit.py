@@ -246,6 +246,9 @@ class ProactiveRevisitMixin:
         if isinstance(continuous_world, dict) and continuous_world.get("kernel"):
             lines.append("- 与其他决策共同使用的统一生命内核：")
             lines.append(kernel_context(continuous_world))
+        living_reader = getattr(self, "living_context_for_scope", None)
+        if callable(living_reader):
+            lines.append(await living_reader(target_scope))
         return "\n".join(lines), bool(
             day
             or commitments
@@ -449,9 +452,7 @@ JSON 输出要求：
         payload["_expression_candidate_text"] = reply_text
         requested = self._proactive_bool(payload.get("should_reply"))
         expression_passed = self._expression_review_passed(payload)
-        utility, utility_valid = self._normalize_proactive_utility(
-            payload, confidence=confidence
-        )
+        utility, utility_valid = self._normalize_proactive_utility(payload)
         should_reply = (
             requested
             and confidence >= self.config.proactive.revisit_min_confidence

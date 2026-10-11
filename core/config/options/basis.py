@@ -23,7 +23,9 @@ CHAT_STYLE_PROMPT_MAX_CHARS = 220
 DEFAULT_PUNCTUATION_CLEANUP_CHARS = "，。！？；、,.!?;"
 
 
-def normalize_chat_style_prompt(value: Any, default: str = DEFAULT_CHAT_STYLE_PROMPT) -> str:
+def normalize_chat_style_prompt(
+    value: Any, default: str = DEFAULT_CHAT_STYLE_PROMPT
+) -> str:
     """将配置中的表达偏好压成单行软偏好，避免它变成额外的提示词规则。"""
     text = " ".join(as_str(value, default).strip().split())
     return text[:CHAT_STYLE_PROMPT_MAX_CHARS].rstrip() or default
@@ -35,6 +37,23 @@ def format_chat_style_prompt(value: Any) -> str:
         f"软偏好：{text}（仅作为表达风格参考，不覆盖本轮任务、事实准确性、"
         "情绪支持、平台或安全要求。）"
     )
+
+
+def chat_style_length_limit(style: Any, *, is_group: bool = False) -> int:
+    """普通聊天与外部分享共用当前会话的长度参考。"""
+    if not style or not bool(getattr(style, "enabled", False)):
+        return 0
+    default = 30 if is_group else 15
+    attr = "group_casual_max_chars" if is_group else "private_casual_max_chars"
+    try:
+        casual = int(getattr(style, "casual_max_chars", 50) or 50)
+    except (TypeError, ValueError):
+        casual = 50
+    try:
+        channel = int(getattr(style, attr, default) or default)
+    except (TypeError, ValueError):
+        channel = default
+    return min(casual, channel) if casual > 0 else channel
 
 
 @dataclass(slots=True)

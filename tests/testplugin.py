@@ -59,6 +59,30 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_location_is_readable_before_turn_memory_and_model_request(self):
+        from testlocation import event_with, segment
+        observed = []
+        async def capture(event):
+            observed.append(("memory", event.message_str))
+        async def inject(req, event):
+            observed.append(("model", req.prompt))
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            note_continuous_turn_incoming=lambda event: observed.append(("turn", event.message_str)),
+            capture_chat_memory_message=capture,
+            schedule_bili_summary_from_event=lambda event: True,
+            search=types.SimpleNamespace(prepare_tools=lambda *args, **kwargs: None),
+            inject_life_context=inject,
+        )
+        event = event_with([segment()])
+        await plugin.on_message_for_proactive_reply(event)
+        request = types.SimpleNamespace(prompt="", func_tool=None)
+        await plugin.on_llm_request(event, request)
+        self.assertEqual([kind for kind, _ in observed], ["turn", "memory", "model"])
+        for _, text in observed:
+            self.assertIn("南海区里水镇鹿眠村", text)
+            self.assertNotIn("PRIVATE-CARD-TOKEN", text)
+
     async def test_agent_done_does_not_duplicate_called_video_tool(self):
         calls = []
 
@@ -1734,6 +1758,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(
             note_recalled_message=lambda event: False,
+            note_conversation_incoming=lambda event: calls.append(("received", event)),
             prepare_visual_media_from_event=lambda event: record_async(
                 calls, "prepare", event
             ),
@@ -1767,7 +1792,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [name for name, _ in calls],
-            ["prepare", "structured", "emoji", "visual", "video", "memory", "bili"],
+            ["received", "prepare", "structured", "emoji", "visual", "video", "memory", "bili"],
         )
 
     async def test_message_hook_persists_memory_and_schedules_emoji_capture(self):
@@ -2097,6 +2122,52 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         await plugin.on_llm_request(Event(), request)
 
         self.assertEqual(request.func_tool.names, ["life_weather"])
+
+    async def test_chat_does_not_wait_for_home_location_preheat(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        scheduled = []
+
+        async def ensure_map_context():
+            started.set()
+            await release.wait()
+
+        async def inject_life_context(_req, _event):
+            return None
+
+        def schedule_background(coro, **kwargs):
+            scheduled.append((asyncio.create_task(coro), kwargs))
+            return True
+
+        class Toolset:
+            def __init__(self):
+                self.names = ["life_place_search", "life_weather"]
+
+            def remove_tool(self, name):
+                if name in self.names:
+                    self.names.remove(name)
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            search=types.SimpleNamespace(prepare_tools=lambda *_args, **_kwargs: None),
+            config=types.SimpleNamespace(),
+            domains=types.SimpleNamespace(
+                map_tools_available=lambda: False,
+                home_location_resolution_due=lambda: True,
+                ensure_map_context=ensure_map_context,
+            ),
+            _schedule_background_task=schedule_background,
+            inject_life_context=inject_life_context,
+        )
+        request = types.SimpleNamespace(func_tool=Toolset())
+        try:
+            await asyncio.wait_for(plugin.on_llm_request(Event(), request), timeout=0.2)
+            await asyncio.wait_for(started.wait(), timeout=0.2)
+            self.assertEqual(request.func_tool.names, ["life_weather"])
+            self.assertEqual(scheduled[0][1]["key"], "map_context:home")
+        finally:
+            release.set()
+            await asyncio.gather(*(task for task, _ in scheduled))
 
     async def test_explicit_video_request_instructs_tool_use(self):
         class Toolset:

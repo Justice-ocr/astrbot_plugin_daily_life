@@ -1,4 +1,10 @@
 CONVERSATION_SQL = """
+CREATE TABLE IF NOT EXISTS conversation_receipts (
+    scope TEXT NOT NULL,
+    sent_at REAL NOT NULL,
+    PRIMARY KEY(scope, sent_at)
+);
+
 CREATE TABLE IF NOT EXISTS chat_memory_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_key TEXT NOT NULL UNIQUE,

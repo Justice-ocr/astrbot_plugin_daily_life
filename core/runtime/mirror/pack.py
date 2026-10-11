@@ -112,7 +112,8 @@ class SnapshotPackMixin:
             experience_scope = group_id or session_id
 
         cache_key = json.dumps(
-            [max_summaries, experience_scope, session_id], ensure_ascii=False
+            [max_summaries, experience_scope, session_id,
+             int(getattr(getattr(self, "archive", None), "living_revision", 0))], ensure_ascii=False
         )
         if use_cache:
             cached = self._cached_injection_snapshot(cache, cache_key)

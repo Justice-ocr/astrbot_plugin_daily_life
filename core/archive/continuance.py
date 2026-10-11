@@ -88,6 +88,7 @@ class ContinuityArchiveMixin:
                                     recent.clear()
                                     recent.update(original)
                 if cursor.rowcount and kind == "outcome" and scope == "global":
+                    self._archive_life_artifact_unlocked(item)
                     content = (
                         f"{summary}：{item.get('result') or item.get('status') or ''}"
                     )
@@ -301,6 +302,7 @@ class ContinuityArchiveMixin:
                 if day.meta.get('outfit_fact_source') == 'life_action':
                     self._record_wardrobe_wear_unlocked(day, source='life_action_atomic_receipt')
                 self._conn.commit()
+                self.living_revision = getattr(self, "living_revision", 0) + 1
                 day.mark_persisted(revision)
                 return day, world
             except BaseException:

@@ -121,9 +121,32 @@ class LongTermMemoryArchiveMixin:
         return terms[:16]
 
     def _upsert_long_term_memory_unlocked(
-        self, memory: LongTermMemoryRecord
+        self,
+        memory: LongTermMemoryRecord,
+        *,
+        replacing_correction: bool = False,
     ) -> LongTermMemoryRecord | None:
         if not memory.content:
+            return None
+        # 来源已被用户纠正时，迟到的后台任务即使改写措辞也不能重新确立旧事实。
+        # 再次纠正同一条记录只能由 correct_life_memory 的事务显式放行。
+        source_table = self._text(memory.source_table)
+        source_id = self._text(memory.source_id)
+        if not replacing_correction and source_table and source_id:
+            invalidated = self._conn.execute(
+                """SELECT 1 FROM long_term_memories WHERE scope=? AND source_table=?
+                AND source_id=? AND status='invalidated' LIMIT 1""",
+                (memory.scope, source_table, source_id),
+            ).fetchone()
+            if invalidated:
+                return None
+        # 无来源标识的记录仍按原文阻止被纠正版本复活。
+        invalidated = self._conn.execute(
+            """SELECT 1 FROM long_term_memories WHERE scope=? AND source_table=? AND source_id=?
+            AND content=? AND status='invalidated' LIMIT 1""",
+            (memory.scope, memory.source_table, memory.source_id, memory.content),
+        ).fetchone()
+        if invalidated and not replacing_correction:
             return None
         cursor = self._conn.execute(
             """

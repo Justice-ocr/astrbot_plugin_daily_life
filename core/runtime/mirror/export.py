@@ -8,7 +8,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...clock import now as life_now
-from ...config.options.basis import format_chat_style_prompt
+from ...config.options.basis import chat_style_length_limit, format_chat_style_prompt
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import classify_message_interrupt, message_can_interrupt
 from ...life.tools import (
@@ -22,7 +22,7 @@ from ...sources.platforms import parse_unified_origin
 class SnapshotExportMixin:
     @staticmethod
     def _share_current_facts(data: Any) -> dict[str, Any]:
-        """Export own current facts, never the raw kernel or private goal payload."""
+        """只导出自身当前事实，不暴露原始生命内核或私人目标数据。"""
         meta = data.meta or {}
         if str(meta.get("residence_context_stale", "")).lower() == "true":
             return {
@@ -52,16 +52,6 @@ class SnapshotExportMixin:
                     "source": "continuous_executor",
                     "action_id": str(action.get("action_id") or ""),
                     "started_at": str(run.get("started_at") or ""),
-                }
-        elif not run:
-            active = [
-                item for item in data.timeline if item.execution_state == "active"
-            ]
-            if len(active) == 1:
-                current = {
-                    "activity": active[0].activity,
-                    "status": "running",
-                    "source": "timeline",
                 }
         body = object_value("continuous_body")
         return {
@@ -286,7 +276,7 @@ class SnapshotExportMixin:
         keys: set[str] = set()
         for relationship in relationships:
 
-            def field_value(key: str) -> Any:
+            def field_value(key: str, relationship: Any = relationship) -> Any:
                 if isinstance(relationship, dict):
                     return relationship.get(key, "")
                 return getattr(relationship, key, "")
@@ -711,7 +701,7 @@ class SnapshotExportMixin:
                 " 公开说说沿用上述语气与表达节奏，像平时说话一样随手发一条状态；"
                 "围绕本次在意的一点，用自己会说出口的话表达，意思说完就自然停住，"
                 "不需要完整铺景、抒情或总结一天。按语意自然换行，不固定字数、行数或标题模板。"
-                "这是单条公开文案的表达偏好，不采用私聊长度、聊天分段发送或标点清洗规则。"
+                "这是单条公开文案的表达偏好，不采用私聊长度或聊天分段发送。正常生成标点，正文提交前按当前开关和字符表统一清洗。"
                 "日常状态通常一句就够，只说最想说的那件小事；不顺带汇报下一项安排，"
                 "不补一段氛围描写或升华，不为了显得随性硬加口头禅。"
             )
@@ -721,6 +711,22 @@ class SnapshotExportMixin:
                 "有来有往即可，不写小作文、不连续夸赞、不反问续聊。"
                 "称呼和熟悉程度只参考当前对象的已确认关系，不公开私聊细节。"
             )
+        elif scene in {"share_private", "share_group"}:
+            audience = "群友" if scene == "share_group" else "当前私聊对象"
+            limit = chat_style_length_limit(style, is_group=scene == "share_group")
+            prompt += (
+                f" 这是面向{audience}的一条日常分享，沿用上述语气与表达节奏，意思说清楚就停。"
+                + (
+                    f"轻闲聊参考长度约 {limit} 字左右；只作表达节奏参考，整轮简短，不因分段而扩写，必要信息完整保留。"
+                    if limit > 0
+                    else ""
+                )
+                + "问候心情围绕当下一点，不铺景或凑感悟；新闻知识推荐保留主体和必要事实，不硬压成一句。"
+                "正常生成标点，分享正文生成后由 daily_life 按当前开关和字符表统一清洗；不要提前删除。"
+                "遵守分享插件自己的排版与事实要求，称呼和关系只用当前对象已确认的信息。"
+            )
+            if scene == "share_group":
+                prompt += " 群聊只使用已授权的群内材料，不引用私人关系或私聊记忆。"
         return {"enabled": True, "prompt": prompt}
 
     async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:
@@ -731,6 +737,17 @@ class SnapshotExportMixin:
         context["share_guidance"] = await self._share_guidance(
             target_umo, list(context.get("relationships") or [])
         )
+        from .sharing import share_continuity, share_timing
+
+        try:
+            context["conversation_timing"] = await share_timing(self, target_umo)
+        except Exception as exc:
+            logger.debug(f"[分享上下文] 会话时间暂不可用：{type(exc).__name__}")
+        if context.get("current_facts", {}).get("valid") is not False:
+            try:
+                context["continuity"] = await share_continuity(self, target_umo)
+            except Exception as exc:
+                logger.debug(f"[分享上下文] 连续生活摘要暂不可用：{type(exc).__name__}")
         return context
 
     async def _build_share_base_context(self, target_umo: str = "") -> dict[str, Any]:
@@ -758,7 +775,7 @@ class SnapshotExportMixin:
         state_dict = data.state.as_dict() if data.state else {}
         current_facts = self._share_current_facts(data)
         if not current_facts["valid"]:
-            # Historical records remain in storage, not in the current sharing view.
+            # 历史记录仍保存在数据库中，不进入当前分享视图。
             return {
                 "current_facts": current_facts,
                 "current_awareness": {

@@ -21,6 +21,7 @@ class RuntimeScopeState:
     PRUNE_INTERVAL_SECONDS = 60.0
 
     _SCOPE_STORES = (
+        "_conversation_receipts",
         "_response_gate_last_reply_at",
         "_response_gate_last_seen_at",
         "_response_gate_first_seen_at",
