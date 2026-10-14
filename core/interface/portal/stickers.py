@@ -13,6 +13,8 @@ from pathlib import Path, PurePosixPath
 from ...models import EmojiAssetRecord
 from .codec import encode_base64, file_sha256
 
+from typing import Any, Protocol
+
 
 EMOJI_PREVIEW_MAX_MB = 20
 EMOJI_IMPORT_DEFAULT_MAX_MB = 5
@@ -23,104 +25,153 @@ EMOJI_BACKUP_VERSION = 1
 EMOJI_STILL_PREVIEW_SIZE = 160
 
 
-class PortalEmojiMixin:
+class PortalEmojiComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _page_backup_asset_name: Any
+    _page_backup_file_allowed: Any
+    _page_backup_member_suffix: Any
+    _page_bool: Any
+    _page_build_emoji_backup_file: Any
+    _page_cached_emoji_path: Any
+    _page_delete_emoji_files: Any
+    _page_emoji_asset_by_id: Any
+    _page_emoji_assets_by_ids: Any
+    _page_emoji_backup_item: Any
+    _page_emoji_cache_filename: Any
+    _page_emoji_ids: Any
+    _page_emoji_is_animated: Any
+    _page_emoji_item: Any
+    _page_emoji_max_bytes: Any
+    _page_emoji_payload: Any
+    _page_emoji_payload_from_assets: Any
+    _page_emoji_placeholder_bytes: Any
+    _page_emoji_placeholder_data_url: Any
+    _page_emoji_preview_data: Any
+    _page_emoji_transfer_path: Any
+    _page_image_mime: Any
+    _page_imported_emoji_record: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_merge_restored_emoji_asset: Any
+    _page_read_emoji_backup_manifest: Any
+    _page_receive_emoji: Any
+    _page_receive_upload: Any
+    _page_restore_emoji_backup_file: Any
+    _page_restore_emoji_backup_records: Any
+    _page_safe_backup_member: Any
+    _page_safe_emoji_path: Any
+    _page_schedule_emoji_import_vision: Any
+    _page_schedule_emoji_transfer_cleanup: Any
+    _page_send_download: Any
+    _page_static_emoji_preview_data: Any
+    _page_static_emoji_preview_path: Any
+    _page_validate_emoji_backup_zip: Any
+    _page_write_emoji_backup: Any
+    runtime: Any
+
+
+class PortalEmojiComponent:
+    def __init__(self, context: PortalEmojiComponentContext) -> None:
+        self.context = context
+
     async def page_emoji_list(self):
         async def handler():
-            return await self._page_emoji_payload()
+            return await self.context._page_emoji_payload()
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_emoji_import(self):
         async def handler():
-            cached_path, fingerprint, display_name = await self._page_receive_emoji(
-                self._page_emoji_transfer_path("emoji", ".upload")
+            cached_path, fingerprint, display_name = await self.context._page_receive_emoji(
+                self.context._page_emoji_transfer_path("emoji", ".upload")
             )
-            existing = await self.runtime.archive.get_emoji_asset_by_hash(fingerprint)
-            item = self._page_imported_emoji_record(
+            existing = await self.context.runtime.archive.get_emoji_asset_by_hash(fingerprint)
+            item = self.context._page_imported_emoji_record(
                 existing,
                 fingerprint=fingerprint,
                 file_path=str(cached_path),
                 source_url="",
                 display_name=display_name,
             )
-            saved = await self.runtime.archive.upsert_emoji_asset(item)
+            saved = await self.context.runtime.archive.upsert_emoji_asset(item)
             if saved:
-                await self._page_schedule_emoji_import_vision(saved)
+                await self.context._page_schedule_emoji_import_vision(saved)
             return {
-                **(await self._page_emoji_payload()),
-                "item": self._page_emoji_item(saved) if saved else None,
+                **(await self.context._page_emoji_payload()),
+                "item": self.context._page_emoji_item(saved) if saved else None,
                 "imported": bool(saved),
             }
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_emoji_preview(self):
         async def handler():
-            body = await self._page_json_body()
+            body = await self.context._page_json_body()
             emoji_id = int(body.get("id") or 0)
-            still = self._page_bool(body.get("still")) or str(
+            still = self.context._page_bool(body.get("still")) or str(
                 body.get("mode") or ""
             ).strip().lower() in {
                 "still",
                 "thumb",
                 "thumbnail",
             }
-            asset = await self._page_emoji_asset_by_id(emoji_id)
+            asset = await self.context._page_emoji_asset_by_id(emoji_id)
             if not asset:
                 raise ValueError("表情素材不存在")
             path_text = str(asset.file_path or "").strip()
-            if self.runtime._emoji_asset_is_remote(path_text):
+            if self.context.runtime._emoji_asset_is_remote(path_text):
                 return (
-                    {"data_url": self._page_emoji_placeholder_data_url(path_text)}
+                    {"data_url": self.context._page_emoji_placeholder_data_url(path_text)}
                     if still
                     else {"url": path_text}
                 )
-            path = self._page_safe_emoji_path(path_text)
+            path = self.context._page_safe_emoji_path(path_text)
             if not await asyncio.to_thread(path.is_file):
                 raise ValueError("表情素材文件不存在")
             max_bytes = EMOJI_PREVIEW_MAX_MB * 1024 * 1024
             size = await asyncio.to_thread(lambda: path.stat().st_size)
             if not still and size > max_bytes:
                 raise ValueError(f"表情素材不能超过 {EMOJI_PREVIEW_MAX_MB} MB")
-            data, mime = await self._page_emoji_preview_data(path, still=still)
+            data, mime = await self.context._page_emoji_preview_data(path, still=still)
             encoded = await asyncio.to_thread(encode_base64, data)
             return {"data_url": f"data:{mime};base64,{encoded}", "still": bool(still)}
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_emoji_delete(self):
         async def handler():
-            body = await self._page_json_body()
-            ids = self._page_emoji_ids(body)
+            body = await self.context._page_json_body()
+            ids = self.context._page_emoji_ids(body)
             if not ids:
                 raise ValueError("请选择要删除的表情素材")
-            assets = await self._page_emoji_assets_by_ids(ids)
-            deleted_files = await self._page_delete_emoji_files(assets)
-            deleted_records = await self.runtime.archive.delete_emoji_assets(ids)
-            cleanup = getattr(self.runtime, "cleanup_emoji_asset_cache", None)
+            assets = await self.context._page_emoji_assets_by_ids(ids)
+            deleted_files = await self.context._page_delete_emoji_files(assets)
+            deleted_records = await self.context.runtime.archive.delete_emoji_assets(ids)
+            cleanup = getattr(self.context.runtime, "cleanup_emoji_asset_cache", None)
             if callable(cleanup):
                 await cleanup()
             return {
-                **(await self._page_emoji_payload()),
+                **(await self.context._page_emoji_payload()),
                 "deleted_records": deleted_records,
                 "deleted_files": deleted_files,
             }
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_emoji_sendable(self):
         async def handler():
-            body = await self._page_json_body()
-            ids = self._page_emoji_ids(body)
+            body = await self.context._page_json_body()
+            ids = self.context._page_emoji_ids(body)
             if not ids:
                 raise ValueError("请选择要更新的表情素材")
-            assets = await self._page_emoji_assets_by_ids(ids)
+            assets = await self.context._page_emoji_assets_by_ids(ids)
             if not assets:
                 raise ValueError("表情素材不存在")
-            sendable = self._page_bool(body.get("sendable"))
+            sendable = self.context._page_bool(body.get("sendable"))
             saved_items = []
             for asset in assets:
-                saved = await self.runtime.archive.upsert_emoji_asset(
+                saved = await self.context.runtime.archive.upsert_emoji_asset(
                     EmojiAssetRecord(
                         **{
                             **asset.as_dict(),
@@ -132,25 +183,25 @@ class PortalEmojiMixin:
                 if saved:
                     saved_items.append(saved)
             return {
-                **(await self._page_emoji_payload()),
-                "item": self._page_emoji_item(saved_items[0])
+                **(await self.context._page_emoji_payload()),
+                "item": self.context._page_emoji_item(saved_items[0])
                 if len(saved_items) == 1
                 else None,
                 "updated_records": len(saved_items),
             }
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_emoji_backup(self):
-        assets = await self.runtime.archive.get_emoji_assets(limit=0)
-        target = self._page_emoji_transfer_path("backup", ".zip")
+        assets = await self.context.runtime.archive.get_emoji_assets(limit=0)
+        target = self.context._page_emoji_transfer_path("backup", ".zip")
         meta = await asyncio.to_thread(
-            self._page_build_emoji_backup_file,
+            self.context._page_build_emoji_backup_file,
             assets,
             target,
         )
-        self._page_schedule_emoji_transfer_cleanup(target)
-        return await self._page_send_download(
+        self.context._page_schedule_emoji_transfer_cleanup(target)
+        return await self.context._page_send_download(
             target,
             mime="application/zip",
             filename=meta["filename"],
@@ -158,9 +209,9 @@ class PortalEmojiMixin:
 
     async def page_emoji_restore(self):
         async def handler():
-            target = self._page_emoji_transfer_path("restore", ".zip")
+            target = self.context._page_emoji_transfer_path("restore", ".zip")
             try:
-                upload = await self._page_receive_upload(
+                upload = await self.context._page_receive_upload(
                     target,
                     max_bytes=EMOJI_BACKUP_MAX_MB * 1024 * 1024,
                 )
@@ -168,39 +219,39 @@ class PortalEmojiMixin:
                 if not filename.endswith(".zip"):
                     raise ValueError("请选择 ZIP 表情备份文件")
                 records, meta = await asyncio.to_thread(
-                    self._page_restore_emoji_backup_records,
+                    self.context._page_restore_emoji_backup_records,
                     target,
                 )
             finally:
                 await asyncio.to_thread(target.unlink, missing_ok=True)
             restored = 0
             for record in records:
-                existing = await self.runtime.archive.get_emoji_asset_by_hash(
+                existing = await self.context.runtime.archive.get_emoji_asset_by_hash(
                     record.file_hash
                 )
-                merged = self._page_merge_restored_emoji_asset(existing, record)
-                if await self.runtime.archive.upsert_emoji_asset(merged):
+                merged = self.context._page_merge_restored_emoji_asset(existing, record)
+                if await self.context.runtime.archive.upsert_emoji_asset(merged):
                     restored += 1
             return {
-                **(await self._page_emoji_payload()),
+                **(await self.context._page_emoji_payload()),
                 "restored": restored,
                 "files": meta["files"],
                 "skipped_records": meta["skipped_records"],
             }
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def _page_emoji_payload(self) -> dict:
-        assets = await self.runtime.archive.get_emoji_assets(limit=0)
+        assets = await self.context.runtime.archive.get_emoji_assets(limit=0)
         items, stats = await asyncio.to_thread(
-            self._page_emoji_payload_from_assets, assets
+            self.context._page_emoji_payload_from_assets, assets
         )
         return {"items": items, "stats": stats}
 
     def _page_emoji_payload_from_assets(
         self, assets: list[EmojiAssetRecord]
     ) -> tuple[list[dict], dict]:
-        items = [self._page_emoji_item(asset) for asset in assets]
+        items = [self.context._page_emoji_item(asset) for asset in assets]
         return items, {
             "total": len(items),
             "ready": sum(1 for item in items if item["status"] == "ready"),
@@ -215,20 +266,20 @@ class PortalEmojiMixin:
         asset = asset or EmojiAssetRecord()
         data = asset.as_dict()
         path_text = str(asset.file_path or "").strip()
-        file_path = self._page_cached_emoji_path(path_text)
+        file_path = self.context._page_cached_emoji_path(path_text)
         data.update(
             {
                 "file_name": file_path.name if file_path else Path(path_text).name,
                 "file_size": file_path.stat().st_size
                 if file_path and file_path.is_file()
                 else 0,
-                "is_animated": self._page_emoji_is_animated(path_text, file_path),
-                "is_remote": self.runtime._emoji_asset_is_remote(path_text),
+                "is_animated": self.context._page_emoji_is_animated(path_text, file_path),
+                "is_remote": self.context.runtime._emoji_asset_is_remote(path_text),
                 "is_cached": bool(file_path and file_path.is_file()),
                 "preview_available": bool(
                     path_text
                     and (
-                        self.runtime._emoji_asset_is_remote(path_text)
+                        self.context.runtime._emoji_asset_is_remote(path_text)
                         or (file_path and file_path.is_file())
                     )
                 ),
@@ -240,7 +291,7 @@ class PortalEmojiMixin:
     async def _page_emoji_asset_by_id(self, emoji_id: int) -> EmojiAssetRecord | None:
         if emoji_id <= 0:
             return None
-        for asset in await self.runtime.archive.get_emoji_assets(limit=0):
+        for asset in await self.context.runtime.archive.get_emoji_assets(limit=0):
             if int(asset.id or 0) == emoji_id:
                 return asset
         return None
@@ -249,7 +300,7 @@ class PortalEmojiMixin:
         id_set = set(ids)
         return [
             asset
-            for asset in await self.runtime.archive.get_emoji_assets(limit=0)
+            for asset in await self.context.runtime.archive.get_emoji_assets(limit=0)
             if int(asset.id or 0) in id_set
         ]
 
@@ -271,10 +322,10 @@ class PortalEmojiMixin:
         return sorted(set(result))
 
     def _page_cached_emoji_path(self, path_text: str) -> Path | None:
-        cache_dir = self.runtime._emoji_asset_cache_dir(create=False)
+        cache_dir = self.context.runtime._emoji_asset_cache_dir(create=False)
         if not cache_dir:
             return None
-        return self.runtime._resolve_cached_emoji_path(path_text, cache_dir)
+        return self.context.runtime._resolve_cached_emoji_path(path_text, cache_dir)
 
     @staticmethod
     def _page_emoji_is_animated(path_text: str, cached_path: Path | None) -> bool:
@@ -286,7 +337,7 @@ class PortalEmojiMixin:
         return Path(name).suffix.lower() == ".gif"
 
     def _page_safe_emoji_path(self, path_text: str) -> Path:
-        path = self._page_cached_emoji_path(path_text)
+        path = self.context._page_cached_emoji_path(path_text)
         if not path:
             raise ValueError("只能预览插件缓存中的表情素材")
         return path
@@ -295,7 +346,7 @@ class PortalEmojiMixin:
         deleted = 0
         seen: set[Path] = set()
         for asset in assets:
-            path = self._page_cached_emoji_path(str(asset.file_path or ""))
+            path = self.context._page_cached_emoji_path(str(asset.file_path or ""))
             if (
                 not path
                 or path in seen
@@ -304,7 +355,7 @@ class PortalEmojiMixin:
                 continue
             seen.add(path)
             await asyncio.to_thread(lambda target=path: target.unlink(missing_ok=True))
-            preview_path = self._page_static_emoji_preview_path(path)
+            preview_path = self.context._page_static_emoji_preview_path(path)
             if await asyncio.to_thread(preview_path.is_file):
                 await asyncio.to_thread(
                     lambda target=preview_path: target.unlink(missing_ok=True)
@@ -316,7 +367,7 @@ class PortalEmojiMixin:
         self, assets: list[EmojiAssetRecord]
     ) -> tuple[bytes, dict]:
         buffer = BytesIO()
-        meta = self._page_write_emoji_backup(assets, buffer)
+        meta = self.context._page_write_emoji_backup(assets, buffer)
         return buffer.getvalue(), meta
 
     def _page_build_emoji_backup_file(
@@ -325,7 +376,7 @@ class PortalEmojiMixin:
         target: Path,
     ) -> dict:
         target.parent.mkdir(parents=True, exist_ok=True)
-        meta = self._page_write_emoji_backup(assets, target)
+        meta = self.context._page_write_emoji_backup(assets, target)
         meta["size"] = target.stat().st_size
         return meta
 
@@ -347,14 +398,14 @@ class PortalEmojiMixin:
             destination, "w", compression=zipfile.ZIP_DEFLATED
         ) as package:
             for asset in assets:
-                item = self._page_emoji_backup_item(asset)
-                path = self._page_cached_emoji_path(str(asset.file_path or ""))
+                item = self.context._page_emoji_backup_item(asset)
+                path = self.context._page_cached_emoji_path(str(asset.file_path or ""))
                 if path and path.is_file() and not path.name.endswith(".still.png"):
                     try:
                         size = path.stat().st_size
                     except OSError:
                         size = 0
-                    if self._page_backup_file_allowed(path, size):
+                    if self.context._page_backup_file_allowed(path, size):
                         digest = file_sha256(path)
                         file_hash = (
                             str(item.get("file_hash") or digest).strip() or digest
@@ -362,7 +413,7 @@ class PortalEmojiMixin:
                         item["file_hash"] = file_hash
                         item["file_path"] = ""
                         item["file_name"] = path.name
-                        item["backup_asset"] = self._page_backup_asset_name(
+                        item["backup_asset"] = self.context._page_backup_asset_name(
                             file_hash, path.suffix, used_names
                         )
                         item["backup_sha256"] = digest
@@ -373,7 +424,7 @@ class PortalEmojiMixin:
                         skipped_files += 1
                         item["file_path"] = (
                             ""
-                            if not self.runtime._emoji_asset_is_remote(
+                            if not self.context.runtime._emoji_asset_is_remote(
                                 str(asset.file_path or "")
                             )
                             else str(asset.file_path or "")
@@ -398,17 +449,17 @@ class PortalEmojiMixin:
         item["backup_sha256"] = ""
         item["backup_size"] = 0
         path_text = str(item.get("file_path") or "").strip()
-        if not self.runtime._emoji_asset_is_remote(path_text):
+        if not self.context.runtime._emoji_asset_is_remote(path_text):
             item["file_path"] = ""
         return item
 
     def _page_backup_file_allowed(self, path: Path, size: int) -> bool:
         if size <= 0:
             return False
-        max_bytes = self._page_emoji_max_bytes()
+        max_bytes = self.context._page_emoji_max_bytes()
         suffixes = set(
             getattr(
-                self.runtime,
+                self.context.runtime,
                 "EMOJI_ASSET_SUFFIXES",
                 {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
             )
@@ -439,7 +490,7 @@ class PortalEmojiMixin:
     def _page_restore_emoji_backup_records(
         self, archive_data: bytes | Path
     ) -> tuple[list[EmojiAssetRecord], dict]:
-        cache_dir = self.runtime._emoji_asset_cache_dir()
+        cache_dir = self.context.runtime._emoji_asset_cache_dir()
         if not cache_dir:
             raise ValueError("表情缓存目录不可用")
         try:
@@ -448,8 +499,8 @@ class PortalEmojiMixin:
         except zipfile.BadZipFile as exc:
             raise ValueError("表情备份文件不是有效 ZIP") from exc
         with package:
-            self._page_validate_emoji_backup_zip(package)
-            manifest = self._page_read_emoji_backup_manifest(package)
+            self.context._page_validate_emoji_backup_zip(package)
+            manifest = self.context._page_read_emoji_backup_manifest(package)
             records: list[EmojiAssetRecord] = []
             skipped = 0
             restored_files = 0
@@ -462,7 +513,7 @@ class PortalEmojiMixin:
                 backup_asset = str(item.pop("backup_asset", "") or "").strip()
                 if backup_asset:
                     try:
-                        path = self._page_restore_emoji_backup_file(
+                        path = self.context._page_restore_emoji_backup_file(
                             package, item, backup_asset, cache_dir
                         )
                     except ValueError:
@@ -470,7 +521,7 @@ class PortalEmojiMixin:
                         continue
                     item["file_path"] = str(path)
                     restored_files += 1
-                elif not self.runtime._emoji_asset_is_remote(
+                elif not self.context.runtime._emoji_asset_is_remote(
                     str(item.get("file_path") or "")
                 ):
                     item["file_path"] = ""
@@ -485,12 +536,12 @@ class PortalEmojiMixin:
             return records, {"files": restored_files, "skipped_records": skipped}
 
     def _page_emoji_transfer_path(self, prefix: str, suffix: str) -> Path:
-        root = Path(self.runtime.data_path).parent / "transfer"
+        root = Path(self.context.runtime.data_path).parent / "transfer"
         token = secrets.token_hex(8)
         return root / f"{prefix}_{token}{suffix}"
 
     def _page_schedule_emoji_transfer_cleanup(self, path: Path) -> None:
-        scheduler = getattr(self.runtime, "_schedule_background_task", None)
+        scheduler = getattr(self.context.runtime, "_schedule_background_task", None)
         if not callable(scheduler):
             return
 
@@ -549,7 +600,7 @@ class PortalEmojiMixin:
             name = str(info.filename or "")
             if name == "manifest.json":
                 continue
-            self._page_safe_backup_member(name)
+            self.context._page_safe_backup_member(name)
 
     def _page_read_emoji_backup_manifest(self, package: zipfile.ZipFile) -> dict:
         try:
@@ -574,12 +625,12 @@ class PortalEmojiMixin:
     def _page_restore_emoji_backup_file(
         self, package: zipfile.ZipFile, item: dict, backup_asset: str, cache_dir: Path
     ) -> Path:
-        member = self._page_safe_backup_member(backup_asset)
+        member = self.context._page_safe_backup_member(backup_asset)
         try:
             info = package.getinfo(member)
         except KeyError as exc:
             raise ValueError("表情备份素材文件缺失") from exc
-        max_bytes = self._page_emoji_max_bytes()
+        max_bytes = self.context._page_emoji_max_bytes()
         if int(info.file_size or 0) <= 0 or int(info.file_size or 0) > max_bytes:
             raise ValueError("表情备份素材大小不符合限制")
         data = package.read(info)
@@ -587,9 +638,9 @@ class PortalEmojiMixin:
         expected = str(item.get("backup_sha256") or "").strip().lower()
         if expected and expected != digest:
             raise ValueError("表情备份素材校验失败")
-        suffix = self._page_backup_member_suffix(member, data)
+        suffix = self.context._page_backup_member_suffix(member, data)
         file_hash = str(item.get("file_hash") or digest).strip() or digest
-        filename = self._page_emoji_cache_filename(file_hash, suffix)
+        filename = self.context._page_emoji_cache_filename(file_hash, suffix)
         target = (cache_dir / filename).resolve()
         target.relative_to(cache_dir.resolve())
         if (
@@ -611,7 +662,7 @@ class PortalEmojiMixin:
             raise ValueError("表情备份素材路径不安全")
         suffixes = set(
             getattr(
-                self.runtime,
+                self.context.runtime,
                 "EMOJI_ASSET_SUFFIXES",
                 {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
             )
@@ -621,7 +672,7 @@ class PortalEmojiMixin:
         return path.as_posix()
 
     def _page_backup_member_suffix(self, member: str, data: bytes) -> str:
-        detector = getattr(self.runtime, "_emoji_asset_suffix", None)
+        detector = getattr(self.context.runtime, "_emoji_asset_suffix", None)
         if callable(detector):
             return detector(member, data=data, content_type="")
         suffix = PurePosixPath(member).suffix.lower()
@@ -632,7 +683,7 @@ class PortalEmojiMixin:
         )
 
     def _page_emoji_cache_filename(self, file_hash: str, suffix: str) -> str:
-        namer = getattr(self.runtime, "_emoji_asset_filename", None)
+        namer = getattr(self.context.runtime, "_emoji_asset_filename", None)
         if callable(namer):
             return namer(file_hash, suffix)
         safe_hash = (
@@ -643,21 +694,21 @@ class PortalEmojiMixin:
         return f"{safe_hash}{safe_suffix.lower()}"
 
     def _page_emoji_max_bytes(self) -> int:
-        getter = getattr(self.runtime, "_emoji_max_bytes", None)
+        getter = getattr(self.context.runtime, "_emoji_max_bytes", None)
         if callable(getter):
             return int(getter() or 0)
         return EMOJI_IMPORT_DEFAULT_MAX_MB * 1024 * 1024
 
     async def _page_receive_emoji(self, temporary: Path) -> tuple[Path, str, str]:
-        upload = await self._page_receive_upload(
+        upload = await self.context._page_receive_upload(
             temporary,
-            max_bytes=self._page_emoji_max_bytes(),
+            max_bytes=self.context._page_emoji_max_bytes(),
         )
         display_name = str(upload.get("filename") or "").strip()
         suffix = Path(display_name).suffix.lower()
         allowed = set(
             getattr(
-                self.runtime,
+                self.context.runtime,
                 "EMOJI_ASSET_SUFFIXES",
                 {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
             )
@@ -667,11 +718,11 @@ class PortalEmojiMixin:
             await asyncio.to_thread(temporary.unlink, missing_ok=True)
             raise ValueError("仅支持 PNG、JPG、WEBP、GIF 或 BMP 图片")
         fingerprint = await asyncio.to_thread(file_sha256, temporary)
-        cache_dir = self.runtime._emoji_asset_cache_dir()
+        cache_dir = self.context.runtime._emoji_asset_cache_dir()
         if not cache_dir:
             await asyncio.to_thread(temporary.unlink, missing_ok=True)
             raise ValueError("表情素材缓存失败")
-        target = cache_dir / self._page_emoji_cache_filename(fingerprint, suffix)
+        target = cache_dir / self.context._page_emoji_cache_filename(fingerprint, suffix)
         if await asyncio.to_thread(target.is_file):
             await asyncio.to_thread(temporary.unlink, missing_ok=True)
         else:
@@ -717,11 +768,11 @@ class PortalEmojiMixin:
     async def _page_schedule_emoji_import_vision(self, asset: EmojiAssetRecord) -> None:
         if not asset or str(asset.status or "") == "ready":
             return
-        describe = getattr(self.runtime, "_describe_emoji_asset_with_vision", None)
+        describe = getattr(self.context.runtime, "_describe_emoji_asset_with_vision", None)
         if not callable(describe):
             return
         task = describe(asset)
-        scheduler = getattr(self.runtime, "_schedule_background_task", None)
+        scheduler = getattr(self.context.runtime, "_schedule_background_task", None)
         if callable(scheduler):
             scheduler(
                 task,
@@ -747,11 +798,11 @@ class PortalEmojiMixin:
         self, path: Path, *, still: bool
     ) -> tuple[bytes, str]:
         if still and path.suffix.lower() == ".gif":
-            return await asyncio.to_thread(self._page_static_emoji_preview_data, path)
-        return await asyncio.to_thread(path.read_bytes), self._page_image_mime(path)
+            return await asyncio.to_thread(self.context._page_static_emoji_preview_data, path)
+        return await asyncio.to_thread(path.read_bytes), self.context._page_image_mime(path)
 
     def _page_static_emoji_preview_data(self, path: Path) -> tuple[bytes, str]:
-        preview_path = self._page_static_emoji_preview_path(path)
+        preview_path = self.context._page_static_emoji_preview_path(path)
         try:
             source_stat = path.stat()
             if (
@@ -761,7 +812,7 @@ class PortalEmojiMixin:
             ):
                 return preview_path.read_bytes(), "image/png"
         except OSError:
-            return self._page_emoji_placeholder_bytes(path.name), "image/svg+xml"
+            return self.context._page_emoji_placeholder_bytes(path.name), "image/svg+xml"
 
         try:
             from PIL import Image, ImageOps
@@ -783,7 +834,7 @@ class PortalEmojiMixin:
                 return data, "image/png"
         except Exception:
             pass
-        return self._page_emoji_placeholder_bytes(path.name), "image/svg+xml"
+        return self.context._page_emoji_placeholder_bytes(path.name), "image/svg+xml"
 
     @staticmethod
     def _page_static_emoji_preview_path(path: Path) -> Path:

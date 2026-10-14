@@ -5,6 +5,8 @@ import datetime
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from astrbot.api import logger
 
@@ -16,8 +18,27 @@ from ..sources.platforms import parse_unified_origin
 from .proactive.procontext import ProactiveSyntheticEvent
 
 
-class ExternalIntegrationMixin:
-    """记录其他插件已经完成的主动行为。"""
+class ShareExpressionService:
+    """检查单条分享的表达，沿用聊天清洗规则。"""
+
+    def __init__(
+        self,
+        *,
+        chat_style_config: Callable[[], Any],
+        share_style: Callable[..., dict[str, Any]],
+        text_is_structural: Callable[[str], bool],
+        clean_punctuation: Callable[[str, str], str],
+        parse_payload: Callable[[str], Any],
+        text_provider: Callable[[str], Awaitable[Any]],
+        call_text_model: Callable[..., Awaitable[str]],
+    ) -> None:
+        self._chat_style_config = chat_style_config
+        self._share_style = share_style
+        self._text_is_structural = text_is_structural
+        self._clean_punctuation = clean_punctuation
+        self._parse_payload = parse_payload
+        self._text_provider = text_provider
+        self._call_text_model = call_text_model
 
     async def prepare_share_expression(
         self, text: str, *, scene: str = "", requirements: dict | None = None
@@ -50,15 +71,13 @@ class ExternalIntegrationMixin:
 
     def _clean_share_punctuation(self, text: str, *, requirements: dict | None) -> str:
         """复用聊天清洗字符表和结构边界，不受聊天转图阈值约束。"""
-        settings = getattr(getattr(self, "config", None), "chat_style", None)
-        cleaner = getattr(self, "_semantic_segment_clean_punctuation", None)
+        settings = self._chat_style_config()
         if (
             not settings
             or not getattr(settings, "enabled", False)
             or not getattr(settings, "punctuation_cleanup_enabled", True)
-            or not callable(cleaner)
             or not text
-            or self._chat_style_text_is_structural(text)
+            or self._text_is_structural(text)
         ):
             return text
         constraints = requirements if isinstance(requirements, dict) else {}
@@ -106,7 +125,7 @@ class ExternalIntegrationMixin:
                 else:
                     leading = source[: len(source) - len(source.lstrip())]
                     trailing = source[len(source.rstrip()) :]
-                    cleaned = cleaner(source, cleanup_chars)
+                    cleaned = self._clean_punctuation(source, cleanup_chars)
                     # 即使删掉受保护名称或链接旁的停顿符号，也要像常规清理一样
                     # 保留词语之间的分隔。
                     if (
@@ -158,10 +177,10 @@ class ExternalIntegrationMixin:
         }
         if not original:
             return fallback
-        style = self.get_share_chat_style(scene=scene)
+        style = self._share_style(scene=scene)
         if scene != "share_voice" and not style.get("enabled"):
             return fallback
-        settings = getattr(self.config, "chat_style", None)
+        settings = self._chat_style_config()
         provider_id = str(getattr(settings, "semantic_provider", "") or "")
         constraints = requirements if isinstance(requirements, dict) else {}
         output_format = str(constraints.get("output_format") or "")[:1600]
@@ -176,7 +195,7 @@ class ExternalIntegrationMixin:
             else []
         )
         try:
-            provider = await self.get_text_provider(provider_id)
+            provider = await self._text_provider(provider_id)
             if provider is None:
                 return fallback
             instruction = (
@@ -239,7 +258,7 @@ class ExternalIntegrationMixin:
                 ),
             )
             raw = await asyncio.wait_for(
-                self.call_text_model(
+                self._call_text_model(
                     provider,
                     prompt,
                     "",
@@ -248,7 +267,7 @@ class ExternalIntegrationMixin:
                 ),
                 timeout=20,
             )
-            payload = self._semantic_segment_parse_payload(raw)
+            payload = self._parse_payload(raw)
             if not isinstance(payload, dict):
                 return fallback
             result = dict(fallback)
@@ -289,13 +308,36 @@ class ExternalIntegrationMixin:
             )
             return fallback
 
+
+class ExternalActivityService:
+    """只记录其他插件已经完成的公开发布和会话分享。"""
+
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], Any],
+        resolve_target: Callable[[datetime.datetime], Awaitable[tuple[str, bool]]],
+        note_structured_bot: Callable[..., Any],
+        capture_proactive_reply: Callable[..., Awaitable[Any]],
+        mark_proactive_sent: Callable[..., Any],
+        note_proactive_bot: Callable[..., Any],
+        schedule_memos: Callable[..., Any],
+    ) -> None:
+        self._archive = archive
+        self._resolve_target = resolve_target
+        self._note_structured_bot = note_structured_bot
+        self._capture_proactive_reply = capture_proactive_reply
+        self._mark_proactive_sent = mark_proactive_sent
+        self._note_proactive_bot = note_proactive_bot
+        self._schedule_memos = schedule_memos
+
     async def record_public_activity(self, receipt: dict) -> bool:
         """公开发布不等于私聊，也不能视为行动已完成。"""
         if receipt.get("scene") not in {"qzone_post", "qzone_comment", "qzone_reply"}:
             raise ValueError("不支持的公开动态场景")
         if not receipt.get("event_id") or not str(receipt.get("content") or "").strip():
             return False
-        saved = await self.archive.record_public_activity(receipt)
+        saved = await self._archive().record_public_activity(receipt)
         now = life_now().replace(tzinfo=None)
         try:
             occurred_at = datetime.datetime.fromisoformat(
@@ -306,7 +348,7 @@ class ExternalIntegrationMixin:
             occurred_at = occurred_at.replace(tzinfo=None)
         except ValueError:
             occurred_at = now
-        date, _ = await self.resolve_injection_target(now)
+        date, _ = await self._resolve_target(now)
         from ..life.presence import record_event
 
         def record(day, world):
@@ -319,7 +361,7 @@ class ExternalIntegrationMixin:
                 evidence_ids=[str(receipt["event_id"])],
             )
 
-        day, _ = await self.archive.mutate_continuous_life(date, record)
+        day, _ = await self._archive().mutate_continuous_life(date, record)
         return bool(saved and day is not None)
 
     @staticmethod
@@ -359,10 +401,8 @@ class ExternalIntegrationMixin:
             "video": "视频",
             "audio": "语音",
         }.get(str(media_kind or "").strip().lower(), "")
-        self.note_structured_bot_message(scope, text, media=media_label)
-        capture = getattr(self, "capture_proactive_chat_memory_reply", None)
-        if callable(capture):
-            await capture(scope, text, media=media_label)
+        self._note_structured_bot(scope, text, media=media_label)
+        await self._capture_proactive_reply(scope, text, media=media_label)
 
         _, real_id = parse_unified_origin(scope)
         is_group = ":GroupMessage:" in scope
@@ -372,8 +412,8 @@ class ExternalIntegrationMixin:
             target_scope=scope,
             group_id=real_id if is_group else "",
         )
-        self._mark_proactive_reply_sent(event, now)
-        self.note_proactive_bot_reply(event, now)
+        self._mark_proactive_sent(event, now)
+        self._note_proactive_bot(event, now)
 
         if sync_memory:
             memory_text = text
@@ -382,7 +422,7 @@ class ExternalIntegrationMixin:
                 memory_text += f"\n[配图: {description}]"
             elif image_sent:
                 memory_text += "\n[已发送配图]"
-            self.schedule_memos_selected_items(
+            self._schedule_memos(
                 self._external_activity_memos_meta(scope),
                 [memory_text],
                 reason=str(reason or "外部主动活动").strip() or "外部主动活动",
@@ -392,4 +432,4 @@ class ExternalIntegrationMixin:
         return True
 
 
-__all__ = ["ExternalIntegrationMixin"]
+__all__ = ["ShareExpressionService", "ExternalActivityService"]

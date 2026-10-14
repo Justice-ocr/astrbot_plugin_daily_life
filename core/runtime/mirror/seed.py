@@ -6,27 +6,52 @@ from astrbot.api import logger
 
 from ...models import DayRecord
 
+from typing import Any, Protocol
 
-class SnapshotSeedMixin:
+
+class SnapshotSeedComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _generate_injection_day_background: Any
+    _generate_missing_day_background: Any
+    _prepare_residence_change: Any
+    _refresh_after_residence_change: Any
+    _runtime_now: Any
+    _schedule_background_task: Any
+    _synchronize_outfit_with_schedule: Any
+    _target_datetime_for_command: Any
+    archive: Any
+    composer: Any
+    domains: Any
+    failed_dates: Any
+    resolve_injection_target: Any
+    run_daily_generation: Any
+    wait_for_platform_ready: Any
+
+
+class SnapshotSeedComponent:
+    def __init__(self, context: SnapshotSeedComponentContext) -> None:
+        self.context = context
+
     async def ensure_startup_day_data(
         self, now: datetime.datetime | None = None
     ) -> None:
         """插件启动后若没有当前生活日记录，则在后台补充生成。"""
         # 插件初始化可能早于 OneBot/WebSocket 建连。先等待平台真正可用，
         # 否则首轮历史和联系人查询会在适配器尚未连接时被错误跳过。
-        wait_for_platform = getattr(self, "wait_for_platform_ready", None)
+        wait_for_platform = getattr(self.context, "wait_for_platform_ready", None)
         if callable(wait_for_platform):
             await wait_for_platform()
         preference_maintainer = getattr(
-            getattr(self, "composer", None),
+            getattr(self.context, "composer", None),
             "maintain_preference_consistency",
             None,
         )
         if callable(preference_maintainer):
             await preference_maintainer()
-        now = now or self._runtime_now()
-        target_date_str, _ = await self.resolve_injection_target(now)
-        domains = getattr(self, "domains", None)
+        now = now or self.context._runtime_now()
+        target_date_str, _ = await self.context.resolve_injection_target(now)
+        domains = getattr(self.context, "domains", None)
         resolver = getattr(domains, "resolve_home_location", None)
         if callable(resolver):
             await resolver()
@@ -40,7 +65,7 @@ class SnapshotSeedMixin:
             if callable(residence_change_consumer)
             else ""
         )
-        current_day = await self.archive.get_day(target_date_str)
+        current_day = await self.context.archive.get_day(target_date_str)
         stale_residence_context = bool(
             current_day
             and str(
@@ -52,18 +77,18 @@ class SnapshotSeedMixin:
             == "true"
         )
         if detected_residence_change or stale_residence_context:
-            target = self._target_datetime_for_command(target_date_str, now)
-            await self._prepare_residence_change(target)
-            await self._refresh_after_residence_change(target)
+            target = self.context._target_datetime_for_command(target_date_str, now)
+            await self.context._prepare_residence_change(target)
+            await self.context._refresh_after_residence_change(target)
             return
         if current_day:
             sync_outfit = getattr(
-                self, "_synchronize_outfit_with_schedule", None
+                self.context, "_synchronize_outfit_with_schedule", None
             )
             if callable(sync_outfit):
                 try:
                     if sync_outfit(current_day, now):
-                        await self.archive.save_day(current_day)
+                        await self.context.archive.save_day(current_day)
                 except Exception as exc:
                     logger.warning(
                         "[首次启动] 日程穿搭场景同步失败：%s: %s",
@@ -71,7 +96,7 @@ class SnapshotSeedMixin:
                         exc,
                     )
             return
-        await self._generate_missing_day_background(
+        await self.context._generate_missing_day_background(
             target_date_str,
             now,
             source="startup_seed",
@@ -83,17 +108,17 @@ class SnapshotSeedMixin:
         target_date_str: str,
         now: datetime.datetime,
     ) -> DayRecord | None:
-        data = await self.archive.get_day(target_date_str)
+        data = await self.context.archive.get_day(target_date_str)
         today_str = now.strftime("%Y-%m-%d")
-        if not hasattr(self, "failed_dates"):
-            self.failed_dates = {}
-        failed_at = self.failed_dates.get(target_date_str)
+        if not hasattr(self.context, "failed_dates"):
+            self.context.failed_dates = {}
+        failed_at = self.context.failed_dates.get(target_date_str)
         can_retry_generation = not failed_at or (now - failed_at).total_seconds() >= 600
         if target_date_str != today_str or data or not can_retry_generation:
             return data
 
-        self._schedule_background_task(
-            self._generate_injection_day_background(target_date_str, now),
+        self.context._schedule_background_task(
+            self.context._generate_injection_day_background(target_date_str, now),
             label="日常生活即时生成",
             key=f"injection_day:{target_date_str}",
         )
@@ -104,7 +129,7 @@ class SnapshotSeedMixin:
         target_date_str: str,
         now: datetime.datetime,
     ) -> None:
-        await self._generate_missing_day_background(
+        await self.context._generate_missing_day_background(
             target_date_str,
             now,
             source="injection_seed",
@@ -119,10 +144,10 @@ class SnapshotSeedMixin:
         source: str,
         log_scope: str,
     ) -> None:
-        if not hasattr(self, "failed_dates"):
-            self.failed_dates = {}
+        if not hasattr(self.context, "failed_dates"):
+            self.context.failed_dates = {}
 
-        data = await self.archive.get_day(target_date_str)
+        data = await self.context.archive.get_day(target_date_str)
         if data:
             return
 
@@ -137,7 +162,7 @@ class SnapshotSeedMixin:
                     second=now.second,
                     microsecond=now.microsecond,
                 )
-            result = await self.run_daily_generation(
+            result = await self.context.run_daily_generation(
                 date=target_time,
                 source=source,
                 force=False,
@@ -150,9 +175,9 @@ class SnapshotSeedMixin:
             )
             data = None
         if data:
-            self.failed_dates.pop(target_date_str, None)
+            self.context.failed_dates.pop(target_date_str, None)
         else:
-            self.failed_dates[target_date_str] = now
+            self.context.failed_dates[target_date_str] = now
 
     async def maybe_update_injection_outfit(
         self,
@@ -163,7 +188,7 @@ class SnapshotSeedMixin:
         if using_extended_night:
             return data
 
-        today_data = await self.archive.get_day(today_str)
+        today_data = await self.context.archive.get_day(today_str)
         if not today_data:
             return data
 

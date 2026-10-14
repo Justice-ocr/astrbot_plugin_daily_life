@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import copy
@@ -23,7 +25,6 @@ from ..runtime.markers import LOG_PREFIX
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief
 from .clip import SightClip, SightInsight
-from .cinematics import NativeSightMixin
 from .native import NativeVideoError
 from .cookie import BiliCookieJar
 from .digest import (
@@ -45,7 +46,6 @@ from .flight import (
     sight_resource_keys,
     sight_resource_matches,
 )
-from .identity import SightIdentityMixin
 from .login import BiliLoginService, BiliLoginStatus
 from .note import (
     PROFESSIONAL_NOTE_CACHE_SCHEMA,
@@ -64,7 +64,6 @@ from .probe import (
     source_from_value,
 )
 from .provider import sight_provider_id
-from .prune import SightCleanupMixin
 from .reader import (
     AUDIO_TRANSCRIPT_TIMEOUT_SECONDS,
     LOCAL_ASR_BATCH_SIZE_SECONDS,
@@ -79,6 +78,11 @@ from .sample import (
     sight_cache_dir,
 )
 from .vault import SightVault
+
+from . import cinematics as _part_native_sight_component
+from . import prune as _part_sight_cleanup_component
+from . import identity as _part_sight_identity_component
+from typing import Protocol
 
 BILI_RESOLVE_TIMEOUT_SECONDS = 10
 DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS = 300
@@ -107,59 +111,175 @@ def _sight_file_content_fingerprint(path: str) -> str:
     return digest.hexdigest()
 
 
-class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
+class SightComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_sight_insight_to_structured: Any
+    _astrbot_config: Any
+    _background_tool_existing_result: Any
+    _background_tool_request: Any
+    _bili_cookie_jar: Any
+    _bili_cookie_jar_for_runtime: Any
+    _bili_summary_log_subject: Any
+    _cache_sight_note_markdown: Any
+    _cached_sight_insight_for_clip: Any
+    _cached_sight_note_markdown: Any
+    _call_sight_vision_batch_provider: Any
+    _call_sight_vision_provider: Any
+    _cleanup_sight_vision_session: Any
+    _clear_sight_prepare_cache: Any
+    _collect_sight_context_background: Any
+    _complete_cached_sight_brief: Any
+    _completion_text: Any
+    _compose_sight_note_with_timeout: Any
+    _describe_sight_frames: Any
+    _describe_sight_frames_with_provider: Any
+    _event_component_kind: Any
+    _event_group_meta: Any
+    _event_has_command_handler: Any
+    _event_is_group_message: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _event_sources: Any
+    _finalize_prepared_sight_clip: Any
+    _finalize_sight_insight: Any
+    _init_sight_identity: Any
+    _life_video_note_inline: Any
+    _load_sight_prepare_cache: Any
+    _lock_video_note_source: Any
+    _log_sight_fusion: Any
+    _log_sight_professional_metrics: Any
+    _mark_sight_completed_key: Any
+    _mark_sight_note_sent: Any
+    _native_sight_route: Any
+    _prepare_sight_clip_material: Any
+    _record_sight_delivery_metrics: Any
+    _render_sight_note_image: Any
+    _resolve_sight_clip_source: Any
+    _resolve_sight_file_source: Any
+    _resume_sight_summary_after_timeout: Any
+    _save_sight_prepare_cache: Any
+    _schedule_background_task: Any
+    _send_bili_summary_background: Any
+    _send_bili_summary_failure: Any
+    _send_sight_note: Any
+    _sight_apply_group_upload_id: Any
+    _sight_brief: Any
+    _sight_brief_for_runtime: Any
+    _sight_cache_dir: Any
+    _sight_cache_max_items: Any
+    _sight_cache_ttl_seconds: Any
+    _sight_clip_source_is_usable: Any
+    _sight_clips_from_event: Any
+    _sight_clips_from_event_async: Any
+    _sight_compact_text: Any
+    _sight_enrich_clips_from_raw_message: Any
+    _sight_finalize_timeout_seconds: Any
+    _sight_flight: Any
+    _sight_flight_for_runtime: Any
+    _sight_frame_parts: Any
+    _sight_insight_for_clip: Any
+    _sight_nested_components: Any
+    _sight_note: Any
+    _sight_note_chain: Any
+    _sight_note_digest: Any
+    _sight_note_for_runtime: Any
+    _sight_note_was_sent: Any
+    _sight_plain_result: Any
+    _sight_prepare_cache_path: Any
+    _sight_prepare_flight: Any
+    _sight_prepare_flight_for_runtime: Any
+    _sight_quote_clips_from_event: Any
+    _sight_quote_video_clips_from_event: Any
+    _sight_reader: Any
+    _sight_reader_for_runtime: Any
+    _sight_reader_signature: Any
+    _sight_recent_for_event: Any
+    _sight_source_note: Any
+    _sight_total_timeout_seconds: Any
+    _sight_vault: Any
+    _sight_vault_for_runtime: Any
+    _sight_video_clip_from_component: Any
+    _sight_video_clips_from_component: Any
+    _snapshot_media_event: Any
+    _submit_background_tool: Any
+    _submit_native_video_tool: Any
+    _suppress_default_llm: Any
+    _understand_native_video: Any
+    _understand_sight_clip: Any
+    _understand_sight_clip_once: Any
+    _understand_sight_clip_with_timeout: Any
+    _voice_switch_reply_text_from_event: Any
+    archive: Any
+    composer: Any
+    config: Any
+    data_path: Any
+    event_has_sight_video: Any
+    event_was_recalled: Any
+    get_text_provider_candidates: Any
+    note_structured_bot_message: Any
+    send_background_text: Any
+    send_message_if_not_recalled: Any
+    update_structured_message_video_summary: Any
+
+
+class SightComponent:
+    def __init__(self, context: SightComponentContext) -> None:
+        self.context = context
+
     def _init_sight(self) -> None:
-        self._sight_vault = SightVault(
-            getattr(self, "archive", None),
-            ttl_seconds=self._sight_cache_ttl_seconds(),
-            max_items=self._sight_cache_max_items(),
+        self.context._sight_vault = SightVault(
+            getattr(self.context, "archive", None),
+            ttl_seconds=self.context._sight_cache_ttl_seconds(),
+            max_items=self.context._sight_cache_max_items(),
         )
-        self._sight_reader = SightReader(self)
-        self._sight_brief = SightBrief(self)
-        self._sight_flight = SightFlight()
+        self.context._sight_reader = SightReader(self.context)
+        self.context._sight_brief = SightBrief(self.context)
+        self.context._sight_flight = SightFlight()
         # 聊天理解和专业总结共享素材准备；最终总结仍按用途分别生成。
-        self._sight_prepare_flight = SightFlight()
-        self._sight_note = SightNote(self)
-        self._init_sight_identity()
+        self.context._sight_prepare_flight = SightFlight()
+        self.context._sight_note = SightNote(self.context)
+        self.context._init_sight_identity()
 
     def _sight_vault_for_runtime(self) -> SightVault:
-        vault = getattr(self, "_sight_vault", None)
+        vault = getattr(self.context, "_sight_vault", None)
         if (
             isinstance(vault, SightVault)
-            and getattr(vault, "ttl_seconds", None) == self._sight_cache_ttl_seconds()
-            and getattr(vault, "max_items", None) == self._sight_cache_max_items()
+            and getattr(vault, "ttl_seconds", None) == self.context._sight_cache_ttl_seconds()
+            and getattr(vault, "max_items", None) == self.context._sight_cache_max_items()
         ):
             return vault
         vault = SightVault(
-            getattr(self, "archive", None),
-            ttl_seconds=self._sight_cache_ttl_seconds(),
-            max_items=self._sight_cache_max_items(),
+            getattr(self.context, "archive", None),
+            ttl_seconds=self.context._sight_cache_ttl_seconds(),
+            max_items=self.context._sight_cache_max_items(),
         )
-        self._sight_vault = vault
+        self.context._sight_vault = vault
         return vault
 
     def _sight_cache_ttl_seconds(self) -> int:
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         hours = max(1, int(getattr(settings, "video_cache_ttl_hours", 2) or 2))
         return hours * 3600
 
     def _sight_cache_max_items(self) -> int:
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         return max(8, int(getattr(settings, "video_cache_max_items", 60) or 60))
 
     def _sight_reader_for_runtime(self) -> SightReader:
-        reader = getattr(self, "_sight_reader", None)
+        reader = getattr(self.context, "_sight_reader", None)
         if (
             isinstance(reader, SightReader)
-            and reader.settings_signature == self._sight_reader_signature()
+            and reader.settings_signature == self.context._sight_reader_signature()
         ):
             return reader
-        reader = SightReader(self)
-        self._sight_reader = reader
+        reader = SightReader(self.context)
+        self.context._sight_reader = reader
         return reader
 
     def _sight_reader_signature(self) -> tuple[object, ...]:
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         max_chars = max(
             TRANSCRIPT_CAPTURE_CHARS,
             int(getattr(settings, "max_transcript_chars", 8000) or 8000),
@@ -179,35 +299,35 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         )
 
     def _sight_brief_for_runtime(self) -> SightBrief:
-        brief = getattr(self, "_sight_brief", None)
+        brief = getattr(self.context, "_sight_brief", None)
         if isinstance(brief, SightBrief):
             return brief
-        brief = SightBrief(self)
-        self._sight_brief = brief
+        brief = SightBrief(self.context)
+        self.context._sight_brief = brief
         return brief
 
     def _sight_flight_for_runtime(self) -> SightFlight:
-        flight = getattr(self, "_sight_flight", None)
+        flight = getattr(self.context, "_sight_flight", None)
         if isinstance(flight, SightFlight):
             return flight
         flight = SightFlight()
-        self._sight_flight = flight
+        self.context._sight_flight = flight
         return flight
 
     def _sight_prepare_flight_for_runtime(self) -> SightFlight:
-        flight = getattr(self, "_sight_prepare_flight", None)
+        flight = getattr(self.context, "_sight_prepare_flight", None)
         if isinstance(flight, SightFlight):
             return flight
         flight = SightFlight()
-        self._sight_prepare_flight = flight
+        self.context._sight_prepare_flight = flight
         return flight
 
     def _sight_note_for_runtime(self) -> SightNote:
-        note = getattr(self, "_sight_note", None)
+        note = getattr(self.context, "_sight_note", None)
         if isinstance(note, SightNote):
             return note
-        note = SightNote(self)
-        self._sight_note = note
+        note = SightNote(self.context)
+        self.context._sight_note = note
         return note
 
     async def _compose_sight_note_with_timeout(
@@ -220,29 +340,29 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 evidence_seconds += max(0.0, float(metrics.get(key) or 0.0))
             except (TypeError, ValueError):
                 continue
-        remaining = max(1.0, self._sight_finalize_timeout_seconds() - evidence_seconds)
+        remaining = max(1.0, self.context._sight_finalize_timeout_seconds() - evidence_seconds)
         try:
             return await asyncio.wait_for(
-                self._sight_note_for_runtime().compose(insight, style=style),
+                self.context._sight_note_for_runtime().compose(insight, style=style),
                 timeout=remaining,
             )
         except asyncio.TimeoutError as exc:
             raise SightNoteError(
-                f"专业总结超过视频理解总时间限制（{self._sight_total_timeout_seconds():.0f} 秒）"
+                f"专业总结超过视频理解总时间限制（{self.context._sight_total_timeout_seconds():.0f} 秒）"
             ) from exc
 
     def remove_recalled_sight_context(self, scope: str, message_id: str) -> None:
-        self._schedule_background_task(
-            self._sight_vault_for_runtime().remove_message(scope, message_id),
+        self.context._schedule_background_task(
+            self.context._sight_vault_for_runtime().remove_message(scope, message_id),
             label="撤回视频理解清理",
             key=f"sight_recall:{scope}:{message_id}",
         )
 
     def _sight_cache_dir(self) -> Path:
-        return sight_cache_dir(getattr(self, "data_path", None))
+        return sight_cache_dir(getattr(self.context, "data_path", None))
 
     def _sight_prepare_cache_path(self, clip: SightClip) -> Path:
-        return self._sight_cache_dir() / "prepare" / f"{clip.key}.json"
+        return self.context._sight_cache_dir() / "prepare" / f"{clip.key}.json"
 
     def _save_sight_prepare_cache(
         self,
@@ -255,7 +375,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         metadata: dict[str, Any],
         error: str,
     ) -> None:
-        path = self._sight_prepare_cache_path(clip)
+        path = self.context._sight_prepare_cache_path(clip)
         payload = {
             "source_note": str(source_note or ""),
             "source_path": str(source_path or ""),
@@ -287,7 +407,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         temp.replace(path)
 
     def _load_sight_prepare_cache(self, clip: SightClip) -> dict[str, Any] | None:
-        path = self._sight_prepare_cache_path(clip)
+        path = self.context._sight_prepare_cache_path(clip)
         if not path.is_file():
             return None
         try:
@@ -331,32 +451,32 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
 
     def _clear_sight_prepare_cache(self, clip: SightClip) -> None:
         with contextlib.suppress(OSError):
-            self._sight_prepare_cache_path(clip).unlink()
+            self.context._sight_prepare_cache_path(clip).unlink()
 
     def _bili_cookie_jar_for_runtime(self) -> BiliCookieJar:
-        jar = getattr(self, "_bili_cookie_jar", None)
+        jar = getattr(self.context, "_bili_cookie_jar", None)
         if isinstance(jar, BiliCookieJar):
             return jar
-        jar = BiliCookieJar(getattr(self, "data_path", None) or self._sight_cache_dir())
-        self._bili_cookie_jar = jar
+        jar = BiliCookieJar(getattr(self.context, "data_path", None) or self.context._sight_cache_dir())
+        self.context._bili_cookie_jar = jar
         return jar
 
     async def bili_login(self, event: Any) -> AsyncIterator[Any]:
-        if self._event_is_group_message(event):
-            yield self._sight_plain_result(event, "B站登录请在私聊里使用。")
+        if self.context._event_is_group_message(event):
+            yield self.context._sight_plain_result(event, "B站登录请在私聊里使用。")
             return
-        jar = await asyncio.to_thread(self._bili_cookie_jar_for_runtime)
+        jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
         if jar.is_logged_in():
-            yield self._sight_plain_result(
+            yield self.context._sight_plain_result(
                 event, "B站已登录，如需重新登录请先使用 /B站登出"
             )
             return
         login = BiliLoginService()
         qr = await login.generate()
         if not qr:
-            yield self._sight_plain_result(event, "B站登录二维码生成失败，请稍后再试。")
+            yield self.context._sight_plain_result(event, "B站登录二维码生成失败，请稍后再试。")
             return
-        qr_path = self._sight_cache_dir() / f"bili_login_{uuid.uuid4().hex[:8]}.png"
+        qr_path = self.context._sight_cache_dir() / f"bili_login_{uuid.uuid4().hex[:8]}.png"
         try:
             import segno
 
@@ -364,7 +484,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 lambda: segno.make(qr.url).save(str(qr_path), scale=10, border=4)
             )
         except Exception as exc:
-            yield self._sight_plain_result(event, f"B站登录二维码生成失败：{exc}")
+            yield self.context._sight_plain_result(event, f"B站登录二维码生成失败：{exc}")
             return
         yield_chain = getattr(event, "chain_result", None)
         if callable(yield_chain):
@@ -382,41 +502,41 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             and result.cookies
             and await asyncio.to_thread(jar.save, result.cookies)
         ):
-            yield self._sight_plain_result(
+            yield self.context._sight_plain_result(
                 event, "B站登录成功，后续 B站视频总结会自动使用登录态。"
             )
             return
         if result.status == BiliLoginStatus.EXPIRED:
-            yield self._sight_plain_result(
+            yield self.context._sight_plain_result(
                 event, "B站登录二维码已过期，请重新使用 /B站登录。"
             )
             return
         if result.status == BiliLoginStatus.TIMEOUT:
-            yield self._sight_plain_result(event, "B站登录超时，请重新使用 /B站登录。")
+            yield self.context._sight_plain_result(event, "B站登录超时，请重新使用 /B站登录。")
             return
-        yield self._sight_plain_result(event, "B站登录失败，请重新使用 /B站登录。")
+        yield self.context._sight_plain_result(event, "B站登录失败，请重新使用 /B站登录。")
 
     async def bili_logout(self, event: Any) -> Any:
-        if self._event_is_group_message(event):
-            return self._sight_plain_result(event, "B站登录请在私聊里使用。")
-        jar = await asyncio.to_thread(self._bili_cookie_jar_for_runtime)
+        if self.context._event_is_group_message(event):
+            return self.context._sight_plain_result(event, "B站登录请在私聊里使用。")
+        jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
         if not jar.is_logged_in():
-            return self._sight_plain_result(event, "当前未登录 B站。")
+            return self.context._sight_plain_result(event, "当前未登录 B站。")
         await asyncio.to_thread(jar.clear)
-        return self._sight_plain_result(event, "已退出 B站登录。")
+        return self.context._sight_plain_result(event, "已退出 B站登录。")
 
     async def bili_status(self, event: Any) -> Any:
-        if self._event_is_group_message(event):
-            return self._sight_plain_result(event, "B站登录请在私聊里使用。")
-        jar = await asyncio.to_thread(self._bili_cookie_jar_for_runtime)
+        if self.context._event_is_group_message(event):
+            return self.context._sight_plain_result(event, "B站登录请在私聊里使用。")
+        jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
         status = "已登录" if jar.is_logged_in() else "未登录"
-        return self._sight_plain_result(event, f"B站登录状态：{status}")
+        return self.context._sight_plain_result(event, f"B站登录状态：{status}")
 
     def _sight_clips_from_event(
         self, event: Any, explicit: str = ""
     ) -> list[SightClip]:
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event) or f"event:{id(event)}"
+        scope = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event) or f"event:{id(event)}"
         text = str(getattr(event, "message_str", "") or "").strip()
         clips: list[SightClip] = []
         if explicit:
@@ -427,7 +547,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 clips.append(clip)
         clips.extend(
             clips_from_items(
-                self._event_message_items(event),
+                self.context._event_message_items(event),
                 scope=scope,
                 message_id=message_id,
                 origin="current",
@@ -435,26 +555,26 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             )
         )
         clips.extend(clips_from_text_links(text, scope=scope, message_id=message_id))
-        clips.extend(self._sight_quote_clips_from_event(event, scope, message_id, text))
-        clips = self._sight_enrich_clips_from_raw_message(event, clips)
-        return dedupe_clips(self._sight_apply_group_upload_id(event, clips))
+        clips.extend(self.context._sight_quote_clips_from_event(event, scope, message_id, text))
+        clips = self.context._sight_enrich_clips_from_raw_message(event, clips)
+        return dedupe_clips(self.context._sight_apply_group_upload_id(event, clips))
 
     async def _sight_clips_from_event_async(
         self, event: Any, explicit: str = ""
     ) -> list[SightClip]:
-        clips = list(self._sight_clips_from_event(event, explicit))
+        clips = list(self.context._sight_clips_from_event(event, explicit))
         if explicit:
             return dedupe_clips(clips)
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event) or f"event:{id(event)}"
+        scope = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event) or f"event:{id(event)}"
         text = str(getattr(event, "message_str", "") or "").strip()
         current_clips: list[SightClip] = []
-        for item in self._event_message_items(event):
-            kind = self._event_component_kind(item)
+        for item in self.context._event_message_items(event):
+            kind = self.context._event_component_kind(item)
             if "reply" in kind or "quote" in kind:
                 continue
             current_clips.extend(
-                await self._sight_video_clips_from_component(
+                await self.context._sight_video_clips_from_component(
                     item,
                     scope=scope,
                     message_id=message_id,
@@ -464,7 +584,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             )
         if current_clips:
             clips = [clip for clip in clips if clip.origin != "current"]
-        quote_clips = await self._sight_quote_video_clips_from_event(
+        quote_clips = await self.context._sight_quote_video_clips_from_event(
             event, scope, message_id, text
         )
         if quote_clips:
@@ -472,12 +592,12 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 clip
                 for clip in clips
                 if clip.origin != "quote"
-                or self._sight_clip_source_is_usable(clip.source)
+                or self.context._sight_clip_source_is_usable(clip.source)
             ]
-        combined = self._sight_enrich_clips_from_raw_message(
+        combined = self.context._sight_enrich_clips_from_raw_message(
             event, [*current_clips, *quote_clips, *clips]
         )
-        return dedupe_clips(self._sight_apply_group_upload_id(event, combined))
+        return dedupe_clips(self.context._sight_apply_group_upload_id(event, combined))
 
     def _sight_quote_clips_from_event(
         self,
@@ -487,7 +607,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         text: str,
     ) -> list[SightClip]:
         clips: list[SightClip] = []
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             for attr in ("quote", "reply", "reply_message"):
                 clips.extend(
                     clips_from_value(
@@ -498,8 +618,8 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                         text=text,
                     )
                 )
-            for item in self._event_message_items(source):
-                kind = self._event_component_kind(item)
+            for item in self.context._event_message_items(source):
+                kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
                 clips.extend(
@@ -534,13 +654,13 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         text: str,
     ) -> list[SightClip]:
         clips: list[SightClip] = []
-        for source in self._event_sources(event):
-            for item in self._event_message_items(source):
-                kind = self._event_component_kind(item)
+        for source in self.context._event_sources(event):
+            for item in self.context._event_message_items(source):
+                kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
                 clips.extend(
-                    await self._sight_video_clips_from_component(
+                    await self.context._sight_video_clips_from_component(
                         item,
                         scope=scope,
                         message_id=message_id,
@@ -550,7 +670,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 )
             for attr in ("quote", "reply", "reply_message"):
                 clips.extend(
-                    await self._sight_video_clips_from_component(
+                    await self.context._sight_video_clips_from_component(
                         getattr(source, attr, None),
                         scope=scope,
                         message_id=message_id,
@@ -586,27 +706,27 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         }
 
     def event_has_sight_video(self, event: Any) -> bool:
-        return bool(event is not None and self._sight_clips_from_event(event))
+        return bool(event is not None and self.context._sight_clips_from_event(event))
 
     def schedule_video_context_from_event(self, event: Any) -> bool:
         if (
             event is None
-            or self._event_has_command_handler(event)
-            or self.event_was_recalled(event, log_skip=True)
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
         ):
             return False
-        clips = self._sight_clips_from_event(event)
+        clips = self.context._sight_clips_from_event(event)
         if not clips:
             return False
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         if not bool(getattr(settings, "auto_video_understanding", False)):
             return False
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return False
         clip_identity = clips[0].key
-        return self._schedule_background_task(
-            self._collect_sight_context_background(event),
+        return self.context._schedule_background_task(
+            self.context._collect_sight_context_background(event),
             label="视频上下文理解",
             key=f"sight:{scope}:{clip_identity}",
         )
@@ -614,59 +734,59 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     def schedule_bili_summary_from_event(self, event: Any) -> bool:
         if (
             event is None
-            or self._event_has_command_handler(event)
-            or self.event_was_recalled(event, log_skip=True)
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
         ):
             return False
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         if not bool(getattr(settings, "bili_auto_summary", True)):
             return False
         target = find_bili_target(event)
         if not target:
             return False
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return False
-        stopper = getattr(self, "_suppress_default_llm", None)
+        stopper = getattr(self.context, "_suppress_default_llm", None)
         if callable(stopper):
             stopper(event)
-        message_id = self._event_message_id(event) or f"event:{id(event)}"
-        return self._schedule_background_task(
-            self._send_bili_summary_background(event, target),
+        message_id = self.context._event_message_id(event) or f"event:{id(event)}"
+        return self.context._schedule_background_task(
+            self.context._send_bili_summary_background(event, target),
             label="B站视频总结",
             key=f"bili:{scope}:{target.identity or message_id}",
         )
 
     async def _collect_sight_context_background(self, event: Any) -> None:
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
-        for clip in (await self._sight_clips_from_event_async(event))[:2]:
-            if self.event_was_recalled(event, log_skip=True):
+        for clip in (await self.context._sight_clips_from_event_async(event))[:2]:
+            if self.context.event_was_recalled(event, log_skip=True):
                 return
-            insight = await self._understand_sight_clip(event, clip)
+            insight = await self.context._understand_sight_clip(event, clip)
             if insight and insight.summary:
-                self._mark_sight_completed_key(clip.key)
-                self._apply_sight_insight_to_structured(insight)
+                self.context._mark_sight_completed_key(clip.key)
+                self.context._apply_sight_insight_to_structured(insight)
 
     async def _send_bili_summary_background(
         self, event: Any, target: BiliTarget
     ) -> None:
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
         resolved = await resolve_bili_target(
             target,
             timeout_seconds=BILI_RESOLVE_TIMEOUT_SECONDS,
         )
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event) or f"event:{id(event)}"
+        scope = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event) or f"event:{id(event)}"
         if not resolved or not resolved.canonical_url:
             detail = "没有识别到有效视频链接"
             logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{detail}")
-            await self._send_bili_summary_failure(
+            await self.context._send_bili_summary_failure(
                 event, detail, scope=scope, message_id=message_id
             )
             return
-        jar = await asyncio.to_thread(self._bili_cookie_jar_for_runtime)
+        jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
         metadata = await fetch_bili_metadata(
             resolved,
             timeout_seconds=BILI_RESOLVE_TIMEOUT_SECONDS,
@@ -695,10 +815,10 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             text=str(getattr(event, "message_str", "") or "").strip(),
             metadata=metadata_dict,
         )
-        log_subject = self._bili_summary_log_subject(metadata_dict, resolved)
+        log_subject = self.context._bili_summary_log_subject(metadata_dict, resolved)
         logger.info(f"{LOG_PREFIX} B站视频自动总结开始：{log_subject}")
-        insight = await self._understand_sight_clip(event, clip, purpose="professional")
-        if self.event_was_recalled(event, log_skip=True):
+        insight = await self.context._understand_sight_clip(event, clip, purpose="professional")
+        if self.context.event_was_recalled(event, log_skip=True):
             return
         if not insight or insight.status == "failed":
             detail = (
@@ -707,25 +827,25 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 or "没有拿到可确认的视频内容"
             )
             logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{detail}")
-            await self._send_bili_summary_failure(
+            await self.context._send_bili_summary_failure(
                 event, detail, scope=scope, message_id=message_id
             )
             return
-        insight = self._sight_insight_for_clip(insight, clip)
+        insight = self.context._sight_insight_for_clip(insight, clip)
         note_unavailable = professional_note_unavailable_reason(
             insight, style="professional"
         )
         if note_unavailable:
             logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{note_unavailable}")
             return
-        markdown = self._cached_sight_note_markdown(insight, style="professional")
+        markdown = self.context._cached_sight_note_markdown(insight, style="professional")
         note_cache_hit = bool(markdown)
         try:
             if not markdown:
-                markdown = await self._compose_sight_note_with_timeout(
+                markdown = await self.context._compose_sight_note_with_timeout(
                     insight, style="professional"
                 )
-            markdown = self._sight_note_for_runtime().normalize(
+            markdown = self.context._sight_note_for_runtime().normalize(
                 insight,
                 markdown,
                 include_frames=False,
@@ -733,25 +853,25 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         except SightNoteError as exc:
             detail = str(exc) or "总结模型生成失败"
             logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{detail}")
-            await self._send_bili_summary_failure(
+            await self.context._send_bili_summary_failure(
                 event, detail, scope=scope, message_id=message_id
             )
             return
-        insight = await self._cache_sight_note_markdown(
+        insight = await self.context._cache_sight_note_markdown(
             insight, markdown, style="professional"
         )
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
         delivery_started = time.monotonic()
-        sent = await self._send_sight_note(
+        sent = await self.context._send_sight_note(
             event,
             markdown,
             source_event=event,
             source_message_id=message_id,
             status_text="[B站视频专业总结已发送]",
         )
-        self._record_sight_delivery_metrics(insight, delivery_started)
-        self._log_sight_professional_metrics(insight, cache_hit=note_cache_hit)
+        self.context._record_sight_delivery_metrics(insight, delivery_started)
+        self.context._log_sight_professional_metrics(insight, cache_hit=note_cache_hit)
         if sent:
             logger.debug(f"{LOG_PREFIX} B站视频自动总结已发送：{log_subject}")
 
@@ -906,11 +1026,11 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             metadata["professional_note_prompt_key"] = professional_note_prompt_key(
                 style_key
             )
-            digest = self._sight_note_digest(markdown)
+            digest = self.context._sight_note_digest(markdown)
             if digest:
                 metadata["professional_digest"] = digest
         insight.metadata = metadata
-        return await self._sight_vault_for_runtime().upsert(insight)
+        return await self.context._sight_vault_for_runtime().upsert(insight)
 
     async def _send_bili_summary_failure(
         self,
@@ -924,7 +1044,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         message = f"B站视频自动总结失败：{detail}" if detail else "B站视频自动总结失败"
         if not scope:
             return False
-        return await self.send_background_text(
+        return await self.context.send_background_text(
             scope,
             message,
             mode=BackgroundTextMode.DIRECT,
@@ -934,36 +1054,36 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         )
 
     async def life_video_understand(self, event: Any, target: str = "") -> str:
-        candidates = self._sight_clips_from_event(event, target)
+        candidates = self.context._sight_clips_from_event(event, target)
         try:
-            route = await self._native_sight_route(candidates[0] if candidates else None)
+            route = await self.context._native_sight_route(candidates[0] if candidates else None)
         except NativeVideoError as exc:
             return ToolResultText(str(exc), status="failed", media="video_understanding")
         if route is not None:
-            return await self._submit_native_video_tool(event, target)
-        clips = await self._sight_clips_from_event_async(event, target)
+            return await self.context._submit_native_video_tool(event, target)
+        clips = await self.context._sight_clips_from_event_async(event, target)
         if not clips:
-            recent = await self._sight_recent_for_event(event, limit=1)
+            recent = await self.context._sight_recent_for_event(event, limit=1)
             if recent:
                 return tool_result_text(recent[0])
             return (
                 "没有找到可理解的视频。请直接发送视频、引用视频，或提供视频文件/直链。"
             )
-        insight = await self._understand_sight_clip(event, clips[0])
+        insight = await self.context._understand_sight_clip(event, clips[0])
         if insight and insight.summary:
-            self._apply_sight_insight_to_structured(insight)
+            self.context._apply_sight_insight_to_structured(insight)
             return tool_result_text(insight)
         return "视频理解失败：没有拿到可确认的视频内容。"
 
     async def life_video_note(
         self, event: Any, target: str = "", style: str = "professional"
     ) -> Any:
-        existing = self._background_tool_existing_result(event, "life_video_note")
+        existing = self.context._background_tool_existing_result(event, "life_video_note")
         if existing:
             return existing
-        snapshot = self._snapshot_media_event(event)
-        clips = await self._sight_clips_from_event_async(snapshot, target)
-        recent = [] if clips else await self._sight_recent_for_event(snapshot, limit=1)
+        snapshot = self.context._snapshot_media_event(event)
+        clips = await self.context._sight_clips_from_event_async(snapshot, target)
+        recent = [] if clips else await self.context._sight_recent_for_event(snapshot, limit=1)
         if not clips and not recent:
             return ToolResultText(
                 "没有找到可总结的视频。请直接发送视频、引用视频，或提供视频文件/直链。",
@@ -971,13 +1091,13 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 media="video_note",
             )
         snapshot._daily_life_locked_video_note = (
-            await self._lock_video_note_source(clips[0]) if clips else None,
+            await self.context._lock_video_note_source(clips[0]) if clips else None,
             copy.deepcopy(recent[0]) if recent else None,
         )
-        return self._submit_background_tool(
+        return self.context._submit_background_tool(
             snapshot,
             event,
-            lambda: self._life_video_note_inline(snapshot, target, style),
+            lambda: self.context._life_video_note_inline(snapshot, target, style),
             tool_name="life_video_note",
             media="video_note",
             label="视频专业总结",
@@ -996,7 +1116,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             source = Path(locked.source).expanduser()
             if not source.is_file():
                 return ""
-            cache_dir = sight_cache_dir(getattr(self, "data_path", None)) / "media"
+            cache_dir = sight_cache_dir(getattr(self.context, "data_path", None)) / "media"
             cache_dir.mkdir(parents=True, exist_ok=True)
             target = cache_dir / f"note_{uuid.uuid4().hex}{source.suffix}"
             try:
@@ -1016,14 +1136,14 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     ) -> Any:
         locked = getattr(event, "_daily_life_locked_video_note", None)
         if locked is None:
-            clips = await self._sight_clips_from_event_async(event, target)
-            recent = [] if clips else await self._sight_recent_for_event(event, limit=1)
+            clips = await self.context._sight_clips_from_event_async(event, target)
+            recent = [] if clips else await self.context._sight_recent_for_event(event, limit=1)
             clip = clips[0] if clips else None
             insight = recent[0] if recent else None
         else:
             clip, insight = locked
         if clip is not None:
-            insight = await self._understand_sight_clip(
+            insight = await self.context._understand_sight_clip(
                 event, clip, purpose="professional"
             )
         if not insight:
@@ -1043,20 +1163,20 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 f"视频总结失败：{note_unavailable}", status="failed", media="video_note"
             )
         try:
-            markdown = await self._compose_sight_note_with_timeout(insight, style=style)
+            markdown = await self.context._compose_sight_note_with_timeout(insight, style=style)
         except SightNoteError as exc:
             return ToolResultText(
                 f"视频总结失败：{str(exc) or '总结模型生成失败'}",
                 status="failed",
                 media="video_note",
             )
-        insight = await self._cache_sight_note_markdown(insight, markdown, style=style)
+        insight = await self.context._cache_sight_note_markdown(insight, markdown, style=style)
         delivery_started = time.monotonic()
-        sent = await self._send_sight_note(
+        sent = await self.context._send_sight_note(
             event, markdown, source_event=event, status_text="[视频专业总结已发送]"
         )
-        self._record_sight_delivery_metrics(insight, delivery_started)
-        self._log_sight_professional_metrics(insight)
+        self.context._record_sight_delivery_metrics(insight, delivery_started)
+        self.context._log_sight_professional_metrics(insight)
         return (
             ToolResultText(
                 "视频专业总结已发送，无需复述正文。",
@@ -1078,25 +1198,25 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         purpose: str = "chat",
     ) -> SightInsight:
         purpose = "professional" if purpose == "professional" else "chat"
-        clip = await self._resolve_sight_clip_source(event, clip)
+        clip = await self.context._resolve_sight_clip_source(event, clip)
         try:
-            route = await self._native_sight_route(clip)
+            route = await self.context._native_sight_route(clip)
         except NativeVideoError as exc:
             return SightInsight(clip=clip, status="failed", error=str(exc))
         if route is not None:
-            return await self._understand_native_video(event, clip, route, force=force)
+            return await self.context._understand_native_video(event, clip, route, force=force)
         if not force:
-            cached = await self._cached_sight_insight_for_clip(clip)
+            cached = await self.context._cached_sight_insight_for_clip(clip)
             if cached:
                 metrics = dict(cached.metadata.get("sight_metrics") or {})
                 metrics["cache_hit"] = True
                 cached.metadata["sight_metrics"] = metrics
                 if purpose == "chat" and cached.metadata.get("brief_ready") is False:
-                    return await self._complete_cached_sight_brief(event, cached)
+                    return await self.context._complete_cached_sight_brief(event, cached)
                 return cached
-        return await self._sight_flight_for_runtime().run(
+        return await self.context._sight_flight_for_runtime().run(
             f"{sight_flight_key(clip)}:{purpose}",
-            lambda: self._understand_sight_clip_with_timeout(
+            lambda: self.context._understand_sight_clip_with_timeout(
                 event, clip, purpose=purpose
             ),
         )
@@ -1105,13 +1225,13 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         self, event: Any, clip: SightClip, *, purpose: str = "chat"
     ) -> SightInsight:
         try:
-            return await self._understand_sight_clip_once(event, clip, purpose=purpose)
+            return await self.context._understand_sight_clip_once(event, clip, purpose=purpose)
         except asyncio.TimeoutError:
-            timeout = self._sight_finalize_timeout_seconds()
+            timeout = self.context._sight_finalize_timeout_seconds()
             logger.warning(
                 f"{LOG_PREFIX} 视频理解超时：{timeout} 秒，尝试基于已准备内容继续总结。"
             )
-            resumed = await self._resume_sight_summary_after_timeout(
+            resumed = await self.context._resume_sight_summary_after_timeout(
                 event, clip, purpose=purpose
             )
             if resumed is not None:
@@ -1126,7 +1246,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _complete_cached_sight_brief(
         self, event: Any, insight: SightInsight
     ) -> SightInsight:
-        return await self._finalize_sight_insight(
+        return await self.context._finalize_sight_insight(
             event,
             insight.clip,
             source_note=insight.source_note,
@@ -1144,35 +1264,35 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         )
 
     def _sight_total_timeout_seconds(self) -> float:
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         value = getattr(
             settings, "total_timeout_seconds", DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS
         )
         return max(60, min(int(value or DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS), 1800))
 
     def _sight_finalize_timeout_seconds(self) -> float:
-        return max(float(self._sight_total_timeout_seconds()), 0.05)
+        return max(float(self.context._sight_total_timeout_seconds()), 0.05)
 
     async def _cached_sight_insight_for_clip(
         self, clip: SightClip
     ) -> SightInsight | None:
-        cached = await self._sight_vault_for_runtime().get(clip.key)
+        cached = await self.context._sight_vault_for_runtime().get(clip.key)
         if cached and cached.status == "ready" and cached.metadata.get("video_input_mode") != "gemini_native":
             return cached
         keys = set(sight_resource_keys(clip))
         if not keys:
             return None
-        limit = self._sight_cache_max_items()
-        for item in await self._sight_vault_for_runtime().recent(
+        limit = self.context._sight_cache_max_items()
+        for item in await self.context._sight_vault_for_runtime().recent(
             clip.scope, limit=limit
         ):
             if item.status == "ready" and item.metadata.get("video_input_mode") != "gemini_native" and sight_resource_matches(clip, item.clip):
-                return self._sight_insight_for_clip(item, clip)
+                return self.context._sight_insight_for_clip(item, clip)
         return None
 
     @staticmethod
     def _sight_insight_for_clip(insight: SightInsight, clip: SightClip) -> SightInsight:
-        metadata = SightMixin._merged_sight_metadata(insight.metadata, clip.metadata)
+        metadata = SightComponent._merged_sight_metadata(insight.metadata, clip.metadata)
         return SightInsight(
             clip=clip,
             summary=insight.summary,
@@ -1215,16 +1335,16 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _understand_sight_clip_once(
         self, event: Any, clip: SightClip, *, purpose: str = "chat"
     ) -> SightInsight:
-        prepared = await self._sight_prepare_flight_for_runtime().run(
+        prepared = await self.context._sight_prepare_flight_for_runtime().run(
             f"prepare:{sight_prepare_key(clip)}",
-            lambda: self._prepare_sight_clip_material(event, clip),
+            lambda: self.context._prepare_sight_clip_material(event, clip),
         )
         prepared = dict(prepared)
         prepared["metadata"] = dict(prepared.get("metadata") or {})
         prepared["frame_notes"] = list(prepared.get("frame_notes") or [])
-        timeout = self._sight_finalize_timeout_seconds()
+        timeout = self.context._sight_finalize_timeout_seconds()
         return await asyncio.wait_for(
-            self._finalize_prepared_sight_clip(
+            self.context._finalize_prepared_sight_clip(
                 event, clip, purpose=purpose, **prepared
             ),
             timeout=timeout,
@@ -1233,7 +1353,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _prepare_sight_clip_material(
         self, event: Any, clip: SightClip
     ) -> dict[str, Any]:
-        source_note = self._sight_source_note(clip)
+        source_note = self.context._sight_source_note(clip)
         metadata = dict(getattr(clip, "metadata", None) or {})
         metrics = dict(metadata.get("sight_metrics") or {})
         material_started = time.monotonic()
@@ -1242,7 +1362,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             prepared_video: Path | None,
         ) -> tuple[SightTextResult, float]:
             started = time.monotonic()
-            reader = self._sight_reader_for_runtime()
+            reader = self.context._sight_reader_for_runtime()
             audio_path: Path | None = None
             try:
                 audio_path = await reader.prepare_audio(
@@ -1260,7 +1380,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             source_path: Path | None = None
             error = ""
             try:
-                sight_settings = getattr(self.config, "sight", None)
+                sight_settings = getattr(self.context.config, "sight", None)
                 max_video_mb = int(
                     getattr(sight_settings, "video_download_max_mb", 500)
                 )
@@ -1270,7 +1390,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 )
                 source_path = await prepare_sample_video_source(
                     clip.source,
-                    self._sight_cache_dir(),
+                    self.context._sight_cache_dir(),
                     max_video_mb=max_video_mb,
                     download_timeout_seconds=download_timeout_seconds,
                 )
@@ -1313,7 +1433,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         elif text_result.errors and not error:
             error = "?".join(text_result.errors[:2])
         await asyncio.to_thread(
-            self._save_sight_prepare_cache,
+            self.context._save_sight_prepare_cache,
             clip,
             source_note=source_note,
             source_path=str(source_path or ""),
@@ -1352,12 +1472,12 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         metrics = dict(metadata.get("sight_metrics") or {})
         if source_path is not None and not metadata.get("visual_complete"):
             try:
-                sight_settings = getattr(self.config, "sight", None)
+                sight_settings = getattr(self.context.config, "sight", None)
                 max_frames = int(getattr(sight_settings, "max_frames", 8) or 8)
                 logger.debug(f"{LOG_PREFIX} 视频抽帧开始")
                 extract_started = time.monotonic()
                 frames = await extract_video_frames(
-                    source_path, self._sight_cache_dir(), max_frames=max_frames
+                    source_path, self.context._sight_cache_dir(), max_frames=max_frames
                 )
                 metrics["frame_extract_seconds"] = round(
                     time.monotonic() - extract_started, 3
@@ -1367,7 +1487,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 if frames:
                     logger.debug(f"{LOG_PREFIX} 视频画面理解开始")
                     vision_started = time.monotonic()
-                    described = await self._describe_sight_frames(clip, frames)
+                    described = await self.context._describe_sight_frames(clip, frames)
                     resolved_frame_notes, frame_assets = described
                     metrics["vision_seconds"] = round(
                         time.monotonic() - vision_started, 3
@@ -1392,9 +1512,9 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         if frame_assets:
             metadata["frames"] = frame_assets
         metadata["sight_metrics"] = metrics
-        self._log_sight_fusion(text_result, resolved_frame_notes)
+        self.context._log_sight_fusion(text_result, resolved_frame_notes)
         await asyncio.to_thread(
-            self._save_sight_prepare_cache,
+            self.context._save_sight_prepare_cache,
             clip,
             source_note=source_note,
             source_path=str(source_path or ""),
@@ -1403,7 +1523,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             metadata=metadata,
             error=error,
         )
-        return await self._finalize_sight_insight(
+        return await self.context._finalize_sight_insight(
             event,
             clip,
             source_note=source_note,
@@ -1417,14 +1537,14 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _resume_sight_summary_after_timeout(
         self, event: Any, clip: SightClip, *, purpose: str = "chat"
     ) -> SightInsight | None:
-        prepared = await asyncio.to_thread(self._load_sight_prepare_cache, clip)
+        prepared = await asyncio.to_thread(self.context._load_sight_prepare_cache, clip)
         if prepared is None:
             return None
         logger.info(f"{LOG_PREFIX} 视频理解超时后检测到已准备内容，自动继续完成总结。")
         try:
             source_path = prepared.get("source_path")
             if source_path:
-                return await self._finalize_prepared_sight_clip(
+                return await self.context._finalize_prepared_sight_clip(
                     event,
                     clip,
                     source_note=str(prepared.get("source_note") or ""),
@@ -1437,7 +1557,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 )
             prepared = dict(prepared)
             prepared.pop("source_path", None)
-            return await self._finalize_sight_insight(
+            return await self.context._finalize_sight_insight(
                 event, clip, purpose=purpose, **prepared
             )
         except Exception as exc:
@@ -1469,16 +1589,16 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 source_note=source_note,
                 error=error or "没有拿到可确认的视频内容",
             )
-            if self.event_was_recalled(event, log_skip=True):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return insight
-            saved = await self._sight_vault_for_runtime().upsert(insight)
-            await asyncio.to_thread(self._clear_sight_prepare_cache, clip)
+            saved = await self.context._sight_vault_for_runtime().upsert(insight)
+            await asyncio.to_thread(self.context._clear_sight_prepare_cache, clip)
             return saved
         note = ""
         note_details: list[str] = []
         if purpose != "professional":
             brief_started = time.monotonic()
-            note, note_details = await self._sight_brief_for_runtime().summarize(
+            note, note_details = await self.context._sight_brief_for_runtime().summarize(
                 clip,
                 transcript=text_result.transcript,
                 frame_notes=frame_notes,
@@ -1502,10 +1622,10 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             source_note=source_note,
             error=error,
         )
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return insight
-        saved = await self._sight_vault_for_runtime().upsert(insight)
-        await asyncio.to_thread(self._clear_sight_prepare_cache, clip)
+        saved = await self.context._sight_vault_for_runtime().upsert(insight)
+        await asyncio.to_thread(self.context._clear_sight_prepare_cache, clip)
         return saved
 
     @staticmethod
@@ -1524,10 +1644,10 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _describe_sight_frames(
         self, clip: SightClip, frames: list[Path | SightFrame]
     ) -> SightFrameDescriptionResult:
-        provider_id = sight_provider_id(self, "frame_provider")
+        provider_id = sight_provider_id(self.context, "frame_provider")
         best_result = SightFrameDescriptionResult()
         index = 0
-        async for provider in self.get_text_provider_candidates(provider_id):
+        async for provider in self.context.get_text_provider_candidates(provider_id):
             if index:
                 logger.info(
                     f"{LOG_PREFIX} 视频关键帧指定模型识别失败，改用当前默认模型"
@@ -1538,7 +1658,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 for name in ("text_chat", "image_chat", "vision_chat")
             ):
                 continue
-            result = await self._describe_sight_frames_with_provider(
+            result = await self.context._describe_sight_frames_with_provider(
                 clip, frames, provider
             )
             if result.notes:
@@ -1555,7 +1675,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     ) -> SightFrameDescriptionResult:
 
         total = len(frames)
-        parts = [self._sight_frame_parts(frame) for frame in frames]
+        parts = [self.context._sight_frame_parts(frame) for frame in frames]
         notes_by_index: dict[int, str] = {}
         request_count = 0
         mode = "single"
@@ -1565,7 +1685,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             try:
                 request_count += 1
                 try:
-                    batch_result = await self._call_sight_vision_batch_provider(
+                    batch_result = await self.context._call_sight_vision_batch_provider(
                         provider,
                         batch_frame_prompt(
                             [
@@ -1583,18 +1703,18 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                     )
                     batch_result = None
                 notes_by_index.update(
-                    batch_frame_notes_from_text(self._completion_text(batch_result))
+                    batch_frame_notes_from_text(self.context._completion_text(batch_result))
                 )
                 if notes_by_index:
                     mode = "multi_image"
                 else:
                     first_note = frame_note_from_text(
-                        self._completion_text(batch_result)
+                        self.context._completion_text(batch_result)
                     )
                     if first_note:
                         notes_by_index[1] = first_note
             finally:
-                await self._cleanup_sight_vision_session(session_id)
+                await self.context._cleanup_sight_vision_session(session_id)
 
         missing = [
             index for index in range(1, total + 1) if index not in notes_by_index
@@ -1609,7 +1729,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                 try:
                     async with semaphore:
                         try:
-                            result = await self._call_sight_vision_provider(
+                            result = await self.context._call_sight_vision_provider(
                                 provider,
                                 frame_prompt(index, total, clip, label),
                                 str(frame_path),
@@ -1621,9 +1741,9 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
                                 f"原因={str(exc)[:120]}"
                             )
                             result = None
-                    return index, frame_note_from_text(self._completion_text(result))
+                    return index, frame_note_from_text(self.context._completion_text(result))
                 finally:
-                    await self._cleanup_sight_vision_session(session_id)
+                    await self.context._cleanup_sight_vision_session(session_id)
 
             described = await asyncio.gather(
                 *(describe_one(index) for index in missing)
@@ -1656,7 +1776,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         )
 
     async def _cleanup_sight_vision_session(self, session_id: str) -> None:
-        cleanup = getattr(self.composer, "_cleanup_conversation", None)
+        cleanup = getattr(self.context.composer, "_cleanup_conversation", None)
         if callable(cleanup):
             await cleanup(session_id)
 
@@ -1731,16 +1851,16 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         if item is None or depth > 4:
             return []
         clips: list[SightClip] = []
-        kind = self._event_component_kind(item)
+        kind = self.context._event_component_kind(item)
         if "video" in kind:
-            clip = await self._sight_video_clip_from_component(
+            clip = await self.context._sight_video_clip_from_component(
                 item, scope=scope, message_id=message_id, origin=origin, text=text
             )
             if clip:
                 clips.append(clip)
-        for nested in self._sight_nested_components(item):
+        for nested in self.context._sight_nested_components(item):
             clips.extend(
-                await self._sight_video_clips_from_component(
+                await self.context._sight_video_clips_from_component(
                     nested,
                     scope=scope,
                     message_id=message_id,
@@ -1765,7 +1885,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         source = ""
         if payload_source.startswith(("http://", "https://")):
             try:
-                route = await self._native_sight_route(SightClip(source=payload_source))
+                route = await self.context._native_sight_route(SightClip(source=payload_source))
                 if route is not None:
                     source = payload_source
             except NativeVideoError:
@@ -1891,19 +2011,19 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     ) -> SightClip:
         if clip.source or not clip.file_id:
             return clip
-        source = await self._resolve_sight_file_source(event, clip.file_id)
+        source = await self.context._resolve_sight_file_source(event, clip.file_id)
         if source:
             clip.source = source
         return clip
 
     async def _resolve_sight_file_source(self, event: Any, file_id: str) -> str:
         bot = None
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             bot = getattr(source, "bot", None) or bot
         call_action = getattr(bot, "call_action", None)
         if not callable(call_action):
             return ""
-        group_id, _ = self._event_group_meta(event)
+        group_id, _ = self.context._event_group_meta(event)
         actions: list[tuple[str, dict[str, Any]]] = [
             ("get_file", {"file_id": file_id}),
             ("get_private_file_url", {"file_id": file_id}),
@@ -1947,7 +2067,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     def _apply_sight_insight_to_structured(self, insight: SightInsight) -> None:
         if insight.status != "ready":
             return
-        updater = getattr(self, "update_structured_message_video_summary", None)
+        updater = getattr(self.context, "update_structured_message_video_summary", None)
         if callable(updater):
             updater(insight.scope, insight.message_id, insight.summary)
 
@@ -1967,23 +2087,23 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         source_message_id: str = "",
         status_text: str = "[视频总结已发送]",
     ) -> bool:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         markdown = str(markdown or "").strip()
         if not scope or not markdown:
             return False
-        chain = await self._sight_note_chain(scope, markdown)
-        if not await self.send_message_if_not_recalled(
+        chain = await self.context._sight_note_chain(scope, markdown)
+        if not await self.context.send_message_if_not_recalled(
             scope,
             chain,
             source_event=source_event or event,
             source_message_id=source_message_id,
         ):
             return False
-        self._mark_sight_note_sent(event)
-        marker = self._background_tool_request(event, "life_video_note")
+        self.context._mark_sight_note_sent(event)
+        marker = self.context._background_tool_request(event, "life_video_note")
         if marker is not None:
             marker["status"] = "sent"
-        self.note_structured_bot_message(
+        self.context.note_structured_bot_message(
             scope, status_text, source_event=source_event or event, media="图片"
         )
         return True
@@ -2011,9 +2131,9 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         return bool(getattr(event, "_daily_life_sight_note_sent", False))
 
     def suppress_sight_note_followup(self, event: Any) -> bool:
-        if not self._sight_note_was_sent(event):
+        if not self.context._sight_note_was_sent(event):
             return False
-        if not self._voice_switch_reply_text_from_event(event):
+        if not self.context._voice_switch_reply_text_from_event(event):
             return False
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
@@ -2032,7 +2152,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             return MessageChain()
         try:
             logger.debug(f"{LOG_PREFIX} 视频专业总结渲染开始")
-            image = await self._render_sight_note_image(scope, markdown)
+            image = await self.context._render_sight_note_image(scope, markdown)
             if image:
                 logger.debug(f"{LOG_PREFIX} 视频专业总结渲染完成")
                 chain = MessageChain()
@@ -2050,7 +2170,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _render_sight_note_image(self, scope: str, markdown: str) -> str:
         from astrbot.core import html_renderer
 
-        config = self._astrbot_config(scope)
+        config = self.context._astrbot_config(scope)
         prepared = await asyncio.to_thread(
             embed_local_markdown_images,
             "\n\n" + str(markdown or "").strip(),
@@ -2072,13 +2192,13 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
     async def _sight_recent_for_event(
         self, event: Any, *, limit: int = 2
     ) -> list[SightInsight]:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return []
-        return await self._sight_vault_for_runtime().recent(scope, limit=limit)
+        return await self.context._sight_vault_for_runtime().recent(scope, limit=limit)
 
     async def format_recent_sight_context(self, event: Any, *, limit: int = 2) -> str:
-        insights = await self._sight_recent_for_event(event, limit=limit)
+        insights = await self.context._sight_recent_for_event(event, limit=limit)
         if not insights:
             return ""
         lines = [
@@ -2089,12 +2209,12 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
             if item.status != "ready":
                 continue
             metadata = dict(getattr(item, "metadata", None) or {})
-            summary = html.escape(self._sight_compact_text(item.summary, 220))
+            summary = html.escape(self.context._sight_compact_text(item.summary, 220))
             details = html.escape("；".join(content_details(item.details, limit=3)))
             professional = html.escape(
-                self._sight_compact_text(metadata.get("professional_digest"), 600)
+                self.context._sight_compact_text(metadata.get("professional_digest"), 600)
             )
-            note = html.escape(self._sight_compact_text(item.note, 600))
+            note = html.escape(self.context._sight_compact_text(item.note, 600))
             attrs = [
                 f'status="{html.escape(item.status, quote=True)}"',
                 f'origin="{html.escape(item.clip.origin, quote=True)}"',
@@ -2117,7 +2237,7 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         return "\n".join(lines)
 
     def _append_video_input_anchor(self, req: Any, event: Any = None) -> None:
-        if event is None or not self.event_has_sight_video(event):
+        if event is None or not self.context.event_has_sight_video(event):
             return
         parts = getattr(req, "extra_user_content_parts", None)
         if not isinstance(parts, list):
@@ -2142,3 +2262,24 @@ class SightMixin(NativeSightMixin, SightCleanupMixin, SightIdentityMixin):
         if callable(marker):
             part = marker()
         parts.append(part)
+
+    @staticmethod
+    def _native_video_prompt(clip: _part_native_sight_component.SightClip) -> str:
+        return _part_native_sight_component.NativeSightComponent._native_video_prompt(clip)
+
+    @staticmethod
+    def _prune_cache_tree(root: _part_sight_cleanup_component.Path, cutoff: float) -> tuple[int, int]:
+        return _part_sight_cleanup_component.SightCleanupComponent._prune_cache_tree(root, cutoff)
+
+    @staticmethod
+    def _prune_cache_files(root: _part_sight_cleanup_component.Path, cutoff: float) -> int:
+        return _part_sight_cleanup_component.SightCleanupComponent._prune_cache_files(root, cutoff)
+
+    @staticmethod
+    def _prune_empty_cache_dirs(root: _part_sight_cleanup_component.Path) -> int:
+        return _part_sight_cleanup_component.SightCleanupComponent._prune_empty_cache_dirs(root)
+
+    @staticmethod
+    def _sight_raw_message(source: _part_sight_identity_component.Any) -> _part_sight_identity_component.Any:
+        return _part_sight_identity_component.SightIdentityComponent._sight_raw_message(source)
+

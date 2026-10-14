@@ -17,6 +17,8 @@ from .wardrobe import (
     project_outfit_components_for_scene,
 )
 
+from typing import Protocol
+
 APPEARANCE_PREFERENCE_CATEGORIES = (
     "outfit",
     "top",
@@ -163,7 +165,18 @@ def format_reference_appearance_context(day: Any, *, label: str = "历史参考"
     return "\n".join(lines)
 
 
-class AppearanceAuditMixin:
+class AppearanceAuditComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    config: Any
+
+
+class AppearanceAuditComponent:
+    def __init__(self, context: AppearanceAuditComponentContext) -> None:
+        self.context = context
+
     async def _audit_persona_appearance(
         self,
         appearances: dict[str, dict[str, str]],
@@ -228,7 +241,7 @@ class AppearanceAuditMixin:
         )
         session_id = f"daily_life_appearance_{uuid.uuid4().hex[:8]}"
         try:
-            text = await self._call_llm_text(
+            text = await self.context._call_llm_text(
                 provider,
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="待审计外观"),
                 session_id,
@@ -236,7 +249,7 @@ class AppearanceAuditMixin:
                 primary_provider_id=provider_id,
                 timeout_seconds=min(
                     30.0,
-                    max(8.0, float(getattr(self.config, "llm_timeout_seconds", 120))),
+                    max(8.0, float(getattr(self.context.config, "llm_timeout_seconds", 120))),
                 ),
             )
             payload = extract_json_from_text(text)
@@ -272,7 +285,7 @@ class AppearanceAuditMixin:
             logger.debug(f"[人物外观审计] 执行失败，保留原外观：{exc}")
             return normalized
         finally:
-            await self._cleanup_conversation(session_id)
+            await self.context._cleanup_conversation(session_id)
 
 
 def _appearance_characters(value: object) -> list[str]:

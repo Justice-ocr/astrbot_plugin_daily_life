@@ -1,11 +1,30 @@
+from __future__ import annotations
+
 import datetime
 from typing import Any
 
 from ....models import ActionDecisionRecord, LifeEpisodeRecord, MemoryEvidenceRecord
 from ....models.coerce import compact_explanation_text
 
+from typing import Protocol
 
-class ProactiveStoreMixin:
+
+class ProactiveStoreComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _clamp_float: Any
+    _event_context_meta: Any
+    _proactive_scope_key: Any
+    _save_proactive_decision_trace: Any
+    _str_payload: Any
+    archive: Any
+    composer: Any
+
+
+class ProactiveStoreComponent:
+    def __init__(self, context: ProactiveStoreComponentContext) -> None:
+        self.context = context
+
     async def _advance_proactive_decision_trace(
         self,
         event: Any,
@@ -29,7 +48,7 @@ class ProactiveStoreMixin:
         staged = dict(payload)
         staged["stage"] = stage
         staged["reason_code"] = reason_code
-        await self._save_proactive_decision_trace(
+        await self.context._save_proactive_decision_trace(
             event, staged, stage=stage, sent=sent, outcome=outcome
         )
         trace_id = str(staged.get("_decision_trace_id") or "").strip()
@@ -54,7 +73,7 @@ class ProactiveStoreMixin:
             sent: 消息是否已实际送达。
             outcome: 本阶段结果摘要。
         """
-        saver = getattr(getattr(self, "archive", None), "save_decision_trace", None)
+        saver = getattr(getattr(self.context, "archive", None), "save_decision_trace", None)
         if not callable(saver):
             return
         score_fields = (
@@ -82,10 +101,10 @@ class ProactiveStoreMixin:
         ]
         trace_payload = {
             "trace_id": str(payload.get("_decision_trace_id") or ""),
-            "scope": self._proactive_scope_key(event),
+            "scope": self.context._proactive_scope_key(event),
             "stage": stage,
-            "reason_code": self._str_payload(payload.get("reason_code")),
-            "decision": self._str_payload(payload.get("decision"), "observe"),
+            "reason_code": self.context._str_payload(payload.get("reason_code")),
+            "decision": self.context._str_payload(payload.get("decision"), "observe"),
             "scores": scores,
             "evidence": evidence,
             "outcome": compact_explanation_text(outcome),
@@ -123,13 +142,13 @@ class ProactiveStoreMixin:
             reply_text: 候选或实际发送文本。
             stage: ``proposal``、``commit`` 等裁定阶段。
         """
-        meta = await self._event_context_meta(event, sender_name, now)
-        source = self._str_payload(payload.get("source"), "proactive_reply")
-        decision_name = self._str_payload(payload.get("decision"), "observe")
+        meta = await self.context._event_context_meta(event, sender_name, now)
+        source = self.context._str_payload(payload.get("source"), "proactive_reply")
+        decision_name = self.context._str_payload(payload.get("decision"), "observe")
         action = "proactive_reply" if sent else f"proactive_{stage}_{decision_name}"
         reason = compact_explanation_text(payload.get("reason"))
-        strategy = self._str_payload(payload.get("reply_strategy"))
-        saved = await self.archive.save_action_decision(
+        strategy = self.context._str_payload(payload.get("reply_strategy"))
+        saved = await self.context.archive.save_action_decision(
             ActionDecisionRecord(
                 session_id=meta["session_id"],
                 message_id=meta["message_id"],
@@ -140,42 +159,42 @@ class ProactiveStoreMixin:
                 date=meta["date"],
                 action=action,
                 reason=reason,
-                confidence=self._clamp_float(payload.get("confidence")),
+                confidence=self.context._clamp_float(payload.get("confidence")),
                 scene_type=(
                     f"私聊回访/{stage}"
                     if source == "private_revisit"
                     else f"闲时回复/{stage}"
                 ),
-                topic_owner=self._str_payload(payload.get("topic_owner")),
+                topic_owner=self.context._str_payload(payload.get("topic_owner")),
                 understanding="understood" if sent else "partial",
                 deep_analysis=False,
-                inner_monologue=self._str_payload(payload.get("inner_monologue")),
+                inner_monologue=self.context._str_payload(payload.get("inner_monologue")),
                 reply_strategy=strategy or reply_text,
             )
         )
-        await self.composer._save_life_decision_record(
+        await self.context.composer._save_life_decision_record(
             kind=source,
             date=meta["date"],
             subject=meta["group_name"] or meta["sender_name"] or meta["session_id"],
             decision=action,
             reason=reason,
-            evidence=self._str_payload(
+            evidence=self.context._str_payload(
                 payload.get("target_topic")
                 or payload.get("target_message_id")
                 or payload.get("reason_code")
             ),
             outcome=reply_text
             if sent
-            else self._str_payload(payload.get("wait_reason") or strategy),
-            confidence=self._clamp_float(payload.get("confidence")),
+            else self.context._str_payload(payload.get("wait_reason") or strategy),
+            confidence=self.context._clamp_float(payload.get("confidence")),
             source=source,
-            focus_scope=self._proactive_scope_key(event),
+            focus_scope=self.context._proactive_scope_key(event),
         )
-        note = self._str_payload(payload.get("memory_note")) if sent else ""
+        note = self.context._str_payload(payload.get("memory_note")) if sent else ""
         if sent:
             note = note or f"闲时续话：{reply_text}"
         if note:
-            episode = await self.archive.save_life_episode(
+            episode = await self.context.archive.save_life_episode(
                 LifeEpisodeRecord(
                     date=meta["date"],
                     title=(
@@ -191,11 +210,11 @@ class ProactiveStoreMixin:
                     kind="group" if meta.get("is_group") == "true" else "chat",
                     related_people=[sender_name] if sender_name else [],
                     impact=reason,
-                    confidence=self._clamp_float(payload.get("confidence"), 0.5),
+                    confidence=self.context._clamp_float(payload.get("confidence"), 0.5),
                     source=source,
                 )
             )
-            await self.archive.save_memory_evidence(
+            await self.context.archive.save_memory_evidence(
                 MemoryEvidenceRecord(
                     target_type="action_decision",
                     target_id=str(saved.id),
@@ -206,10 +225,10 @@ class ProactiveStoreMixin:
                     message_id=meta["message_id"],
                     date=meta["date"],
                     summary=note,
-                    confidence=self._clamp_float(payload.get("confidence"), 0.5),
+                    confidence=self.context._clamp_float(payload.get("confidence"), 0.5),
                 )
             )
-            await self.archive.save_memory_evidence(
+            await self.context.archive.save_memory_evidence(
                 MemoryEvidenceRecord(
                     target_type="life_episode",
                     target_id=str(episode.id),
@@ -220,10 +239,10 @@ class ProactiveStoreMixin:
                     message_id=meta["message_id"],
                     date=meta["date"],
                     summary=reason or note,
-                    confidence=self._clamp_float(payload.get("confidence"), 0.5),
+                    confidence=self.context._clamp_float(payload.get("confidence"), 0.5),
                 )
             )
-        await self._save_proactive_decision_trace(
+        await self.context._save_proactive_decision_trace(
             event,
             payload,
             stage=stage,

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import datetime
 import json
@@ -14,6 +16,7 @@ from ..models import (
     EventRecord,
     LifeEventRecord,
     PreferenceRecord,
+    PhysiologicalRhythm,
 )
 from ..prompts import (
     CORE_MEMORY_RULES,
@@ -25,7 +28,11 @@ from .appearance import (
     format_life_preference_context,
     is_autonomous_appearance_preference,
 )
-from .condition import format_daily_variability_prompt
+from .condition import (
+    format_daily_variability_prompt,
+    format_physiological_rhythm_prompt,
+    normalize_physiological_rhythm,
+)
 from .evolution import LifeEvolutionService
 from .presence import ensure_kernel, record_causal_trace, record_event
 from .tools import (
@@ -33,6 +40,8 @@ from .tools import (
     format_timeline_to_text,
     reconcile_timeline_execution,
 )
+
+from typing import Protocol
 
 
 def _clamp_float(value: float, min_value: float, max_value: float) -> float:
@@ -48,7 +57,37 @@ DAILY_REVIEW_COMPLETED_AT = "daily_review_completed_at"
 DAILY_REVIEW_REVISION_ATTEMPTS = 6
 
 
-class LifecycleMixin:
+class LifecycleComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_focus_review_updates: Any
+    _apply_life_decision_review_outcomes: Any
+    _apply_life_event_review_updates: Any
+    _apply_timeline_review_updates: Any
+    _build_daily_review_prompt: Any
+    _build_preference_consistency_prompt: Any
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    _compute_sleep_continuity: Any
+    _fallback_daily_review: Any
+    _format_physiological_rhythm_trend_context: Any
+    _get_provider: Any
+    _mark_daily_review_completed: Any
+    _meta_float: Any
+    _preference_maintenance_done: Any
+    _style_catalog_has_clothing_candidates: Any
+    _task_provider_id: Any
+    archive: Any
+    config: Any
+    extract_schedule_anchors: Any
+    maintain_preference_consistency: Any
+    settle_completed_planned_actions: Any
+
+
+class LifecycleComponent:
+    def __init__(self, context: LifecycleComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _meta_float(meta: dict[str, str], key: str, default: float = 0.0) -> float:
         try:
@@ -104,29 +143,29 @@ class LifecycleMixin:
     async def maintain_preference_consistency(self, *, force: bool = False) -> int:
         """在后台合并同义偏好，避免重复证据放大同一生活倾向。"""
 
-        if bool(getattr(self, "_preference_maintenance_done", False)) and not force:
+        if bool(getattr(self.context, "_preference_maintenance_done", False)) and not force:
             return 0
         if not force:
-            self._preference_maintenance_done = True
-        preferences = await self.archive.get_preferences(80)
+            self.context._preference_maintenance_done = True
+        preferences = await self.context.archive.get_preferences(80)
         category_counts: dict[str, int] = {}
         for item in preferences:
             category = str(item.category or "general")
             category_counts[category] = category_counts.get(category, 0) + 1
         if not any(count >= 2 for count in category_counts.values()):
             return 0
-        merger = getattr(self.archive, "merge_preferences", None)
+        merger = getattr(self.context.archive, "merge_preferences", None)
         if not callable(merger):
             return 0
-        provider_id = self._task_provider_id(self.config.lifecycle.provider)
-        provider = await self._get_provider(provider_id)
+        provider_id = self.context._task_provider_id(self.context.config.lifecycle.provider)
+        provider = await self.context._get_provider(provider_id)
         if not provider:
             return 0
         session_id = f"daily_life_preference_consistency_{uuid.uuid4().hex[:8]}"
         try:
-            text = await self._call_llm_text(
+            text = await self.context._call_llm_text(
                 provider,
-                self._build_preference_consistency_prompt(preferences),
+                self.context._build_preference_consistency_prompt(preferences),
                 session_id,
                 empty_retries=0,
                 primary_provider_id=provider_id,
@@ -188,14 +227,14 @@ class LifecycleMixin:
             )
             return 0
         finally:
-            await self._cleanup_conversation(session_id)
+            await self.context._cleanup_conversation(session_id)
 
     def _compute_sleep_continuity(
         self,
         previous_day,
         day,
     ) -> tuple[float, float, float]:
-        previous_debt = self._meta_float(
+        previous_debt = self.context._meta_float(
             previous_day.meta if previous_day else {}, "sleep_debt", 0.0
         )
         state = day.state
@@ -229,10 +268,20 @@ class LifecycleMixin:
         date: datetime.datetime,
         result: dict | None = None,
     ):
-        previous_day = await self.archive.get_day(
+        previous_day = await self.context.archive.get_day(
             (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         )
-        debt, delta, carryover = self._compute_sleep_continuity(previous_day, day)
+        current_day = await self.context.archive.get_day(day.date)
+        continuity_day = current_day if current_day and current_day.state else previous_day
+        if continuity_day and continuity_day.state and day.state:
+            day.state.physiological_rhythm = PhysiologicalRhythm.from_value(
+                normalize_physiological_rhythm(
+                    day.state.physiological_rhythm.as_dict(),
+                    previous=continuity_day.state.physiological_rhythm.as_dict(),
+                    now=date,
+                )
+            )
+        debt, delta, carryover = self.context._compute_sleep_continuity(previous_day, day)
         day.meta["sleep_debt"] = f"{debt:.2f}".rstrip("0").rstrip(".")
         day.meta["sleep_debt_delta"] = f"{delta:.2f}".rstrip("0").rstrip(".")
         day.meta["energy_carryover"] = f"{carryover:.1f}".rstrip("0").rstrip(".")
@@ -245,8 +294,8 @@ class LifecycleMixin:
                 else None
             )
             if event:
-                await self.archive.add_life_event(event)
-        extract_anchors = getattr(self, "extract_schedule_anchors", None)
+                await self.context.archive.add_life_event(event)
+        extract_anchors = getattr(self.context, "extract_schedule_anchors", None)
         if callable(extract_anchors):
             anchors = extract_anchors(day)
             day.meta["schedule_planning_mode"] = "hierarchical"
@@ -260,16 +309,25 @@ class LifecycleMixin:
         exclude_daily_plan_date: str = "",
     ) -> str:
         sections = []
-        sections.append(
-            "## 🌦️ 状态因果线索\n"
-            + format_daily_variability_prompt(date.strftime("%Y-%m-%d"))
-        )
-        previous_day = await self.archive.get_day(
+        previous_day = await self.context.archive.get_day(
             (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         )
+        current_day = (
+            await self.context.archive.get_day(exclude_daily_plan_date)
+            if exclude_daily_plan_date == date.strftime("%Y-%m-%d")
+            else None
+        )
+        continuity_day = current_day if current_day and current_day.state else previous_day
+        sections.append(
+            "## 🌦️ 状态因果线索\n"
+            + format_daily_variability_prompt(
+                date.strftime("%Y-%m-%d"),
+                state=continuity_day.state if continuity_day else None,
+            )
+        )
         if previous_day:
-            debt = self._meta_float(previous_day.meta or {}, "sleep_debt", 0.0)
-            carryover = self._meta_float(
+            debt = self.context._meta_float(previous_day.meta or {}, "sleep_debt", 0.0)
+            carryover = self.context._meta_float(
                 previous_day.meta or {}, "energy_carryover", 60.0
             )
             sections.append(
@@ -278,22 +336,36 @@ class LifecycleMixin:
                 f"- 昨日体力延续值：{carryover:.0f}/100\n"
                 "- 今日生成必须把这当作连续身体状态参考，而不是每天从零开始。"
             )
+        if continuity_day and continuity_day.state:
+            body = continuity_day.state.physiological_rhythm.body_condition
+            if body.burden_present or body.phase == "resolved":
+                sections.append(
+                    f"## 🫧 {continuity_day.date} 身体状态\n"
+                    + format_physiological_rhythm_prompt(
+                        continuity_day.state.physiological_rhythm.as_dict()
+                    )
+                    + (
+                        "\n- 昨日已根据实际感受恢复；今天无需续写同一事件。"
+                        if body.phase == "resolved"
+                        else "\n- 身体事件跨日延续；只有实际恢复依据才能结束，期限是复核点。"
+                    )
+                )
 
-        trend_getter = getattr(self.archive, "get_physiological_rhythm_trend", None)
+        trend_getter = getattr(self.context.archive, "get_physiological_rhythm_trend", None)
         if callable(trend_getter):
             trend = await trend_getter(days=7, limit=8)
-            rhythm_lines = self._format_physiological_rhythm_trend_context(trend)
+            rhythm_lines = self.context._format_physiological_rhythm_trend_context(trend)
             if rhythm_lines:
                 sections.append("## 🫧 近期生理节律\n" + rhythm_lines)
 
-        preference_limit = max(0, self.config.lifecycle.max_preferences)
+        preference_limit = max(0, self.context.config.lifecycle.max_preferences)
         preferences = (
-            await self.archive.get_preferences(preference_limit)
+            await self.context.archive.get_preferences(preference_limit)
             if preference_limit
             else []
         )
         catalog_checker = getattr(
-            self, "_style_catalog_has_clothing_candidates", None
+            self.context, "_style_catalog_has_clothing_candidates", None
         )
         catalog_backed = bool(
             callable(catalog_checker) and await catalog_checker()
@@ -306,7 +378,7 @@ class LifecycleMixin:
         if preference_context:
             sections.append("## 🧭 长期审美与生活偏好\n" + preference_context)
 
-        reviews = await self.archive.get_recent_daily_reviews(3)
+        reviews = await self.context.archive.get_recent_daily_reviews(3)
         if reviews:
             lines = [
                 f"- {item.date}: {item.summary}" for item in reviews if item.summary
@@ -314,7 +386,7 @@ class LifecycleMixin:
             if lines:
                 sections.append("## 🌙 近期每日复盘\n" + "\n".join(lines))
 
-        events = await self.archive.get_life_events(status="open", limit=8)
+        events = await self.context.archive.get_life_events(status="open", limit=8)
         if events:
             lines = [
                 f"- {item.date or '未定'}｜{item.title}：{item.effect or item.detail or '等待自然影响'}"
@@ -322,7 +394,7 @@ class LifecycleMixin:
             ]
             sections.append("## ✨ 生活事件池\n" + "\n".join(lines))
 
-        episodes = await self.archive.get_life_episodes(limit=20)
+        episodes = await self.context.archive.get_life_episodes(limit=20)
         if exclude_daily_plan_date:
             episodes = [
                 item
@@ -341,7 +413,7 @@ class LifecycleMixin:
             ]
             sections.append("## 🧩 生活片段记忆\n" + "\n".join(lines))
 
-        focus_targets = await self.archive.get_focus_targets(limit=6)
+        focus_targets = await self.context.archive.get_focus_targets(limit=6)
         if focus_targets:
             lines = [
                 f"- [{item.target_type}] {item.label or item.target_id}：优先级 {item.priority}；{item.reason or '近期自然多留意'}"
@@ -349,7 +421,7 @@ class LifecycleMixin:
             ]
             sections.append("## 🎯 近期关注目标\n" + "\n".join(lines))
 
-        feedback = await self.archive.get_behavior_feedback(limit=5)
+        feedback = await self.context.archive.get_behavior_feedback(limit=5)
         if feedback:
             lines = [
                 f"- {item.scene or '未分场景'}｜{item.action or '动作'}：{item.feedback or item.result}（分值 {item.score:g}；{item.reason or item.source}）"
@@ -357,7 +429,7 @@ class LifecycleMixin:
             ]
             sections.append("## 🧪 行为反馈学习\n" + "\n".join(lines))
 
-        terms = await self.archive.get_life_terms(limit=8)
+        terms = await self.context.archive.get_life_terms(limit=8)
         if terms:
             lines = [
                 f"- {item.term}：{item.meaning}（范围：{item.scope or '通用'}）"
@@ -365,7 +437,7 @@ class LifecycleMixin:
             ]
             sections.append("## 🗣️ 语言与群聊黑话\n" + "\n".join(lines))
 
-        boundaries = await self.archive.get_memory_boundaries(limit=6)
+        boundaries = await self.context.archive.get_memory_boundaries(limit=6)
         if boundaries:
             lines = [
                 f"- {item.source_scope} -> {item.target_scope}: {item.policy}；{item.reason or '按上下文谨慎判断'}"
@@ -527,8 +599,8 @@ class LifecycleMixin:
         state_summary = day.state.summary if day.state and day.state.summary else ""
         first = day.timeline[0].activity if day.timeline else ""
         summary = state_summary or first or "我今天按自己的自然节奏生活。"
-        debt = self._meta_float(day.meta or {}, "sleep_debt_delta", 0.0)
-        carryover = self._meta_float(day.meta or {}, "energy_carryover", 60.0)
+        debt = self.context._meta_float(day.meta or {}, "sleep_debt_delta", 0.0)
+        carryover = self.context._meta_float(day.meta or {}, "energy_carryover", 60.0)
         return DailyReviewRecord(
             date=day.date,
             summary=summary,
@@ -553,8 +625,8 @@ class LifecycleMixin:
 
         existing = None
         if not force:
-            existing = await self.archive.get_daily_review(date_str)
-        day = await self.archive.get_day(date_str)
+            existing = await self.context.archive.get_daily_review(date_str)
+        day = await self.context.archive.get_day(date_str)
         if not day:
             return existing
         if existing and str(
@@ -563,12 +635,12 @@ class LifecycleMixin:
             return existing
 
         preferences, events, decisions, feedback, reply_effects, focus_slots = await asyncio.gather(
-            self.archive.get_preferences(12),
-            self.archive.get_life_events(status="open", limit=8),
-            self.archive.get_life_decisions(limit=8, date=date_str),
-            self.archive.get_behavior_feedback(limit=12),
-            self.archive.get_reply_effects(limit=12),
-            self.archive.get_focus_slots(limit=12),
+            self.context.archive.get_preferences(12),
+            self.context.archive.get_life_events(status="open", limit=8),
+            self.context.archive.get_life_decisions(limit=8, date=date_str),
+            self.context.archive.get_behavior_feedback(limit=12),
+            self.context.archive.get_reply_effects(limit=12),
+            self.context.archive.get_focus_slots(limit=12),
         )
         feedback = [
             item for item in feedback if str(getattr(item, "date", "")) == date_str
@@ -593,16 +665,16 @@ class LifecycleMixin:
         review = existing
         review_payload: dict[str, Any] = dict(existing.payload) if existing else {}
         if review is None or force:
-            provider_id = self._task_provider_id(self.config.lifecycle.provider)
-            provider = await self._get_provider(provider_id)
+            provider_id = self.context._task_provider_id(self.context.config.lifecycle.provider)
+            provider = await self.context._get_provider(provider_id)
             review = None
             review_payload = {}
             session_id = f"daily_life_review_{uuid.uuid4().hex[:8]}"
             try:
                 if provider:
-                    text = await self._call_llm_text(
+                    text = await self.context._call_llm_text(
                         provider,
-                        self._build_daily_review_prompt(
+                        self.context._build_daily_review_prompt(
                             day,
                             preferences,
                             events,
@@ -625,9 +697,9 @@ class LifecycleMixin:
                             }
                         )
             finally:
-                await self._cleanup_conversation(session_id)
+                await self.context._cleanup_conversation(session_id)
 
-            fallback_review = self._fallback_daily_review(day)
+            fallback_review = self.context._fallback_daily_review(day)
             review = review or fallback_review
             if not review.summary:
                 review.summary = fallback_review.summary
@@ -639,21 +711,21 @@ class LifecycleMixin:
                 if not is_autonomous_appearance_preference(preference)
             ]
             review.payload = dict(review_payload)
-            saved = await self.archive.save_daily_review(review)
+            saved = await self.context.archive.save_daily_review(review)
         else:
             saved = review
-        await self._apply_life_event_review_updates(
+        await self.context._apply_life_event_review_updates(
             events, review_payload, date_str=date_str
         )
-        await self._apply_life_decision_review_outcomes(decisions, review_payload)
-        await self._apply_focus_review_updates(
+        await self.context._apply_life_decision_review_outcomes(decisions, review_payload)
+        await self.context._apply_focus_review_updates(
             focus_slots,
             review_payload,
             date_str=date_str,
             allowed_evidence_ids=allowed_evidence_ids,
         )
-        await self._apply_timeline_review_updates(day, review_payload)
-        evolution = LifeEvolutionService(self.archive)
+        await self.context._apply_timeline_review_updates(day, review_payload)
+        evolution = LifeEvolutionService(self.context.archive)
         await evolution.settle_review(
             review_payload,
             date=date_str,
@@ -665,7 +737,7 @@ class LifecycleMixin:
         )
 
         if review.memory_points:
-            await self.archive.add_events(
+            await self.context.archive.add_events(
                 date_str,
                 [
                     EventRecord(
@@ -678,7 +750,7 @@ class LifecycleMixin:
                 ],
             )
         if review.life_events:
-            await self.archive.add_events(
+            await self.context.archive.add_events(
                 date_str,
                 [
                     EventRecord(
@@ -690,11 +762,11 @@ class LifecycleMixin:
                     for event in review.life_events[:5]
                 ],
             )
-        if await self.maintain_preference_consistency(force=True):
-            refreshed = await self.archive.get_daily_review(date_str)
+        if await self.context.maintain_preference_consistency(force=True):
+            refreshed = await self.context.archive.get_daily_review(date_str)
             if refreshed:
                 saved = refreshed
-        continuous_mutator = getattr(self.archive, "mutate_continuous_life", None)
+        continuous_mutator = getattr(self.context.archive, "mutate_continuous_life", None)
         if callable(continuous_mutator):
             reflection_summary = _compact(review.summary, 360)
 
@@ -729,7 +801,7 @@ class LifecycleMixin:
                 )
 
             await continuous_mutator(date_str, sync_continuity)
-        await self._mark_daily_review_completed(date_str)
+        await self.context._mark_daily_review_completed(date_str)
         return saved
 
     async def _mark_daily_review_completed(self, date_str: str) -> None:
@@ -746,7 +818,7 @@ class LifecycleMixin:
             day.meta[DAILY_REVIEW_COMPLETED_AT] = completed_at
             return True
 
-        await self.archive.mutate_day(date_str, mark_completed)
+        await self.context.archive.mutate_day(date_str, mark_completed)
 
     async def _apply_focus_review_updates(
         self,
@@ -758,7 +830,7 @@ class LifecycleMixin:
     ) -> None:
         """只接受针对现有目标编号且带证据的显式进度更新。"""
 
-        updater = getattr(self.archive, "update_focus_slot_progress", None)
+        updater = getattr(self.context.archive, "update_focus_slot_progress", None)
         raw_updates = payload.get("focus_updates") if isinstance(payload, dict) else None
         if not callable(updater) or not isinstance(raw_updates, list):
             return
@@ -839,11 +911,11 @@ class LifecycleMixin:
             )
             return before != [item.as_dict() for item in current_day.timeline]
 
-        settled_day = await self.archive.mutate_day(day.date, settle_timeline)
+        settled_day = await self.context.archive.mutate_day(day.date, settle_timeline)
         if settled_day is None:
             return
 
-        settle_actions = getattr(self, "settle_completed_planned_actions", None)
+        settle_actions = getattr(self.context, "settle_completed_planned_actions", None)
         if callable(settle_actions):
             settled_at = review_end.strftime("%Y-%m-%d %H:%M:%S")
             for attempt in range(DAILY_REVIEW_REVISION_ATTEMPTS):
@@ -854,7 +926,7 @@ class LifecycleMixin:
                     if attempt >= DAILY_REVIEW_REVISION_ATTEMPTS - 1:
                         raise
                     await asyncio.sleep(min(0.05 * (2**attempt), 0.4))
-                    latest = await self.archive.get_day(day.date)
+                    latest = await self.context.archive.get_day(day.date)
                     if latest is None:
                         return
                     if str(
@@ -873,12 +945,12 @@ class LifecycleMixin:
             current_day.meta[DAILY_REVIEW_TIMELINE_SETTLED_AT] = settled_at
             return True
 
-        await self.archive.mutate_day(day.date, mark_settled)
+        await self.context.archive.mutate_day(day.date, mark_settled)
 
     async def _apply_life_decision_review_outcomes(
         self, decisions: list[Any], payload: dict[str, Any]
     ) -> None:
-        updater = getattr(self.archive, "update_life_decision_outcome", None)
+        updater = getattr(self.context.archive, "update_life_decision_outcome", None)
         raw_items = (
             payload.get("decision_outcomes") if isinstance(payload, dict) else None
         )
@@ -920,13 +992,13 @@ class LifecycleMixin:
                     "cancelled",
                 }:
                     continue
-                await self.archive.set_life_event_status(event_id, status)
+                await self.context.archive.set_life_event_status(event_id, status)
         try:
             review_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
             return
         cutoff = (review_date - datetime.timedelta(days=14)).isoformat()
-        await self.archive.close_stale_life_events(cutoff)
+        await self.context.archive.close_stale_life_events(cutoff)
 
     async def learn_preferences_from_payload(
         self,
@@ -948,7 +1020,7 @@ class LifecycleMixin:
         ]
         if not preferences:
             return []
-        return await self.archive.upsert_preferences(preferences, date_str)
+        return await self.context.archive.upsert_preferences(preferences, date_str)
 
     async def persist_life_events_from_payload(
         self,
@@ -964,7 +1036,7 @@ class LifecycleMixin:
         for event in raw:
             item = LifeEventRecord.from_value(event, date=date_str, source=source)
             if item:
-                stored = await self.archive.add_life_event(item)
+                stored = await self.context.archive.add_life_event(item)
                 if stored:
                     saved.append(stored)
         return saved

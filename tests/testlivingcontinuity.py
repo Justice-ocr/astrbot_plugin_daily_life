@@ -20,8 +20,8 @@ from core.life.presence import (
     record_action_outcome,
 )
 from core.models import CommitmentRecord, DayRecord, LifeState, LongTermMemoryRecord
-from core.runtime.participation import LivingRuntimeMixin
-from core.runtime.layer.chain import LayerChainMixin
+from core.runtime.participation import LivingStateService
+from componentfixtures import LayerChainComponent
 
 
 class AchievementTest(unittest.TestCase):
@@ -244,16 +244,17 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.activity = await self.archive.ensure_shared_activity(self.commitment)
-        self.runtime = LivingRuntimeMixin()
-        self.runtime.archive = self.archive
-        self.runtime._event_session_id = lambda event: event.unified_msg_origin
-        self.runtime._event_message_id = lambda event: event.message_id
-        self.runtime.event_was_recalled = lambda event: False
-
         async def mark(*args):
             pass
 
-        self.runtime.mark_page_status_changed = mark
+        self.runtime = LivingStateService(
+            archive=lambda: self.archive,
+            session_id=lambda event: event.unified_msg_origin,
+            message_id=lambda event: event.message_id,
+            event_was_recalled=lambda event: False,
+            message_was_recalled=lambda scope, message_id: False,
+            notify_status=mark,
+        )
 
     async def asyncTearDown(self):
         await self.archive.aclose()
@@ -348,7 +349,6 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.archive.mutate_continuous_life("2026-10-11", produce)
         await self.archive.aclose()
         self.archive = LifeArchive(self.path)
-        self.runtime.archive = self.archive
         restored = await self.archive.get_continuous_life()
         candidates = review_candidates(restored)
         self.assertEqual(len(candidates), 1)
@@ -361,7 +361,6 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
         before = copy.deepcopy(self.activity)
         await self.archive.aclose()
         self.archive = LifeArchive(self.path)
-        self.runtime.archive = self.archive
         for day in range(12, 19):
             await self.archive.save_day(
                 DayRecord(date=f"2026-10-{day}", state=LifeState())
@@ -527,7 +526,7 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
             max_summaries=3, session_id=self.scope, experience_scope=self.scope
         )
         self.assertIn(
-            "照片是前天拍的", LayerChainMixin._format_cognition_context(snapshot)
+            "照片是前天拍的", LayerChainComponent._format_cognition_context(snapshot)
         )
         self.assertNotIn(
             "照片是前天拍的", await self.runtime.living_context_for_scope(self.other)
@@ -659,7 +658,7 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 content="旧记录",
             )
         )
-        self.runtime._message_was_recalled = lambda scope, message_id: (
+        self.runtime._was_recalled = lambda scope, message_id: (
             message_id == "recalled"
         )
         await self.runtime.note_memory_corrections(
@@ -710,7 +709,6 @@ class LivingIntegrationTest(unittest.IsolatedAsyncioTestCase):
         """)
         conn.close()
         self.archive = LifeArchive(self.path)
-        self.runtime.archive = self.archive
         await self.archive.correct_life_memory(
             self.scope,
             original.id,

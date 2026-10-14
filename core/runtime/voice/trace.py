@@ -7,8 +7,27 @@ from astrbot.api import logger
 
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class VoiceSwitchRecordMixin:
+
+class VoiceSwitchRecordComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _log_voice_expression_decision: Any
+    _mark_voice_switch_channel: Any
+    _prune_voice_switch_rounds: Any
+    _record_message_chain: Any
+    _strip_voice_record_caption: Any
+    _voice_expression_log_title: Any
+    _voice_record_component: Any
+    _voice_switch_round_store: Any
+    _voice_switch_scope_key: Any
+
+
+class VoiceSwitchRecordComponent:
+    def __init__(self, context: VoiceSwitchRecordComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _voice_record_component(item: Any) -> bool:
         if isinstance(item, dict):
@@ -44,11 +63,11 @@ class VoiceSwitchRecordMixin:
         return next_item
 
     def _replace_result_with_voice(self, event: Any, path: str) -> None:
-        raw_chain = list(getattr(self._record_message_chain(path), "chain", []) or [])
+        raw_chain = list(getattr(self.context._record_message_chain(path), "chain", []) or [])
         voice_items = [
-            self._strip_voice_record_caption(item)
+            self.context._strip_voice_record_caption(item)
             for item in raw_chain
-            if self._voice_record_component(item)
+            if self.context._voice_record_component(item)
         ]
         chain = voice_items or raw_chain
         setter = getattr(event, "set_result", None)
@@ -61,14 +80,14 @@ class VoiceSwitchRecordMixin:
             result.chain = chain
 
     def note_voice_switch_text_result(self, event: Any) -> bool:
-        scope = self._voice_switch_scope_key(event)
+        scope = self.context._voice_switch_scope_key(event)
         if not scope:
             return False
-        self._prune_voice_switch_rounds()
-        item = self._voice_switch_round_store().pop(scope, None)
+        self.context._prune_voice_switch_rounds()
+        item = self.context._voice_switch_round_store().pop(scope, None)
         if not isinstance(item, dict) or item.get("used_voice"):
             return False
-        self._mark_voice_switch_channel(event, "文字")
+        self.context._mark_voice_switch_channel(event, "文字")
         return True
 
     @staticmethod
@@ -88,7 +107,7 @@ class VoiceSwitchRecordMixin:
         result: str,
     ) -> None:
         logger.debug(
-            f"{LOG_PREFIX} {self._voice_expression_log_title(channel, source)}；"
+            f"{LOG_PREFIX} {self.context._voice_expression_log_title(channel, source)}；"
             f"结果：{result or '已裁定'}；原因：{reason or '未提供额外原因'}"
         )
 
@@ -108,7 +127,7 @@ class VoiceSwitchRecordMixin:
         confidence: float = 1.0,
     ) -> None:
         if not (channel == "语音" and source == "普通聊天" and result == "已发送"):
-            self._log_voice_expression_decision(
+            self.context._log_voice_expression_decision(
                 channel=channel,
                 source=source,
                 reason=reason,

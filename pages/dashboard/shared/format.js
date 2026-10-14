@@ -806,6 +806,7 @@ function visibleExperienceEvidence(evidence, episodes) {
     .filter((item) => item && typeof item === "object")
     .map((item) => text(item.id).trim())
     .filter(Boolean));
+  const shown = new Set();
   return evidence.filter((item) => {
     if (!item || typeof item !== "object") return false;
     const targetType = text(item.target_type).trim().toLowerCase();
@@ -813,6 +814,15 @@ function visibleExperienceEvidence(evidence, episodes) {
     const targetId = text(item.target_id).trim();
     if (targetType === "life_episode" && evidenceType === "daily_generation" && episodeIds.has(targetId)) {
       return false;
+    }
+    const summary = text(item.summary).trim();
+    if (summary) {
+      const identity = JSON.stringify([
+        targetType, targetId, evidenceType,
+        text(item.session_id).trim(), text(item.date).trim(), summary,
+      ]);
+      if (shown.has(identity)) return false;
+      shown.add(identity);
     }
     return true;
   });

@@ -146,7 +146,8 @@ class AnimatedVisionDeadlineTest(unittest.IsolatedAsyncioTestCase):
                     cancelled.set()
 
         runtime, closed = self.runtime(SlowProvider([], provider_id="primary"))
-        runtime._EMOJI_VISION_TIMEOUT_SECONDS = 0.03
+        # 留给请求进入 provider 的时间，避免繁忙测试进程先在准备阶段超时。
+        runtime._EMOJI_VISION_TIMEOUT_SECONDS = 0.5
         runtime._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS = 1
         with self.assertRaises(TimeoutError):
             await runtime._call_emoji_vision_payload(

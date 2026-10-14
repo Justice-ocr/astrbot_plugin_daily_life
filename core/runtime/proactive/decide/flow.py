@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import uuid
 from typing import Any
@@ -10,8 +12,77 @@ from ....life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ....life.tools import extract_json_from_text
 from ...markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ProactiveFlowMixin:
+
+class ProactiveFlowComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _PROACTIVE_UTILITY_THRESHOLD: Any
+    _advance_proactive_decision_trace: Any
+    _audit_proactive_continuity: Any
+    _build_proactive_prompt: Any
+    _clamp_float: Any
+    _commit_proactive_decision: Any
+    _current_proactive_persona: Any
+    _evaluate_idle_candidate: Any
+    _event_is_group_message: Any
+    _event_message_id: Any
+    _event_session_id: Any
+    _expression_review_passed: Any
+    _format_recent_context_messages: Any
+    _get_proactive_provider: Any
+    _idle_candidate_ready: Any
+    _mark_proactive_reply_sent: Any
+    _normalize_proactive_payload: Any
+    _normalize_proactive_utility: Any
+    _normalize_proactive_voice_call_intent: Any
+    _prepare_proactive_voice_call_invite: Any
+    _proactive_air_delay_remaining: Any
+    _proactive_allowed_for_event: Any
+    _proactive_bool: Any
+    _proactive_candidate_event: Any
+    _proactive_chat_enabled: Any
+    _proactive_cooldown_remaining: Any
+    _proactive_current_day: Any
+    _proactive_group_anchor: Any
+    _proactive_idle_candidates: Any
+    _proactive_idle_enabled: Any
+    _proactive_idle_seconds: Any
+    _proactive_observe_hold_remaining: Any
+    _proactive_observe_hold_seconds: Any
+    _proactive_readiness_check: Any
+    _proactive_reply_text: Any
+    _proactive_scope_key: Any
+    _proactive_skip: Any
+    _read_recent_context_messages: Any
+    _record_proactive_decision: Any
+    _record_virtual_life_metric: Any
+    _save_pending_reply_effect: Any
+    _save_proactive_decision: Any
+    _save_proactive_expression_records: Any
+    _send_proactive_message: Any
+    _send_proactive_voice_call_invite: Any
+    _split_voice_call_invite_message: Any
+    _track_proactive_reply_effect: Any
+    _transition_proactive_lifecycle: Any
+    _update_proactive_air_after_decision: Any
+    call_text_model: Any
+    close_text_session: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    create_voice_call_invite: Any
+    evaluate_proactive_reply: Any
+    mark_page_status_changed: Any
+    resolve_interaction_context: Any
+    voice_call: Any
+
+
+class ProactiveFlowComponent:
+    def __init__(self, context: ProactiveFlowComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _proactive_skip(reason: str, *, handled: bool = False) -> dict[str, Any]:
         return {
@@ -24,7 +95,7 @@ class ProactiveFlowMixin:
     def _proactive_group_anchor(
         self, event: Any, readiness: dict[str, Any], payload: dict[str, Any]
     ) -> bool:
-        if not self._event_is_group_message(event):
+        if not self.context._event_is_group_message(event):
             return True
         target_message_id = str(payload.get("target_message_id") or "").strip()
         target_topic = str(payload.get("target_topic") or "").strip()
@@ -33,7 +104,7 @@ class ProactiveFlowMixin:
         if not target_topic:
             target_topic = str(readiness.get("target_topic") or "").strip()
         if not target_message_id:
-            target_message_id = self._event_message_id(event)
+            target_message_id = self.context._event_message_id(event)
         if not target_topic:
             target_topic = str(getattr(event, "message_str", "") or "").strip()[:80]
         if target_message_id:
@@ -49,15 +120,15 @@ class ProactiveFlowMixin:
 
         raw = payload.get("voice_call_intent")
         raw = raw if isinstance(raw, dict) else {}
-        requested = self._proactive_bool(raw.get("should_invite"))
-        greeting = self._proactive_reply_text(raw.get("greeting"))[:500]
+        requested = self.context._proactive_bool(raw.get("should_invite"))
+        greeting = self.context._proactive_reply_text(raw.get("greeting"))[:500]
         reason = str(raw.get("reason") or "").strip()[:240]
-        manager = getattr(self, "voice_call", None)
+        manager = getattr(self.context, "voice_call", None)
         checker = getattr(manager, "proactive_invite_available", None)
         available = False
-        if not self._event_is_group_message(event) and callable(checker):
+        if not self.context._event_is_group_message(event) and callable(checker):
             try:
-                available = bool(checker(self._event_session_id(event)))
+                available = bool(checker(self.context._event_session_id(event)))
             except Exception:
                 available = False
         should_invite = (
@@ -95,7 +166,7 @@ class ProactiveFlowMixin:
         intent = payload.get("voice_call_intent")
         if not isinstance(intent, dict) or not intent.get("should_invite"):
             return None
-        creator = getattr(self, "create_voice_call_invite", None)
+        creator = getattr(self.context, "create_voice_call_invite", None)
         if not callable(creator):
             return None
         try:
@@ -106,7 +177,7 @@ class ProactiveFlowMixin:
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 主动语音邀请创建失败：{type(exc).__name__}")
             return None
-        notice, link = self._split_voice_call_invite_message(message)
+        notice, link = self.context._split_voice_call_invite_message(message)
         return (notice, link) if notice and link else None
 
     def _normalize_proactive_payload(
@@ -115,16 +186,16 @@ class ProactiveFlowMixin:
         readiness: dict[str, Any],
         payload: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
-        confidence = self._clamp_float(payload.get("confidence"))
-        reply_text = self._proactive_reply_text(payload.get("reply_text"))
+        confidence = self.context._clamp_float(payload.get("confidence"))
+        reply_text = self.context._proactive_reply_text(payload.get("reply_text"))
         payload["_expression_candidate_text"] = reply_text
-        requested = self._proactive_bool(payload.get("should_reply"))
-        expression_passed = self._expression_review_passed(payload)
-        utility, utility_valid = self._normalize_proactive_utility(payload)
+        requested = self.context._proactive_bool(payload.get("should_reply"))
+        expression_passed = self.context._expression_review_passed(payload)
+        utility, utility_valid = self.context._normalize_proactive_utility(payload)
         reason_code = "proposal_approved"
         if not requested:
             reason_code = "model_declined"
-        elif confidence < self.config.proactive.min_confidence:
+        elif confidence < self.context.config.proactive.min_confidence:
             reason_code = "confidence_below_threshold"
         elif not expression_passed:
             reason_code = "expression_review_failed"
@@ -132,18 +203,18 @@ class ProactiveFlowMixin:
             reason_code = "empty_reply"
         elif not utility_valid:
             reason_code = "invalid_utility_scores"
-        elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
+        elif utility < self.context._PROACTIVE_UTILITY_THRESHOLD:
             reason_code = "utility_below_threshold"
         if requested and not expression_passed:
             payload["decision"] = "observe"
             payload["reason"] = "表达检查未通过或缺少有效检查，暂缓主动发送"
         should_reply = (
             requested
-            and confidence >= self.config.proactive.min_confidence
+            and confidence >= self.context.config.proactive.min_confidence
             and expression_passed
             and bool(reply_text)
             and utility_valid
-            and utility >= self._PROACTIVE_UTILITY_THRESHOLD
+            and utility >= self.context._PROACTIVE_UTILITY_THRESHOLD
         )
         if requested and reason_code in {
             "invalid_utility_scores",
@@ -155,7 +226,7 @@ class ProactiveFlowMixin:
                 if utility_valid
                 else "主动收益评分不完整，暂不发送"
             )
-        if should_reply and not self._proactive_group_anchor(event, readiness, payload):
+        if should_reply and not self.context._proactive_group_anchor(event, readiness, payload):
             should_reply = False
             payload["decision"] = "observe"
             payload["reason"] = "群聊闲时回复缺少自然承接点"
@@ -170,7 +241,7 @@ class ProactiveFlowMixin:
                 "reply_text": reply_text if should_reply else "",
             }
         )
-        self._normalize_proactive_voice_call_intent(event, payload)
+        self.context._normalize_proactive_voice_call_intent(event, payload)
         return payload, reply_text
 
     async def _record_proactive_decision(
@@ -181,9 +252,9 @@ class ProactiveFlowMixin:
         reply_text: str,
         now: datetime.datetime,
     ) -> None:
-        await self._save_proactive_expression_records(event, payload, reply_text)
+        await self.context._save_proactive_expression_records(event, payload, reply_text)
         try:
-            await self._save_proactive_decision(
+            await self.context._save_proactive_decision(
                 event,
                 sender_name,
                 payload,
@@ -196,11 +267,11 @@ class ProactiveFlowMixin:
             logger.warning(f"{LOG_PREFIX} 闲时回复审计记录失败：{exc}")
         if not payload.get("should_reply"):
             return
-        chat_mode = "群聊" if self._event_is_group_message(event) else "私聊"
+        chat_mode = "群聊" if self.context._event_is_group_message(event) else "私聊"
         logger.debug(
             f"{LOG_PREFIX} 闲时回复{chat_mode}裁定通过：长度={len(reply_text)}"
         )
-        mark_changed = getattr(self, "mark_page_status_changed", None)
+        mark_changed = getattr(self.context, "mark_page_status_changed", None)
         if not callable(mark_changed):
             return
         try:
@@ -238,7 +309,7 @@ class ProactiveFlowMixin:
             }
         )
         try:
-            await self._save_proactive_decision(
+            await self.context._save_proactive_decision(
                 event,
                 sender_name,
                 committed,
@@ -255,11 +326,13 @@ class ProactiveFlowMixin:
         event: Any,
         now: datetime.datetime | None = None,
     ) -> dict[str, Any]:
-        if not self._proactive_allowed_for_event(event):
-            return self._proactive_skip("未启用或不适合闲时回复")
+        if not self.context._proactive_allowed_for_event(
+            event, continuing=bool(getattr(event, "is_proactive_synthetic", False))
+        ):
+            return self.context._proactive_skip("未启用或不适合闲时回复")
         now = now or life_now()
-        if not self._event_is_group_message(event):
-            interaction_context = await self.resolve_interaction_context(
+        if not self.context._event_is_group_message(event):
+            interaction_context = await self.context.resolve_interaction_context(
                 event=event,
                 now=now,
             )
@@ -271,7 +344,7 @@ class ProactiveFlowMixin:
                     "reason": "双方当前同处现场，不额外发起线上闲时回复",
                     "reason_code": "co_present_interaction",
                 }
-        remaining = self._proactive_cooldown_remaining(event, now)
+        remaining = self.context._proactive_cooldown_remaining(event, now)
         if remaining > 0:
             return {
                 "should_reply": False,
@@ -279,10 +352,10 @@ class ProactiveFlowMixin:
                 "decision": "cooldown",
                 "reason": f"闲时回复冷却中，还剩 {remaining} 秒",
             }
-        key = self._proactive_scope_key(event)
+        key = self.context._proactive_scope_key(event)
         pending_count = max(1, int(getattr(event, "proactive_pending_count", 1) or 1))
         air_delay = (
-            self._proactive_air_delay_remaining(key, now, pending_count=pending_count)
+            self.context._proactive_air_delay_remaining(key, now, pending_count=pending_count)
             if key
             else 0
         )
@@ -294,25 +367,25 @@ class ProactiveFlowMixin:
                 "reason": f"会话空气正在等待或退避，还剩 {air_delay} 秒",
                 "retry_after": air_delay,
             }
-        readiness = await self._proactive_readiness_check(
+        readiness = await self.context._proactive_readiness_check(
             event, now, pending_count=pending_count
         )
         if not readiness.get("should_evaluate", False):
             if key:
-                self._update_proactive_air_after_decision(
+                self.context._update_proactive_air_after_decision(
                     key, readiness, now, sent=False
                 )
             return readiness
-        provider = await self._get_proactive_provider()
+        provider = await self.context._get_proactive_provider()
         if not provider:
-            return self._proactive_skip("没有可用模型")
+            return self.context._proactive_skip("没有可用模型")
 
-        sender_name = await self.contact_resolver.resolve_event_sender(event)
-        target_date_str, using_extended_night, day = await self._proactive_current_day(
+        sender_name = await self.context.contact_resolver.resolve_event_sender(event)
+        target_date_str, using_extended_night, day = await self.context._proactive_current_day(
             now
         )
         session_id = f"daily_life_proactive_{uuid.uuid4().hex[:8]}"
-        prompt = await self._build_proactive_prompt(
+        prompt = await self.context._build_proactive_prompt(
             event,
             sender_name,
             now,
@@ -322,8 +395,8 @@ class ProactiveFlowMixin:
             readiness,
         )
         try:
-            provider_id = self.config.proactive.provider
-            text = await self.call_text_model(
+            provider_id = self.context.config.proactive.provider
+            text = await self.context.call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -332,18 +405,18 @@ class ProactiveFlowMixin:
             )
             payload = extract_json_from_text(text)
             if not isinstance(payload, dict):
-                return self._proactive_skip("模型未返回有效裁定")
-            payload, reply_text = self._normalize_proactive_payload(
+                return self.context._proactive_skip("模型未返回有效裁定")
+            payload, reply_text = self.context._normalize_proactive_payload(
                 event, readiness, payload
             )
             if payload["should_reply"]:
                 auditor = getattr(
-                    getattr(self, "composer", None), "_audit_person_payload", None
+                    getattr(self.context, "composer", None), "_audit_person_payload", None
                 )
                 if callable(auditor):
-                    person_facts = await self.composer._build_person_fact_context(
-                        persona=await self._current_proactive_persona(
-                            self._event_session_id(event)
+                    person_facts = await self.context.composer._build_person_fact_context(
+                        persona=await self.context._current_proactive_persona(
+                            self.context._event_session_id(event)
                         ),
                         explicit_instruction=str(
                             getattr(event, "message_str", "") or ""
@@ -368,17 +441,17 @@ class ProactiveFlowMixin:
                         )
                         reply_text = ""
                     else:
-                        payload, reply_text = self._normalize_proactive_payload(
+                        payload, reply_text = self.context._normalize_proactive_payload(
                             event, readiness, audit.payload
                         )
             if payload["should_reply"]:
-                recent_messages = await self._read_recent_context_messages(
-                    self._event_session_id(event), limit=12
+                recent_messages = await self.context._read_recent_context_messages(
+                    self.context._event_session_id(event), limit=12
                 )
                 if recent_messages:
-                    valid, reason = await self._audit_proactive_continuity(
+                    valid, reason = await self.context._audit_proactive_continuity(
                         payload=payload,
-                        recent_context=self._format_recent_context_messages(
+                        recent_context=self.context._format_recent_context_messages(
                             recent_messages, now=now
                         ),
                         provider=provider,
@@ -393,37 +466,37 @@ class ProactiveFlowMixin:
                             "reply_text": "",
                         })
                         reply_text = ""
-                        self._normalize_proactive_voice_call_intent(event, payload)
+                        self.context._normalize_proactive_voice_call_intent(event, payload)
             if not payload["should_reply"]:
-                self._update_proactive_air_after_decision(key, payload, now, sent=False)
-            await self._record_proactive_decision(
+                self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
+            await self.context._record_proactive_decision(
                 event, sender_name, payload, reply_text, now
             )
             return payload
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 闲时回复裁定失败：{exc}")
-            return self._proactive_skip(f"闲时回复裁定失败：{exc}")
+            return self.context._proactive_skip(f"闲时回复裁定失败：{exc}")
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def evaluate_idle_proactive_candidates(
         self,
         now: datetime.datetime | None = None,
     ) -> None:
-        if not self._proactive_idle_enabled():
+        if not self.context._proactive_idle_enabled():
             return
-        candidates = self._proactive_idle_candidates
+        candidates = self.context._proactive_idle_candidates
         if not candidates:
             return
         now = now or life_now()
         for key, candidate in list(candidates.items()):
-            if not self._idle_candidate_ready(candidate, now):
+            if not self.context._idle_candidate_ready(candidate, now):
                 if not isinstance(candidate, dict) or not isinstance(
                     candidate.get("last_activity_at"), datetime.datetime
                 ):
                     candidates.pop(key, None)
                 continue
-            await self._evaluate_idle_candidate(key, candidate, now)
+            await self.context._evaluate_idle_candidate(key, candidate, now)
 
     def _idle_candidate_ready(self, candidate: Any, now: datetime.datetime) -> bool:
         if not isinstance(candidate, dict):
@@ -431,17 +504,24 @@ class ProactiveFlowMixin:
         last_activity_at = candidate.get("last_activity_at")
         if not isinstance(last_activity_at, datetime.datetime):
             return False
-        if self._proactive_observe_hold_remaining(candidate, now) > 0:
+        if self.context._proactive_observe_hold_remaining(candidate, now) > 0:
             return False
         return int((now - last_activity_at).total_seconds()) >= (
-            self._proactive_idle_seconds(candidate)
+            self.context._proactive_idle_seconds(candidate)
         )
 
     async def _evaluate_idle_candidate(
         self, key: str, candidate: dict[str, Any], now: datetime.datetime
     ) -> None:
         revision = int(candidate.get("revision") or 0)
-        self._transition_proactive_lifecycle(
+
+        def is_current() -> bool:
+            current = self.context._proactive_idle_candidates.get(key)
+            return current is candidate and int(current.get("revision") or 0) == revision
+
+        if not is_current():
+            return
+        self.context._transition_proactive_lifecycle(
             key,
             "considering",
             event="evaluation_started",
@@ -450,20 +530,19 @@ class ProactiveFlowMixin:
             revision=revision,
             candidate=candidate,
         )
-        event = self._proactive_candidate_event(candidate)
-        decision = await self.evaluate_proactive_reply(event, now=now)
+        event = self.context._proactive_candidate_event(candidate)
+        decision = await self.context.evaluate_proactive_reply(event, now=now)
         reply_text = str(decision.get("reply_text") or "").strip()
         decision_name = decision.get("decision")
-        current = self._proactive_idle_candidates.get(key)
-        if current is not candidate or int(current.get("revision") or 0) != revision:
-            await self._advance_proactive_decision_trace(
+        if not is_current():
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="interrupted",
                 reason_code="conversation_revision_changed",
                 outcome="裁定期间会话版本已变化",
             )
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "interrupted",
                 event="conversation_revision_changed",
@@ -473,17 +552,17 @@ class ProactiveFlowMixin:
                 candidate=candidate,
                 publish=False,
             )
-            self._record_virtual_life_metric("idle_revision_interrupted")
+            self.context._record_virtual_life_metric("idle_revision_interrupted")
             return
-        if not self._proactive_chat_enabled(self._event_is_group_message(event)):
-            await self._advance_proactive_decision_trace(
+        if not self.context._proactive_chat_enabled(self.context._event_is_group_message(event)):
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="abandoned",
                 reason_code="channel_disabled",
                 outcome="发送前主动回复通道已关闭",
             )
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "abandoned",
                 event="channel_disabled",
@@ -492,13 +571,15 @@ class ProactiveFlowMixin:
                 revision=revision,
                 candidate=candidate,
             )
-            self._proactive_idle_candidates.pop(key, None)
+            self.context._proactive_idle_candidates.pop(key, None)
             return
-        if decision.get("should_reply") and not self._event_is_group_message(event):
-            latest_interaction = await self.resolve_interaction_context(
+        if decision.get("should_reply") and not self.context._event_is_group_message(event):
+            latest_interaction = await self.context.resolve_interaction_context(
                 event=event,
                 now=life_now(),
             )
+            if not is_current():
+                return
             if latest_interaction.mode == "co_present":
                 decision.update(
                     {
@@ -520,7 +601,7 @@ class ProactiveFlowMixin:
                     )
                 reply_text = ""
                 decision_name = "observe"
-        self._normalize_proactive_voice_call_intent(event, decision)
+        self.context._normalize_proactive_voice_call_intent(event, decision)
         if decision_name in {"cooldown", "air_delay", "wait"}:
             retry_after = max(60, int(decision.get("retry_after") or 60))
             candidate["next_evaluation_at"] = now + datetime.timedelta(
@@ -528,7 +609,7 @@ class ProactiveFlowMixin:
             )
             candidate["state"] = "reevaluate_after_silence"
             target_state = "cooldown" if decision_name == "cooldown" else "waiting"
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 target_state,
                 event="decision_deferred",
@@ -537,7 +618,7 @@ class ProactiveFlowMixin:
                 revision=revision,
                 candidate=candidate,
             )
-            await self._advance_proactive_decision_trace(
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage=target_state,
@@ -545,7 +626,9 @@ class ProactiveFlowMixin:
                 outcome=str(decision.get("reason") or "等待更合适的时机"),
             )
             return
-        voice_invite = await self._prepare_proactive_voice_call_invite(event, decision)
+        voice_invite = await self.context._prepare_proactive_voice_call_invite(event, decision)
+        if not is_current():
+            return
         voice_intent = decision.get("voice_call_intent")
         if isinstance(voice_intent, dict) and voice_intent.get("should_invite") and voice_invite is None:
             decision.update(
@@ -558,16 +641,16 @@ class ProactiveFlowMixin:
                 }
             )
             voice_intent.update({"should_invite": False, "reason": decision["reason"]})
-            self._update_proactive_air_after_decision(key, decision, now, sent=False)
-            self._proactive_idle_candidates.pop(key, None)
-            await self._advance_proactive_decision_trace(
+            self.context._update_proactive_air_after_decision(key, decision, now, sent=False)
+            self.context._proactive_idle_candidates.pop(key, None)
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="abandoned",
                 reason_code="voice_call_invite_unavailable",
                 outcome=decision["reason"],
             )
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "abandoned",
                 event="voice_call_invite_unavailable",
@@ -578,7 +661,7 @@ class ProactiveFlowMixin:
             )
             return
         if decision.get("should_reply") and reply_text:
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "sending",
                 event="proposal_approved",
@@ -587,14 +670,16 @@ class ProactiveFlowMixin:
                 revision=revision,
                 candidate=candidate,
             )
-            await self._advance_proactive_decision_trace(
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="sending",
                 reason_code="proposal_approved",
                 outcome="准备发送主动消息",
             )
-            sent = await self._send_proactive_message(
+            if not is_current():
+                return
+            sent = await self.context._send_proactive_message(
                 str(candidate.get("target_scope") or ""),
                 reply_text,
                 "闲时回复发送失败",
@@ -604,7 +689,7 @@ class ProactiveFlowMixin:
             if sent:
                 if voice_invite is not None:
                     notice, link = voice_invite
-                    invite_sent = await self._send_proactive_voice_call_invite(
+                    invite_sent = await self.context._send_proactive_voice_call_invite(
                         str(candidate.get("target_scope") or ""),
                         notice,
                         link,
@@ -616,36 +701,38 @@ class ProactiveFlowMixin:
                     if not invite_sent:
                         logger.warning(f"{LOG_PREFIX} 主动语音邀请链接发送失败")
                 sender_name = str(candidate.get("sender_name") or "").strip()
-                await self._commit_proactive_decision(
+                await self.context._commit_proactive_decision(
                     event,
                     sender_name,
                     decision,
                     reply_text,
                     now,
                 )
-                self._mark_proactive_reply_sent(event, now)
-                self._transition_proactive_lifecycle(
-                    key,
-                    "engaged",
-                    event="send_succeeded",
-                    reason="主动消息已实际送达，开始观察互动效果",
-                    now=now,
-                    revision=revision,
-                    candidate=candidate,
-                )
-                self._track_proactive_reply_effect(
+                self.context._mark_proactive_reply_sent(event, now)
+                if is_current():
+                    self.context._transition_proactive_lifecycle(
+                        key,
+                        "engaged",
+                        event="send_succeeded",
+                        reason="主动消息已实际送达，开始观察互动效果",
+                        now=now,
+                        revision=revision,
+                        candidate=candidate,
+                    )
+                self.context._track_proactive_reply_effect(
                     key, event, decision, reply_text, now
                 )
-                await self._save_pending_reply_effect(key, event, decision, reply_text)
-                self._proactive_idle_candidates.pop(key, None)
-                self._record_virtual_life_metric("idle_reply_sent")
+                await self.context._save_pending_reply_effect(key, event, decision, reply_text)
+                if is_current():
+                    self.context._proactive_idle_candidates.pop(key, None)
+                self.context._record_virtual_life_metric("idle_reply_sent")
                 return
-            latest = self._proactive_idle_candidates.get(key)
+            latest = self.context._proactive_idle_candidates.get(key)
             interrupted = (
                 latest is not candidate
                 or int((latest or {}).get("revision") or 0) != revision
             )
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "interrupted" if interrupted else "abandoned",
                 event=(
@@ -659,7 +746,7 @@ class ProactiveFlowMixin:
                 candidate=candidate,
                 publish=not interrupted,
             )
-            await self._advance_proactive_decision_trace(
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="interrupted" if interrupted else "abandoned",
@@ -670,25 +757,26 @@ class ProactiveFlowMixin:
                     "发送期间会话版本已变化" if interrupted else "主动消息发送失败"
                 ),
             )
-            self._update_proactive_air_after_decision(
-                key,
-                {
-                    "decision": "observe",
-                    "reason": "闲时回复发送失败，暂时收回续话意愿",
-                },
-                now,
-                sent=False,
-            )
-            self._proactive_idle_candidates.pop(key, None)
-            self._record_virtual_life_metric("idle_send_failed")
+            if is_current():
+                self.context._update_proactive_air_after_decision(
+                    key,
+                    {
+                        "decision": "observe",
+                        "reason": "闲时回复发送失败，暂时收回续话意愿",
+                    },
+                    now,
+                    sent=False,
+                )
+                self.context._proactive_idle_candidates.pop(key, None)
+            self.context._record_virtual_life_metric("idle_send_failed")
             return
         if decision_name == "observe":
             candidate["observe_hold_until"] = now + datetime.timedelta(
-                seconds=self._proactive_observe_hold_seconds()
+                seconds=self.context._proactive_observe_hold_seconds()
             )
             candidate["next_evaluation_at"] = candidate["observe_hold_until"]
             candidate["state"] = "reevaluate_after_silence"
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "waiting",
                 event="decision_observe",
@@ -697,16 +785,16 @@ class ProactiveFlowMixin:
                 revision=revision,
                 candidate=candidate,
             )
-            await self._advance_proactive_decision_trace(
+            await self.context._advance_proactive_decision_trace(
                 event,
                 decision,
                 stage="waiting",
                 reason_code=str(decision.get("reason_code") or "decision_observe"),
                 outcome=str(decision.get("reason") or "继续观察会话空气"),
             )
-            self._record_virtual_life_metric("idle_observe")
+            self.context._record_virtual_life_metric("idle_observe")
             return
-        self._transition_proactive_lifecycle(
+        self.context._transition_proactive_lifecycle(
             key,
             "abandoned",
             event="decision_abandoned",
@@ -715,12 +803,13 @@ class ProactiveFlowMixin:
             revision=revision,
             candidate=candidate,
         )
-        await self._advance_proactive_decision_trace(
+        await self.context._advance_proactive_decision_trace(
             event,
             decision,
             stage="abandoned",
             reason_code=str(decision.get("reason_code") or "decision_abandoned"),
             outcome=str(decision.get("reason") or "本轮不适合主动续话"),
         )
-        self._proactive_idle_candidates.pop(key, None)
-        self._record_virtual_life_metric("turn_abandoned")
+        if is_current():
+            self.context._proactive_idle_candidates.pop(key, None)
+        self.context._record_virtual_life_metric("turn_abandoned")

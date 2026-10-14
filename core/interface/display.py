@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from typing import Any, AsyncIterator
 
@@ -25,8 +27,20 @@ from ..clock import now as life_now
 from .request import CommandRequest
 from ..config.vocab import PERIOD_ORDER
 
+from typing import Protocol
 
-class DisplayCommandMixin:
+
+class DisplayCommandComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _cleanup_emoji_cache: Any
+    runtime: Any
+
+
+class DisplayCommandComponent:
+    def __init__(self, context: DisplayCommandComponentContext) -> None:
+        self.context = context
+
     async def _help(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         yield event.plain_result(
             """📅 日常生活背景引擎
@@ -46,7 +60,7 @@ class DisplayCommandMixin:
         )
 
     async def _status(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        data = await self.runtime.archive.get_day(req.target_date_str)
+        data = await self.context.runtime.archive.get_day(req.target_date_str)
         if not data or not data.timeline:
             yield event.plain_result("今天还没有安排日程哦。")
             return
@@ -72,11 +86,11 @@ class DisplayCommandMixin:
     async def _refresh_state(
         self, event: Any, req: CommandRequest
     ) -> AsyncIterator[Any]:
-        data = await self.runtime.archive.get_day(req.target_date_str)
+        data = await self.context.runtime.archive.get_day(req.target_date_str)
         if not data or not data.timeline:
             yield event.plain_result("今天还没有安排日程哦，暂时无法刷新状态。")
             return
-        data = await self.runtime.refresh_state_for_day(
+        data = await self.context.runtime.refresh_state_for_day(
             req.target_date_str,
             data,
             req.now,
@@ -88,7 +102,7 @@ class DisplayCommandMixin:
 
     async def _show(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         if not req.param1:
-            data = await self.runtime.archive.get_day(req.target_date_str)
+            data = await self.context.runtime.archive.get_day(req.target_date_str)
             if data and data.timeline:
                 tl_text = format_timeline_to_text(data.timeline, timeline_date=data.date, meta=data.meta)
                 meta = data.meta
@@ -119,8 +133,8 @@ class DisplayCommandMixin:
             return
 
         if req.param1 == "周计划":
-            plan = await self.runtime.composer._get_week_plan()
-            prog = await self.runtime.composer._get_week_progress()
+            plan = await self.context.runtime.composer._get_week_plan()
+            prog = await self.context.runtime.composer._get_week_progress()
             goals = format_text_list(plan.goals, default="无")
             today_hint = resolve_daily_hint(plan, req.now, default="无")
             today_suggested = resolve_daily_suggested(plan, req.now, default="无")
@@ -135,7 +149,7 @@ class DisplayCommandMixin:
             return
 
         if req.param1 == "历史":
-            data = await self.runtime.archive.get_day(req.target_date_str)
+            data = await self.context.runtime.archive.get_day(req.target_date_str)
             if data and data.outfit_history:
                 history = data.outfit_history
                 lines = [f"📅 {req.target_date_str} 穿搭历史"]
@@ -152,7 +166,7 @@ class DisplayCommandMixin:
         yield event.plain_result("未知显示项，使用 /生活 帮助 查看帮助")
 
     async def _spoiler(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        data = await self.runtime.archive.get_day(req.target_date_str)
+        data = await self.context.runtime.archive.get_day(req.target_date_str)
         if not data or not data.timeline:
             yield event.plain_result("今天还没有安排日程哦，无法剧透。")
             return
@@ -169,9 +183,9 @@ class DisplayCommandMixin:
 
         tomorrow = req.now + datetime.timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-        week_plan = await self.runtime.composer._get_week_plan()
+        week_plan = await self.context.runtime.composer._get_week_plan()
         tomorrow_hint = resolve_daily_hint(week_plan, tomorrow, default="暂无特殊安排")
-        tomorrow_data = await self.runtime.archive.get_day(tomorrow_str)
+        tomorrow_data = await self.context.runtime.archive.get_day(tomorrow_str)
         memo = tomorrow_data.memo if tomorrow_data else ""
         msg = f"🌙 今天的计划已经全部结束啦。\n\n📅 【明日前瞻】\n💡 主题走向：{tomorrow_hint}"
         if memo:
@@ -193,7 +207,7 @@ class DisplayCommandMixin:
         now = life_now()
         for i in range(days):
             day = (now - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-            info = await self.runtime.archive.get_day(day)
+            info = await self.context.runtime.archive.get_day(day)
             if info and info.timeline:
                 w_info = info.weather_info
                 w_mark = (
@@ -211,18 +225,18 @@ class DisplayCommandMixin:
     async def _world(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         yield event.plain_result(
             format_world_display(
-                await self.runtime.archive.get_recent_relationships(8),
-                await self.runtime.archive.get_recent_places(10),
-                await self.runtime.archive.get_recent_events(10),
-                await self.runtime.archive.get_recent_chat_summaries(8),
-                await self.runtime.archive.get_recent_group_environments(5),
-                await self.runtime.archive.get_recent_action_decisions(5),
-                await self.runtime.archive.get_recent_message_visibility(5),
+                await self.context.runtime.archive.get_recent_relationships(8),
+                await self.context.runtime.archive.get_recent_places(10),
+                await self.context.runtime.archive.get_recent_events(10),
+                await self.context.runtime.archive.get_recent_chat_summaries(8),
+                await self.context.runtime.archive.get_recent_group_environments(5),
+                await self.context.runtime.archive.get_recent_action_decisions(5),
+                await self.context.runtime.archive.get_recent_message_visibility(5),
             )
         )
 
     async def _timeline(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        data = await self.runtime.archive.get_day(req.target_date_str)
+        data = await self.context.runtime.archive.get_day(req.target_date_str)
         if not data or not data.timeline:
             yield event.plain_result("当前没有时间轴记录。")
             return
@@ -236,13 +250,13 @@ class DisplayCommandMixin:
     async def _review(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         target = req.param2 or req.target_date_str
         if req.param1 in {"生成", "刷新", "重做"}:
-            review = await self.runtime.composer.compose_daily_review(
+            review = await self.context.runtime.composer.compose_daily_review(
                 target, force=True
             )
         else:
-            review = await self.runtime.archive.get_daily_review(target)
+            review = await self.context.runtime.archive.get_daily_review(target)
             if not review:
-                review = await self.runtime.composer.compose_daily_review(target)
+                review = await self.context.runtime.composer.compose_daily_review(target)
         if not review:
             yield event.plain_result(f"{target} 暂无可复盘的生活记录。")
             return
@@ -262,7 +276,7 @@ class DisplayCommandMixin:
         yield event.plain_result("\n".join(lines))
 
     async def _preferences(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        items = await self.runtime.archive.get_preferences(20)
+        items = await self.context.runtime.archive.get_preferences(20)
         if not items:
             yield event.plain_result("暂时还没有学习到稳定偏好。")
             return
@@ -274,7 +288,7 @@ class DisplayCommandMixin:
         yield event.plain_result("\n".join(lines))
 
     async def _life_events(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        items = await self.runtime.archive.get_life_events(limit=20)
+        items = await self.context.runtime.archive.get_life_events(limit=20)
         if not items:
             yield event.plain_result("暂时还没有生活事件。")
             return
@@ -301,18 +315,18 @@ class DisplayCommandMixin:
         try:
             if action == "清理":
                 if category:
-                    result = await self.runtime.archive.cleanup_storage_category(
+                    result = await self.context.runtime.archive.cleanup_storage_category(
                         category, keep_days
                     )
-                    await self._cleanup_emoji_cache()
+                    await self.context._cleanup_emoji_cache()
                     yield event.plain_result(
                         f"✅ 已清理{result['label']}：删除 {result['deleted_rows']} 行，保留 {result['keep_days']} 天内数据。"
                     )
                 else:
-                    result = await self.runtime.archive.cleanup_by_storage_policy(
-                        self.runtime.config.storage
+                    result = await self.context.runtime.archive.cleanup_by_storage_policy(
+                        self.context.runtime.config.storage
                     )
-                    await self._cleanup_emoji_cache()
+                    await self.context._cleanup_emoji_cache()
                     yield event.plain_result(
                         f"✅ 已按存储策略清理：删除 {result['deleted_rows']} 行。"
                     )
@@ -324,18 +338,18 @@ class DisplayCommandMixin:
                         "请指定要清空的分类，例如：/生活 存储 清空 日常记录"
                     )
                     return
-                result = await self.runtime.archive.clear_storage_category(category)
-                clear_timing = getattr(self.runtime, "clear_conversation_timing", None)
+                result = await self.context.runtime.archive.clear_storage_category(category)
+                clear_timing = getattr(self.context.runtime, "clear_conversation_timing", None)
                 if result.get("category") == "conversation" and callable(clear_timing):
                     clear_timing()
-                await self._cleanup_emoji_cache()
+                await self.context._cleanup_emoji_cache()
                 yield event.plain_result(
                     f"✅ 已清空{result['label']}：删除 {result['deleted_rows']} 行。"
                 )
                 return
 
-            overview = await self.runtime.archive.get_storage_overview(
-                self.runtime.config.storage
+            overview = await self.context.runtime.archive.get_storage_overview(
+                self.context.runtime.config.storage
             )
             lines = [f"🗃️ 数据分区（共 {overview.get('total_rows', 0)} 行）"]
             for item in overview.get("categories", []):
@@ -358,10 +372,10 @@ class DisplayCommandMixin:
             yield event.plain_result(f"存储维护失败：{exc}")
 
     async def _cleanup_emoji_cache(self) -> None:
-        maintain = getattr(self.runtime, "maintain_emoji_assets", None)
+        maintain = getattr(self.context.runtime, "maintain_emoji_assets", None)
         if callable(maintain):
             await maintain()
             return
-        cleanup = getattr(self.runtime, "cleanup_emoji_asset_cache", None)
+        cleanup = getattr(self.context.runtime, "cleanup_emoji_asset_cache", None)
         if callable(cleanup):
             await cleanup()

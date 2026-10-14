@@ -48,7 +48,9 @@ def sight_prepare_key(clip: SightClip) -> str:
         or clip.name
         or clip.key
     ).strip()
-    return hashlib.sha256(f"prepare|{identity}".encode("utf-8", errors="ignore")).hexdigest()
+    return hashlib.sha256(
+        f"prepare|{identity}".encode("utf-8", errors="ignore")
+    ).hexdigest()
 
 
 def sight_resource_matches(first: SightClip, second: SightClip) -> bool:
@@ -100,3 +102,6 @@ class SightFlight:
     def _forget(self, key: str, task: asyncio.Task[Any]) -> None:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)
+        if not task.cancelled():
+            # 等待方可能已经超时离开；消费后台异常，仍由在等的调用方正常接收。
+            task.exception()

@@ -1,39 +1,57 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
 import time
-from collections import deque
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from astrbot.api import logger
 
-from ..sources.dispatch import send_message_to_scope
 from .markers import LOG_PREFIX
 
 
-class RecallMixin:
-    """记录用户撤回，并在插件发送前做轻量拦截。"""
+class RecallService:
+    """管理撤回记录与发送拦截，通过明确回调通知上下文所有者。"""
 
     _RECALL_NOTICE_TYPES = {"friend_recall", "group_recall"}
     _RECALL_TTL_SECONDS = 30 * 60
 
-    def _recall_now(self) -> float:
-        try:
-            return asyncio.get_running_loop().time()
-        except RuntimeError:
-            return time.monotonic()
+    def __init__(
+        self,
+        *,
+        event_sources: Callable[[Any], Iterable[Any]],
+        session_id: Callable[[Any], str],
+        message_id: Callable[[Any], str],
+        remove_context: tuple[Callable[[str, str], None], ...],
+        send_scope: Callable[..., Awaitable[bool]],
+        log_outbound: Callable[..., Awaitable[bool]],
+        log_limit: int = 4096,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._event_sources = event_sources
+        self._event_session_id = session_id
+        self._event_message_id = message_id
+        self._remove_context = remove_context
+        self._send_scope = send_scope
+        self._log_outbound = log_outbound
+        self._log_limit = max(1, log_limit)
+        self._clock = clock
+        self._recalled_messages: dict[str, dict[str, float]] = {}
+        self._skip_logged: dict[tuple[str, str], None] = {}
 
-    def _recalled_message_store(self) -> dict[str, dict[str, float]]:
-        store = getattr(self, "_recalled_messages", None)
-        if not isinstance(store, dict):
-            store = {}
-            self._recalled_messages = store
-        return store
+    def evict_scopes(self, scopes: set[str]) -> None:
+        for scope in scopes:
+            self._recalled_messages.pop(scope, None)
+        for key in list(self._skip_logged):
+            if key[0] in scopes:
+                self._skip_logged.pop(key, None)
+
+    def clear(self) -> None:
+        self._recalled_messages.clear()
+        self._skip_logged.clear()
 
     def _prune_recalled_messages(self) -> None:
-        store = self._recalled_message_store()
-        now = self._recall_now()
+        store = self._recalled_messages
+        now = self._clock()
         for scope, items in list(store.items()):
             for message_id, expires_at in list(items.items()):
                 if expires_at <= now:
@@ -69,106 +87,39 @@ class RecallMixin:
         if not scope:
             return True
         self._prune_recalled_messages()
-        self._recalled_message_store().setdefault(scope, {})[message_id] = (
-            self._recall_now() + self._RECALL_TTL_SECONDS
+        self._recalled_messages.setdefault(scope, {})[message_id] = (
+            self._clock() + self._RECALL_TTL_SECONDS
         )
-        self._remove_recalled_message_from_runtime_context(scope, message_id)
+        for remove in self._remove_context:
+            remove(scope, message_id)
         logger.debug(f"{LOG_PREFIX} 已记录用户撤回消息：{scope}#{message_id}")
         return True
 
-    def _remove_recalled_message_from_runtime_context(
-        self, scope: str, message_id: str
-    ) -> None:
-        self._remove_recalled_structured_message(scope, message_id)
-        self._remove_recalled_proactive_candidate(scope, message_id)
-        remover = getattr(self, "remove_recalled_sight_context", None)
-        if callable(remover):
-            remover(scope, message_id)
-
-    def _remove_recalled_structured_message(self, scope: str, message_id: str) -> None:
-        store = getattr(self, "_structured_messages", None)
-        if not isinstance(store, dict):
-            return
-        messages = store.get(scope)
-        if not messages:
-            return
-        kept = [
-            item
-            for item in list(messages)
-            if message_id
-            not in {
-                getattr(item, "message_id", ""),
-                getattr(item, "fallback_key", ""),
-                getattr(item, "key", ""),
-            }
-        ]
-        store[scope] = deque(kept, maxlen=getattr(messages, "maxlen", None))
-
-    def _remove_recalled_proactive_candidate(self, scope: str, message_id: str) -> None:
-        candidates = getattr(self, "_proactive_idle_candidates", None)
-        if not isinstance(candidates, dict):
-            return
-        for key, candidate in list(candidates.items()):
-            if not isinstance(candidate, dict):
-                continue
-            same_target = str(candidate.get("target_scope") or "").strip() == scope
-            same_message = str(candidate.get("message_id") or "").strip() == message_id
-            recent_messages = [
-                item
-                for item in list(candidate.get("recent_messages") or [])
-                if str(item.get("message_id") or "").strip() != message_id
-            ]
-            if same_target and same_message:
-                candidates.pop(key, None)
-                cancel = getattr(self, "_cancel_proactive_idle_task", None)
-                if callable(cancel):
-                    cancel(key)
-                continue
-            if len(recent_messages) != len(
-                list(candidate.get("recent_messages") or [])
-            ):
-                candidate["recent_messages"] = recent_messages
-                candidate["pending_count"] = len(recent_messages)
-
-    def _message_was_recalled(self, scope: str, message_id: str) -> bool:
+    def message_was_recalled(self, scope: str, message_id: str) -> bool:
         scope = str(scope or "").strip()
         message_id = str(message_id or "").strip()
         if not scope or not message_id:
             return False
         self._prune_recalled_messages()
-        return message_id in self._recalled_message_store().get(scope, {})
+        return message_id in self._recalled_messages.get(scope, {})
 
     def _event_message_was_recalled(self, event: Any) -> bool:
-        return self._message_was_recalled(
+        return self.message_was_recalled(
             self._event_session_id(event), self._event_message_id(event)
         )
 
-    def _recalled_skip_log_store(self) -> set[str]:
-        store = getattr(self, "_recalled_skip_logged", None)
-        if not isinstance(store, set):
-            store = set()
-            self._recalled_skip_logged = store
-        return store
-
-    def _remember_recalled_skip_log(self, key: str) -> bool:
-        logged = self._recalled_skip_log_store()
-        if key in logged:
+    def _remember_recalled_skip_log(self, key: tuple[str, str]) -> bool:
+        if key in self._skip_logged:
             return False
-        order = getattr(self, "_recalled_skip_log_order", None)
-        if not isinstance(order, deque):
-            order = deque()
-            self._recalled_skip_log_order = order
-        logged.add(key)
-        order.append(key)
-        limit = max(1, int(getattr(self, "_MESSAGE_DEDUP_LIMIT", 4096)))
-        while len(order) > limit:
-            logged.discard(order.popleft())
+        self._skip_logged[key] = None
+        while len(self._skip_logged) > self._log_limit:
+            self._skip_logged.pop(next(iter(self._skip_logged)))
         return True
 
     def log_recalled_history_skip(self, event: Any) -> None:
         scope = self._event_session_id(event)
         message_id = self._event_message_id(event)
-        key = f"{scope}:{message_id}" if scope and message_id else f"event:{id(event)}"
+        key = (scope, message_id if scope and message_id else f"event:{id(event)}")
         if not self._remember_recalled_skip_log(key):
             return
         logger.debug(f"{LOG_PREFIX} 原消息已撤回，已跳过本轮回复与历史沉淀。")
@@ -190,8 +141,8 @@ class RecallMixin:
         if source_event is not None:
             event_scope = self._event_session_id(source_event) or scope
             message_id = message_id or self._event_message_id(source_event)
-            return self._message_was_recalled(event_scope, message_id)
-        return self._message_was_recalled(scope, message_id)
+            return self.message_was_recalled(event_scope, message_id)
+        return self.message_was_recalled(scope, message_id)
 
     def source_was_recalled(
         self,
@@ -244,30 +195,15 @@ class RecallMixin:
         if callable(event_sender) and not prefer_scope_send:
             await event_sender(chain)
             if log_outbound:
-                outbound_logger = getattr(self, "log_outbound_message_async", None)
-                if not callable(outbound_logger):
-                    outbound_logger = getattr(self, "log_outbound_message", None)
-                if callable(outbound_logger):
-                    result = outbound_logger(
-                        chain,
-                        scope=scope,
-                        source_event=source_event,
-                        source="direct",
-                    )
-                    if inspect.isawaitable(result):
-                        await result
+                await self._log_outbound(
+                    chain, scope=scope, source_event=source_event, source="direct"
+                )
             return True
-        sent = await send_message_to_scope(
-            self.context, scope, chain, raise_delivery_errors=raise_delivery_errors
+        sent = await self._send_scope(
+            scope, chain, raise_delivery_errors=raise_delivery_errors
         )
         if sent and log_outbound:
-            outbound_logger = getattr(self, "log_outbound_message_async", None)
-            if not callable(outbound_logger):
-                outbound_logger = getattr(self, "log_outbound_message", None)
-            if callable(outbound_logger):
-                result = outbound_logger(chain, scope=scope, source="direct")
-                if inspect.isawaitable(result):
-                    await result
+            await self._log_outbound(chain, scope=scope, source="direct")
         return sent
 
     def suppress_recalled_event_result(self, event: Any) -> bool:
@@ -297,3 +233,6 @@ class RecallMixin:
             clearer()
         self.log_recalled_history_skip(event)
         return True
+
+
+__all__ = ["RecallService"]

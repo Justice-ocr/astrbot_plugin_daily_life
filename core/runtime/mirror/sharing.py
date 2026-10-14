@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import math
 
 from ...clock import TIMEZONE, now as life_now
 
@@ -42,7 +43,10 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
             fields.update(detail=200, progress=160)
             key = "activities"
         elif kind == "object":
-            fields.update(progress=160, provenance=120, delivery=32, delivered_at=40)
+            fields.update(
+                progress=160, provenance=120, delivery=32, delivered_at=40,
+                unit=30, available_at=40,
+            )
             # 物品正文与位置可能含私人资料，只在其所属私聊使用。
             if private and item.get("scope") == scope:
                 fields.update(content=240, location=120)
@@ -50,9 +54,24 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
         else:
             continue
         if len(result[key]) < 4:
-            result[key].append(
-                {name: _text(item.get(name), limit) for name, limit in fields.items()}
-            )
+            row = {name: _text(item.get(name), limit) for name, limit in fields.items()}
+            if kind == "object":
+                owner = item.get("owner")
+                if isinstance(owner, str) and owner in {"self", "user", "shared", "unknown"}:
+                    row["owner"] = owner
+                quantity = item.get("quantity")
+                if (
+                    isinstance(quantity, (int, float))
+                    and not isinstance(quantity, bool)
+                    and math.isfinite(quantity)
+                    and quantity >= 0
+                    and row["unit"]
+                ):
+                    row["quantity"] = quantity
+                version = item.get("artifact_version")
+                if isinstance(version, int) and not isinstance(version, bool) and version > 0:
+                    row["artifact_version"] = version
+            result[key].append(row)
 
     model = (world.get("kernel") or {}).get("self_model") or {}
     safe_interests = set()

@@ -30,6 +30,8 @@ from ...paths import STYLE_CATALOG_DIR_NAME, path_exists, runtime_data_root
 from ...prompts import cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
+
 _STYLE_KINDS = {"auto", "both", *STYLE_CATALOG_KIND_SET}
 _STYLE_ITEM_KINDS = STYLE_CATALOG_KIND_SET
 _STYLE_FEEDBACK_SENTIMENTS = {"prefer", "dislike", "neutral", "disable"}
@@ -40,7 +42,59 @@ _STYLE_PERCEPTUAL_DISTANCE = 5
 _CREATIVE_STYLE_GENERATION_MODES = {"text_to_image", "image_to_image"}
 
 
-class RuntimeStyleCatalogMixin:
+class RuntimeStyleCatalogComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _analyze_style_catalog_image: Any
+    _background_tool_existing_result: Any
+    _completion_text: Any
+    _creative_style_prompt: Any
+    _edit_life_image_with_policy_retry: Any
+    _event_component_kind: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _generate_life_image_with_policy_retry: Any
+    _image_reference_from_items_async: Any
+    _learn_style_catalog_image: Any
+    _life_character_reference_image: Any
+    _life_image_reference_is_usable: Any
+    _life_style_learn_inline: Any
+    _media_error_summary: Any
+    _persist_style_catalog_image: Any
+    _prepare_style_catalog_image_bytes: Any
+    _remove_unused_style_catalog_image: Any
+    _requested_style_kinds: Any
+    _resolve_life_image_reference_async: Any
+    _reverse_prompt_call_provider: Any
+    _reverse_reference_bytes: Any
+    _snapshot_media_event: Any
+    _style_analysis_item: Any
+    _style_attributes: Any
+    _style_catalog_call_provider: Any
+    _style_catalog_contract: Any
+    _style_catalog_result_text: Any
+    _style_feedback_decision: Any
+    _style_item_ids: Any
+    _style_learning_images: Any
+    _style_perceptual_hash: Any
+    _style_text: Any
+    _submit_background_tool: Any
+    archive: Any
+    call_text_model: Any
+    close_text_session: Any
+    config: Any
+    data_path: Any
+    get_text_provider: Any
+    get_text_provider_candidates: Any
+    media: Any
+    queue_wardrobe_generation: Any
+
+
+class RuntimeStyleCatalogComponent:
+    def __init__(self, context: RuntimeStyleCatalogComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _requested_style_kinds(kind: str) -> set[str]:
         return (
@@ -320,7 +374,7 @@ class RuntimeStyleCatalogMixin:
             if kind in {"auto", "both"}
             else f"只保存{STYLE_CATALOG_KIND_LABELS.get(kind, '指定')}候选；其他类别仍可分析，但不会入库。"
         )
-        dynamic = f"学习重点：{focus}\n用户补充：{self._style_text(note, 500) or '无'}"
+        dynamic = f"学习重点：{focus}\n用户补充：{self.context._style_text(note, 500) or '无'}"
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="视觉衣橱学习")
 
     @staticmethod
@@ -364,18 +418,18 @@ class RuntimeStyleCatalogMixin:
     async def _persist_style_catalog_image(
         self, image: str, *, source_url: str = ""
     ) -> tuple[str, str]:
-        data, _ = await self._reverse_reference_bytes(image, referer=source_url)
+        data, _ = await self.context._reverse_reference_bytes(image, referer=source_url)
         if not data:
             return image, ""
         if len(data) > REFERENCE_IMAGE_MAX_BYTES:
             raise ValueError("参考图片过大")
         digest = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
-        data = await asyncio.to_thread(self._prepare_style_catalog_image_bytes, data)
+        data = await asyncio.to_thread(self.context._prepare_style_catalog_image_bytes, data)
         if len(data) > REFERENCE_IMAGE_MAX_BYTES:
             raise ValueError("参考图片转换后仍然过大")
         mime, suffix = image_mime_and_ext(data)
         target_dir = (
-            runtime_data_root(getattr(self, "data_path", None)) / STYLE_CATALOG_DIR_NAME
+            runtime_data_root(getattr(self.context, "data_path", None)) / STYLE_CATALOG_DIR_NAME
         )
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         target = target_dir / f"style_{digest[:24]}{suffix}"
@@ -412,14 +466,14 @@ class RuntimeStyleCatalogMixin:
 
     async def _remove_unused_style_catalog_image(self, path_text: str) -> None:
         path = (
-            runtime_data_root(getattr(self, "data_path", None)) / STYLE_CATALOG_DIR_NAME
+            runtime_data_root(getattr(self.context, "data_path", None)) / STYLE_CATALOG_DIR_NAME
         )
         try:
             candidate = await asyncio.to_thread(Path(path_text).expanduser().resolve)
             candidate.relative_to(await asyncio.to_thread(path.resolve))
         except (OSError, RuntimeError, ValueError):
             return
-        items = await self.archive.get_style_catalog_items(status="", limit=500)
+        items = await self.context.archive.get_style_catalog_items(status="", limit=500)
         if any(str(item.image_path or "") == str(candidate) for item in items):
             return
         await asyncio.to_thread(candidate.unlink, missing_ok=True)
@@ -427,16 +481,16 @@ class RuntimeStyleCatalogMixin:
     async def _analyze_style_catalog_image(
         self, image: str, *, note: str, kind: str
     ) -> dict[str, Any]:
-        configured_provider_id = self._style_text(
-            getattr(getattr(self.config, "vision", None), "provider", ""),
+        configured_provider_id = self.context._style_text(
+            getattr(getattr(self.context.config, "vision", None), "provider", ""),
             240,
         )
         sessions: list[str] = []
         last_error: Exception = RuntimeError("视觉模型不可用")
         try:
-            prompt = self._style_catalog_contract(note, kind)
+            prompt = self.context._style_catalog_contract(note, kind)
             index = 0
-            async for provider in self.get_text_provider_candidates(
+            async for provider in self.context.get_text_provider_candidates(
                 configured_provider_id
             ):
                 session_id = f"daily_life_style_catalog_{uuid.uuid4().hex[:8]}"
@@ -447,7 +501,7 @@ class RuntimeStyleCatalogMixin:
                     )
                 sessions.append(session_id)
                 try:
-                    return await self._style_catalog_call_provider(
+                    return await self.context._style_catalog_call_provider(
                         provider,
                         prompt,
                         image,
@@ -458,7 +512,7 @@ class RuntimeStyleCatalogMixin:
                 index += 1
             raise last_error
         finally:
-            cleanup = getattr(self, "close_text_session", None)
+            cleanup = getattr(self.context, "close_text_session", None)
             if callable(cleanup):
                 for active_session_id in sessions:
                     await cleanup(active_session_id)
@@ -470,7 +524,7 @@ class RuntimeStyleCatalogMixin:
         image: str,
         session_id: str,
     ) -> dict[str, Any]:
-        result = await self._reverse_prompt_call_provider(
+        result = await self.context._reverse_prompt_call_provider(
             provider,
             prompt,
             image,
@@ -478,7 +532,7 @@ class RuntimeStyleCatalogMixin:
         )
         if result is None:
             raise RuntimeError("视觉模型未返回结果")
-        payload = extract_json_from_text(self._completion_text(result))
+        payload = extract_json_from_text(self.context._completion_text(result))
         if not isinstance(payload, dict):
             raise RuntimeError("视觉模型未返回有效结构")
         if not any(
@@ -503,34 +557,34 @@ class RuntimeStyleCatalogMixin:
         kind: str = "auto",
         require_complete_clothing: bool = False,
     ) -> list[StyleCatalogItemRecord]:
-        cached_image, image_hash = await self._persist_style_catalog_image(
+        cached_image, image_hash = await self.context._persist_style_catalog_image(
             image,
             source_url=source_url,
         )
         if not image_hash:
             image_hash = hashlib.sha256(image.encode("utf-8")).hexdigest()
-        payload = await self._analyze_style_catalog_image(
+        payload = await self.context._analyze_style_catalog_image(
             cached_image or image, note=note, kind=kind
         )
         analyzed_by_kind = {
-            item_kind: self._style_analysis_item(payload, item_kind)
+            item_kind: self.context._style_analysis_item(payload, item_kind)
             for item_kind in STYLE_CATALOG_KINDS
         }
         if require_complete_clothing and not (
             analyzed_by_kind.get("outfit")
             or (analyzed_by_kind.get("top") and analyzed_by_kind.get("bottom"))
         ):
-            await self._remove_unused_style_catalog_image(cached_image or image)
+            await self.context._remove_unused_style_catalog_image(cached_image or image)
             return []
         perceptual_hash = await asyncio.to_thread(
-            self._style_perceptual_hash, cached_image or image
+            self.context._style_perceptual_hash, cached_image or image
         )
         normalized_scope = (
-            self._style_text(source_scope, 240)
-            or self._event_session_id(event)
+            self.context._style_text(source_scope, 240)
+            or self.context._event_session_id(event)
             or "dashboard"
         )
-        requested = self._requested_style_kinds(kind)
+        requested = self.context._requested_style_kinds(kind)
         saved: list[StyleCatalogItemRecord] = []
         for item_kind in STYLE_CATALOG_KINDS:
             if item_kind not in requested:
@@ -540,13 +594,13 @@ class RuntimeStyleCatalogMixin:
                 continue
             attributes = dict(analyzed.get("attributes") or {})
             if source_attributes:
-                attributes.update(self._style_attributes(source_attributes))
+                attributes.update(self.context._style_attributes(source_attributes))
             if perceptual_hash:
                 attributes["perceptual_hash"] = perceptual_hash
             if source_batch_id:
-                attributes["source_batch_id"] = self._style_text(source_batch_id, 120)
+                attributes["source_batch_id"] = self.context._style_text(source_batch_id, 120)
             if source_query:
-                attributes["source_query"] = self._style_text(source_query, 500)
+                attributes["source_query"] = self.context._style_text(source_query, 500)
             if source_url:
                 try:
                     source_host = (urlsplit(source_url).hostname or "").casefold()
@@ -569,23 +623,23 @@ class RuntimeStyleCatalogMixin:
             }
             similar = None
             if perceptual_hash:
-                similar = await self.archive.find_similar_style_catalog_item(
+                similar = await self.context.archive.find_similar_style_catalog_item(
                     item_kind,
                     perceptual_hash,
                     max_distance=_STYLE_PERCEPTUAL_DISTANCE,
                 )
             if similar:
-                record = await self.archive.merge_style_catalog_item(
+                record = await self.context.archive.merge_style_catalog_item(
                     similar.id, incoming
                 )
             else:
-                record = await self.archive.upsert_style_catalog_item(incoming)
+                record = await self.context.archive.upsert_style_catalog_item(incoming)
             if record:
                 saved.append(record)
         if saved and all(
             str(item.image_path or "") != str(cached_image or image) for item in saved
         ):
-            await self._remove_unused_style_catalog_image(cached_image or image)
+            await self.context._remove_unused_style_catalog_image(cached_image or image)
         return saved
 
     def _creative_style_prompt(
@@ -603,7 +657,7 @@ class RuntimeStyleCatalogMixin:
             else "人物不绑定任何现有角色或身份，不使用任何角色形象参考图。"
         )
         request_text = (
-            self._style_text(requirement, 1000)
+            self.context._style_text(requirement, 1000)
             or "请自由构思一套自然、真实、适合日常生活的完整造型。"
         )
         variation = (
@@ -631,11 +685,11 @@ class RuntimeStyleCatalogMixin:
         generation_mode: str = "",
         count: int = 1,
     ) -> str:
-        queue = getattr(self, "queue_wardrobe_generation", None)
+        queue = getattr(self.context, "queue_wardrobe_generation", None)
         if callable(queue):
             return await queue(event, requirement=requirement, generation_mode=generation_mode, count=count)
         settings = getattr(
-            getattr(getattr(self, "config", None), "image_generation", None),
+            getattr(getattr(self.context, "config", None), "image_generation", None),
             "creative_wardrobe",
             None,
         )
@@ -645,8 +699,8 @@ class RuntimeStyleCatalogMixin:
                 status="failed",
                 media="style_catalog",
             )
-        user_requirement = self._style_text(requirement, 1000)
-        selected_mode = self._style_text(
+        user_requirement = self.context._style_text(requirement, 1000)
+        selected_mode = self.context._style_text(
             generation_mode or getattr(settings, "default_mode", "text_to_image"), 32
         ).lower()
         if selected_mode not in _CREATIVE_STYLE_GENERATION_MODES:
@@ -656,7 +710,7 @@ class RuntimeStyleCatalogMixin:
         except (TypeError, ValueError):
             target_count = 1
 
-        image_service = getattr(getattr(self, "media", None), "image", None)
+        image_service = getattr(getattr(self.context, "media", None), "image", None)
         if image_service is None:
             return ToolResultText(
                 "图片生成服务不可用，暂时不能创建创意衣橱候选。",
@@ -680,11 +734,11 @@ class RuntimeStyleCatalogMixin:
             )
             if callable(resolver):
                 try:
-                    character_reference = self._style_text(resolver(), 1500)
+                    character_reference = self.context._style_text(resolver(), 1500)
                 except Exception:
                     character_reference = ""
             if not character_reference:
-                character_reference = self._life_character_reference_image()
+                character_reference = self.context._life_character_reference_image()
             if not character_reference:
                 return ToolResultText(
                     "图生图创意生成需要可用的图生图接口和已启用的当前角色参考图；不会改用文生图替代。",
@@ -697,7 +751,7 @@ class RuntimeStyleCatalogMixin:
         failures: list[str] = []
         for index in range(target_count):
             seed = secrets.token_hex(8)
-            prompt = self._creative_style_prompt(
+            prompt = self.context._creative_style_prompt(
                 user_requirement,
                 generation_mode=selected_mode,
                 sequence=index + 1,
@@ -705,7 +759,7 @@ class RuntimeStyleCatalogMixin:
             )
             try:
                 if selected_mode == "image_to_image":
-                    generated = await self._edit_life_image_with_policy_retry(
+                    generated = await self.context._edit_life_image_with_policy_retry(
                         event,
                         prompt,
                         character_reference,
@@ -713,20 +767,20 @@ class RuntimeStyleCatalogMixin:
                         preserve_reference_ratio=False,
                     )
                 else:
-                    generated = await self._generate_life_image_with_policy_retry(
+                    generated = await self.context._generate_life_image_with_policy_retry(
                         event,
                         prompt,
                         aspect_ratio="2:3",
                         include_character_reference=False,
                     )
-                image_path = self._style_text(getattr(generated, "path", ""), 1500)
+                image_path = self.context._style_text(getattr(generated, "path", ""), 1500)
                 if not image_path:
                     raise RuntimeError("图片服务没有返回生成文件")
-                learned = await self._learn_style_catalog_image(
+                learned = await self.context._learn_style_catalog_image(
                     event,
                     image_path,
                     source_kind="generated_style_image",
-                    source_scope=self._event_session_id(event) or "dashboard",
+                    source_scope=self.context._event_session_id(event) or "dashboard",
                     source_batch_id=batch_id,
                     source_attributes={
                         "generation_mode": selected_mode,
@@ -735,7 +789,7 @@ class RuntimeStyleCatalogMixin:
                         "creative_prompt_version": "creative_wardrobe_v2",
                         "creative_sequence": index + 1,
                     },
-                    note="创意衣橱生成图；" + self._style_text(user_requirement, 500),
+                    note="创意衣橱生成图；" + self.context._style_text(user_requirement, 500),
                     kind="auto",
                     require_complete_clothing=True,
                 )
@@ -746,7 +800,7 @@ class RuntimeStyleCatalogMixin:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                failures.append(self._media_error_summary(exc))
+                failures.append(self.context._media_error_summary(exc))
         if not saved:
             error = failures[0] if failures else "未形成可入库的完整造型"
             return ToolResultText(
@@ -756,7 +810,7 @@ class RuntimeStyleCatalogMixin:
             )
         suffix = f"；{len(failures)} 张未入库" if failures else ""
         return ToolResultText(
-            self._style_catalog_result_text(
+            self.context._style_catalog_result_text(
                 saved,
                 heading=f"已生成并加入视觉衣橱候选（{selected_mode}）：",
             )
@@ -768,18 +822,18 @@ class RuntimeStyleCatalogMixin:
     async def review_style_catalog_item(
         self, item_id: int, *, note: str = ""
     ) -> StyleCatalogItemRecord:
-        item = await self.archive.get_style_catalog_item(item_id)
+        item = await self.context.archive.get_style_catalog_item(item_id)
         if not item:
             raise ValueError("衣橱素材不存在")
-        image_path = self._style_text(item.image_path, 1500)
+        image_path = self.context._style_text(item.image_path, 1500)
         if not image_path or not await asyncio.to_thread(path_exists, image_path):
             raise ValueError("衣橱素材图片不存在")
-        payload = await self._analyze_style_catalog_image(
+        payload = await self.context._analyze_style_catalog_image(
             image_path,
             note=note,
             kind="auto",
         )
-        analyzed = self._style_analysis_item(payload, item.kind)
+        analyzed = self.context._style_analysis_item(payload, item.kind)
         if not analyzed:
             raise ValueError("图片中没有足够清晰的造型信息")
         attributes = dict(analyzed.get("attributes") or {})
@@ -790,7 +844,7 @@ class RuntimeStyleCatalogMixin:
             if existing_attributes.get(key) not in (None, ""):
                 attributes[key] = existing_attributes[key]
         confidence = float(analyzed.get("confidence") or 0.0)
-        updated = await self.archive.revise_style_catalog_item(
+        updated = await self.context.archive.revise_style_catalog_item(
             item.id,
             title=str(analyzed.get("title") or ""),
             description=str(analyzed.get("description") or ""),
@@ -800,20 +854,20 @@ class RuntimeStyleCatalogMixin:
         )
         if not updated:
             raise RuntimeError("衣橱素材更新失败")
-        perceptual_hash = self._style_text(
+        perceptual_hash = self.context._style_text(
             existing_attributes.get("perceptual_hash"), 32
         )
         for other_kind in STYLE_CATALOG_KINDS:
             if other_kind == item.kind:
                 continue
-            other = self._style_analysis_item(payload, other_kind)
+            other = self.context._style_analysis_item(payload, other_kind)
             if not other:
                 continue
             other_attributes = dict(other.get("attributes") or {})
             if perceptual_hash:
                 other_attributes["perceptual_hash"] = perceptual_hash
             other_confidence = float(other.get("confidence") or 0.0)
-            await self.archive.upsert_style_catalog_item(
+            await self.context.archive.upsert_style_catalog_item(
                 {
                     **other,
                     "attributes": other_attributes,
@@ -864,11 +918,11 @@ class RuntimeStyleCatalogMixin:
         note: str = "",
         kind: str = "auto",
     ) -> str:
-        existing = self._background_tool_existing_result(event, "life_style_learn")
+        existing = self.context._background_tool_existing_result(event, "life_style_learn")
         if existing:
             return existing
-        snapshot = self._snapshot_media_event(event)
-        images = await self._style_learning_images(
+        snapshot = self.context._snapshot_media_event(event)
+        images = await self.context._style_learning_images(
             snapshot, reference_image, reference_images
         )
         if not images:
@@ -878,10 +932,10 @@ class RuntimeStyleCatalogMixin:
                 media="style_catalog",
             )
         snapshot._daily_life_locked_style_images = tuple(images)
-        return self._submit_background_tool(
+        return self.context._submit_background_tool(
             snapshot,
             event,
-            lambda: self._life_style_learn_inline(
+            lambda: self.context._life_style_learn_inline(
                 snapshot, source_url=source_url, note=note, kind=kind
             ),
             tool_name="life_style_learn",
@@ -894,9 +948,9 @@ class RuntimeStyleCatalogMixin:
     async def _style_learning_images(
         self, event: Any, reference_image: str, reference_images: list[str] | None
     ) -> list[str]:
-        requested = [self._style_text(item, 1500) for item in (reference_images or [])]
-        if self._style_text(reference_image, 1500):
-            requested.insert(0, self._style_text(reference_image, 1500))
+        requested = [self.context._style_text(item, 1500) for item in (reference_images or [])]
+        if self.context._style_text(reference_image, 1500):
+            requested.insert(0, self.context._style_text(reference_image, 1500))
         images: list[str] = []
         if requested:
             for value in requested[:6]:
@@ -906,20 +960,20 @@ class RuntimeStyleCatalogMixin:
                 if (
                     value
                     and value not in images
-                    and await self._life_image_reference_is_usable(value)
+                    and await self.context._life_image_reference_is_usable(value)
                 ):
                     images.append(value)
             return images
-        for item in self._event_message_items(event):
-            if "image" not in self._event_component_kind(item):
+        for item in self.context._event_message_items(event):
+            if "image" not in self.context._event_component_kind(item):
                 continue
-            value = await self._image_reference_from_items_async([item])
+            value = await self.context._image_reference_from_items_async([item])
             if value and value not in images:
                 images.append(value)
             if len(images) >= 6:
                 break
         if not images:
-            value = await self._resolve_life_image_reference_async(
+            value = await self.context._resolve_life_image_reference_async(
                 event, "", current_items=()
             )
             if value:
@@ -936,14 +990,14 @@ class RuntimeStyleCatalogMixin:
         note: str = "",
         kind: str = "auto",
     ) -> str:
-        normalized_kind = self._style_text(kind, 16).lower()
+        normalized_kind = self.context._style_text(kind, 16).lower()
         if normalized_kind not in _STYLE_KINDS:
             normalized_kind = "auto"
         locked = getattr(event, "_daily_life_locked_style_images", None)
         images = (
             list(locked)
             if locked is not None
-            else await self._style_learning_images(
+            else await self.context._style_learning_images(
                 event, reference_image, reference_images
             )
         )
@@ -964,7 +1018,7 @@ class RuntimeStyleCatalogMixin:
                 continue
             try:
                 saved.extend(
-                    await self._learn_style_catalog_image(
+                    await self.context._learn_style_catalog_image(
                         event,
                         image,
                         source_url=source_url,
@@ -974,7 +1028,7 @@ class RuntimeStyleCatalogMixin:
                     )
                 )
             except Exception as exc:
-                failures.append(self._media_error_summary(exc))
+                failures.append(self.context._media_error_summary(exc))
         if not saved:
             error = failures[0] if failures else "未识别到可保存造型"
             return ToolResultText(
@@ -983,7 +1037,7 @@ class RuntimeStyleCatalogMixin:
                 media="style_catalog",
             )
         return ToolResultText(
-            self._style_catalog_result_text(saved),
+            self.context._style_catalog_result_text(saved),
             status="ok",
             media="style_catalog",
         )
@@ -992,14 +1046,14 @@ class RuntimeStyleCatalogMixin:
         self, event: Any, *, kind: str = "", limit: int = 20
     ) -> str:
         del event
-        normalized_kind = self._style_text(kind, 16).lower()
+        normalized_kind = self.context._style_text(kind, 16).lower()
         if normalized_kind not in _STYLE_ITEM_KINDS:
             normalized_kind = ""
         try:
             safe_limit = max(1, min(int(limit or 20), 50))
         except (TypeError, ValueError):
             safe_limit = 20
-        counts = await self.archive.get_style_catalog_counts(status="active")
+        counts = await self.context.archive.get_style_catalog_counts(status="active")
         total_count = sum(counts.values())
         inventory_parts = [
             f"{STYLE_CATALOG_KIND_LABELS[item_kind]} {counts.get(item_kind, 0)}"
@@ -1010,7 +1064,7 @@ class RuntimeStyleCatalogMixin:
             f"{'、'.join(inventory_parts)}。"
         )
         query_total = counts.get(normalized_kind, 0) if normalized_kind else total_count
-        items = await self.archive.get_style_catalog_items(
+        items = await self.context.archive.get_style_catalog_items(
             kind=normalized_kind, status="active", limit=safe_limit
         )
         if not items:
@@ -1042,7 +1096,7 @@ class RuntimeStyleCatalogMixin:
             )
         return (
             f"{inventory_summary}\n{display_summary}\n"
-            f"{self._style_catalog_result_text(items, heading=heading)}"
+            f"{self.context._style_catalog_result_text(items, heading=heading)}"
             f"{remaining_hint}\n"
             "用户追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，"
             "必须重新调用 life_style_catalog 并传入对应 kind，不能沿用混合查询的展示子集。"
@@ -1053,12 +1107,12 @@ class RuntimeStyleCatalogMixin:
         items: list[StyleCatalogItemRecord],
         feedback: str,
     ) -> dict[str, Any]:
-        provider = await self.get_text_provider()
+        provider = await self.context.get_text_provider()
         if not provider:
             raise RuntimeError("文本模型不可用")
         item_text = "\n".join(
             f"- #{item.id} [{item.kind}] {item.title}："
-            f"{self._style_text(item.description, 800)}"
+            f"{self.context._style_text(item.description, 800)}"
             for item in items
         )
         fixed = """你负责把用户对视觉衣橱候选的自然语言反馈转换成结构化调整。
@@ -1072,15 +1126,15 @@ class RuntimeStyleCatalogMixin:
   "adjustments": [{"item_id": 1, "sentiment": "prefer | dislike | neutral | disable", "score_delta": 0.0, "reason": "简短理由"}],
   "preference_points": [{"category": "outfit | top | bottom | footwear | accessory | hair | makeup | nails | style", "content": "稳定偏好", "weight": 0.1}]
 }"""
-        dynamic = f"候选：\n{item_text}\n\n用户反馈：{self._style_text(feedback, 1000)}"
+        dynamic = f"候选：\n{item_text}\n\n用户反馈：{self.context._style_text(feedback, 1000)}"
         prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="衣橱反馈")
         session_id = f"daily_life_style_feedback_{uuid.uuid4().hex[:8]}"
         try:
-            text = await self.call_text_model(provider, prompt, session_id)
+            text = await self.context.call_text_model(provider, prompt, session_id)
             payload = extract_json_from_text(text)
             return payload if isinstance(payload, dict) else {}
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def life_style_feedback(
         self,
@@ -1089,21 +1143,21 @@ class RuntimeStyleCatalogMixin:
         *,
         item_ids: list[int] | None = None,
     ) -> str:
-        feedback = self._style_text(feedback, 1000)
+        feedback = self.context._style_text(feedback, 1000)
         if not feedback:
             return ToolResultText(
                 "没有收到对视觉衣橱候选的反馈。",
                 status="failed",
                 media="style_catalog",
             )
-        normalized_ids = self._style_item_ids(item_ids or [])
+        normalized_ids = self.context._style_item_ids(item_ids or [])
         if normalized_ids:
-            items = await self.archive.get_style_catalog_items(
+            items = await self.context.archive.get_style_catalog_items(
                 status="", ids=normalized_ids, limit=len(normalized_ids)
             )
         else:
-            items = await self.archive.get_recent_style_catalog_items(
-                self._event_session_id(event), limit=1
+            items = await self.context.archive.get_recent_style_catalog_items(
+                self.context._event_session_id(event), limit=1
             )
         if not items:
             return ToolResultText(
@@ -1112,20 +1166,20 @@ class RuntimeStyleCatalogMixin:
                 media="style_catalog",
             )
         try:
-            payload = await self._style_feedback_decision(items, feedback)
+            payload = await self.context._style_feedback_decision(items, feedback)
         except Exception as exc:
             return ToolResultText(
-                f"视觉衣橱反馈处理失败：{self._media_error_summary(exc)}",
+                f"视觉衣橱反馈处理失败：{self.context._media_error_summary(exc)}",
                 status="failed",
                 media="style_catalog",
             )
-        recorder = getattr(self.archive, "record_wardrobe_feedback", None)
+        recorder = getattr(self.context.archive, "record_wardrobe_feedback", None)
         if callable(recorder):
             from ...clock import now as life_now
-            source = self._event_message_id(event) if callable(getattr(self, "_event_message_id", None)) else uuid.uuid4().hex
-            await recorder(event_id="feedback:" + hashlib.sha256((self._event_session_id(event) + ":" + str(source)).encode()).hexdigest(),
+            source = self.context._event_message_id(event) if callable(getattr(self.context, "_event_message_id", None)) else uuid.uuid4().hex
+            await recorder(event_id="feedback:" + hashlib.sha256((self.context._event_session_id(event) + ":" + str(source)).encode()).hexdigest(),
                 item_ids=[item.id for item in items], text=feedback,
-                at=life_now().replace(tzinfo=None).isoformat(sep=" "), scope=self._event_session_id(event))
+                at=life_now().replace(tzinfo=None).isoformat(sep=" "), scope=self.context._event_session_id(event))
         allowed_ids = {item.id for item in items}
         changed: list[StyleCatalogItemRecord] = []
         for adjustment in payload.get("adjustments") or []:
@@ -1135,7 +1189,7 @@ class RuntimeStyleCatalogMixin:
                 item_id = int(adjustment.get("item_id") or 0)
             except (TypeError, ValueError):
                 continue
-            sentiment = self._style_text(adjustment.get("sentiment"), 16).lower()
+            sentiment = self.context._style_text(adjustment.get("sentiment"), 16).lower()
             if (
                 item_id not in allowed_ids
                 or sentiment not in _STYLE_FEEDBACK_SENTIMENTS
@@ -1148,13 +1202,13 @@ class RuntimeStyleCatalogMixin:
                 if sentiment == "prefer"
                 else ""
             )
-            updated = await self.archive.add_style_catalog_feedback(
+            updated = await self.context.archive.add_style_catalog_feedback(
                 item_id,
-                scope=self._event_session_id(event),
+                scope=self.context._event_session_id(event),
                 feedback=feedback,
                 sentiment=sentiment,
                 score_delta=adjustment.get("score_delta") or 0.0,
-                reason=self._style_text(adjustment.get("reason"), 240),
+                reason=self.context._style_text(adjustment.get("reason"), 240),
                 status=status,
             )
             if updated:
@@ -1164,8 +1218,8 @@ class RuntimeStyleCatalogMixin:
         for point in payload.get("preference_points") or []:
             if not isinstance(point, dict):
                 continue
-            category = self._style_text(point.get("category"), 16).lower()
-            content = self._style_text(point.get("content"), 240)
+            category = self.context._style_text(point.get("category"), 16).lower()
+            content = self.context._style_text(point.get("content"), 240)
             if category not in {*STYLE_CATALOG_KIND_SET, "style"} or not content:
                 continue
             try:
@@ -1182,7 +1236,7 @@ class RuntimeStyleCatalogMixin:
                 )
             )
         if preferences:
-            await self.archive.upsert_preferences(preferences, life_today().isoformat())
+            await self.context.archive.upsert_preferences(preferences, life_today().isoformat())
         if not changed and not preferences:
             return ToolResultText(
                 "没有从这条反馈中确认可执行的候选调整。",
@@ -1202,4 +1256,4 @@ class RuntimeStyleCatalogMixin:
         )
 
 
-__all__ = ["RuntimeStyleCatalogMixin"]
+__all__ = ["RuntimeStyleCatalogComponent"]

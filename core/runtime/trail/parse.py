@@ -10,8 +10,22 @@ from ...media.base import image_data_url
 from ...paths import expand_path, path_is_file
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class HistoryParseMixin:
+
+class HistoryParseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_sources: Any
+    _history_display_url: Any
+    _history_text_from_message_items: Any
+    _history_text_from_value: Any
+
+
+class HistoryParseComponent:
+    def __init__(self, context: HistoryParseComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _history_text_from_value(value: Any) -> str:
         if value is None:
@@ -22,22 +36,22 @@ class HistoryParseMixin:
             data = value.get("data")
             merged = {**value, **data} if isinstance(data, dict) else value
             for key in ("message_str", "text", "content", "raw_message"):
-                text = HistoryParseMixin._history_text_from_value(merged.get(key))
+                text = HistoryParseComponent._history_text_from_value(merged.get(key))
                 if text:
                     return text
             message = merged.get("message")
             if isinstance(message, list):
-                return HistoryParseMixin._history_text_from_message_items(message)
+                return HistoryParseComponent._history_text_from_message_items(message)
             return ""
         for attr in ("message_str", "text", "content", "raw_message"):
-            text = HistoryParseMixin._history_text_from_value(
+            text = HistoryParseComponent._history_text_from_value(
                 getattr(value, attr, None)
             )
             if text:
                 return text
         message = getattr(value, "message", None)
         if isinstance(message, list):
-            return HistoryParseMixin._history_text_from_message_items(message)
+            return HistoryParseComponent._history_text_from_message_items(message)
         return ""
 
     @classmethod
@@ -73,32 +87,32 @@ class HistoryParseMixin:
         return cls._history_text_from_value(value)
 
     def _event_user_history_text(self, event: Any) -> str:
-        sources_getter = getattr(self, "_event_sources", None)
+        sources_getter = getattr(self.context, "_event_sources", None)
         sources = sources_getter(event) if callable(sources_getter) else [event]
         for source in sources:
-            text = self._history_text_from_value(getattr(source, "message_str", None))
+            text = self.context._history_text_from_value(getattr(source, "message_str", None))
             if text:
                 return text
             getter = getattr(source, "get_messages", None)
             if callable(getter):
                 try:
-                    text = self._history_text_from_message_items(getter() or [])
+                    text = self.context._history_text_from_message_items(getter() or [])
                     if text:
                         return text
                 except Exception:
                     continue
             message_obj = getattr(source, "message_obj", None)
             for attr in ("message_str", "raw_message"):
-                text = self._history_text_from_value(getattr(message_obj, attr, None))
+                text = self.context._history_text_from_value(getattr(message_obj, attr, None))
                 if text:
                     return text
             raw = getattr(message_obj, "message", None)
             if isinstance(raw, list):
-                text = self._history_text_from_message_items(raw)
+                text = self.context._history_text_from_message_items(raw)
                 if text:
                     return text
             for attr in ("raw_message", "text", "content"):
-                text = self._history_text_from_value(getattr(source, attr, None))
+                text = self.context._history_text_from_value(getattr(source, attr, None))
                 if text:
                     return text
         return ""
@@ -119,7 +133,7 @@ class HistoryParseMixin:
             return False
         return (
             str(item.get("role") or "").strip() == role
-            and HistoryParseMixin._history_primary_text(item.get("content")).strip()
+            and HistoryParseComponent._history_primary_text(item.get("content")).strip()
             == str(content or "").strip()
         )
 
@@ -131,12 +145,12 @@ class HistoryParseMixin:
             return False
         if item.get("content") == expected.get("content"):
             return True
-        if HistoryParseMixin._history_content_has_media(
+        if HistoryParseComponent._history_content_has_media(
             item.get("content")
-        ) or HistoryParseMixin._history_content_has_media(expected.get("content")):
+        ) or HistoryParseComponent._history_content_has_media(expected.get("content")):
             return False
-        return HistoryParseMixin._history_primary_text(item.get("content")).strip() == (
-            HistoryParseMixin._history_primary_text(expected.get("content")).strip()
+        return HistoryParseComponent._history_primary_text(item.get("content")).strip() == (
+            HistoryParseComponent._history_primary_text(expected.get("content")).strip()
         )
 
     @staticmethod
@@ -195,7 +209,7 @@ class HistoryParseMixin:
         ).strip()
         if not path:
             return {}
-        display_url = await self._history_display_url(path)
+        display_url = await self.context._history_display_url(path)
         filename = (
             str(part.get("name") or "").strip()
             or path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]

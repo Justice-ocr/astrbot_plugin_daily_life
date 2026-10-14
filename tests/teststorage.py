@@ -1233,8 +1233,8 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             for script in iter_schema_sql():
                 conn.executescript(script)
             self.assertEqual(schema_fingerprint(conn), CURRENT_SCHEMA_FINGERPRINT)
-            # v24 只清理旧数据，结构指纹仍指向最早安全版本 v23。
-            self.assertEqual(infer_schema_version(conn), SCHEMA_VERSION - 1)
+            # v24 至 v26 只清理数据，结构指纹仍指向最早安全版本 v23。
+            self.assertEqual(infer_schema_version(conn), 23)
             conn.commit()
             conn.close()
 
@@ -1290,6 +1290,97 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    def test_expression_feedback_migration_keeps_sources_and_removes_mirrors(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            conn = archive._conn
+            profile_id = conn.execute(
+                "INSERT INTO long_term_memories(scope, category, content, source_table, source_id) "
+                "VALUES ('private:1', 'expression', '短句接话；对方继续回应', 'expression_profiles', '2')"
+            ).lastrowid
+            mirror_ids = []
+            for source_id in ("10", "11"):
+                cursor = conn.execute(
+                    "INSERT INTO memory_evidence(target_type, target_id, evidence_type, "
+                    "source_table, source_id, summary) "
+                    "VALUES ('expression_profile', '2', 'expression_feedback', "
+                    "'chat_memory_messages', ?, '对方继续回应')",
+                    (source_id,),
+                )
+                mirror_id = conn.execute(
+                    "INSERT INTO long_term_memories(scope, category, content, source_table, source_id) "
+                    "VALUES ('private:1', 'evidence:expression_feedback', '对方继续回应', "
+                    "'memory_evidence', ?)",
+                    (str(cursor.lastrowid),),
+                ).lastrowid
+                mirror_ids.append(mirror_id)
+            decision_id = conn.execute(
+                "INSERT INTO life_decisions DEFAULT VALUES"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO memory_decision_links(decision_id, memory_id, influence) "
+                "VALUES (?, ?, '表达习惯')",
+                (decision_id, mirror_ids[0]),
+            )
+            entity_id = conn.execute(
+                "INSERT INTO memory_entities(scope, name) VALUES ('private:1', '重复依据')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO memory_entity_links(entity_id, memory_id) VALUES (?, ?)",
+                (entity_id, mirror_ids[0]),
+            )
+            conn.execute(
+                "INSERT INTO memory_vectors(target_type, target_id) "
+                "VALUES ('long_term_memory', ?)",
+                (str(mirror_ids[0]),),
+            )
+            conn.execute(
+                "INSERT INTO memory_episode_clusters(scope, title, category, memory_count) "
+                "VALUES ('private:1', '重复证据', 'evidence', 2)"
+            )
+            conn.execute(
+                "INSERT INTO memory_episode_cluster_items(cluster_id, memory_id) "
+                "SELECT 1, id FROM long_term_memories "
+                "WHERE source_table = 'memory_evidence'"
+            )
+            conn.execute("UPDATE meta SET value = '25' WHERE key = 'schema_version'")
+            conn.commit()
+            archive.close()
+
+            reopened = LifeArchive(db_path)
+            try:
+                self.assertEqual(
+                    reopened._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                    str(SCHEMA_VERSION),
+                )
+                self.assertEqual(
+                    reopened._conn.execute("SELECT COUNT(*) FROM memory_evidence").fetchone()[0], 2
+                )
+                self.assertEqual(
+                    reopened._conn.execute("SELECT COUNT(*) FROM long_term_memories").fetchone()[0], 1
+                )
+                self.assertEqual(
+                    reopened._conn.execute("SELECT COUNT(*) FROM memory_episode_clusters").fetchone()[0], 0
+                )
+                self.assertEqual(
+                    reopened._conn.execute(
+                        "SELECT memory_id FROM memory_decision_links WHERE decision_id = ?",
+                        (decision_id,),
+                    ).fetchone()[0],
+                    profile_id,
+                )
+                self.assertEqual(
+                    reopened._conn.execute("SELECT COUNT(*) FROM memory_entities").fetchone()[0], 0
+                )
+                self.assertEqual(
+                    reopened._conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0], 0
+                )
+                self.assertEqual(reopened._conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(reopened._conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+            finally:
+                reopened.close()
+
     def test_unversioned_current_schema_runs_data_cleanup_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
@@ -1318,9 +1409,45 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(metadata["schema_version"], str(SCHEMA_VERSION))
                 self.assertNotIn("migration_marker", metadata)
-                self.assertEqual(migration_order, [24])
+                self.assertEqual(migration_order, [24, 25, 26])
             finally:
                 archive.close()
+
+    def test_food_stage_migration_preserves_actual_meals(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            try:
+                for action_id, action_type in (
+                    ("made", "cook"), ("ordered", "order_food"), ("eaten", "meal")
+                ):
+                    archive._conn.execute(
+                        "INSERT INTO life_action_outcomes(action_id, action_type, status) "
+                        "VALUES (?, ?, 'committed')",
+                        (action_id, action_type),
+                    )
+                    archive._conn.execute(
+                        "INSERT INTO meal_records(action_id, status) VALUES (?, 'completed')",
+                        (action_id,),
+                    )
+                archive._conn.execute(
+                    "UPDATE meta SET value = '24' WHERE key = 'schema_version'"
+                )
+            finally:
+                archive.close()
+            reopened = LifeArchive(db_path)
+            try:
+                rows = dict(
+                    reopened._conn.execute(
+                        "SELECT action_id, status FROM meal_records"
+                    ).fetchall()
+                )
+                self.assertEqual(
+                    rows,
+                    {"made": "prepared", "ordered": "ordered", "eaten": "completed"},
+                )
+            finally:
+                reopened.close()
 
     def test_schema_migration_failure_rolls_back_all_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

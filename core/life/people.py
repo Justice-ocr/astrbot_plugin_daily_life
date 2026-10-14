@@ -20,6 +20,8 @@ from ..facts import (
 )
 from .tools import extract_json_from_text
 
+from typing import Protocol
+
 DAILY_PERSON_TEXT_PATHS: tuple[PathPattern, ...] = (
     ("timeline", "*", "activity"),
     ("timeline", "*", "status"),
@@ -83,7 +85,22 @@ class PersonAuditResult:
         return self.status == "unresolved"
 
 
-class PersonFactMixin:
+class PersonFactComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    _extract_reference_persona: Any
+    _get_persona: Any
+    _resolve_reference_user_profile: Any
+    archive: Any
+    config: Any
+
+
+class PersonFactComponent:
+    def __init__(self, context: PersonFactComponentContext) -> None:
+        self.context = context
+
     async def _build_person_fact_context(
         self,
         *,
@@ -91,9 +108,9 @@ class PersonFactMixin:
         explicit_instruction: str = "",
         relationships: list[Any] | None = None,
     ) -> PersonFactContext:
-        persona = str(persona or "").strip() or await self._get_persona()
+        persona = str(persona or "").strip() or await self.context._get_persona()
         if relationships is None:
-            relationships = await self.archive.get_recent_relationships(12)
+            relationships = await self.context.archive.get_recent_relationships(12)
 
         base = person_fact_context_from_relationships(
             persona=persona,
@@ -150,17 +167,17 @@ class PersonFactMixin:
                 item for item in unverified_people if item.casefold() != name.casefold()
             ]
 
-        image_settings = getattr(self.config, "image_generation", None)
+        image_settings = getattr(self.context.config, "image_generation", None)
         for profile in getattr(image_settings, "friend_reference_profiles", []) or []:
             if not isinstance(profile, dict):
                 continue
             name = str(
                 profile.get("display_name") or profile.get("profile_id") or ""
             ).strip()
-            add_persona_fact(name, self._extract_reference_persona(persona, name))
+            add_persona_fact(name, self.context._extract_reference_persona(persona, name))
 
-        for user_id in getattr(self.config, "reference_users", []) or []:
-            profile = await self._resolve_reference_user_profile(
+        for user_id in getattr(self.context.config, "reference_users", []) or []:
+            profile = await self.context._resolve_reference_user_profile(
                 str(user_id or ""), persona=persona
             )
             add_persona_fact(profile.get("name"), profile.get("persona"))
@@ -195,7 +212,7 @@ class PersonFactMixin:
         session_id = f"daily_life_person_audit_{uuid.uuid4().hex[:8]}"
         try:
             text = await asyncio.wait_for(
-                self._call_llm_text(
+                self.context._call_llm_text(
                     provider,
                     prompt,
                     session_id,
@@ -228,7 +245,7 @@ class PersonFactMixin:
             logger.debug(f"[人物事实审计] 执行失败，保留原生成内容：{exc}")
             return PersonAuditResult(payload, "failed", str(exc)[:240])
         finally:
-            await self._cleanup_conversation(session_id)
+            await self.context._cleanup_conversation(session_id)
 
 
 __all__ = [
@@ -237,7 +254,7 @@ __all__ = [
     "INVITE_PERSON_TEXT_PATHS",
     "MEDIA_PERSON_TEXT_PATHS",
     "PersonAuditResult",
-    "PersonFactMixin",
+    "PersonFactComponent",
     "PROACTIVE_PERSON_TEXT_PATHS",
     "WEEK_PERSON_TEXT_PATHS",
 ]

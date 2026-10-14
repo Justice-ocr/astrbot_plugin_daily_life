@@ -7,8 +7,40 @@ from astrbot.api import logger
 
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ResponseGateScoreMixin:
+
+class ResponseGateScoreComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_is_group_message: Any
+    _event_profile_id: Any
+    _response_gate_attention_delta: Any
+    _response_gate_band_delta: Any
+    _response_gate_batch_delta: Any
+    _response_gate_body_delta: Any
+    _response_gate_days_since: Any
+    _response_gate_group_state_delta: Any
+    _response_gate_has_media: Any
+    _response_gate_int: Any
+    _response_gate_last_reply_at: Any
+    _response_gate_presence_delta: Any
+    _response_gate_profile_ids: Any
+    _response_gate_relationship_signal_count: Any
+    _response_gate_rhythm_dict: Any
+    _response_gate_scope_key: Any
+    _response_gate_sleep_delta: Any
+    _response_gate_state_delta: Any
+    _response_gate_visible_text: Any
+    _safe_event_call: Any
+    archive: Any
+    config: Any
+
+
+class ResponseGateScoreComponent:
+    def __init__(self, context: ResponseGateScoreComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _response_gate_band_delta(
         value: int,
@@ -72,16 +104,16 @@ class ResponseGateScoreMixin:
         pending_count: int,
         now: datetime.datetime,
     ) -> tuple[float, list[str]]:
-        is_group = self._event_is_group_message(event)
-        config = self.config.response_gate
-        key = self._response_gate_scope_key(event)
+        is_group = self.context._event_is_group_message(event)
+        config = self.context.config.response_gate
+        key = self.context._response_gate_scope_key(event)
         score = (
             config.group_talk_frequency if is_group else config.private_talk_frequency
         )
         reasons: list[str] = []
 
-        visible_text = self._response_gate_visible_text(event)
-        has_media = self._response_gate_has_media(event)
+        visible_text = self.context._response_gate_visible_text(event)
+        has_media = self.context._response_gate_has_media(event)
         if is_group and has_media and not visible_text:
             score = min(score, config.media_only_group_frequency)
             reasons.append("群聊纯媒体消息先后台识别")
@@ -101,7 +133,7 @@ class ResponseGateScoreMixin:
                 score += 0.28
                 reasons.append("私聊里有直接提问")
 
-        score += self._response_gate_batch_delta(
+        score += self.context._response_gate_batch_delta(
             key, event, pending_count, now, reasons, is_group=is_group
         )
         if pending_count >= max(1, int(config.bypass_pending_count or 0)):
@@ -111,20 +143,20 @@ class ResponseGateScoreMixin:
             score -= 0.08
             reasons.append("群聊还没有形成稳定话轮")
 
-        last_reply_at = self._response_gate_last_reply_at.get(key)
+        last_reply_at = self.context._response_gate_last_reply_at.get(key)
         if isinstance(last_reply_at, datetime.datetime):
             elapsed = (now - last_reply_at).total_seconds()
             if elapsed < max(0, int(config.min_interval_seconds or 0)):
                 score -= 0.35
                 reasons.append("刚回复过，避免连续抢话")
 
-        score += self._response_gate_presence_delta(key, now, reasons)
-        score += self._response_gate_attention_delta(
+        score += self.context._response_gate_presence_delta(key, now, reasons)
+        score += self.context._response_gate_attention_delta(
             key, now, reasons, is_group=is_group
         )
 
         if state is not None:
-            score += self._response_gate_state_delta(state, is_group, reasons)
+            score += self.context._response_gate_state_delta(state, is_group, reasons)
 
         return max(0.0, min(score, 1.0)), reasons
 
@@ -132,26 +164,26 @@ class ResponseGateScoreMixin:
         self, state: Any, is_group: bool, reasons: list[str]
     ) -> float:
         delta = 0.0
-        interaction = self._response_gate_int(
+        interaction = self.context._response_gate_int(
             getattr(state, "interaction_capacity", None), 55
         )
-        attention = self._response_gate_int(
+        attention = self.context._response_gate_int(
             getattr(state, "attention_openness", None), 55
         )
-        mood_score = self._response_gate_int(getattr(state, "mood_score", None), 60)
-        social = self._response_gate_int(getattr(state, "social", None), 50)
-        sleepiness = self._response_gate_int(getattr(state, "sleepiness", None), 35)
-        busyness = self._response_gate_int(getattr(state, "busyness", None), 45)
-        stress = self._response_gate_int(getattr(state, "stress", None), 25)
+        mood_score = self.context._response_gate_int(getattr(state, "mood_score", None), 60)
+        social = self.context._response_gate_int(getattr(state, "social", None), 50)
+        sleepiness = self.context._response_gate_int(getattr(state, "sleepiness", None), 35)
+        busyness = self.context._response_gate_int(getattr(state, "busyness", None), 45)
+        stress = self.context._response_gate_int(getattr(state, "stress", None), 25)
         interrupt_level = str(getattr(state, "interrupt_level", "") or "").strip()
         watch_state = str(getattr(state, "watch_state", "") or "").strip()
         sleep_depth = str(
             getattr(getattr(state, "sleep", None), "depth", "") or ""
         ).strip()
-        rhythm = self._response_gate_rhythm_dict(
+        rhythm = self.context._response_gate_rhythm_dict(
             getattr(state, "physiological_rhythm", None)
         )
-        social_battery = self._response_gate_int(
+        social_battery = self.context._response_gate_int(
             rhythm.get("social_battery"), interaction
         )
         body_condition = (
@@ -159,7 +191,7 @@ class ResponseGateScoreMixin:
             if isinstance(rhythm.get("body_condition"), dict)
             else {}
         )
-        body_intensity = self._response_gate_int(body_condition.get("intensity"), 0)
+        body_intensity = self.context._response_gate_int(body_condition.get("intensity"), 0)
 
         social_bands = (
             (interaction, 70, 35, 0.12, -0.16, "互动余力较高", "互动余力偏低"),
@@ -177,24 +209,24 @@ class ResponseGateScoreMixin:
             high_reason,
             low_reason,
         ) in social_bands:
-            delta += self._response_gate_band_delta(
+            delta += self.context._response_gate_band_delta(
                 value,
                 reasons,
                 (high, low, high_delta, low_delta, high_reason, low_reason),
             )
-        delta += self._response_gate_body_delta(body_intensity, reasons)
-        delta += self._response_gate_sleep_delta(sleepiness, sleep_depth, reasons)
+        delta += self.context._response_gate_body_delta(body_intensity, reasons)
+        delta += self.context._response_gate_sleep_delta(sleepiness, sleep_depth, reasons)
         for value, high, low, high_delta, low_delta, high_reason, low_reason in (
             (busyness, 75, 25, -0.12, 0.06, "当前忙碌度高", "当前不太忙"),
             (stress, 75, 20, -0.14, 0.04, "压力感较高", "压力感较低"),
         ):
-            delta += self._response_gate_band_delta(
+            delta += self.context._response_gate_band_delta(
                 value,
                 reasons,
                 (high, low, high_delta, low_delta, high_reason, low_reason),
             )
         if is_group:
-            delta += self._response_gate_group_state_delta(
+            delta += self.context._response_gate_group_state_delta(
                 interrupt_level, watch_state, reasons
             )
 
@@ -206,13 +238,13 @@ class ResponseGateScoreMixin:
         now: datetime.datetime,
         reasons: list[str],
     ) -> float:
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         getter = getattr(archive, "get_relationship", None)
         if not callable(getter):
             return 0.0
 
         relationship = None
-        for profile_id in self._response_gate_profile_ids(event):
+        for profile_id in self.context._response_gate_profile_ids(event):
             try:
                 value = getter(profile_id)
                 relationship = await value if hasattr(value, "__await__") else value
@@ -227,7 +259,7 @@ class ResponseGateScoreMixin:
             return 0.0
 
         delta = 0.0
-        interactions = self._response_gate_int(
+        interactions = self.context._response_gate_int(
             getattr(relationship, "interactions", None), 0
         )
         if interactions >= 8:
@@ -240,7 +272,7 @@ class ResponseGateScoreMixin:
             delta += 0.03
             reasons.append("已有关系互动")
 
-        signal_count = self._response_gate_relationship_signal_count(relationship)
+        signal_count = self.context._response_gate_relationship_signal_count(relationship)
         if signal_count >= 3:
             delta += 0.06
             reasons.append("关系印象较清楚")
@@ -248,7 +280,7 @@ class ResponseGateScoreMixin:
             delta += 0.03
             reasons.append("有关系印象")
 
-        days_since = self._response_gate_days_since(
+        days_since = self.context._response_gate_days_since(
             getattr(relationship, "last_seen", ""), now
         )
         if days_since is not None:
@@ -259,7 +291,7 @@ class ResponseGateScoreMixin:
                 delta += 0.03
                 reasons.append("近期有互动")
 
-        if not self._event_is_group_message(event):
+        if not self.context._event_is_group_message(event):
             delta += 0.03
             reasons.append("私聊熟人语境")
         return min(delta, 0.18)
@@ -272,17 +304,17 @@ class ResponseGateScoreMixin:
             if text and text not in ids:
                 ids.append(text)
 
-        profile_getter = getattr(self, "_event_profile_id", None)
+        profile_getter = getattr(self.context, "_event_profile_id", None)
         if callable(profile_getter):
             try:
                 add(
                     profile_getter(
-                        event, self._safe_event_call(event, "get_sender_name") or "用户"
+                        event, self.context._safe_event_call(event, "get_sender_name") or "用户"
                     )
                 )
             except Exception:
                 pass
-        add(self._safe_event_call(event, "get_sender_id"))
+        add(self.context._safe_event_call(event, "get_sender_id"))
         return ids
 
     @staticmethod

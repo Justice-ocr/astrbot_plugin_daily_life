@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
@@ -7,6 +9,8 @@ from ..models import (
     MessageVisibilityRecord,
 )
 from ..models.coerce import compact_explanation_text
+
+from typing import Protocol
 
 _COALESCED_ACTION_DECISION_KEYS = frozenset(
     {
@@ -24,7 +28,23 @@ def _coalescible_action_decision(item: ActionDecisionRecord) -> bool:
     return (item.action, item.scene_type) in _COALESCED_ACTION_DECISION_KEYS
 
 
-class PerceptionArchiveMixin:
+class PerceptionArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_action_decision: Any
+    _compose_group_environment: Any
+    _compose_message_visibility: Any
+    _conn: Any
+    _flag: Any
+    _recent_scoped_rows_unlocked: Any
+    _run_db: Any
+    _text: Any
+
+
+class PerceptionArchiveComponent:
+    def __init__(self, context: PerceptionArchiveComponentContext) -> None:
+        self.context = context
+
     def _recent_scoped_rows_unlocked(self, table: str, limit: int) -> list[sqlite3.Row]:
         sql = f"""
             SELECT *
@@ -45,7 +65,7 @@ class PerceptionArchiveMixin:
         if limit > 0:
             sql += " LIMIT ?"
             params = (limit,)
-        return self._conn.execute(sql, params).fetchall()
+        return self.context._conn.execute(sql, params).fetchall()
 
     def _compose_group_environment(self, row: sqlite3.Row) -> GroupEnvironmentRecord:
         return GroupEnvironmentRecord(
@@ -55,7 +75,7 @@ class PerceptionArchiveMixin:
             group_name=row["group_name"],
             date=row["date"],
             atmosphere=row["atmosphere"],
-            topic=self._text(row["topic"]),
+            topic=self.context._text(row["topic"]),
             topic_owner=row["topic_owner"],
             active_users=int(row["active_users"] or 0),
             is_multithread=bool(row["is_multithread"]),
@@ -68,7 +88,7 @@ class PerceptionArchiveMixin:
             complexity_score=int(row["complexity_score"] or 0),
             understanding_confidence=int(row["understanding_confidence"] or 0),
             deep_analysis_needed=bool(row["deep_analysis_needed"]),
-            summary=self._text(row["summary"]),
+            summary=self.context._text(row["summary"]),
             created_at=row["created_at"],
         )
 
@@ -84,7 +104,7 @@ class PerceptionArchiveMixin:
             raise ValueError("群聊环境快照不能为空")
 
         def write() -> GroupEnvironmentRecord:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO group_environments(
                     session_id, group_id, group_name, date, atmosphere, topic, topic_owner,
@@ -95,34 +115,34 @@ class PerceptionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self._text(item.session_id),
-                    self._text(item.group_id),
-                    self._text(item.group_name),
-                    self._text(item.date),
-                    self._text(item.atmosphere),
-                    self._text(item.topic),
-                    self._text(item.topic_owner),
+                    self.context._text(item.session_id),
+                    self.context._text(item.group_id),
+                    self.context._text(item.group_name),
+                    self.context._text(item.date),
+                    self.context._text(item.atmosphere),
+                    self.context._text(item.topic),
+                    self.context._text(item.topic_owner),
                     max(int(item.active_users or 0), 0),
-                    self._flag(item.is_multithread),
-                    self._flag(item.is_spam),
-                    self._flag(item.is_repetition),
-                    self._flag(item.is_discussing_bot),
-                    self._text(item.suitable_to_join),
-                    self._text(item.bot_watch_state),
+                    self.context._flag(item.is_multithread),
+                    self.context._flag(item.is_spam),
+                    self.context._flag(item.is_repetition),
+                    self.context._flag(item.is_discussing_bot),
+                    self.context._text(item.suitable_to_join),
+                    self.context._text(item.bot_watch_state),
                     max(int(item.participation_desire or 0), 0),
                     max(int(item.complexity_score or 0), 0),
                     max(int(item.understanding_confidence or 0), 0),
-                    self._flag(item.deep_analysis_needed),
-                    self._text(item.summary),
+                    self.context._flag(item.deep_analysis_needed),
+                    self.context._text(item.summary),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM group_environments WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_group_environment(row)
+            return self.context._compose_group_environment(row)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_recent_group_environments(
         self, limit: int = 8
@@ -138,10 +158,10 @@ class PerceptionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_group_environment(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_group_environment(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     def _compose_message_visibility(self, row: sqlite3.Row) -> MessageVisibilityRecord:
         return MessageVisibilityRecord(
@@ -160,7 +180,7 @@ class PerceptionArchiveMixin:
             freshness=row["freshness"],
             psychological_freshness=int(row["psychological_freshness"] or 0),
             reactivated_from_id=int(row["reactivated_from_id"] or 0),
-            reactivation_hint=self._text(row["reactivation_hint"]),
+            reactivation_hint=self.context._text(row["reactivation_hint"]),
             reason=compact_explanation_text(row["reason"]),
             created_at=row["created_at"],
         )
@@ -177,7 +197,7 @@ class PerceptionArchiveMixin:
             raise ValueError("消息可见性记录不能为空")
 
         def write() -> MessageVisibilityRecord:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO message_visibility(
                     session_id, message_id, sender_profile_id, sender_name, group_id, group_name,
@@ -187,40 +207,40 @@ class PerceptionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self._text(item.session_id),
-                    self._text(item.message_id),
-                    self._text(item.sender_profile_id),
-                    self._text(item.sender_name),
-                    self._text(item.group_id),
-                    self._text(item.group_name),
-                    self._text(item.date),
-                    self._text(item.visibility) or "seen",
+                    self.context._text(item.session_id),
+                    self.context._text(item.message_id),
+                    self.context._text(item.sender_profile_id),
+                    self.context._text(item.sender_name),
+                    self.context._text(item.group_id),
+                    self.context._text(item.group_name),
+                    self.context._text(item.date),
+                    self.context._text(item.visibility) or "seen",
                     max(int(item.attention_level or 0), 0),
-                    self._text(item.priority) or "normal",
-                    self._flag(item.is_directed_at_bot),
-                    self._text(item.freshness),
+                    self.context._text(item.priority) or "normal",
+                    self.context._flag(item.is_directed_at_bot),
+                    self.context._text(item.freshness),
                     max(int(item.psychological_freshness or 0), 0),
                     max(int(item.reactivated_from_id or 0), 0),
-                    self._text(item.reactivation_hint),
-                    self._text(item.reason),
+                    self.context._text(item.reactivation_hint),
+                    self.context._text(item.reason),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM message_visibility WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_message_visibility(row)
+            return self.context._compose_message_visibility(row)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_recent_message_visibility(
         self, limit: int = 8
     ) -> list[MessageVisibilityRecord]:
         def read() -> list[MessageVisibilityRecord]:
-            rows = self._recent_scoped_rows_unlocked("message_visibility", limit)
-            return [self._compose_message_visibility(row) for row in rows]
+            rows = self.context._recent_scoped_rows_unlocked("message_visibility", limit)
+            return [self.context._compose_message_visibility(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_message_visibility_records(
         self, limit: int = 20
@@ -231,10 +251,10 @@ class PerceptionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_message_visibility(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_message_visibility(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     def _compose_action_decision(self, row: sqlite3.Row) -> ActionDecisionRecord:
         return ActionDecisionRecord(
@@ -253,8 +273,8 @@ class PerceptionArchiveMixin:
             topic_owner=row["topic_owner"],
             understanding=row["understanding"],
             deep_analysis=bool(row["deep_analysis"]),
-            inner_monologue=self._text(row["inner_monologue"]),
-            reply_strategy=self._text(row["reply_strategy"]),
+            inner_monologue=self.context._text(row["inner_monologue"]),
+            reply_strategy=self.context._text(row["reply_strategy"]),
             created_at=row["created_at"],
         )
 
@@ -271,7 +291,7 @@ class PerceptionArchiveMixin:
 
         def write() -> ActionDecisionRecord:
             if _coalescible_action_decision(item):
-                existing = self._conn.execute(
+                existing = self.context._conn.execute(
                     """
                     SELECT id
                     FROM action_decisions
@@ -285,16 +305,16 @@ class PerceptionArchiveMixin:
                     LIMIT 1
                     """,
                     (
-                        self._text(item.session_id),
-                        self._text(item.sender_profile_id),
-                        self._text(item.group_id),
-                        self._text(item.date),
-                        self._text(item.action),
-                        self._text(item.scene_type),
+                        self.context._text(item.session_id),
+                        self.context._text(item.sender_profile_id),
+                        self.context._text(item.group_id),
+                        self.context._text(item.date),
+                        self.context._text(item.action),
+                        self.context._text(item.scene_type),
                     ),
                 ).fetchone()
                 if existing:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         """
                         UPDATE action_decisions
                         SET message_id = ?, sender_name = ?, group_name = ?,
@@ -305,26 +325,26 @@ class PerceptionArchiveMixin:
                         WHERE id = ?
                         """,
                         (
-                            self._text(item.message_id),
-                            self._text(item.sender_name),
-                            self._text(item.group_name),
-                            self._text(item.reason),
+                            self.context._text(item.message_id),
+                            self.context._text(item.sender_name),
+                            self.context._text(item.group_name),
+                            self.context._text(item.reason),
                             max(float(item.confidence or 0.0), 0.0),
-                            self._text(item.topic_owner),
-                            self._text(item.understanding),
-                            self._flag(item.deep_analysis),
-                            self._text(item.inner_monologue),
-                            self._text(item.reply_strategy),
+                            self.context._text(item.topic_owner),
+                            self.context._text(item.understanding),
+                            self.context._flag(item.deep_analysis),
+                            self.context._text(item.inner_monologue),
+                            self.context._text(item.reply_strategy),
                             int(existing["id"]),
                         ),
                     )
-                    self._conn.commit()
-                    row = self._conn.execute(
+                    self.context._conn.commit()
+                    row = self.context._conn.execute(
                         "SELECT * FROM action_decisions WHERE id = ?",
                         (int(existing["id"]),),
                     ).fetchone()
-                    return self._compose_action_decision(row)
-            cursor = self._conn.execute(
+                    return self.context._compose_action_decision(row)
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO action_decisions(
                     session_id, message_id, sender_profile_id, sender_name, group_id, group_name,
@@ -334,40 +354,40 @@ class PerceptionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self._text(item.session_id),
-                    self._text(item.message_id),
-                    self._text(item.sender_profile_id),
-                    self._text(item.sender_name),
-                    self._text(item.group_id),
-                    self._text(item.group_name),
-                    self._text(item.date),
-                    self._text(item.action),
-                    self._text(item.reason),
+                    self.context._text(item.session_id),
+                    self.context._text(item.message_id),
+                    self.context._text(item.sender_profile_id),
+                    self.context._text(item.sender_name),
+                    self.context._text(item.group_id),
+                    self.context._text(item.group_name),
+                    self.context._text(item.date),
+                    self.context._text(item.action),
+                    self.context._text(item.reason),
                     max(float(item.confidence or 0.0), 0.0),
-                    self._text(item.scene_type),
-                    self._text(item.topic_owner),
-                    self._text(item.understanding),
-                    self._flag(item.deep_analysis),
-                    self._text(item.inner_monologue),
-                    self._text(item.reply_strategy),
+                    self.context._text(item.scene_type),
+                    self.context._text(item.topic_owner),
+                    self.context._text(item.understanding),
+                    self.context._flag(item.deep_analysis),
+                    self.context._text(item.inner_monologue),
+                    self.context._text(item.reply_strategy),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM action_decisions WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_action_decision(row)
+            return self.context._compose_action_decision(row)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_recent_action_decisions(
         self, limit: int = 8
     ) -> list[ActionDecisionRecord]:
         def read() -> list[ActionDecisionRecord]:
-            rows = self._recent_scoped_rows_unlocked("action_decisions", limit)
-            return [self._compose_action_decision(row) for row in rows]
+            rows = self.context._recent_scoped_rows_unlocked("action_decisions", limit)
+            return [self.context._compose_action_decision(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_action_decision_records(
         self, limit: int = 20
@@ -379,7 +399,7 @@ class PerceptionArchiveMixin:
             params = (limit,)
 
         def read() -> list[ActionDecisionRecord]:
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_action_decision(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_action_decision(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)

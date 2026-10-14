@@ -76,6 +76,17 @@ class ModelContractTest(unittest.TestCase):
         self.assertEqual(RelationshipNote.from_value({"note": "旧笔记"}).content, "")
         self.assertIsNone(ChatSummaryRecord.from_value({"summary": "旧摘要"}))
         self.assertIsNone(ChatSummaryRecord.from_value({"detail": "旧长摘要"}))
+        summary = ChatSummaryRecord.from_value(
+            {
+                "brief": "一起去看电影",
+                "people": [
+                    {"profile_id": "u1", "name": "阿林"},
+                    {"profile_id": "u1", "name": "阿林"},
+                    {"profile_id": "u2"},
+                ],
+            }
+        )
+        self.assertEqual(summary.people, ["阿林", "u2"])
         self.assertIsNone(GroupEnvironmentRecord.from_value({"main_topic": "旧话题"}))
         self.assertIsNone(MessageVisibilityRecord.from_value({"sender_id": "u1"}))
         self.assertIsNone(

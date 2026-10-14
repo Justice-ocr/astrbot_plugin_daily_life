@@ -51,6 +51,33 @@ class ShareExpressionTests(unittest.IsolatedAsyncioTestCase):
             "约 20 字", runtime.get_share_chat_style(scene="share_private")["prompt"]
         )
 
+    def test_public_style_uses_casual_length_without_private_send_settings(self):
+        runtime = self.runtime(
+            casual_max_chars=20, private_casual_max_chars=10, group_casual_max_chars=15
+        )
+        reply = runtime.get_share_chat_style(scene="qzone_reply")["prompt"]
+        comment = runtime.get_share_chat_style(scene="qzone_comment")["prompt"]
+        self.assertEqual(reply, comment)
+        self.assertIn("平时说话的语气", reply)
+        self.assertIn("约 20 字", reply)
+        self.assertNotIn("约 10 字", reply)
+        self.assertNotIn("约 15 字", reply)
+        self.assertNotIn("画面", reply)
+        self.assertNotIn("只接住眼前", reply)
+        runtime.config.chat_style.casual_max_chars = 28
+        for scene in ("qzone_comment", "qzone_reply"):
+            self.assertIn(
+                "约 28 字", runtime.get_share_chat_style(scene=scene)["prompt"]
+            )
+        self.assertNotIn(
+            "约 28 字", runtime.get_share_chat_style(scene="qzone_post")["prompt"]
+        )
+        runtime.config.chat_style.enabled = False
+        self.assertEqual(
+            runtime.get_share_chat_style(scene="qzone_reply"),
+            {"enabled": False, "prompt": ""},
+        )
+
     async def test_cleanup_runs_without_model_and_uses_current_character_set(self):
         runtime = self.runtime()
         text = "早呀，喝点水。今天不赶时间！"

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import datetime
 import json
 
 from ..models import (
@@ -23,8 +26,23 @@ from .wardrobe import (
     serialize_outfit_components,
 )
 
+from typing import Any, Protocol
 
-class DailyAssemblyMixin:
+
+class DailyAssemblyComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _filter_places_by_day_evidence: Any
+    _localize_outfit_reason: Any
+    _meta_text: Any
+    _mood_color_text: Any
+    _style_catalog_reference_ids: Any
+
+
+class DailyAssemblyComponent:
+    def __init__(self, context: DailyAssemblyComponentContext) -> None:
+        self.context = context
+
     def _day_from_generation(
         self,
         result: dict,
@@ -59,11 +77,15 @@ class DailyAssemblyMixin:
             )
             if place is not None
         ]
-        places = self._filter_places_by_day_evidence(
+        places = self.context._filter_places_by_day_evidence(
             raw_place_records, timeline, events
         )
         state = LifeState.from_value(
-            normalize_state(result.get("state"), source="daily")
+            normalize_state(
+                result.get("state"),
+                now=datetime.datetime.strptime(date_str, "%Y-%m-%d"),
+                source="daily",
+            )
         )
         outfit = strip_hair_from_outfit(
             result.get("outfit", ""),
@@ -213,7 +235,7 @@ class DailyAssemblyMixin:
 
         pairs = {
             "theme": decision.get("theme") or plan.get("theme"),
-            "mood": self._mood_color_text(decision.get("mood")),
+            "mood": self.context._mood_color_text(decision.get("mood")),
             "style": normalize_appearance_fact(outfit.get("style"), 120),
             "hair_style": normalize_appearance_fact(
                 outfit.get("hair_style"), 80
@@ -235,10 +257,10 @@ class DailyAssemblyMixin:
             "outfit_components": serialize_outfit_components(
                 outfit.get("outfit_components")
             ),
-            "outfit_reason": self._localize_outfit_reason(outfit.get("reason")),
+            "outfit_reason": self.context._localize_outfit_reason(outfit.get("reason")),
             "style_catalog_reference_ids": ",".join(
                 str(item)
-                for item in self._style_catalog_reference_ids(
+                for item in self.context._style_catalog_reference_ids(
                     outfit.get("catalog_reference_ids")
                 )
             ),
@@ -256,7 +278,7 @@ class DailyAssemblyMixin:
         }
         meta = {}
         for key, value in pairs.items():
-            text = self._meta_text(
+            text = self.context._meta_text(
                 value,
                 limit=1200 if key == "outfit_components" else 80,
             )
@@ -264,10 +286,10 @@ class DailyAssemblyMixin:
                 meta[key] = text
         location_audit = result.get("location_audit")
         if isinstance(location_audit, dict):
-            meta["location_audit_provider"] = self._meta_text(
+            meta["location_audit_provider"] = self.context._meta_text(
                 location_audit.get("map_provider")
             )
-            meta["location_audit_city"] = self._meta_text(
+            meta["location_audit_city"] = self.context._meta_text(
                 location_audit.get("home_city")
             )
             meta["location_audit_places"] = str(
@@ -279,4 +301,4 @@ class DailyAssemblyMixin:
         return meta
 
 
-__all__ = ["DailyAssemblyMixin"]
+__all__ = ["DailyAssemblyComponent"]

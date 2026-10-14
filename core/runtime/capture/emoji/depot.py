@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import os
@@ -12,13 +14,41 @@ from ....clock import timestamp as life_timestamp
 from ...markers import LOG_PREFIX
 from ....security import is_http_url_allowed_async
 
+from typing import Any, Protocol
 
-class EmojiCacheMixin:
+
+class EmojiCacheComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    EMOJI_ASSET_SUFFIXES: Any
+    _cache_emoji_asset_path: Any
+    _copy_emoji_asset: Any
+    _decode_emoji_asset_data: Any
+    _download_emoji_asset: Any
+    _emoji_asset_cache_dir: Any
+    _emoji_asset_filename: Any
+    _emoji_asset_size_allowed: Any
+    _emoji_asset_source: Any
+    _emoji_asset_suffix: Any
+    _emoji_asset_temporary_path: Any
+    _emoji_max_bytes: Any
+    _emoji_orphan_grace_seconds: Any
+    _local_path_from_file_uri: Any
+    _remove_emoji_asset_temporary_path: Any
+    _resolve_cached_emoji_path: Any
+    _write_emoji_asset_bytes: Any
+    archive: Any
+
+
+class EmojiCacheComponent:
+    def __init__(self, context: EmojiCacheComponentContext) -> None:
+        self.context = context
+
     async def _cache_emoji_asset_file(
         self, payload: dict[str, str], fingerprint: str
     ) -> str:
-        source = self._emoji_asset_source(payload)
-        cached = await self._cache_emoji_asset_path(payload, fingerprint)
+        source = self.context._emoji_asset_source(payload)
+        cached = await self.context._cache_emoji_asset_path(payload, fingerprint)
         return str(cached) if cached else source
 
     async def _cache_emoji_asset_path(
@@ -28,33 +58,33 @@ class EmojiCacheMixin:
         *,
         log_failure: bool = True,
     ) -> Path | None:
-        cache_dir = self._emoji_asset_cache_dir()
-        source = self._emoji_asset_source(payload)
+        cache_dir = self.context._emoji_asset_cache_dir()
+        source = self.context._emoji_asset_source(payload)
         if not cache_dir or not source:
             return None
         if source.startswith("data:image/") or source.startswith("base64://"):
-            return await self._decode_emoji_asset_data(
+            return await self.context._decode_emoji_asset_data(
                 source, fingerprint, cache_dir, log_failure=log_failure
             )
         if source.startswith("file://"):
-            source = self._local_path_from_file_uri(source)
+            source = self.context._local_path_from_file_uri(source)
         if source.startswith(("http://", "https://")):
-            return await self._download_emoji_asset(
+            return await self.context._download_emoji_asset(
                 source, fingerprint, cache_dir, log_failure=log_failure
             )
-        return await self._copy_emoji_asset(
+        return await self.context._copy_emoji_asset(
             source, fingerprint, cache_dir, log_failure=log_failure
         )
 
     async def cleanup_emoji_asset_cache(self) -> int:
-        cache_dir = self._emoji_asset_cache_dir(create=False)
+        cache_dir = self.context._emoji_asset_cache_dir(create=False)
         if not cache_dir or not await asyncio.to_thread(cache_dir.is_dir):
             return 0
 
         referenced_paths = set()
-        for asset in await self.archive.get_emoji_assets(limit=0):
+        for asset in await self.context.archive.get_emoji_assets(limit=0):
             path_text = str(getattr(asset, "file_path", "") or "").strip()
-            resolved = self._resolve_cached_emoji_path(path_text, cache_dir)
+            resolved = self.context._resolve_cached_emoji_path(path_text, cache_dir)
             if resolved:
                 referenced_paths.add(resolved)
 
@@ -64,7 +94,7 @@ class EmojiCacheMixin:
         for path in paths:
             if (
                 not await asyncio.to_thread(path.is_file)
-                or path.suffix.lower() not in self.EMOJI_ASSET_SUFFIXES
+                or path.suffix.lower() not in self.context.EMOJI_ASSET_SUFFIXES
             ):
                 continue
             try:
@@ -75,7 +105,7 @@ class EmojiCacheMixin:
                 continue
             if resolved in referenced_paths:
                 continue
-            if now_ts - file_stat.st_mtime < self._emoji_orphan_grace_seconds():
+            if now_ts - file_stat.st_mtime < self.context._emoji_orphan_grace_seconds():
                 continue
             try:
                 await asyncio.to_thread(path.unlink)
@@ -102,14 +132,14 @@ class EmojiCacheMixin:
             if not await asyncio.to_thread(source_path.is_file):
                 return None
             size = await asyncio.to_thread(lambda: source_path.stat().st_size)
-            if not self._emoji_asset_size_allowed(size):
+            if not self.context._emoji_asset_size_allowed(size):
                 return None
-            suffix = self._emoji_asset_suffix(source, content_type="")
-            target_path = cache_dir / self._emoji_asset_filename(fingerprint, suffix)
+            suffix = self.context._emoji_asset_suffix(source, content_type="")
+            target_path = cache_dir / self.context._emoji_asset_filename(fingerprint, suffix)
             if source_path == await asyncio.to_thread(target_path.resolve):
                 return target_path
             if not await asyncio.to_thread(target_path.exists):
-                temporary_path = self._emoji_asset_temporary_path(target_path)
+                temporary_path = self.context._emoji_asset_temporary_path(target_path)
                 await asyncio.to_thread(shutil.copy2, source_path, temporary_path)
                 await asyncio.to_thread(os.replace, temporary_path, target_path)
             return target_path
@@ -120,7 +150,7 @@ class EmojiCacheMixin:
                 logger.debug(f"{LOG_PREFIX} 表情素材本地缓存跳过：{exc}")
             return None
         finally:
-            await self._remove_emoji_asset_temporary_path(temporary_path)
+            await self.context._remove_emoji_asset_temporary_path(temporary_path)
 
     @staticmethod
     def _emoji_asset_temporary_path(target_path: Path) -> Path:
@@ -175,13 +205,13 @@ class EmojiCacheMixin:
                 header, encoded = text.split(",", 1)
                 content_type = header[5:].split(";", 1)[0]
             data = base64.b64decode(encoded, validate=False)
-            if not data or not self._emoji_asset_size_allowed(len(data)):
+            if not data or not self.context._emoji_asset_size_allowed(len(data)):
                 return None
-            suffix = self._emoji_asset_suffix("", data=data, content_type=content_type)
-            target_path = cache_dir / self._emoji_asset_filename(fingerprint, suffix)
+            suffix = self.context._emoji_asset_suffix("", data=data, content_type=content_type)
+            target_path = cache_dir / self.context._emoji_asset_filename(fingerprint, suffix)
             if not await asyncio.to_thread(target_path.exists):
                 await asyncio.to_thread(
-                    self._write_emoji_asset_bytes, target_path, data
+                    self.context._write_emoji_asset_bytes, target_path, data
                 )
             return target_path
         except Exception as exc:
@@ -215,17 +245,17 @@ class EmojiCacheMixin:
                     content_type = str(response.headers.get("Content-Type", "") or "")
                     if content_type and not content_type.lower().startswith("image/"):
                         return None
-                    max_bytes = self._emoji_max_bytes()
+                    max_bytes = self.context._emoji_max_bytes()
                     data = await response.content.read(
                         max_bytes + 1 if max_bytes > 0 else -1
                     )
-            if not data or not self._emoji_asset_size_allowed(len(data)):
+            if not data or not self.context._emoji_asset_size_allowed(len(data)):
                 return None
-            suffix = self._emoji_asset_suffix(url, data=data, content_type=content_type)
-            target_path = cache_dir / self._emoji_asset_filename(fingerprint, suffix)
+            suffix = self.context._emoji_asset_suffix(url, data=data, content_type=content_type)
+            target_path = cache_dir / self.context._emoji_asset_filename(fingerprint, suffix)
             if not await asyncio.to_thread(target_path.exists):
                 await asyncio.to_thread(
-                    self._write_emoji_asset_bytes, target_path, data
+                    self.context._write_emoji_asset_bytes, target_path, data
                 )
             return target_path
         except Exception as exc:

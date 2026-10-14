@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -165,10 +166,44 @@ class InteractionContext:
         return "\n".join(lines)
 
 
-class InteractionContextMixin:
-    """统一解析消息通道与现实互动方式。"""
+class InteractionFactSource(Protocol):
+    """互动方式服务所需的短期事实读写契约。"""
 
-    def note_interaction_turn_decision(
+    async def get_temporal_facts(
+        self, *, scope: str, predicate: str, limit: int
+    ) -> list[Any]: ...
+
+    async def get_current_temporal_fact(
+        self, scope: str, subject: str, predicate: str
+    ) -> Any: ...
+
+    async def write_temporal_fact(
+        self, operation: str, fact: dict[str, Any]
+    ) -> Any: ...
+
+
+class InteractionContextService:
+    """通过明确的事件与归档依赖解析现实互动方式。"""
+
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], InteractionFactSource],
+        session_id: Callable[[Any], str],
+        profile_id: Callable[[Any], str],
+        message_id: Callable[[Any], str],
+        is_group: Callable[[Any], bool],
+        turn_messages: Callable[[Any], Iterable[str]],
+    ) -> None:
+        # 归档在每次操作开始时读取，以沿用调用方当前的服务租约。
+        self._archive = archive
+        self._session_id = session_id
+        self._profile_id = profile_id
+        self._message_id = message_id
+        self._is_group = is_group
+        self._turn_messages = turn_messages
+
+    def _note_turn_decision(
         self,
         event: Any,
         value: Any,
@@ -195,13 +230,8 @@ class InteractionContextMixin:
         # 不能像新的用户话轮一样使最新的面对面/远距离事实失效。
         if bool(getattr(event, "is_proactive_synthetic", False)):
             return False
-        turn_getter = getattr(self, "continuous_turn_messages", None)
-        if callable(turn_getter):
-            try:
-                if any(str(item or "").strip() for item in turn_getter(event)):
-                    return True
-            except Exception:
-                pass
+        if any(str(item or "").strip() for item in self._turn_messages(event)):
+            return True
         return bool(str(getattr(event, "message_str", "") or "").strip())
 
     @staticmethod
@@ -217,7 +247,7 @@ class InteractionContextMixin:
             raw_message.get("time") if isinstance(raw_message, dict) else None,
         ]
         for value in candidates:
-            if value in {None, ""}:
+            if value is None or value == "":
                 continue
             if isinstance(value, (int, float)):
                 try:
@@ -231,7 +261,7 @@ class InteractionContextMixin:
                 return parsed
         return fallback
 
-    async def apply_interaction_turn_decision(
+    async def apply_turn_decision(
         self,
         event: Any,
         value: Any,
@@ -240,38 +270,24 @@ class InteractionContextMixin:
     ) -> dict[str, Any] | None:
         """应用当前话轮裁定，并立即写入短期互动事实。"""
 
-        decision = self.note_interaction_turn_decision(event, value)
+        decision = self._note_turn_decision(event, value)
         if decision is None or decision["decision"] == "keep":
             return decision
-        scope_getter = getattr(self, "_event_session_id", None)
-        scope = (
-            str(scope_getter(event) or "").strip()
-            if callable(scope_getter)
-            else str(getattr(event, "unified_msg_origin", "") or "").strip()
-        )
+        scope = str(self._session_id(event) or "").strip()
         profile_id = self._interaction_profile_id(event=event, scope=scope)
-        archive = getattr(self, "archive", None)
-        writer = getattr(archive, "write_temporal_fact", None)
-        reader = getattr(archive, "get_current_temporal_fact", None)
-        if not scope or not profile_id or not callable(writer):
+        if not scope or not profile_id:
             return decision
         point = self._interaction_event_time(event, now or life_now())
         observed_at = point.isoformat(timespec="seconds")
-        message_getter = getattr(self, "_event_message_id", None)
-        message_id = (
-            str(message_getter(event) or "").strip()
-            if callable(message_getter)
-            else str(getattr(event, "message_id", "") or "").strip()
-        )
+        message_id = str(self._message_id(event) or "").strip()
         try:
-            current = (
-                await reader(scope, profile_id, INTERACTION_MODE_PREDICATE)
-                if callable(reader)
-                else None
+            archive = self._archive()
+            current = await archive.get_current_temporal_fact(
+                scope, profile_id, INTERACTION_MODE_PREDICATE
             )
             if decision["decision"] == "clear":
                 if current is not None:
-                    await writer(
+                    await archive.write_temporal_fact(
                         "INVALIDATE",
                         {
                             "scope": scope,
@@ -287,7 +303,7 @@ class InteractionContextMixin:
                         },
                     )
                 return decision
-            await writer(
+            await archive.write_temporal_fact(
                 "UPDATE" if current is not None else "ADD",
                 {
                     "scope": scope,
@@ -310,14 +326,8 @@ class InteractionContextMixin:
         return decision
 
     def _interaction_transport(self, scope: str, event: Any = None) -> str:
-        if event is not None:
-            checker = getattr(self, "_event_is_group_message", None)
-            if callable(checker):
-                try:
-                    if checker(event):
-                        return "群聊"
-                except Exception:
-                    pass
+        if event is not None and self._is_group(event):
+            return "群聊"
         return "群聊" if ":GroupMessage:" in scope else "私聊"
 
     def _interaction_profile_id(
@@ -331,15 +341,13 @@ class InteractionContextMixin:
         if explicit:
             return explicit
         if event is not None:
-            getter = getattr(self, "_event_profile_id", None)
-            if callable(getter):
-                resolved = str(getter(event) or "").strip()
-                if resolved:
-                    return resolved
+            resolved = str(self._profile_id(event) or "").strip()
+            if resolved:
+                return resolved
         _, real_id = parse_unified_origin(scope)
         return str(real_id or "").strip()
 
-    async def resolve_interaction_context(
+    async def resolve(
         self,
         *,
         event: Any = None,
@@ -348,10 +356,9 @@ class InteractionContextMixin:
         snapshot: dict[str, Any] | None = None,
         now: datetime.datetime | None = None,
     ) -> InteractionContext:
-        scope_getter = getattr(self, "_event_session_id", None)
         scope = str(target_scope or "").strip()
-        if not scope and event is not None and callable(scope_getter):
-            scope = str(scope_getter(event) or "").strip()
+        if not scope and event is not None:
+            scope = str(self._session_id(event) or "").strip()
         target_profile_id = self._interaction_profile_id(
             event=event,
             scope=scope,
@@ -365,9 +372,8 @@ class InteractionContextMixin:
             == INTERACTION_MODE_PREDICATE
             for fact in facts
         ):
-            reader = getattr(getattr(self, "archive", None), "get_temporal_facts", None)
-            if callable(reader) and scope:
-                facts = await reader(
+            if scope:
+                facts = await self._archive().get_temporal_facts(
                     scope=scope,
                     predicate=INTERACTION_MODE_PREDICATE,
                     limit=12,
@@ -500,7 +506,8 @@ __all__ = [
     "ContextSnapshotRepository",
     "ContextSnapshotSource",
     "InteractionContext",
-    "InteractionContextMixin",
+    "InteractionContextService",
+    "InteractionFactSource",
     "interaction_fact_is_current",
     "normalize_interaction_turn_decision",
 ]

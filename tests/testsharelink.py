@@ -12,12 +12,17 @@ from core.archive import LifeArchive
 from core.media.picture.polling import ImageTaskError, ImageTaskFailed
 from core.media.video.errors import VideoTaskError, VideoTaskFailed
 from core.models import DayRecord, TimelineItem
-from core.runtime.integration import ExternalIntegrationMixin
-from core.runtime.mirror.export import SnapshotExportMixin
-from core.runtime.receipt import RuntimeActionReceiptMixin
+from core.runtime import DailyLifeRuntime
+from componentfixtures import SnapshotExportComponent
+from componentfixtures import RuntimeActionReceiptComponent
 
 
-class _AssetRuntime(RuntimeActionReceiptMixin):
+class _IntegrationRuntime(DailyLifeRuntime):
+    def __init__(self):
+        pass
+
+
+class _AssetRuntime(RuntimeActionReceiptComponent):
     def __init__(self, archive):
         self.archive = archive
         self.listener = None
@@ -125,7 +130,7 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
                 date = datetime.date.today().isoformat()
                 await archive.save_day(DayRecord(date=date))
 
-                class Runtime(ExternalIntegrationMixin):
+                class Runtime(_IntegrationRuntime):
                     async def resolve_injection_target(self, now):
                         return date, False
 
@@ -162,7 +167,7 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
             archive = LifeArchive(Path(folder) / "life.db")
             try:
 
-                class Runtime(ExternalIntegrationMixin):
+                class Runtime(_IntegrationRuntime):
                     async def resolve_injection_target(self, now):
                         return "2026-10-08", False
 
@@ -210,23 +215,23 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
                 ),
             },
         )
-        facts = SnapshotExportMixin._share_current_facts(day)
+        facts = SnapshotExportComponent._share_current_facts(day)
         self.assertEqual(facts["current_action"]["status"], "paused")
         self.assertEqual(facts["body"]["energy"], 48)
         self.assertNotIn("must-not-export", json.dumps(facts))
         self.assertNotIn("private-reason", json.dumps(facts))
         day.meta["residence_context_stale"] = "true"
-        self.assertIs(SnapshotExportMixin._share_current_facts(day)["valid"], False)
+        self.assertIs(SnapshotExportComponent._share_current_facts(day)["valid"], False)
 
     def test_snapshot_does_not_promote_clock_only_active_plan(self):
         day = DayRecord(
             date="2026-10-11",
             timeline=[TimelineItem(time="12:00", activity="准备午餐", execution_state="active")],
         )
-        self.assertEqual(SnapshotExportMixin._share_current_facts(day)["current_action"], {})
+        self.assertEqual(SnapshotExportComponent._share_current_facts(day)["current_action"], {})
 
     async def test_voice_semantics_keep_original_and_validate_style(self):
-        class Runtime(ExternalIntegrationMixin):
+        class Runtime(_IntegrationRuntime):
             config = types.SimpleNamespace(chat_style=None)
 
             def get_share_chat_style(self, **kwargs):
@@ -288,7 +293,7 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_share_review_preserves_facts_and_format_without_qzone_length_limit(
         self,
     ):
-        class Runtime(ExternalIntegrationMixin):
+        class Runtime(_IntegrationRuntime):
             config = types.SimpleNamespace(chat_style=None)
             get_text_provider = AsyncMock(return_value=object())
             call_text_model = AsyncMock(return_value="response")
@@ -374,7 +379,7 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
         runtime.call_text_model.assert_not_awaited()
 
     async def test_expression_review_keeps_source_on_malformed_or_failed_response(self):
-        class Runtime(ExternalIntegrationMixin):
+        class Runtime(_IntegrationRuntime):
             config = types.SimpleNamespace(chat_style=None)
             payload = None
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,8 +17,22 @@ from ..runtime.generation import DailyGenerationBusy
 from ..runtime.locks import operation_lock
 from .request import CommandRequest, DailyResetPlan
 
+from typing import Protocol
 
-class OperateCommandMixin:
+
+class OperateCommandComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_reset_daily_plan: Any
+    _execute_reset_daily: Any
+    _sync_weather_to_day: Any
+    runtime: Any
+
+
+class OperateCommandComponent:
+    def __init__(self, context: OperateCommandComponentContext) -> None:
+        self.context = context
+
     async def _execute_outfit_update(
         self,
         req: CommandRequest,
@@ -26,15 +42,15 @@ class OperateCommandMixin:
     ) -> tuple[DayRecord | None, bool]:
         input_period = CN_PERIOD_MAP.get(period, period)
         target_period = input_period if input_period in PERIOD_HOURS else req.period
-        current_time = self.runtime._target_datetime_for_command(
+        current_time = self.context.runtime._target_datetime_for_command(
             req.target_date_str, req.now
         )
-        existing = await self.runtime.archive.get_day(req.target_date_str)
+        existing = await self.context.runtime.archive.get_day(req.target_date_str)
         if existing is None:
             logger.info(
                 f"[穿搭更新] {req.target_date_str} 尚无生活安排，先生成基础日程"
             )
-            result = await self.runtime.run_daily_generation(
+            result = await self.context.runtime.run_daily_generation(
                 date=current_time,
                 source="outfit_seed",
                 force=True,
@@ -45,27 +61,27 @@ class OperateCommandMixin:
             )
             return result.day, True
 
-        async with operation_lock(self.runtime, f"outfit:{req.target_date_str}"):
-            updated = await self.runtime.composer.update_outfit(
+        async with operation_lock(self.context.runtime, f"outfit:{req.target_date_str}"):
+            updated = await self.context.runtime.composer.update_outfit(
                 req.target_date_str,
                 target_period,
                 current_time=current_time,
                 instruction=detail,
             )
         if updated is not None:
-            notify = getattr(self.runtime, "mark_page_status_changed", None)
+            notify = getattr(self.context.runtime, "mark_page_status_changed", None)
             if callable(notify):
                 await notify("outfit_update")
         return updated, False
 
     async def _clear(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        async with self.runtime.generation_lock:
-            await self.runtime.archive.reset_all()
-            clear_timing = getattr(self.runtime, "clear_conversation_timing", None)
+        async with self.context.runtime.generation_lock:
+            await self.context.runtime.archive.reset_all()
+            clear_timing = getattr(self.context.runtime, "clear_conversation_timing", None)
             if callable(clear_timing):
                 clear_timing()
-            self.runtime.failed_dates.clear()
-            self.runtime.composer._reference_name_cache.clear()
+            self.context.runtime.failed_dates.clear()
+            self.context.runtime.composer._reference_name_cache.clear()
         yield event.plain_result("✅ 已清空全部日常生活背景数据。")
 
     async def _reset(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
@@ -73,10 +89,10 @@ class OperateCommandMixin:
             yield event.plain_result("清空全部数据请使用明确维护指令：/生活 清空")
             return
 
-        plan = self._build_reset_daily_plan(req)
+        plan = self.context._build_reset_daily_plan(req)
         yield event.plain_result(plan.progress)
         try:
-            result = await self._execute_reset_daily(req, plan)
+            result = await self.context._execute_reset_daily(req, plan)
         except DailyGenerationBusy as exc:
             yield event.plain_result(str(exc))
             return
@@ -125,22 +141,22 @@ class OperateCommandMixin:
     async def _execute_reset_daily(
         self, req: CommandRequest, plan: DailyResetPlan
     ) -> DayRecord | None:
-        has_day = await self.runtime.archive.get_day(req.target_date_str)
+        has_day = await self.context.runtime.archive.get_day(req.target_date_str)
         if plan.keep_schedule and has_day and not plan.extra_instruction:
-            async with operation_lock(self.runtime, f"outfit:{req.target_date_str}"):
-                target_time = self.runtime._target_datetime_for_command(
+            async with operation_lock(self.context.runtime, f"outfit:{req.target_date_str}"):
+                target_time = self.context.runtime._target_datetime_for_command(
                     req.target_date_str, req.now
                 )
-                return await self.runtime.composer.update_outfit(
+                return await self.context.runtime.composer.update_outfit(
                     req.target_date_str,
                     plan.target_period,
                     current_time=target_time,
                 )
 
-        target_dt = self.runtime._target_datetime_for_command(
+        target_dt = self.context.runtime._target_datetime_for_command(
             req.target_date_str, req.now
         )
-        result = await self.runtime.run_daily_generation(
+        result = await self.context.runtime.run_daily_generation(
             date=target_dt,
             source="command_reset",
             force=True,
@@ -153,7 +169,7 @@ class OperateCommandMixin:
 
     async def _weather(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         city_resolver = getattr(
-            getattr(self.runtime, "domains", None), "resolve_weather_city", None
+            getattr(self.context.runtime, "domains", None), "resolve_weather_city", None
         )
         weather_city = await city_resolver() if callable(city_resolver) else ""
 
@@ -165,11 +181,11 @@ class OperateCommandMixin:
             )
             return
 
-        weather_raw = await self.runtime.weather_client.get_weather(query_city)
+        weather_raw = await self.context.runtime.weather_client.get_weather(query_city)
         analyzed = analyze_weather(weather_raw)
         should_sync = (not req.param1) or (query_city == weather_city)
         if should_sync and analyzed.get("temp") is not None:
-            await self._sync_weather_to_day(req, analyzed)
+            await self.context._sync_weather_to_day(req, analyzed)
 
         display = f"🌤️ {analyzed['raw']}"
         if analyzed.get("outfit_hint"):
@@ -180,10 +196,10 @@ class OperateCommandMixin:
 
     async def _sync_weather_to_day(self, req: CommandRequest, analyzed: dict) -> None:
         sync_date_str = req.target_date_str
-        data = await self.runtime.archive.get_day(sync_date_str)
+        data = await self.context.runtime.archive.get_day(sync_date_str)
         if not data:
             sync_date_str = req.today_str
-            data = await self.runtime.archive.get_day(sync_date_str)
+            data = await self.context.runtime.archive.get_day(sync_date_str)
         if not data:
             return
         updated_at = life_timestamp()
@@ -193,5 +209,5 @@ class OperateCommandMixin:
             latest.weather_info = WeatherInfo.from_value(analyzed)
             latest.weather_last_update = updated_at
 
-        await self.runtime.archive.mutate_day(sync_date_str, apply_weather)
+        await self.context.runtime.archive.mutate_day(sync_date_str, apply_weather)
         logger.debug("[手动天气] 已更新居住地天气数据")

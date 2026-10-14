@@ -16,7 +16,7 @@ from runtimehelpers import (
     Path,
     Provider,
     ReversePromptRecord,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     TimelineItem,
     async_return,
     asyncio,
@@ -29,7 +29,7 @@ from runtimehelpers import (
 )
 
 
-class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     async def test_edit_passes_directors_character_reference_decision(self):
         from unittest.mock import AsyncMock
 
@@ -227,7 +227,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             _ACTIVE_AGENT_RUNNERS={scope: runner}
         )
         try:
-            image_module.RuntimeImageMediaMixin._disable_direct_image_tools_for_active_turn(
+            image_module.RuntimeImageMediaComponent._disable_direct_image_tools_for_active_turn(
                 event
             )
         finally:

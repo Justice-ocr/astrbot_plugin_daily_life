@@ -1,19 +1,44 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
 from ...models import MemoryMaintenanceRecord
 
+from typing import Protocol
 
-class MaintenanceArchiveMixin:
+
+class MaintenanceArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_memory_maintenance: Any
+    _conn: Any
+    _run_db: Any
+    _text: Any
+    get_behavior_feedback: Any
+    get_emotion_arcs: Any
+    get_focus_targets: Any
+    get_life_episodes: Any
+    get_life_terms: Any
+    get_memory_boundaries: Any
+    get_memory_evidence: Any
+    get_physiological_rhythm_logs: Any
+    get_storage_overview: Any
+
+
+class MaintenanceArchiveComponent:
+    def __init__(self, context: MaintenanceArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_memory_maintenance(self, row: sqlite3.Row) -> MemoryMaintenanceRecord:
         return MemoryMaintenanceRecord(
             id=int(row["id"] or 0),
             date=row["date"],
-            summary=self._text(row["summary"]),
+            summary=self.context._text(row["summary"]),
             merged_count=int(row["merged_count"] or 0),
             corrected_count=int(row["corrected_count"] or 0),
             pruned_count=int(row["pruned_count"] or 0),
-            reason=self._text(row["reason"]),
+            reason=self.context._text(row["reason"]),
             created_at=row["created_at"],
         )
 
@@ -29,7 +54,7 @@ class MaintenanceArchiveMixin:
             return None
 
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO memory_maintenance(
                     date, summary, merged_count, corrected_count, pruned_count, reason, created_at
@@ -37,21 +62,21 @@ class MaintenanceArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
-                    self._text(item.date),
-                    self._text(item.summary),
+                    self.context._text(item.date),
+                    self.context._text(item.summary),
                     max(int(item.merged_count or 0), 0),
                     max(int(item.corrected_count or 0), 0),
                     max(int(item.pruned_count or 0), 0),
-                    self._text(item.reason),
+                    self.context._text(item.reason),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM memory_maintenance WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_memory_maintenance(row) if row else None
+            return self.context._compose_memory_maintenance(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_memory_maintenance(
         self, limit: int = 20
@@ -62,21 +87,21 @@ class MaintenanceArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_memory_maintenance(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_memory_maintenance(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_life_health_report(self, policy: Any = None) -> dict:
-        storage = await self.get_storage_overview(policy)
-        evidence = await self.get_memory_evidence(limit=5)
-        episodes = await self.get_life_episodes(limit=5)
-        focus = await self.get_focus_targets(limit=5)
-        feedback = await self.get_behavior_feedback(limit=5)
-        emotion_arcs = await self.get_emotion_arcs(limit=5)
-        rhythm_logs = await self.get_physiological_rhythm_logs(limit=5)
-        terms = await self.get_life_terms(limit=5)
-        boundaries = await self.get_memory_boundaries(limit=5)
+        storage = await self.context.get_storage_overview(policy)
+        evidence = await self.context.get_memory_evidence(limit=5)
+        episodes = await self.context.get_life_episodes(limit=5)
+        focus = await self.context.get_focus_targets(limit=5)
+        feedback = await self.context.get_behavior_feedback(limit=5)
+        emotion_arcs = await self.context.get_emotion_arcs(limit=5)
+        rhythm_logs = await self.context.get_physiological_rhythm_logs(limit=5)
+        terms = await self.context.get_life_terms(limit=5)
+        boundaries = await self.context.get_memory_boundaries(limit=5)
         memory_category_keys = {
             "relationships",
             "world",

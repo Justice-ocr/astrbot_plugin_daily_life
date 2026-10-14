@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from pathlib import Path
 from typing import Any
@@ -5,8 +7,37 @@ from urllib.parse import urlparse
 
 from ....config.options.basis import EmojiSettings
 
+from typing import Protocol
 
-class EmojiBaseMixin:
+
+class EmojiBaseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    EMOJI_ASSET_DIR_NAME: Any
+    _apply_visual_context_summary_text: Any
+    _compact_visual_context_summary: Any
+    _emoji_asset_is_remote: Any
+    _emoji_max_bytes: Any
+    _emoji_max_ready_count: Any
+    _emoji_ready_asset_count: Any
+    _emoji_replace_when_full: Any
+    _emoji_settings: Any
+    _remember_visual_context_summary: Any
+    _str_payload: Any
+    _visual_context_summaries: Any
+    _visual_context_summary_cache: Any
+    _visual_context_summary_from_payload: Any
+    archive: Any
+    config: Any
+    data_path: Any
+    get_text_provider: Any
+    update_structured_message_visual_summary: Any
+
+
+class EmojiBaseComponent:
+    def __init__(self, context: EmojiBaseComponentContext) -> None:
+        self.context = context
+
     EMOJI_ASSET_DIR_NAME = "emoji"
     EMOJI_ASSET_DEFAULT_MAX_BYTES = 5 * 1024 * 1024
     EMOJI_ASSET_DEFAULT_MAX_READY = 128
@@ -51,40 +82,40 @@ class EmojiBaseMixin:
     }
 
     def _emoji_settings(self) -> EmojiSettings:
-        settings = getattr(getattr(self, "config", None), "emoji", None)
+        settings = getattr(getattr(self.context, "config", None), "emoji", None)
         return settings if isinstance(settings, EmojiSettings) else EmojiSettings()
 
     def _emoji_auto_collect_enabled(self) -> bool:
-        return bool(self._emoji_settings().collect_chat_emojis)
+        return bool(self.context._emoji_settings().collect_chat_emojis)
 
     def _emoji_max_bytes(self) -> int:
-        max_mb = max(1.0, min(float(self._emoji_settings().max_size_mb), 20.0))
+        max_mb = max(1.0, min(float(self.context._emoji_settings().max_size_mb), 20.0))
         return max(1, int(max_mb * 1024 * 1024))
 
     def _emoji_max_ready_count(self) -> int:
-        return max(1, int(self._emoji_settings().max_ready))
+        return max(1, int(self.context._emoji_settings().max_ready))
 
     def _emoji_replace_when_full(self) -> bool:
-        return bool(self._emoji_settings().replace_when_full)
+        return bool(self.context._emoji_settings().replace_when_full)
 
     def _emoji_send_candidate_limit(self) -> int:
-        return max(1, int(self._emoji_settings().send_candidate_limit))
+        return max(1, int(self.context._emoji_settings().send_candidate_limit))
 
     def _emoji_review_batch_size(self) -> int:
-        return max(1, int(self._emoji_settings().review_batch_size))
+        return max(1, int(self.context._emoji_settings().review_batch_size))
 
     def _emoji_inactive_record_keep_days(self) -> int:
-        return max(1, int(self._emoji_settings().inactive_record_keep_days))
+        return max(1, int(self.context._emoji_settings().inactive_record_keep_days))
 
     def _emoji_orphan_grace_seconds(self) -> int:
-        return max(1, int(self._emoji_settings().orphan_cache_grace_hours)) * 60 * 60
+        return max(1, int(self.context._emoji_settings().orphan_cache_grace_hours)) * 60 * 60
 
     def _emoji_asset_size_allowed(self, size_bytes: int) -> bool:
-        max_bytes = self._emoji_max_bytes()
+        max_bytes = self.context._emoji_max_bytes()
         return int(size_bytes or 0) <= max_bytes
 
     async def _emoji_ready_asset_count(self, *, exclude_hash: str = "") -> int:
-        getter = getattr(getattr(self, "archive", None), "get_emoji_assets", None)
+        getter = getattr(getattr(self.context, "archive", None), "get_emoji_assets", None)
         if not callable(getter):
             return 0
         assets = await getter(limit=0, status="ready", sendable_only=True)
@@ -97,21 +128,21 @@ class EmojiBaseMixin:
 
     async def _emoji_can_accept_ready_asset(self, *, exclude_hash: str = "") -> bool:
         return (
-            self._emoji_replace_when_full()
-            or await self._emoji_ready_asset_count(exclude_hash=exclude_hash)
-            < self._emoji_max_ready_count()
+            self.context._emoji_replace_when_full()
+            or await self.context._emoji_ready_asset_count(exclude_hash=exclude_hash)
+            < self.context._emoji_max_ready_count()
         )
 
     async def _get_vision_provider(self):
-        provider_id = self.config.vision.provider
-        return await self.get_text_provider(provider_id)
+        provider_id = self.context.config.vision.provider
+        return await self.context.get_text_provider(provider_id)
 
     def _emoji_asset_cache_dir(self, *, create: bool = True) -> Path | None:
-        data_path = getattr(self, "data_path", None)
+        data_path = getattr(self.context, "data_path", None)
         if not data_path:
             return None
         cache_dir = (
-            Path(data_path).expanduser().resolve().parent / self.EMOJI_ASSET_DIR_NAME
+            Path(data_path).expanduser().resolve().parent / self.context.EMOJI_ASSET_DIR_NAME
         )
         if create:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -234,14 +265,14 @@ class EmojiBaseMixin:
         return cls._emoji_asset_component_kind(item)
 
     def _visual_context_summary_cache(self) -> dict[str, str]:
-        cache = getattr(self, "_visual_context_summaries", None)
+        cache = getattr(self.context, "_visual_context_summaries", None)
         if not isinstance(cache, dict):
             cache = {}
-            self._visual_context_summaries = cache
+            self.context._visual_context_summaries = cache
         return cache
 
     def _remember_visual_context_summary(self, fingerprint: str, summary: str) -> None:
-        cache = self._visual_context_summary_cache()
+        cache = self.context._visual_context_summary_cache()
         cache.pop(fingerprint, None)
         cache[fingerprint] = summary
         while len(cache) > 512:
@@ -290,7 +321,7 @@ class EmojiBaseMixin:
     def _resolve_cached_emoji_path(
         self, path_text: str, cache_dir: Path
     ) -> Path | None:
-        if not path_text or self._emoji_asset_is_remote(path_text):
+        if not path_text or self.context._emoji_asset_is_remote(path_text):
             return None
         try:
             resolved = Path(path_text).expanduser().resolve()
@@ -306,12 +337,12 @@ class EmojiBaseMixin:
         payload: dict[str, Any],
         fingerprint: str = "",
     ) -> None:
-        summary = self._visual_context_summary_from_payload(payload)
+        summary = self.context._visual_context_summary_from_payload(payload)
         if not summary:
             return
         if fingerprint:
-            self._remember_visual_context_summary(fingerprint, summary)
-        self._apply_visual_context_summary_text(
+            self.context._remember_visual_context_summary(fingerprint, summary)
+        self.context._apply_visual_context_summary_text(
             context_scope, context_message_key, summary
         )
 
@@ -321,17 +352,17 @@ class EmojiBaseMixin:
         context_message_key: str,
         summary: str,
     ) -> None:
-        updater = getattr(self, "update_structured_message_visual_summary", None)
+        updater = getattr(self.context, "update_structured_message_visual_summary", None)
         if callable(updater):
             updater(context_scope, context_message_key, summary)
 
     def _visual_context_summary_from_payload(self, payload: dict[str, Any]) -> str:
-        summary = self._str_payload(payload.get("summary"))
+        summary = self.context._str_payload(payload.get("summary"))
         if not summary:
-            summary = self._str_payload(payload.get("caption"))
+            summary = self.context._str_payload(payload.get("caption"))
         if not summary:
-            summary = self._str_payload(payload.get("description"))
-        return self._compact_visual_context_summary(summary)
+            summary = self.context._str_payload(payload.get("description"))
+        return self.context._compact_visual_context_summary(summary)
 
     @classmethod
     def _compact_visual_context_summary(cls, summary: str) -> str:

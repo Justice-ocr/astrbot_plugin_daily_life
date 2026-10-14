@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import uuid
 from typing import Any
@@ -17,11 +19,46 @@ from ..markers import LOG_PREFIX
 from .boundary import format_speaker_boundary
 from .jsonclean import STRICT_JSON_REPLY_RULE, call_pure_json
 
+from typing import Protocol
 
-class CapturePledgeMixin:
+
+class CapturePledgeComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_commitment_extract_prompt: Any
+    _current_persona_text: Any
+    _current_role_label: Any
+    _event_context_meta: Any
+    _event_has_command_handler: Any
+    _event_message_component_facts: Any
+    _event_message_id: Any
+    _event_profile_id: Any
+    _event_session_id: Any
+    _extract_speaker_persona_hint: Any
+    _get_commitment_provider: Any
+    _relative_date_hint: Any
+    _str_payload: Any
+    apply_commitment_to_current_day: Any
+    archive: Any
+    close_text_session: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    direct_media_was_delivered: Any
+    event_was_recalled: Any
+    get_text_provider: Any
+    schedule_commitment_photo: Any
+    schedule_commitment_video: Any
+    schedule_memos_selected_items: Any
+
+
+class CapturePledgeComponent:
+    def __init__(self, context: CapturePledgeComponentContext) -> None:
+        self.context = context
+
     async def _get_commitment_provider(self):
-        provider_id = self.config.commitments.provider
-        return await self.get_text_provider(provider_id)
+        provider_id = self.context.config.commitments.provider
+        return await self.context.get_text_provider(provider_id)
 
     @staticmethod
     def _relative_date_hint(now: datetime.datetime) -> str:
@@ -46,8 +83,8 @@ class CapturePledgeMixin:
         message_facts: str = "",
         current_role_label: str = "",
     ) -> str:
-        persona_hint = self._str_payload(persona_hint)
-        current_role_label = self._str_payload(current_role_label) or "我"
+        persona_hint = self.context._str_payload(persona_hint)
+        current_role_label = self.context._str_payload(current_role_label) or "我"
         message_facts = str(message_facts or message).strip()
         speaker_boundary = format_speaker_boundary(
             current_role_label=current_role_label,
@@ -101,7 +138,7 @@ JSON 输出要求：
 人物边界：
 {speaker_boundary}
 当前日期时间：{now.strftime("%Y-%m-%d %H:%M")}
-日期换算：{self._relative_date_hint(now)}
+日期换算：{self.context._relative_date_hint(now)}
 我刚看到的内容：
 {message_facts}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="刚看到的聊天")
@@ -115,44 +152,44 @@ JSON 输出要求：
         message = str(getattr(event, "message_str", "") or "").strip()
         if (
             not message
-            or self._event_has_command_handler(event)
-            or self.event_was_recalled(event, log_skip=True)
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
         ):
             return None
         now = now or life_now()
-        sender_name = sender_name or await self.contact_resolver.resolve_event_sender(
+        sender_name = sender_name or await self.context.contact_resolver.resolve_event_sender(
             event
         )
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return None
-        provider = await self._get_commitment_provider()
+        provider = await self.context._get_commitment_provider()
         if not provider:
             return None
         session_id = f"daily_life_commitment_{uuid.uuid4().hex[:8]}"
-        profile_id = self._event_profile_id(event, sender_name)
+        profile_id = self.context._event_profile_id(event, sender_name)
         relationship = (
-            await self.archive.get_relationship(profile_id) if profile_id else None
+            await self.context.archive.get_relationship(profile_id) if profile_id else None
         )
-        persona_hint = await self._extract_speaker_persona_hint(
+        persona_hint = await self.context._extract_speaker_persona_hint(
             sender_name,
             event=event,
             relationship=relationship,
         )
-        current_role_label = await self._current_role_label(event)
-        if self.event_was_recalled(event, log_skip=True):
+        current_role_label = await self.context._current_role_label(event)
+        if self.context.event_was_recalled(event, log_skip=True):
             return None
-        prompt = self._build_commitment_extract_prompt(
+        prompt = self.context._build_commitment_extract_prompt(
             message,
             sender_name,
             now,
             persona_hint,
-            self._event_message_component_facts(event, message),
+            self.context._event_message_component_facts(event, message),
             current_role_label,
         )
         try:
-            provider_id = self.config.commitments.provider
+            provider_id = self.context.config.commitments.provider
             payload = await call_pure_json(
-                self,
+                self.context,
                 provider,
                 prompt,
                 session_id,
@@ -170,7 +207,7 @@ JSON 输出要求：
             if not isinstance(payload, dict) or not payload.get("has_commitment"):
                 return None
             fact_context = PersonFactContext(
-                persona=await self._current_persona_text(event),
+                persona=await self.context._current_persona_text(event),
                 explicit_instruction=message,
                 facts=(
                     PersonFact(
@@ -187,7 +224,7 @@ JSON 输出要求：
                 else (),
             )
             auditor = getattr(
-                getattr(self, "composer", None), "_audit_person_payload", None
+                getattr(self.context, "composer", None), "_audit_person_payload", None
             )
             if callable(auditor):
                 audit = await auditor(
@@ -204,20 +241,20 @@ JSON 输出要求：
                     )
                     return None
                 payload = audit.payload
-            if self.event_was_recalled(event, log_skip=True):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return None
             commitment = CommitmentRecord.from_value(
                 {
                     **payload,
                     "source": "chat",
-                    "source_session": self._event_session_id(event),
-                    "source_message_id": self._event_message_id(event),
+                    "source_session": self.context._event_session_id(event),
+                    "source_message_id": self.context._event_message_id(event),
                     "source_message": message,
                 }
             )
             if (
                 not commitment
-                or commitment.confidence < self.config.commitments.min_confidence
+                or commitment.confidence < self.context.config.commitments.min_confidence
             ):
                 return None
             if (
@@ -228,7 +265,7 @@ JSON 输出要求：
                 return None
             if sender_name and sender_name not in commitment.people:
                 commitment.people.insert(0, sender_name)
-            delivery_check = getattr(self, "direct_media_was_delivered", None)
+            delivery_check = getattr(self.context, "direct_media_was_delivered", None)
             if commitment.media_kind in {"photo", "video"} and callable(
                 delivery_check
             ):
@@ -238,9 +275,9 @@ JSON 输出要求：
                     [commitment.source_message_id],
                 ):
                     return None
-            if self.event_was_recalled(event, log_skip=True):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return None
-            saved = await self.archive.save_commitment(commitment)
+            saved = await self.context.archive.save_commitment(commitment)
             if commitment.media_kind in {"photo", "video"} and callable(
                 delivery_check
             ):
@@ -249,11 +286,11 @@ JSON 输出要求：
                     commitment.media_kind,
                     [commitment.source_message_id],
                 ):
-                    await self.archive.set_commitment_status(
+                    await self.context.archive.set_commitment_status(
                         saved.id, "done", life_now().isoformat(timespec="seconds")
                     )
                     return None
-            apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
+            apply_to_day = getattr(self.context, "apply_commitment_to_current_day", None)
             if callable(apply_to_day):
                 try:
                     await apply_to_day(
@@ -263,12 +300,12 @@ JSON 输出要求：
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 当天承诺合并失败：{exc}")
-            get_commitment = getattr(self.archive, "get_commitment", None)
+            get_commitment = getattr(self.context.archive, "get_commitment", None)
             if callable(get_commitment):
                 final_commitment = await get_commitment(saved.id)
                 if final_commitment is not None:
                     saved = final_commitment
-            photo_scheduler = getattr(self, "schedule_commitment_photo", None)
+            photo_scheduler = getattr(self.context, "schedule_commitment_photo", None)
             if callable(photo_scheduler):
                 try:
                     await photo_scheduler(
@@ -278,7 +315,7 @@ JSON 输出要求：
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 承诺拍照任务登记失败：{exc}")
-            video_scheduler = getattr(self, "schedule_commitment_video", None)
+            video_scheduler = getattr(self.context, "schedule_commitment_video", None)
             if callable(video_scheduler):
                 try:
                     await video_scheduler(
@@ -288,9 +325,9 @@ JSON 输出要求：
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 承诺拍视频任务登记失败：{exc}")
-            domain_settings = getattr(self.config, "domains", None)
+            domain_settings = getattr(self.context.config, "domains", None)
             save_action_item = getattr(
-                self.archive, "save_conversation_action_item", None
+                self.context.archive, "save_conversation_action_item", None
             )
             if (
                 bool(getattr(domain_settings, "enabled", False))
@@ -324,7 +361,7 @@ JSON 输出要求：
                         "evidence": [message],
                     }
                 )
-            context_meta = await self._event_context_meta(event, sender_name, now)
+            context_meta = await self.context._event_context_meta(event, sender_name, now)
             details = [
                 f"约定追踪：{saved.content}",
                 f"类型：{saved.kind}",
@@ -337,7 +374,7 @@ JSON 输出要求：
                 details.append("相关人物：" + "、".join(saved.people[:5]))
             if saved.place:
                 details.append(f"地点：{saved.place}")
-            self.schedule_memos_selected_items(
+            self.context.schedule_memos_selected_items(
                 context_meta,
                 details,
                 reason="同步已确认的未来约定，供之后聊天和生活安排参考。",
@@ -350,4 +387,4 @@ JSON 输出要求：
             logger.warning(f"{LOG_PREFIX} 自动识别承诺失败：{e}")
             return None
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)

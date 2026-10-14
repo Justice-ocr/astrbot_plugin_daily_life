@@ -1,7 +1,20 @@
+from __future__ import annotations
+
 from typing import Any
 
+from typing import Protocol
 
-class CapturePayloadMixin:
+
+class CapturePayloadComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    pass
+
+
+class CapturePayloadComponent:
+    def __init__(self, context: CapturePayloadComponentContext) -> None:
+        self.context = context
+
     def _relationship_contact_payload(self, meta: dict[str, str]) -> dict[str, Any]:
         platform = meta.get("platform", "")
         user_id = meta.get("user_id", "")

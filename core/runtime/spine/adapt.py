@@ -13,11 +13,47 @@ from ...life.tools import build_time_context, get_week_id
 from ...models import WeatherInfo
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class SpineAdaptMixin:
+
+class SpineAdaptComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_config: Any
+    _build_runtime_services: Any
+    _current_runtime_services: Any
+    _injection_snapshot_cache: Any
+    _install_runtime_services: Any
+    _prepare_residence_change: Any
+    _proactive_idle_candidates: Any
+    _prune_disabled_proactive_candidates: Any
+    _refresh_after_residence_change: Any
+    _residence_address: Any
+    _restore_runtime_config: Any
+    _retire_runtime_services: Any
+    _rhythm_running: Any
+    _runtime_service_binding: Any
+    _schedule_background_task: Any
+    _schedule_proactive_idle_evaluation: Any
+    _swap_runtime_services: Any
+    _write_runtime_config: Any
+    archive: Any
+    config: Any
+    domains: Any
+    generation_lock: Any
+    mark_page_status_changed: Any
+    raw_config: Any
+    run_daily_generation: Any
+    voice_call: Any
+
+
+class SpineAdaptComponent:
+    def __init__(self, context: SpineAdaptComponentContext) -> None:
+        self.context = context
+
     def _get_curr_period(self, target_dt: datetime.datetime | None = None) -> str:
         return build_time_context(
-            target_dt, getattr(self.config, "schedule_time", "07:00")
+            target_dt, getattr(self.context.config, "schedule_time", "07:00")
         ).period
 
     @staticmethod
@@ -25,27 +61,27 @@ class SpineAdaptMixin:
         return life_now()
 
     async def _persist_schedule_time(self, schedule_time: str) -> bool:
-        if isinstance(self.raw_config, dict):
-            rhythm_config = self.raw_config.setdefault("rhythm_config", {})
+        if isinstance(self.context.raw_config, dict):
+            rhythm_config = self.context.raw_config.setdefault("rhythm_config", {})
             if isinstance(rhythm_config, dict):
                 rhythm_config["schedule_time"] = schedule_time
-        save_config = getattr(self.raw_config, "save_config", None)
+        save_config = getattr(self.context.raw_config, "save_config", None)
         if callable(save_config):
             await asyncio.to_thread(save_config)
             return True
         return False
 
     async def _write_runtime_config(self, payload: dict[str, Any]) -> None:
-        self.raw_config.clear()
-        self.raw_config.update(copy.deepcopy(payload))
-        save_config = getattr(self.raw_config, "save_config", None)
+        self.context.raw_config.clear()
+        self.context.raw_config.update(copy.deepcopy(payload))
+        save_config = getattr(self.context.raw_config, "save_config", None)
         if callable(save_config):
             await asyncio.to_thread(save_config)
 
     async def _restore_runtime_config(self, payload: dict[str, Any]) -> None:
-        self.raw_config.clear()
-        self.raw_config.update(payload)
-        save_config = getattr(self.raw_config, "save_config", None)
+        self.context.raw_config.clear()
+        self.context.raw_config.update(payload)
+        save_config = getattr(self.context.raw_config, "save_config", None)
         if not callable(save_config):
             return
         try:
@@ -65,9 +101,9 @@ class SpineAdaptMixin:
         *,
         previous_rhythm_running: bool,
     ) -> None:
-        binding = self._runtime_service_binding()
+        binding = self.context._runtime_service_binding()
         candidate_token = binding.set(candidate)
-        voice_call = getattr(self, "voice_call", None)
+        voice_call = getattr(self.context, "voice_call", None)
         reconfigure_voice_call = getattr(voice_call, "reconfigure", None)
         voice_attempted = False
         try:
@@ -84,17 +120,17 @@ class SpineAdaptMixin:
             if callable(reconfigure_voice_call):
                 voice_attempted = True
                 await reconfigure_voice_call()
-            self._prune_disabled_proactive_candidates()
-            for key in list(getattr(self, "_proactive_idle_candidates", {})):
-                self._schedule_proactive_idle_evaluation(key)
-            self._injection_snapshot_cache = {}
+            self.context._prune_disabled_proactive_candidates()
+            for key in list(getattr(self.context, "_proactive_idle_candidates", {})):
+                self.context._schedule_proactive_idle_evaluation(key)
+            self.context._injection_snapshot_cache = {}
             previous.rhythm.stop()
             candidate.rhythm.start()
-            self._install_runtime_services(candidate)
+            self.context._install_runtime_services(candidate)
         # 配置切换取消也必须恢复上一组服务，随后继续抛出。
         except BaseException:
             candidate.rhythm.stop()
-            self._install_runtime_services(previous)
+            self.context._install_runtime_services(previous)
             if previous_rhythm_running:
                 previous.rhythm.start()
             if voice_attempted:
@@ -118,13 +154,13 @@ class SpineAdaptMixin:
 
     async def _prepare_residence_change(self, target: datetime.datetime) -> None:
         changed_at = life_now().strftime("%Y-%m-%d %H:%M:%S")
-        resetter = getattr(self.archive, "reset_residence_context", None)
+        resetter = getattr(self.context.archive, "reset_residence_context", None)
         if callable(resetter):
             await resetter(
                 changed_at=changed_at,
                 week_id=get_week_id(target),
             )
-        domains = getattr(self, "domains", None)
+        domains = getattr(self.context, "domains", None)
         boundary_setter = getattr(domains, "set_residence_boundary", None)
         if callable(boundary_setter):
             boundary_setter(changed_at)
@@ -141,22 +177,22 @@ class SpineAdaptMixin:
             day.weather_last_update = 0
             day.meta["residence_context_stale"] = "true"
 
-        mutator = getattr(self.archive, "mutate_day", None)
+        mutator = getattr(self.context.archive, "mutate_day", None)
         if callable(mutator):
             await mutator(target_date, invalidate_location_context)
-        self._injection_snapshot_cache = {}
-        notifier = getattr(self, "mark_page_status_changed", None)
+        self.context._injection_snapshot_cache = {}
+        notifier = getattr(self.context, "mark_page_status_changed", None)
         if callable(notifier):
             await notifier("residence_changed")
 
     async def _refresh_after_residence_change(self, target: datetime.datetime) -> None:
         resolver = getattr(
-            getattr(self, "domains", None), "resolve_home_location", None
+            getattr(self.context, "domains", None), "resolve_home_location", None
         )
         if callable(resolver):
             await resolver()
         try:
-            await self.run_daily_generation(
+            await self.context.run_daily_generation(
                 date=target,
                 source="residence_change",
                 force=True,
@@ -167,32 +203,32 @@ class SpineAdaptMixin:
             logger.warning(f"{LOG_PREFIX} 居住地变化后的生活背景刷新失败：{exc}")
 
     async def apply_config(self, next_config: dict[str, Any]) -> LifeSettings:
-        binding = self._runtime_service_binding()
+        binding = self.context._runtime_service_binding()
         token = binding.set(None)
         try:
-            return await self._apply_config(next_config)
+            return await self.context._apply_config(next_config)
         finally:
             binding.reset(token)
 
     async def _apply_config(self, next_config: dict[str, Any]) -> LifeSettings:
         if not isinstance(next_config, dict):
             raise ValueError("配置必须是对象")
-        if not isinstance(self.raw_config, dict):
+        if not isinstance(self.context.raw_config, dict):
             raise ValueError("当前配置对象不支持面板保存")
 
         payload = copy.deepcopy(next_config)
         parsed = LifeSettings.from_dict(payload)
-        async with self.generation_lock:
-            previous_config = copy.deepcopy(dict(self.raw_config))
-            previous_address = self._residence_address(self.config)
-            next_address = self._residence_address(parsed)
+        async with self.context.generation_lock:
+            previous_config = copy.deepcopy(dict(self.context.raw_config))
+            previous_address = self.context._residence_address(self.context.config)
+            next_address = self.context._residence_address(parsed)
             residence_changed = previous_address != next_address
-            previous_services = self._current_runtime_services()
-            previous_rhythm_running = self._rhythm_running(previous_services)
-            candidate = self._build_runtime_services(parsed, payload)
+            previous_services = self.context._current_runtime_services()
+            previous_rhythm_running = self.context._rhythm_running(previous_services)
+            candidate = self.context._build_runtime_services(parsed, payload)
             try:
-                await self._write_runtime_config(payload)
-                await self._swap_runtime_services(
+                await self.context._write_runtime_config(payload)
+                await self.context._swap_runtime_services(
                     candidate,
                     previous_services,
                     previous_rhythm_running=previous_rhythm_running,
@@ -200,22 +236,22 @@ class SpineAdaptMixin:
             # 写配置或服务替换被取消时，保持配置与运行服务一致。
             except BaseException:
                 candidate.rhythm.stop()
-                await self._restore_runtime_config(previous_config)
-                await self._retire_runtime_services(candidate)
+                await self.context._restore_runtime_config(previous_config)
+                await self.context._retire_runtime_services(candidate)
                 raise
 
-            await self._retire_runtime_services(previous_services)
+            await self.context._retire_runtime_services(previous_services)
 
-        target = build_time_context(life_now(), self.config.schedule_time).business_now
+        target = build_time_context(life_now(), self.context.config.schedule_time).business_now
         if residence_changed:
-            await self._prepare_residence_change(target)
-            self._schedule_background_task(
-                self._refresh_after_residence_change(target),
+            await self.context._prepare_residence_change(target)
+            self.context._schedule_background_task(
+                self.context._refresh_after_residence_change(target),
                 label="居住地变化刷新",
                 key="residence_change_refresh",
             )
         logger.info(f"{LOG_PREFIX} 已从设置页重新加载配置")
-        return self.config
+        return self.context.config
 
     async def _resolve_command_target_date(
         self,
@@ -223,17 +259,17 @@ class SpineAdaptMixin:
     ) -> tuple[str, bool]:
         today_str = now.strftime("%Y-%m-%d")
         yesterday_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        business_now = build_time_context(now, self.config.schedule_time).business_now
+        business_now = build_time_context(now, self.context.config.schedule_time).business_now
         using_extended_night = business_now.date() < now.date()
 
         if using_extended_night:
-            if await self.archive.get_day(yesterday_str):
+            if await self.context.archive.get_day(yesterday_str):
                 return yesterday_str, True
             return today_str, False
 
-        if await self.archive.get_day(today_str):
+        if await self.context.archive.get_day(today_str):
             return today_str, False
-        if await self.archive.get_day(yesterday_str):
+        if await self.context.archive.get_day(yesterday_str):
             return yesterday_str, True
         return today_str, False
 

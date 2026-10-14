@@ -31,7 +31,7 @@ from core.media.video.keyframe import (
 )
 from core.media.video.tasks import task_status_url
 from core.media.video.tasks import poll_video_url
-from core.runtime.proactive.send import ProactiveSendMixin
+from componentfixtures import ProactiveSendComponent
 from PIL import Image
 
 
@@ -3061,12 +3061,12 @@ class VideoMessageChainTest(unittest.TestCase):
         path = Path(tempfile.mkdtemp()) / "life.mp4"
         path.write_bytes(b"video")
 
-        chain = ProactiveSendMixin.video_message_chain(str(path))
+        chain = ProactiveSendComponent.video_message_chain(str(path))
 
         self.assertIn({"type": "video", "file": str(path)}, chain.items)
 
     def test_webchat_video_uses_downloadable_file_attachment(self):
-        chain = ProactiveSendMixin.video_file_message_chain(
+        chain = ProactiveSendComponent.video_file_message_chain(
             "https://cdn.example/video.mp4"
         )
 
@@ -3075,7 +3075,7 @@ class VideoMessageChainTest(unittest.TestCase):
         self.assertEqual(chain.items[0].url, "https://cdn.example/video.mp4")
 
     def test_webchat_local_video_uses_file_path(self):
-        chain = ProactiveSendMixin.video_file_message_chain("/tmp/life.mp4")
+        chain = ProactiveSendComponent.video_file_message_chain("/tmp/life.mp4")
 
         self.assertEqual(chain.items[0].file, "/tmp/life.mp4")
         self.assertEqual(chain.items[0].url, "")

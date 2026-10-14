@@ -1,12 +1,30 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
 from ..models import EventRecord, PlaceRecord
 
+from typing import Protocol
 
-class PlaceArchiveMixin:
+
+class PlaceArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_event: Any
+    _conn: Any
+    _get_people_unlocked: Any
+    _insert_event_unlocked: Any
+    _replace_people_unlocked: Any
+    _run_db: Any
+
+
+class PlaceArchiveComponent:
+    def __init__(self, context: PlaceArchiveComponentContext) -> None:
+        self.context = context
+
     def _insert_event_unlocked(self, event: EventRecord, date_str: str) -> bool:
-        cursor = self._conn.execute(
+        cursor = self.context._conn.execute(
             """
             INSERT OR IGNORE INTO events(date, summary, place, importance, source)
             VALUES (?, ?, ?, ?, ?)
@@ -21,7 +39,7 @@ class PlaceArchiveMixin:
         )
         if cursor.rowcount <= 0:
             return False
-        self._replace_people_unlocked(
+        self.context._replace_people_unlocked(
             "event_people", "event_id", cursor.lastrowid, event.people
         )
         return True
@@ -33,15 +51,15 @@ class PlaceArchiveMixin:
         def dbwork():
             try:
                 for event in events:
-                    self._insert_event_unlocked(event, date_str)
+                    self.context._insert_event_unlocked(event, date_str)
                 # INSERT OR IGNORE 即使没有新增行也可能开启隐式事务，必须在本次
                 # 数据库调用边界内收束，否则后续 BEGIN IMMEDIATE 会误判为嵌套事务。
-                self._conn.commit()
+                self.context._conn.commit()
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_recent_events(self, limit: int = 8) -> list[EventRecord]:
         def dbwork():
@@ -50,16 +68,16 @@ class PlaceArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_event(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_event(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_event(self, row: sqlite3.Row) -> EventRecord:
         return EventRecord(
             date=row["date"],
             summary=row["summary"],
-            people=self._get_people_unlocked("event_people", "event_id", row["id"]),
+            people=self.context._get_people_unlocked("event_people", "event_id", row["id"]),
             place=row["place"],
             importance=row["importance"],
             source=row["source"],
@@ -74,7 +92,7 @@ class PlaceArchiveMixin:
                 name = place.name
                 place_type = place.type
                 hint = place.hint
-                row = self._conn.execute(
+                row = self.context._conn.execute(
                     """
                     SELECT type, hint, latitude, longitude, coordinate_source,
                            coordinate_updated_at, visits, first_seen
@@ -116,7 +134,7 @@ class PlaceArchiveMixin:
                     longitude = place.longitude
                     coordinate_source = place.coordinate_source
                     coordinate_updated_at = place.coordinate_updated_at
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     INSERT INTO places(
                         name, type, hint, latitude, longitude, coordinate_source,
@@ -149,9 +167,9 @@ class PlaceArchiveMixin:
                         source,
                     ),
                 )
-            self._conn.commit()
+            self.context._conn.commit()
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_recent_places(self, limit: int = 10) -> list[PlaceRecord]:
         def dbwork():
@@ -160,7 +178,7 @@ class PlaceArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
+            rows = self.context._conn.execute(sql, params).fetchall()
             return [
                 PlaceRecord(
                     name=row["name"],
@@ -178,4 +196,4 @@ class PlaceArchiveMixin:
                 for row in rows
             ]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

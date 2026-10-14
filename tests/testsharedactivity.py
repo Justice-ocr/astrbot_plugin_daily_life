@@ -3,14 +3,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from support import LifeArchive  # isort: skip
 
 from core.models import CommitmentRecord, DayRecord, TimelineItem
-from core.runtime.proactive.followup import ProactiveFollowupMixin
-from core.runtime.proactive.send import ProactiveSendMixin
-from core.runtime.spine.boot import SpineBootMixin
+from componentfixtures import ProactiveFollowupComponent
+from componentfixtures import ProactiveSendComponent
+from componentfixtures import SpineBootComponent
 from core.sources.dispatch import PermanentScopeDeliveryError
 
 
@@ -22,7 +22,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.archive = LifeArchive(Path(self.directory.name) / "life.db")
-        self.runtime = ProactiveFollowupMixin.__new__(ProactiveFollowupMixin)
+        self.runtime = ProactiveFollowupComponent.__new__(ProactiveFollowupComponent)
         self.runtime.archive = self.archive
         self.now = datetime.datetime(2026, 10, 3, 18, 0)
         self.clock = patch("core.runtime.proactive.rendezvous.life_now", lambda: self.now)
@@ -105,7 +105,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
     async def test_wait_binds_actual_activity_and_persists_plan_across_worker_restart(
         self,
     ):
-        worker = SpineBootMixin.__new__(SpineBootMixin)
+        worker = SpineBootComponent.__new__(SpineBootComponent)
         worker.archive = self.archive
         worker._durable_task_owner = "test-worker"
         worker._durable_runtime_handlers = {
@@ -148,6 +148,41 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.archive.get_commitment(self.commitment.id)).status, "scheduled"
         )
+
+    async def test_outfit_change_during_contact_generation_requires_new_decision(self):
+        async def evaluate(**kwargs):
+            day = await self.archive.get_day(self.day.date)
+            day.outfit = "刚换好的出门装"
+            await self.archive.save_day(day)
+            return self.decision
+        self.runtime._evaluate_shared_activity_contact = evaluate
+        result = await self.send_now()
+        self.assertIn("retry_at", result)
+        self.assertEqual(self.sent, [])
+
+    async def test_unsupported_completion_claim_is_reviewed_again_without_sending(self):
+        from core.runtime.proactive.rendezvous import SharedActivityContactComponent
+        self.runtime._get_proactive_provider = AsyncMock(return_value=object())
+        self.runtime._current_proactive_persona = AsyncMock(return_value="角色")
+        self.runtime._proactive_voice_capability = lambda scope: "文字"
+        self.runtime._format_recent_context_messages = lambda recent, **kw: "等我两分钟"
+        self.runtime.close_text_session = AsyncMock()
+        self.runtime.config = SimpleNamespace(proactive=SimpleNamespace(provider="test"))
+        self.runtime._audit_proactive_continuity = AsyncMock(return_value=(False, "没有换装完成证据"))
+        self.runtime._evaluate_shared_activity_contact = SharedActivityContactComponent(
+            self.runtime
+        )._evaluate_shared_activity_contact
+        with patch("core.runtime.proactive.rendezvous.call_pure_json", AsyncMock(return_value={
+            "decision": "send", "reply_text": "换好啦", "activity_index": 2,
+            "contact_at": self.now.isoformat(),
+        })):
+            result = await self.run_contact()
+        self.assertIn("retry_at", result)
+        self.assertEqual(self.sent, [])
+        facts = self.runtime._audit_proactive_continuity.call_args.kwargs["life_context"]
+        self.assertIn('"committed_actions": []', facts)
+        self.assertIn('"outfit"', facts)
+        self.assertEqual(result["progress"]["review_issue"], "没有换装完成证据")
 
     async def test_messages_arriving_during_model_work_are_rechecked(self):
         async def evaluate(**kwargs):
@@ -264,7 +299,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_send_snapshot_expires_before_slow_voice_can_deliver(self):
-        runtime = ProactiveSendMixin.__new__(ProactiveSendMixin)
+        runtime = ProactiveSendComponent.__new__(ProactiveSendComponent)
         runtime.media_request_is_current_turn = lambda event: True
         event = SimpleNamespace(_daily_life_proactive_expires_at=self.now)
         with patch("core.runtime.proactive.send.life_now", return_value=self.now):

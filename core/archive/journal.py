@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from collections.abc import Callable
@@ -17,8 +19,42 @@ from ..models import (
 from .revision import merge_day_records
 from .timeline import rebind_planned_actions
 
+from typing import Protocol
 
-class DayArchiveMixin:
+
+class DayArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_day_event: Any
+    _compose_weather_info: Any
+    _conn: Any
+    _flag: Any
+    _get_day_events_unlocked: Any
+    _get_day_unlocked: Any
+    _get_people_unlocked: Any
+    _get_state_unlocked: Any
+    _int: Any
+    _load_json_object: Any
+    _record_wardrobe_wear_unlocked: Any
+    _replace_day_events_unlocked: Any
+    _replace_day_meta_unlocked: Any
+    _replace_day_places_unlocked: Any
+    _replace_outfit_history_unlocked: Any
+    _replace_people_unlocked: Any
+    _replace_state_log_unlocked: Any
+    _replace_state_unlocked: Any
+    _replace_timeline_unlocked: Any
+    _run_db: Any
+    _save_day_unlocked: Any
+    _set_day_unlocked: Any
+    _text: Any
+    _wardrobe_action_issue_unlocked: Any
+
+
+class DayArchiveComponent:
+    def __init__(self, context: DayArchiveComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _load_json_object(value: object) -> dict:
         if isinstance(value, dict):
@@ -33,7 +69,7 @@ class DayArchiveMixin:
         return data if isinstance(data, dict) else {}
 
     def _get_day_unlocked(self, date_str: str) -> DayRecord | None:
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT * FROM days WHERE date = ?",
             (date_str,),
         ).fetchone()
@@ -50,7 +86,7 @@ class DayArchiveMixin:
         meta.update(
             {
                 item["key"]: item["value"]
-                for item in self._conn.execute(
+                for item in self.context._conn.execute(
                     "SELECT key, value FROM day_meta WHERE date = ? ORDER BY key",
                     (date_str,),
                 ).fetchall()
@@ -87,7 +123,7 @@ class DayArchiveMixin:
                 execution_evidence=item["execution_evidence"],
                 execution_updated_at=item["execution_updated_at"],
             )
-            for item in self._conn.execute(
+            for item in self.context._conn.execute(
                 """
                 SELECT time, day_offset, activity, status, duration_minutes, place, place_kind, place_scope,
                        place_city, place_hint, travel_mode, place_address,
@@ -103,18 +139,18 @@ class DayArchiveMixin:
 
         outfit_history = {
             item["period"]: item["outfit"]
-            for item in self._conn.execute(
+            for item in self.context._conn.execute(
                 "SELECT period, outfit FROM outfit_history WHERE date = ? ORDER BY period",
                 (date_str,),
             ).fetchall()
             if item["period"]
         }
 
-        state = self._get_state_unlocked(date_str)
+        state = self.context._get_state_unlocked(date_str)
 
         state_log = [
             item["entry"]
-            for item in self._conn.execute(
+            for item in self.context._conn.execute(
                 "SELECT entry FROM state_logs WHERE date = ? ORDER BY sort_order",
                 (date_str,),
             ).fetchall()
@@ -123,14 +159,14 @@ class DayArchiveMixin:
 
         places = [
             PlaceRecord(name=item["name"], type=item["type"], hint=item["hint"])
-            for item in self._conn.execute(
+            for item in self.context._conn.execute(
                 "SELECT name, type, hint FROM day_places WHERE date = ? ORDER BY sort_order",
                 (date_str,),
             ).fetchall()
             if item["name"]
         ]
 
-        events = self._get_day_events_unlocked(date_str)
+        events = self.context._get_day_events_unlocked(date_str)
 
         day = DayRecord(
             date=date_str,
@@ -139,7 +175,7 @@ class DayArchiveMixin:
             places=places,
             new_events=events,
             weather=row["weather"],
-            weather_info=self._compose_weather_info(row),
+            weather_info=self.context._compose_weather_info(row),
             weather_last_update=int(row["weather_last_update"] or 0),
             time_period=row["time_period"],
             meta=meta,
@@ -190,7 +226,7 @@ class DayArchiveMixin:
         )
 
     def _get_state_unlocked(self, date_str: str) -> LifeState | None:
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT * FROM states WHERE date = ?", (date_str,)
         ).fetchone()
         if not row:
@@ -219,7 +255,7 @@ class DayArchiveMixin:
                     "depth": row["sleep_depth"],
                     "summary": row["sleep_summary"],
                 },
-                "physiological_rhythm": self._load_json_object(
+                "physiological_rhythm": self.context._load_json_object(
                     row["physiological_rhythm"]
                 ),
                 "summary": row["summary"],
@@ -229,17 +265,17 @@ class DayArchiveMixin:
         )
 
     def _get_day_events_unlocked(self, date_str: str) -> list[EventRecord]:
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             "SELECT * FROM day_events WHERE date = ? ORDER BY sort_order",
             (date_str,),
         ).fetchall()
-        return [self._compose_day_event(row) for row in rows]
+        return [self.context._compose_day_event(row) for row in rows]
 
     def _compose_day_event(self, row: sqlite3.Row) -> EventRecord:
         return EventRecord(
             date=row["date"],
             summary=row["summary"],
-            people=self._get_people_unlocked(
+            people=self.context._get_people_unlocked(
                 "day_event_people", "day_event_id", row["id"]
             ),
             place=row["place"],
@@ -262,7 +298,7 @@ class DayArchiveMixin:
         rebind_planned_actions(day.meta, previous_timeline, day.timeline)
         weather_info = day.weather_info
         meta = day.meta
-        self._conn.execute(
+        self.context._conn.execute(
             """
             INSERT INTO days(
                 date, revision, outfit, weather, time_period, memo, weather_last_update,
@@ -304,56 +340,56 @@ class DayArchiveMixin:
                 day.weather or weather_info.raw,
                 day.time_period,
                 day.memo,
-                self._int(day.weather_last_update, 0),
+                self.context._int(day.weather_last_update, 0),
                 weather_info.temp,
                 weather_info.condition,
                 weather_info.temp_desc,
                 weather_info.outfit_hint,
                 weather_info.activity_hint,
-                self._flag(weather_info.is_hot),
-                self._flag(weather_info.is_warm),
-                self._flag(weather_info.is_cool),
-                self._flag(weather_info.is_cold),
-                self._flag(weather_info.is_rainy),
-                self._flag(weather_info.is_sunny),
-                self._flag(weather_info.is_cloudy),
-                self._flag(weather_info.is_foggy),
-                self._text(meta.get("theme")),
-                self._text(meta.get("mood")),
-                self._text(meta.get("style")),
-                self._text(meta.get("hair")),
-                self._flag(weather_info.is_severe),
+                self.context._flag(weather_info.is_hot),
+                self.context._flag(weather_info.is_warm),
+                self.context._flag(weather_info.is_cool),
+                self.context._flag(weather_info.is_cold),
+                self.context._flag(weather_info.is_rainy),
+                self.context._flag(weather_info.is_sunny),
+                self.context._flag(weather_info.is_cloudy),
+                self.context._flag(weather_info.is_foggy),
+                self.context._text(meta.get("theme")),
+                self.context._text(meta.get("mood")),
+                self.context._text(meta.get("style")),
+                self.context._text(meta.get("hair")),
+                self.context._flag(weather_info.is_severe),
             ),
         )
-        self._replace_timeline_unlocked(day.date, day.timeline)
-        self._replace_outfit_history_unlocked(day.date, day.outfit_history)
-        self._replace_day_meta_unlocked(day.date, day.meta)
-        self._replace_state_unlocked(day.date, day.state)
-        self._replace_state_log_unlocked(day.date, day.state_log)
-        self._replace_day_places_unlocked(day.date, day.places)
-        self._replace_day_events_unlocked(day.date, day.new_events)
-        row = self._conn.execute(
+        self.context._replace_timeline_unlocked(day.date, day.timeline)
+        self.context._replace_outfit_history_unlocked(day.date, day.outfit_history)
+        self.context._replace_day_meta_unlocked(day.date, day.meta)
+        self.context._replace_state_unlocked(day.date, day.state)
+        self.context._replace_state_log_unlocked(day.date, day.state_log)
+        self.context._replace_day_places_unlocked(day.date, day.places)
+        self.context._replace_day_events_unlocked(day.date, day.new_events)
+        row = self.context._conn.execute(
             "SELECT revision FROM days WHERE date = ?", (day.date,)
         ).fetchone()
         return int(row["revision"] if row else 0)
 
     def _save_day_unlocked(self, day: DayRecord, *, replace: bool, require_wearable: bool = False) -> DayRecord:
-        self._conn.execute("BEGIN IMMEDIATE")
+        self.context._conn.execute("BEGIN IMMEDIATE")
         try:
             if require_wearable:
-                issue = self._wardrobe_action_issue_unlocked(str(day.meta.get('style_catalog_reference_ids') or '').split(','))
+                issue = self.context._wardrobe_action_issue_unlocked(str(day.meta.get('style_catalog_reference_ids') or '').split(','))
                 if issue:
                     raise ValueError(issue)
-            current = self._get_day_unlocked(day.date)
+            current = self.context._get_day_unlocked(day.date)
             target = (
                 day if replace or current is None else merge_day_records(day, current)
             )
-            revision = self._set_day_unlocked(target)
+            revision = self.context._set_day_unlocked(target)
             if require_wearable:
-                self._record_wardrobe_wear_unlocked(target, source='outfit_atomic_receipt')
-            self._conn.commit()
+                self.context._record_wardrobe_wear_unlocked(target, source='outfit_atomic_receipt')
+            self.context._conn.commit()
         except Exception:
-            self._conn.rollback()
+            self.context._conn.rollback()
             raise
         target.mark_persisted(revision)
         if target is not day:
@@ -363,9 +399,9 @@ class DayArchiveMixin:
     def _replace_timeline_unlocked(
         self, date_str: str, timeline: list[TimelineItem]
     ) -> None:
-        self._conn.execute("DELETE FROM timelines WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM timelines WHERE date = ?", (date_str,))
         for idx, item in enumerate(timeline):
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO timelines(
                     date, sort_order, time, activity, status, duration_minutes,
@@ -411,33 +447,33 @@ class DayArchiveMixin:
     def _replace_outfit_history_unlocked(
         self, date_str: str, history: dict[str, str]
     ) -> None:
-        self._conn.execute("DELETE FROM outfit_history WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM outfit_history WHERE date = ?", (date_str,))
         for period, outfit in history.items():
-            period_text = self._text(period)
+            period_text = self.context._text(period)
             if not period_text:
                 continue
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT INTO outfit_history(date, period, outfit) VALUES (?, ?, ?)",
-                (date_str, period_text, self._text(outfit)),
+                (date_str, period_text, self.context._text(outfit)),
             )
 
     def _replace_day_meta_unlocked(self, date_str: str, meta: dict[str, str]) -> None:
-        self._conn.execute("DELETE FROM day_meta WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM day_meta WHERE date = ?", (date_str,))
         for key, value in sorted((meta or {}).items()):
-            key_text = self._text(key)
-            value_text = self._text(value)
+            key_text = self.context._text(key)
+            value_text = self.context._text(value)
             if not key_text or not value_text:
                 continue
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT INTO day_meta(date, key, value) VALUES (?, ?, ?)",
                 (date_str, key_text, value_text),
             )
 
     def _replace_state_unlocked(self, date_str: str, state: LifeState | None) -> None:
-        self._conn.execute("DELETE FROM states WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM states WHERE date = ?", (date_str,))
         if state is None:
             return
-        self._conn.execute(
+        self.context._conn.execute(
             """
             INSERT INTO states(
                 date, energy, mood, mood_score, busyness, social, stress, focus,
@@ -482,19 +518,19 @@ class DayArchiveMixin:
         )
 
     def _replace_state_log_unlocked(self, date_str: str, logs: list[str]) -> None:
-        self._conn.execute("DELETE FROM state_logs WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM state_logs WHERE date = ?", (date_str,))
         for idx, entry in enumerate(logs[-10:]):
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT INTO state_logs(date, sort_order, entry) VALUES (?, ?, ?)",
-                (date_str, idx, self._text(entry)),
+                (date_str, idx, self.context._text(entry)),
             )
 
     def _replace_day_places_unlocked(
         self, date_str: str, places: list[PlaceRecord]
     ) -> None:
-        self._conn.execute("DELETE FROM day_places WHERE date = ?", (date_str,))
+        self.context._conn.execute("DELETE FROM day_places WHERE date = ?", (date_str,))
         for idx, place in enumerate(places):
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT INTO day_places(date, sort_order, name, type, hint) VALUES (?, ?, ?, ?, ?)",
                 (date_str, idx, place.name, place.type, place.hint),
             )
@@ -504,17 +540,17 @@ class DayArchiveMixin:
     ) -> None:
         old_ids = [
             row["id"]
-            for row in self._conn.execute(
+            for row in self.context._conn.execute(
                 "SELECT id FROM day_events WHERE date = ?", (date_str,)
             ).fetchall()
         ]
         if old_ids:
-            self._conn.executemany(
+            self.context._conn.executemany(
                 "DELETE FROM day_events WHERE id = ?",
                 [(event_id,) for event_id in old_ids],
             )
         for idx, event in enumerate(events):
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO day_events(date, sort_order, summary, place, importance, source)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -528,7 +564,7 @@ class DayArchiveMixin:
                     event.source,
                 ),
             )
-            self._replace_people_unlocked(
+            self.context._replace_people_unlocked(
                 "day_event_people",
                 "day_event_id",
                 cursor.lastrowid,
@@ -537,9 +573,9 @@ class DayArchiveMixin:
 
     async def get_day(self, date_str: str) -> DayRecord | None:
         def read() -> DayRecord | None:
-            return self._get_day_unlocked(date_str)
+            return self.context._get_day_unlocked(date_str)
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_future_memo_days(
         self, after_date: str, limit: int = 8
@@ -549,7 +585,7 @@ class DayArchiveMixin:
             return []
 
         def read() -> list[DayRecord]:
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT date FROM days
                 WHERE date > ? AND TRIM(COALESCE(memo, '')) <> ''
@@ -560,36 +596,36 @@ class DayArchiveMixin:
             ).fetchall()
             days = []
             for row in rows:
-                day = self._get_day_unlocked(row["date"])
+                day = self.context._get_day_unlocked(row["date"])
                 if day:
                     days.append(day)
             return days
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_recent_appearance_days(
         self, before_date: str, limit: int = 30
     ) -> list[DayRecord]:
         def read():
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 "SELECT date FROM days WHERE date <= ? ORDER BY date DESC LIMIT ?",
                 (before_date, max(1, min(90, int(limit)))),
             ).fetchall()
             return [
                 day
                 for row in rows
-                if (day := self._get_day_unlocked(row["date"])) is not None
+                if (day := self.context._get_day_unlocked(row["date"])) is not None
             ]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def save_day(self, day: DayRecord, *, replace: bool = False, require_wearable: bool = False) -> DayRecord:
         """保存每日生活记录，并合并基于旧版本产生的非冲突改动。"""
 
         def write() -> DayRecord:
-            return self._save_day_unlocked(day, replace=replace, require_wearable=require_wearable)
+            return self.context._save_day_unlocked(day, replace=replace, require_wearable=require_wearable)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def mutate_day(
         self,
@@ -599,62 +635,62 @@ class DayArchiveMixin:
         """在单次数据库事务中读取并修改每日生活记录。"""
 
         def write() -> DayRecord | None:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                day = self._get_day_unlocked(date_str)
+                day = self.context._get_day_unlocked(date_str)
                 if day is None:
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return None
                 changed = mutator(day)
                 if changed is False:
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return day
-                revision = self._set_day_unlocked(day)
-                self._conn.commit()
+                revision = self.context._set_day_unlocked(day)
+                self.context._conn.commit()
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
             day.mark_persisted(revision)
             return day
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def replace_day_timeline(
         self, date_str: str, timeline: list[TimelineItem]
     ) -> DayRecord | None:
         def write() -> DayRecord | None:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                day = self._get_day_unlocked(date_str)
+                day = self.context._get_day_unlocked(date_str)
                 if not day:
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return None
                 day.timeline = [TimelineItem.from_value(item) for item in timeline]
-                revision = self._set_day_unlocked(day)
-                self._conn.commit()
+                revision = self.context._set_day_unlocked(day)
+                self.context._conn.commit()
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
             day.mark_persisted(revision)
             return day
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def delete_day(self, date_str: str):
         def write() -> None:
-            self._conn.execute("DELETE FROM days WHERE date = ?", (date_str,))
-            self._conn.commit()
+            self.context._conn.execute("DELETE FROM days WHERE date = ?", (date_str,))
+            self.context._conn.commit()
 
-        await self._run_db(write)
+        await self.context._run_db(write)
 
     async def set_memo(self, date_str: str, memo_text: str):
         def write() -> None:
-            text = self._text(memo_text)
+            text = self.context._text(memo_text)
             if not text:
                 return
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                day = self._get_day_unlocked(date_str) or DayRecord(date=date_str)
+                day = self.context._get_day_unlocked(date_str) or DayRecord(date=date_str)
                 lines = [
                     line.strip()
                     for line in str(day.memo or "").splitlines()
@@ -664,10 +700,10 @@ class DayArchiveMixin:
                 if new_line not in lines and text not in lines:
                     lines.append(new_line)
                 day.memo = "\n".join(lines)
-                self._set_day_unlocked(day)
-                self._conn.commit()
+                self.context._set_day_unlocked(day)
+                self.context._conn.commit()
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        await self._run_db(write)
+        await self.context._run_db(write)

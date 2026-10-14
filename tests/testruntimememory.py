@@ -13,7 +13,7 @@ from runtimehelpers import (
     LifeSettings,
     MemoryCorrectionRecord,
     Provider,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     TimelineItem,
     WeatherInfo,
     async_return,
@@ -156,7 +156,7 @@ class RuntimeMemoryTest(unittest.TestCase):
         self.assertIn("这条还没应用", text)
 
 
-class RuntimeMemoryAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     async def test_injection_snapshot_uses_only_unapplied_memory_corrections(self):
         runtime, _ = self._make_proactive_runtime([])
         await runtime.archive.save_memory_correction(

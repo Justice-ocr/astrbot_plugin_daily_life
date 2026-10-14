@@ -4,8 +4,33 @@ from typing import Any
 
 from astrbot.core.agent.message import TextPart
 
+from typing import Protocol
 
-class HistorySceneMixin:
+
+class HistorySceneComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _ASTRBOT_WEEKDAY_NAMES: Any
+    _astrbot_now_for_scope: Any
+    _conversation_user_content: Any
+    _conversation_user_content_from_event: Any
+    _event_group_name: Any
+    _event_is_group_message: Any
+    _event_sender_id_name: Any
+    _event_session_id: Any
+    _event_sources: Any
+    _history_display_url: Any
+    _history_media_parts_from_event: Any
+    _safe_event_call: Any
+    _system_reminder_text: Any
+    context: Any
+    is_internal_llm_session: Any
+
+
+class HistorySceneComponent:
+    def __init__(self, context: HistorySceneComponentContext) -> None:
+        self.context = context
+
     _ASTRBOT_WEEKDAY_NAMES = (
         "Monday",
         "Tuesday",
@@ -17,7 +42,7 @@ class HistorySceneMixin:
     )
 
     def _astrbot_config(self, scope: str) -> dict[str, Any]:
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         getter = getattr(context, "get_config", None)
         if callable(getter):
             try:
@@ -30,9 +55,9 @@ class HistorySceneMixin:
         return config if isinstance(config, dict) else {}
 
     def _event_sender_id_name(self, event: Any) -> tuple[str, str]:
-        sender_id = self._safe_event_call(event, "get_sender_id")
-        sender_name = self._safe_event_call(event, "get_sender_name")
-        for source in self._event_sources(event):
+        sender_id = self.context._safe_event_call(event, "get_sender_id")
+        sender_name = self.context._safe_event_call(event, "get_sender_name")
+        for source in self.context._event_sources(event):
             sender = getattr(getattr(source, "message_obj", None), "sender", None)
             if sender is None:
                 continue
@@ -43,8 +68,8 @@ class HistorySceneMixin:
         return sender_id, sender_name
 
     def _event_group_name(self, event: Any) -> str:
-        group_name = self._safe_event_call(event, "get_group_name")
-        for source in self._event_sources(event):
+        group_name = self.context._safe_event_call(event, "get_group_name")
+        for source in self.context._event_sources(event):
             group = getattr(getattr(source, "message_obj", None), "group", None)
             group_name = (
                 group_name or str(getattr(group, "group_name", "") or "").strip()
@@ -53,18 +78,18 @@ class HistorySceneMixin:
 
     def _system_reminder_text(self, scope: str, event: Any) -> str:
         parts: list[str] = []
-        sender_id, sender_name = self._event_sender_id_name(event)
+        sender_id, sender_name = self.context._event_sender_id_name(event)
         if sender_id or sender_name:
             parts.append(f"User ID: {sender_id}, Nickname: {sender_name}")
-        if self._event_is_group_message(event):
-            group_name = self._event_group_name(event)
+        if self.context._event_is_group_message(event):
+            group_name = self.context._event_group_name(event)
             if group_name:
                 parts.append(f"Group name: {group_name}")
-        now = self._astrbot_now_for_scope(scope)
+        now = self.context._astrbot_now_for_scope(scope)
         current_time = now.strftime("%Y-%m-%d %H:%M (%Z)")
         parts.append(
             f"Current datetime: {current_time}, "
-            f"Weekday: {self._ASTRBOT_WEEKDAY_NAMES[now.weekday()]}"
+            f"Weekday: {self.context._ASTRBOT_WEEKDAY_NAMES[now.weekday()]}"
         )
         content = "\n".join(parts)
         return f"<system_reminder>{content}</system_reminder>" if content else ""
@@ -76,11 +101,11 @@ class HistorySceneMixin:
         marker = "_daily_life_history_reminder_injected"
         if bool(getattr(req, marker, False)):
             return False
-        internal_session = getattr(self, "is_internal_llm_session", None)
+        internal_session = getattr(self.context, "is_internal_llm_session", None)
         if callable(internal_session) and internal_session(req):
             return False
-        scope = self._event_session_id(event)
-        reminder = self._system_reminder_text(scope, event)
+        scope = self.context._event_session_id(event)
+        reminder = self.context._system_reminder_text(scope, event)
         if not reminder:
             return False
         parts = getattr(req, "extra_user_content_parts", None)
@@ -104,7 +129,7 @@ class HistorySceneMixin:
     def _conversation_user_content(
         self, scope: str, event: Any, text: str
     ) -> str | list[dict[str, Any]]:
-        reminder = self._system_reminder_text(scope, event)
+        reminder = self.context._system_reminder_text(scope, event)
         if not reminder:
             return text
         return [
@@ -120,10 +145,10 @@ class HistorySceneMixin:
         media_label: str = "",
     ) -> str | list[dict[str, Any]]:
         text = str(text or "").strip()
-        media_parts = await self._history_media_parts_from_event(event)
-        reminder = self._system_reminder_text(scope, event)
+        media_parts = await self.context._history_media_parts_from_event(event)
+        reminder = self.context._system_reminder_text(scope, event)
         if not media_parts:
-            return self._conversation_user_content(
+            return self.context._conversation_user_content(
                 scope, event, text or f"（发送了{media_label}）"
             )
 
@@ -145,7 +170,7 @@ class HistorySceneMixin:
                 image_parts.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": await self._history_display_url(path)},
+                        "image_url": {"url": await self.context._history_display_url(path)},
                     }
                 )
             elif media_type == "record":
@@ -170,7 +195,7 @@ class HistorySceneMixin:
     def _user_history_item(self, scope: str, event: Any, text: str) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": self._conversation_user_content(scope, event, text),
+            "content": self.context._conversation_user_content(scope, event, text),
         }
 
     async def _user_history_item_from_event(
@@ -182,7 +207,7 @@ class HistorySceneMixin:
     ) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": await self._conversation_user_content_from_event(
+            "content": await self.context._conversation_user_content_from_event(
                 scope, event, text, media_label
             ),
         }

@@ -12,6 +12,8 @@ from ..security import is_http_url_allowed_async
 from .animated import MAX_SOURCE_BYTES, prepare_animated_image
 from .clip import SightClip
 
+SHARE_VIDEO_WAIT_SECONDS = 46
+
 
 async def _remote_gif(source: str) -> str:
     async with aiohttp.ClientSession(
@@ -65,10 +67,27 @@ async def describe_share_video(runtime, source: str) -> dict:
             return {"status": "unavailable"}
         # 不开启长视频转写和专业总结，也不写入聊天消息或私人记忆。
         insight = await asyncio.wait_for(
-            runtime._understand_native_video(None, clip, route), timeout=46
+            runtime._understand_native_video(None, clip, route),
+            timeout=SHARE_VIDEO_WAIT_SECONDS,
         )
         if insight.status != "ready" or not insight.summary:
-            return {"status": "unavailable"}
-        return {"status": "ok", "summary": insight.summary[:1000]}
+            return {"status": "unavailable", "error": "video_understanding_failed"}
+        details = [
+            str(item)[:300]
+            for item in (getattr(insight, "frame_notes", None) or [])[:6]
+        ]
+        details.extend(
+            str(item)[:160] for item in (getattr(insight, "details", None) or [])[:6]
+        )
+        transcript = str(getattr(insight, "transcript", "") or "").strip()
+        if transcript:
+            details.append("已识别音轨：" + transcript[:600])
+        return {
+            "status": "ok",
+            "summary": insight.summary[:1000],
+            "details": "\n".join(details)[:2000],
+        }
+    except asyncio.TimeoutError:
+        return {"status": "pending", "error": "video_wait_timeout"}
     except Exception as exc:
         return {"status": "unavailable", "error": type(exc).__name__}

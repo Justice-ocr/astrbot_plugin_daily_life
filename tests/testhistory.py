@@ -22,7 +22,7 @@ class LifeHistoryTest(unittest.IsolatedAsyncioTestCase):
         bot = ActionBot({"get_friend_msg_history": {"messages": []}})
         release = asyncio.Event()
 
-        async def wait_for_platform():
+        async def wait_for_platform(**kwargs):
             await release.wait()
             return True
 

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from astrbot.api import logger
-
-try:
-    from astrbot.api.message_components import At, Reply
-except Exception:
-    At = None
-    Reply = None
+from astrbot.api.message_components import At, Reply
 
 from .markers import LOG_PREFIX
 
@@ -48,10 +45,43 @@ class _GroupAddressingDecision:
         return self.target.reason
 
 
-class ChatAddressingMixin:
+class ChatAddressingService:
     """为群聊回复补充结构化引用/艾特组件。"""
 
-    _CHAT_ADDRESSING_LAST_LOG_ATTR = "_daily_life_group_addressing_last_log"
+    def __init__(
+        self,
+        *,
+        is_group: Callable[[Any], bool],
+        message_id: Callable[[Any], str],
+        session_id: Callable[[Any], str],
+        is_directed: Callable[[Any], bool],
+        safe_event_call: Callable[..., Any],
+        find_message: Callable[[str, str], Any],
+        scope_messages: Callable[[str], list[Any]],
+        extract_reply: Callable[[Any, str], dict[str, Any]],
+        keep_default_send: Callable[[Any, str], bool],
+        sequence_attr: str,
+        pending_segments_attr: str,
+    ) -> None:
+        self._is_group = is_group
+        self._message_id = message_id
+        self._session_id = session_id
+        self._is_directed = is_directed
+        self._safe_event_call = safe_event_call
+        self._find_message = find_message
+        self._scope_messages = scope_messages
+        self._extract_reply = extract_reply
+        self._keep_default_send = keep_default_send
+        self._sequence_attr = sequence_attr
+        self._pending_segments_attr = pending_segments_attr
+        self._last_logs: OrderedDict[str, tuple[Any, ...]] = OrderedDict()
+
+    def evict_scopes(self, scopes: set[str]) -> None:
+        for scope in scopes:
+            self._last_logs.pop(scope, None)
+
+    def clear(self) -> None:
+        self._last_logs.clear()
 
     @staticmethod
     def _addressing_component_kind(item: Any) -> str:
@@ -91,49 +121,13 @@ class ChatAddressingMixin:
             cls._addressing_component_text(item).strip() for item in items
         )
 
-    @staticmethod
-    def _addressing_int_config(value: Any, default: int, *, minimum: int = 0) -> int:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            return default
-        return max(number, minimum)
-
-    def _addressing_astrbot_send_config(self, event: Any) -> dict[str, Any]:
-        context = getattr(self, "context", None)
-        getter = getattr(context, "get_config", None)
-        if callable(getter):
-            try:
-                config = getter(getattr(event, "unified_msg_origin", None))
-            except TypeError:
-                config = getter()
-            if isinstance(config, dict):
-                return config
-        config = getattr(context, "config", None)
-        return config if isinstance(config, dict) else {}
-
     def _addressing_should_preserve_t2i_result(
         self, event: Any, items: list[Any]
     ) -> bool:
         if not self._addressing_chain_is_plain_text_only(items):
             return False
-        shared_checker = getattr(self, "_chat_style_should_keep_default_send", None)
-        if callable(shared_checker):
-            text = "".join(self._addressing_component_text(item) for item in items)
-            return bool(shared_checker(event, text))
-        config = self._addressing_astrbot_send_config(event)
-        if not bool(config.get("t2i")):
-            return False
         text = "".join(self._addressing_component_text(item) for item in items)
-        threshold = self._addressing_int_config(
-            config.get("t2i_word_threshold"), 150, minimum=50
-        )
-        if len(text) <= threshold:
-            return False
-        logger.debug(
-            f"{LOG_PREFIX} 回复长度 {len(text)} 超过文本转图像阈值 {threshold}。"
-        )
-        return True
+        return bool(self._keep_default_send(event, text))
 
     @classmethod
     def _addressing_has_component(cls, items: list[Any], target_kind: str) -> bool:
@@ -144,23 +138,19 @@ class ChatAddressingMixin:
     @staticmethod
     def _addressing_make_reply_component(message_id: str) -> Any:
         message_id = str(message_id or "").strip()
-        if Reply is not None:
-            return Reply(id=message_id)
-        return {"type": "reply", "id": message_id}
+        return Reply(id=message_id)
 
     @staticmethod
     def _addressing_make_at_component(user_id: str) -> Any:
         user_id = str(user_id or "").strip()
-        if At is not None:
-            return At(qq=user_id)
-        return {"type": "at", "qq": user_id}
+        return At(qq=user_id)
 
     def _addressing_scope_is_group(
         self, target_scope: str = "", source_event: Any = None
     ) -> bool:
         if source_event is not None:
             try:
-                if self._event_is_group_message(source_event):
+                if self._is_group(source_event):
                     return True
             except Exception:
                 pass
@@ -173,7 +163,7 @@ class ChatAddressingMixin:
         if message_id or source_event is None:
             return message_id
         try:
-            return str(self._event_message_id(source_event) or "").strip()
+            return str(self._message_id(source_event) or "").strip()
         except Exception:
             return ""
 
@@ -186,7 +176,7 @@ class ChatAddressingMixin:
         if scope or source_event is None:
             return scope
         try:
-            return self._event_session_id(source_event)
+            return self._session_id(source_event)
         except Exception:
             return ""
 
@@ -203,13 +193,7 @@ class ChatAddressingMixin:
     def _addressing_current_structured_message(
         self, scope: str, message_id: str
     ) -> Any | None:
-        finder = getattr(self, "_structured_find_message", None)
-        if not callable(finder):
-            return None
-        try:
-            return finder(scope, message_id)
-        except Exception:
-            return None
+        return self._find_message(scope, message_id)
 
     @staticmethod
     def _addressing_message_sequence(message: Any | None) -> int:
@@ -224,13 +208,8 @@ class ChatAddressingMixin:
         sequence = self._addressing_message_sequence(current_message)
         if sequence or source_event is None:
             return sequence
-        attr = getattr(
-            self,
-            "_STRUCTURED_EVENT_SEQUENCE_ATTR",
-            "_daily_life_structured_message_sequence",
-        )
         try:
-            return max(0, int(getattr(source_event, attr, 0) or 0))
+            return max(0, int(getattr(source_event, self._sequence_attr, 0) or 0))
         except (TypeError, ValueError):
             return 0
 
@@ -241,13 +220,7 @@ class ChatAddressingMixin:
         source_event: Any = None,
         current_message: Any | None = None,
     ) -> list[Any]:
-        getter = getattr(self, "_structured_scope_messages", None)
-        if not callable(getter):
-            return []
-        try:
-            messages = list(getter(scope))
-        except Exception:
-            return []
+        messages = list(self._scope_messages(scope))
 
         source_sequence = self._addressing_source_sequence(
             source_event, current_message
@@ -298,7 +271,7 @@ class ChatAddressingMixin:
         if source_event is None:
             return False
         try:
-            return bool(self._event_is_directed(source_event))
+            return bool(self._is_directed(source_event))
         except Exception:
             return False
 
@@ -314,14 +287,9 @@ class ChatAddressingMixin:
             getattr(current_message, "reply_to_id", "") if current_message else ""
         ).strip()
         if not reply_id and source_event is not None:
-            extractor = getattr(self, "_structured_extract_reply", None)
-            if callable(extractor):
-                try:
-                    reply_id = str(
-                        (extractor(source_event, scope) or {}).get("message_id") or ""
-                    ).strip()
-                except Exception:
-                    reply_id = ""
+            reply_id = str(
+                (self._extract_reply(source_event, scope) or {}).get("message_id") or ""
+            ).strip()
         if not reply_id:
             return False
 
@@ -329,7 +297,7 @@ class ChatAddressingMixin:
         if target is None or not bool(getattr(target, "is_bot", False)):
             return False
 
-        messages = list(self._structured_scope_messages(scope))
+        messages = list(self._scope_messages(scope))
         target_index = next(
             (
                 index
@@ -354,7 +322,7 @@ class ChatAddressingMixin:
             for message in messages[target_index + 1 : current_index]
         )
 
-    def _group_reply_target(
+    def group_reply_target(
         self,
         *,
         target_scope: str = "",
@@ -439,7 +407,7 @@ class ChatAddressingMixin:
         source_message_id: str = "",
         source: str = "chat",
     ) -> _GroupAddressingDecision:
-        target = self._group_reply_target(
+        target = self.group_reply_target(
             target_scope=target_scope,
             source_event=source_event,
             source_message_id=source_message_id,
@@ -472,7 +440,9 @@ class ChatAddressingMixin:
             source=source,
         )
         if decision.reason:
-            self._log_group_addressing_decision(decision)
+            self._log_group_addressing_decision(
+                self._addressing_scope(target_scope, source_event), decision
+            )
         additions: list[Any] = []
         if decision.reply_message_id and not self._addressing_has_component(
             items, "reply"
@@ -491,7 +461,7 @@ class ChatAddressingMixin:
     def apply_group_addressing_before_send(self, event: Any) -> bool:
         if event is None:
             return False
-        pending_attr = getattr(self, "_CHAT_STYLE_PENDING_SEGMENTS_ATTR", "")
+        pending_attr = self._pending_segments_attr
         if pending_attr and len(list(getattr(event, pending_attr, []) or [])) >= 2:
             return False
         result = getattr(event, "get_result", lambda: None)()
@@ -499,14 +469,14 @@ class ChatAddressingMixin:
             return False
         return self.decorate_group_addressing_chain(
             result,
-            target_scope=self._event_session_id(event),
+            target_scope=self._session_id(event),
             source_event=event,
             segment_index=0,
             source="chat",
         )
 
     def _log_group_addressing_decision(
-        self, decision: _GroupAddressingDecision
+        self, scope: str, decision: _GroupAddressingDecision
     ) -> None:
         key = (
             decision.target.mode,
@@ -515,12 +485,18 @@ class ChatAddressingMixin:
             decision.reason,
             decision.target.intervening_count,
         )
-        if getattr(self, self._CHAT_ADDRESSING_LAST_LOG_ATTR, None) == key:
+        if self._last_logs.get(scope) == key:
             return
-        setattr(self, self._CHAT_ADDRESSING_LAST_LOG_ATTR, key)
+        self._last_logs[scope] = key
+        self._last_logs.move_to_end(scope)
+        while len(self._last_logs) > 256:
+            self._last_logs.popitem(last=False)
         logger.debug(
             f"{LOG_PREFIX} 群聊寻址：引用={'是' if decision.reply_message_id else '否'}；"
             f"提及={'是' if decision.at_user_id else '否'}；"
             f"来源={decision.reason or '自然接话'}；"
             f"插话数={decision.target.intervening_count}"
         )
+
+
+__all__ = ["ChatAddressingService"]

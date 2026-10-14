@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
 from dataclasses import dataclass
@@ -12,6 +14,8 @@ from ..sources.platforms import (
 )
 from ..clock import timestamp as life_timestamp
 
+from typing import Any, Protocol
+
 
 @dataclass(frozen=True, slots=True)
 class _HistoryPageState:
@@ -21,7 +25,33 @@ class _HistoryPageState:
     current_cursor: int
 
 
-class ReferenceMixin:
+class ReferenceComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _clean_reference_name_candidate: Any
+    _extract_persona_prompt: Any
+    _extract_reference_persona: Any
+    _fetch_deep_history: Any
+    _format_reference_profile: Any
+    _format_saved_recent_chats: Any
+    _get_default_persona: Any
+    _get_onebot_recent_chats: Any
+    _history_batch_progress: Any
+    _history_next_cursor: Any
+    _history_response_messages: Any
+    _reference_name_cache: Any
+    _resolve_reference_user_name: Any
+    _resolve_reference_user_profile: Any
+    _saved_private_chat_name: Any
+    contact_resolver: Any
+    context: Any
+    saved_history: Any
+
+
+class ReferenceComponent:
+    def __init__(self, context: ReferenceComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _history_response_messages(response) -> list:
         if isinstance(response, dict):
@@ -73,14 +103,14 @@ class ReferenceMixin:
         return next_cursor
 
     async def _get_persona(self, umo: str = ""):
-        manager = getattr(self.context, "persona_manager", None)
+        manager = getattr(self.context.context, "persona_manager", None)
         if manager:
-            persona = await self._get_default_persona(manager, umo=umo)
-            prompt = self._extract_persona_prompt(persona)
+            persona = await self.context._get_default_persona(manager, umo=umo)
+            prompt = self.context._extract_persona_prompt(persona)
             if prompt:
                 return prompt
 
-            prompt = self._extract_persona_prompt(
+            prompt = self.context._extract_persona_prompt(
                 getattr(manager, "selected_default_persona_v3", None)
             )
             if prompt:
@@ -120,7 +150,7 @@ class ReferenceMixin:
         return ""
 
     async def _cleanup_conversation(self, session_id: str) -> None:
-        manager = getattr(self.context, "conversation_manager", None)
+        manager = getattr(self.context.context, "conversation_manager", None)
         if not manager:
             return
         try:
@@ -134,10 +164,10 @@ class ReferenceMixin:
         target_s = str(target_id or "").strip()
         if not target_s:
             return ""
-        if target_s in self._reference_name_cache:
-            return self._reference_name_cache[target_s]
+        if target_s in self.context._reference_name_cache:
+            return self.context._reference_name_cache[target_s]
 
-        resolver = self.contact_resolver
+        resolver = self.context.contact_resolver
         name = ""
         if resolver:
             try:
@@ -149,9 +179,9 @@ class ReferenceMixin:
 
         name = str(name or "").strip()
         if name:
-            self._reference_name_cache[target_s] = name
-            while len(self._reference_name_cache) > 256:
-                self._reference_name_cache.pop(next(iter(self._reference_name_cache)))
+            self.context._reference_name_cache[target_s] = name
+            while len(self.context._reference_name_cache) > 256:
+                self.context._reference_name_cache.pop(next(iter(self.context._reference_name_cache)))
         return name
 
     async def _resolve_reference_user_profile(
@@ -163,12 +193,12 @@ class ReferenceMixin:
         target_s = str(target_id or "").strip()
         if not target_s:
             return {}
-        name = await self._resolve_reference_user_name(target_s)
+        name = await self.context._resolve_reference_user_name(target_s)
         if not name:
-            name = self._clean_reference_name_candidate(candidate_name)
+            name = self.context._clean_reference_name_candidate(candidate_name)
         if not name:
             return {}
-        persona_hint = self._extract_reference_persona(persona, name)
+        persona_hint = self.context._extract_reference_persona(persona, name)
         return {
             "name": name,
             "persona": persona_hint,
@@ -189,7 +219,7 @@ class ReferenceMixin:
         if not persona_text or not target_name or target_name not in persona_text:
             return ""
 
-        clauses = ReferenceMixin._split_persona_clauses(persona_text)
+        clauses = ReferenceComponent._split_persona_clauses(persona_text)
         matched = []
         for index, clause in enumerate(clauses):
             if target_name not in clause:
@@ -236,11 +266,11 @@ class ReferenceMixin:
     async def _fetch_deep_history(
         self, target_id: int, is_group: bool, hours: int, max_count: int
     ) -> list:
-        resolver = self.contact_resolver
+        resolver = self.context.contact_resolver
         wait_for_platform = getattr(resolver, "wait_for_platform_ready", None)
         if callable(wait_for_platform):
             await wait_for_platform()
-        bot = first_onebot_client(self.context)
+        bot = first_onebot_client(self.context.context)
         target_type = "群聊" if is_group else "私聊"
         if not bot:
             logger.debug("[日常生活] 未找到可用于获取聊天历史的平台实例。")
@@ -277,15 +307,15 @@ class ReferenceMixin:
                     params["message_seq"] = cursor_seq
 
                 response = await call_bot_action(bot, action, **params)
-                batch_msgs = self._history_response_messages(response)
+                batch_msgs = self.context._history_response_messages(response)
 
                 if not batch_msgs:
                     break
-                accepted, sequences, added_count = self._history_batch_progress(
+                accepted, sequences, added_count = self.context._history_batch_progress(
                     batch_msgs, seen_ids, cutoff_time
                 )
                 all_messages.extend(accepted)
-                next_cursor = self._history_next_cursor(
+                next_cursor = self.context._history_next_cursor(
                     batch_msgs,
                     sequences,
                     _HistoryPageState(
@@ -329,21 +359,21 @@ class ReferenceMixin:
         _, real_id = parse_unified_origin(target_s)
         probe_id = real_id or target_s
         if probe_id.isdigit():
-            return await self._get_onebot_recent_chats(
+            return await self.context._get_onebot_recent_chats(
                 target_s, is_group, hours, max_count, persona=persona
             )
 
-        target_umo = self.saved_history.resolve_target_umo(target_s, is_group)
+        target_umo = self.context.saved_history.resolve_target_umo(target_s, is_group)
         if not target_umo:
             return "无"
 
         try:
-            messages = await self.saved_history.fetch(
+            messages = await self.context.saved_history.fetch(
                 target_umo, max_count=max_count, hours=hours
             )
             if not messages:
                 return "无"
-            return await self._format_saved_recent_chats(
+            return await self.context._format_saved_recent_chats(
                 messages, target_s, is_group, persona=persona
             )
         except Exception as e:
@@ -363,7 +393,7 @@ class ReferenceMixin:
                 return "无"
             _, real_id = parse_unified_origin(target_id)
             tid = int(real_id or target_id)
-            raw_msgs = await self._fetch_deep_history(tid, is_group, hours, max_count)
+            raw_msgs = await self.context._fetch_deep_history(tid, is_group, hours, max_count)
             if not raw_msgs:
                 return "无"
 
@@ -372,7 +402,7 @@ class ReferenceMixin:
             target_profile = {}
             target_display_name = ""
             if not is_group:
-                target_profile = await self._resolve_reference_user_profile(
+                target_profile = await self.context._resolve_reference_user_profile(
                     target_id_s, persona=persona
                 )
                 target_display_name = target_profile.get("name", "")
@@ -413,7 +443,7 @@ class ReferenceMixin:
 
             if not formatted:
                 return "无"
-            profile_text = self._format_reference_profile(target_profile)
+            profile_text = self.context._format_reference_profile(target_profile)
             if profile_text:
                 return f"【参考对象人设线索】{profile_text}\n" + "\n".join(formatted)
             return "\n".join(formatted)
@@ -432,8 +462,8 @@ class ReferenceMixin:
         target_profile = {}
         target_display_name = ""
         if not is_group:
-            candidate_name = self._saved_private_chat_name(messages, target_id)
-            target_profile = await self._resolve_reference_user_profile(
+            candidate_name = self.context._saved_private_chat_name(messages, target_id)
+            target_profile = await self.context._resolve_reference_user_profile(
                 target_id,
                 persona=persona,
                 candidate_name=candidate_name,
@@ -465,7 +495,7 @@ class ReferenceMixin:
 
         if not formatted:
             return "无"
-        profile_text = self._format_reference_profile(target_profile)
+        profile_text = self.context._format_reference_profile(target_profile)
         if profile_text:
             return f"【参考对象人设线索】{profile_text}\n" + "\n".join(formatted)
         return "\n".join(formatted)
@@ -478,20 +508,20 @@ class ReferenceMixin:
                 continue
             if str(msg.get("role") or "user").lower() == "assistant":
                 continue
-            name = self._clean_reference_name_candidate(
+            name = self.context._clean_reference_name_candidate(
                 str(msg.get("name") or "").strip()
             )
             if name:
                 return name
             user_id = str(msg.get("user_id") or "").strip()
             if user_id and user_id not in target_keys:
-                cleaned = self._clean_reference_name_candidate(user_id)
+                cleaned = self.context._clean_reference_name_candidate(user_id)
                 if cleaned:
                     return cleaned
         return ""
 
     async def _get_persona_user_name(self) -> str:
-        resolver = self.contact_resolver
+        resolver = self.context.contact_resolver
         if resolver and hasattr(resolver, "get_persona_user_name"):
             try:
                 return str(await resolver.get_persona_user_name() or "").strip()

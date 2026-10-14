@@ -7,21 +7,12 @@ from .coerce import compact_text as _text
 from .primitive import optional_float, optional_int
 
 
-class _RecordMappingMixin:
-    def as_dict(self) -> dict[str, Any]:
-        """将记录转换为可持久化字典。
-
-        Returns:
-            包含记录全部字段的独立字典。
-        """
-
-        return asdict(self)
 
 
 def _payload(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
-    if isinstance(value, _RecordMappingMixin):
+    if isinstance(value, (TemporalFactRecord, FactEvidenceSignalRecord, ReflectionRecord, PersonaAssertionRecord, DurableTaskRecord, DecisionTraceRecord, LifeActionOutcomeRecord, LifeActionReceiptRecord, AffectiveStateRecord, GroundedDiaryEntryRecord)):
         return value.as_dict()
     return None
 
@@ -49,7 +40,7 @@ def _string_list(value: Any, *, limit: int = 100) -> list[str]:
 
 
 @dataclass(slots=True)
-class TemporalFactRecord(_RecordMappingMixin):
+class TemporalFactRecord:
     """带有效时间和来源链的结构化事实。"""
 
     id: int = 0
@@ -110,9 +101,13 @@ class TemporalFactRecord(_RecordMappingMixin):
             updated_at=_text(raw.get("updated_at"), 40),
         )
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class FactEvidenceSignalRecord(_RecordMappingMixin):
+class FactEvidenceSignalRecord:
     """强化或反驳事实的单条证据信号。"""
 
     id: int = 0
@@ -160,9 +155,13 @@ class FactEvidenceSignalRecord(_RecordMappingMixin):
             created_at=_text(raw.get("created_at"), 40),
         )
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class ReflectionRecord(_RecordMappingMixin):
+class ReflectionRecord:
     """由多条证据归纳出的候选反思。"""
 
     id: int = 0
@@ -216,9 +215,13 @@ class ReflectionRecord(_RecordMappingMixin):
             updated_at=_text(raw.get("updated_at"), 40),
         )
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class PersonaAssertionRecord(_RecordMappingMixin):
+class PersonaAssertionRecord:
     """由高价值反思晋升的长期人格断言。"""
 
     id: int = 0
@@ -234,9 +237,13 @@ class PersonaAssertionRecord(_RecordMappingMixin):
     created_at: str = ""
     updated_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class DurableTaskRecord(_RecordMappingMixin):
+class DurableTaskRecord:
     """具备租约和失败恢复能力的持久任务。"""
 
     id: int = 0
@@ -256,9 +263,13 @@ class DurableTaskRecord(_RecordMappingMixin):
     updated_at: str = ""
     completed_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class DecisionTraceRecord(_RecordMappingMixin):
+class DecisionTraceRecord:
     """跨决策阶段共享的可审计轨迹。"""
 
     id: int = 0
@@ -273,9 +284,13 @@ class DecisionTraceRecord(_RecordMappingMixin):
     created_at: str = ""
     updated_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class LifeActionOutcomeRecord(_RecordMappingMixin):
+class LifeActionOutcomeRecord:
     """显式生活动作的提议、校验和结算结果。"""
 
     id: int = 0
@@ -293,9 +308,13 @@ class LifeActionOutcomeRecord(_RecordMappingMixin):
     created_at: str = ""
     updated_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class LifeActionReceiptRecord(_RecordMappingMixin):
+class LifeActionReceiptRecord:
     """可追溯的生活动作执行回执。"""
 
     id: int = 0
@@ -311,9 +330,13 @@ class LifeActionReceiptRecord(_RecordMappingMixin):
     occurred_at: str = ""
     created_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class AffectiveStateRecord(_RecordMappingMixin):
+class AffectiveStateRecord:
     """短时、日级或关系级的可衰减情绪状态。"""
 
     id: int = 0
@@ -333,9 +356,13 @@ class AffectiveStateRecord(_RecordMappingMixin):
     created_at: str = ""
     updated_at: str = ""
 
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
+
 
 @dataclass(slots=True)
-class GroundedDiaryEntryRecord(_RecordMappingMixin):
+class GroundedDiaryEntryRecord:
     """只引用已落库证据的第一人称日记条目。"""
 
     id: int = 0
@@ -348,6 +375,10 @@ class GroundedDiaryEntryRecord(_RecordMappingMixin):
     source: str = "daily_review"
     created_at: str = ""
     updated_at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        """返回记录全部字段的独立字典。"""
+        return asdict(self)
 
 
 __all__ = [

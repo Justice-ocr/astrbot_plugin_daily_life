@@ -1,7 +1,21 @@
+from __future__ import annotations
+
 from typing import Any
 
+from typing import Protocol
 
-class CommonArchiveMixin:
+
+class CommonArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _conn: Any
+    _text: Any
+
+
+class CommonArchiveComponent:
+    def __init__(self, context: CommonArchiveComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _text(value: Any) -> str:
         return str(value or "").strip()
@@ -22,7 +36,7 @@ class CommonArchiveMixin:
     ) -> list[str]:
         return [
             row[text_column]
-            for row in self._conn.execute(
+            for row in self.context._conn.execute(
                 f"SELECT {text_column} FROM {table} WHERE {owner_column} = ? ORDER BY sort_order",
                 (owner_id,),
             ).fetchall()
@@ -37,11 +51,11 @@ class CommonArchiveMixin:
         text_column: str,
         values: list[str],
     ) -> None:
-        self._conn.execute(f"DELETE FROM {table} WHERE {owner_column} = ?", (owner_id,))
+        self.context._conn.execute(f"DELETE FROM {table} WHERE {owner_column} = ?", (owner_id,))
         for idx, value in enumerate(values):
-            text = self._text(value)
+            text = self.context._text(value)
             if text:
-                self._conn.execute(
+                self.context._conn.execute(
                     f"INSERT INTO {table}({owner_column}, sort_order, {text_column}) VALUES (?, ?, ?)",
                     (owner_id, idx, text),
                 )
@@ -49,11 +63,11 @@ class CommonArchiveMixin:
     def _replace_people_unlocked(
         self, table: str, id_column: str, owner_id: int, people: list[str]
     ) -> None:
-        self._conn.execute(f"DELETE FROM {table} WHERE {id_column} = ?", (owner_id,))
+        self.context._conn.execute(f"DELETE FROM {table} WHERE {id_column} = ?", (owner_id,))
         for idx, person in enumerate(people):
-            text = self._text(person)
+            text = self.context._text(person)
             if text:
-                self._conn.execute(
+                self.context._conn.execute(
                     f"INSERT INTO {table}({id_column}, sort_order, person) VALUES (?, ?, ?)",
                     (owner_id, idx, text),
                 )
@@ -63,7 +77,7 @@ class CommonArchiveMixin:
     ) -> list[str]:
         return [
             row["person"]
-            for row in self._conn.execute(
+            for row in self.context._conn.execute(
                 f"SELECT person FROM {table} WHERE {id_column} = ? ORDER BY sort_order",
                 (owner_id,),
             ).fetchall()

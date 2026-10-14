@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import asyncio
 import string
@@ -8,6 +10,8 @@ from ...sources.platforms import parse_unified_origin
 from ...sources.location import location_parts
 from ...paths import expand_path, path_is_file
 
+from typing import Protocol
+
 
 def _file_sha256(path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
@@ -17,14 +21,31 @@ def _file_sha256(path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-class CaptureEventMixin:
+class CaptureEventComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _emoji_asset_size_allowed: Any
+    _event_bot_aliases: Any
+    _event_is_group_message: Any
+    _event_is_platform_directed: Any
+    _event_mentions_bot_alias: Any
+    _event_text_contains_bot_alias: Any
+    _safe_event_attr: Any
+    _safe_event_call: Any
+    config: Any
+
+
+class CaptureEventComponent:
+    def __init__(self, context: CaptureEventComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _event_sources(event: Any) -> list[Any]:
         return iter_event_sources(event)
 
     @staticmethod
     def _event_session_id(event: Any) -> str:
-        for current in CaptureEventMixin._event_sources(event):
+        for current in CaptureEventComponent._event_sources(event):
             for attr in ("unified_msg_origin", "session_id"):
                 value = str(getattr(current, attr, "") or "").strip()
                 if value:
@@ -121,7 +142,7 @@ class CaptureEventMixin:
         )
 
     def _event_bot_aliases(self) -> list[str]:
-        config = getattr(self, "config", None)
+        config = getattr(self.context, "config", None)
         aliases = (
             getattr(config, "bot_identity_aliases", []) if config is not None else []
         )
@@ -173,14 +194,14 @@ class CaptureEventMixin:
         if not text:
             return False
         return any(
-            self._event_text_contains_bot_alias(text, alias)
-            for alias in self._event_bot_aliases()
+            self.context._event_text_contains_bot_alias(text, alias)
+            for alias in self.context._event_bot_aliases()
         )
 
     def _event_is_directed(self, event: Any) -> bool:
-        return self._event_is_platform_directed(
+        return self.context._event_is_platform_directed(
             event
-        ) or self._event_mentions_bot_alias(event)
+        ) or self.context._event_mentions_bot_alias(event)
 
     @classmethod
     def _event_has_command_handler(cls, event: Any) -> bool:
@@ -374,7 +395,7 @@ class CaptureEventMixin:
                 path = await asyncio.to_thread(expand_path, local_path, resolve=True)
                 if await asyncio.to_thread(path_is_file, path):
                     size = await asyncio.to_thread(lambda: path.stat().st_size)
-                    if not self._emoji_asset_size_allowed(size):
+                    if not self.context._emoji_asset_size_allowed(size):
                         return ""
                     return await asyncio.to_thread(_file_sha256, path)
             except (OSError, ValueError):
@@ -445,14 +466,14 @@ class CaptureEventMixin:
         return "\n".join(f"- {item[:220]}" for item in items[:3])
 
     def _event_profile_id(self, event: Any, fallback_name: str = "用户") -> str:
-        if self._event_is_group_message(event):
-            return self._safe_event_call(event, "get_sender_id") or fallback_name
-        origin = self._safe_event_attr(event, "unified_msg_origin")
+        if self.context._event_is_group_message(event):
+            return self.context._safe_event_call(event, "get_sender_id") or fallback_name
+        origin = self.context._safe_event_attr(event, "unified_msg_origin")
         if origin:
             _, real_id = parse_unified_origin(origin)
             return real_id or origin
-        return self._safe_event_call(event, "get_sender_id") or fallback_name
+        return self.context._safe_event_call(event, "get_sender_id") or fallback_name
 
     def _voice_allowed_for_scope(self, scope_or_event: Any) -> bool:
-        voice_config = getattr(self.config, "voice_generation", None)
+        voice_config = getattr(self.context.config, "voice_generation", None)
         return bool(voice_config and voice_config.enabled)

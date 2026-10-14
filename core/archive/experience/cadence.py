@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import datetime
 import json
@@ -9,8 +11,37 @@ from ...models import PhysiologicalRhythmLogRecord
 from ...models.primitive import optional_bool
 from ...models.vitals import normalize_body_burden_intensity
 
+from typing import Protocol
 
-class PhysiologicalRhythmArchiveMixin:
+
+class PhysiologicalRhythmArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _RHYTHM_LIFECYCLE_DAYS: Any
+    _RHYTHM_SINGLE_ACTIVE_LIFECYCLES: Any
+    _compact_active_lifecycle_rhythm_logs: Any
+    _compose_physiological_rhythm_log: Any
+    _conn: Any
+    _invalidate_physiological_rhythm_trend_cache: Any
+    _latest_active_rhythm_logs: Any
+    _loads_texts: Any
+    _parse_rhythm_time: Any
+    _physiological_rhythm_trend_cache: Any
+    _physiological_rhythm_trend_cache_key: Any
+    _physiological_rhythm_trend_revision: Any
+    _rhythm_lifecycle_kind: Any
+    _rhythm_log_status: Any
+    _rhythm_now_text: Any
+    _rhythm_score: Any
+    _rhythm_weight: Any
+    _run_db: Any
+    _text: Any
+
+
+class PhysiologicalRhythmArchiveComponent:
+    def __init__(self, context: PhysiologicalRhythmArchiveComponentContext) -> None:
+        self.context = context
+
     _RHYTHM_SINGLE_ACTIVE_LIFECYCLES = {"short_term", "sustained"}
     _RHYTHM_LIFECYCLE_DAYS = {
         "transient": 1,
@@ -23,10 +54,10 @@ class PhysiologicalRhythmArchiveMixin:
         return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _invalidate_physiological_rhythm_trend_cache(self) -> None:
-        self._physiological_rhythm_trend_revision = (
-            int(getattr(self, "_physiological_rhythm_trend_revision", 0) or 0) + 1
+        self.context._physiological_rhythm_trend_revision = (
+            int(getattr(self.context, "_physiological_rhythm_trend_revision", 0) or 0) + 1
         )
-        self._physiological_rhythm_trend_cache = {}
+        self.context._physiological_rhythm_trend_cache = {}
 
     def _physiological_rhythm_trend_cache_key(
         self,
@@ -35,7 +66,7 @@ class PhysiologicalRhythmArchiveMixin:
         limit: int,
         now: datetime.datetime,
     ) -> str:
-        revision = int(getattr(self, "_physiological_rhythm_trend_revision", 0) or 0)
+        revision = int(getattr(self.context, "_physiological_rhythm_trend_revision", 0) or 0)
         return f"{now.date().isoformat()}:{max(days, 1)}:{max(limit, 1)}:{revision}"
 
     @staticmethod
@@ -97,39 +128,39 @@ class PhysiologicalRhythmArchiveMixin:
             row["body_intensity"],
             burden_present=row["body_burden_present"],
         )
-        lifecycle_kind = self._text(row["lifecycle_kind"]) or "transient"
+        lifecycle_kind = self.context._text(row["lifecycle_kind"]) or "transient"
         if (
-            lifecycle_kind in self._RHYTHM_SINGLE_ACTIVE_LIFECYCLES
+            lifecycle_kind in self.context._RHYTHM_SINGLE_ACTIVE_LIFECYCLES
             and body_intensity < 20
-            and self._rhythm_score(row["social_battery"], 50) > 40
+            and self.context._rhythm_score(row["social_battery"], 50) > 40
             and not bool(row["optional_cycle_enabled"])
         ):
             lifecycle_kind = "transient"
         return PhysiologicalRhythmLogRecord(
             id=int(row["id"] or 0),
-            date=self._text(row["date"]),
-            source=self._text(row["source"]) or "state",
-            energy_curve=self._text(row["energy_curve"]),
-            body_label=self._text(row["body_label"]),
+            date=self.context._text(row["date"]),
+            source=self.context._text(row["source"]) or "state",
+            energy_curve=self.context._text(row["energy_curve"]),
+            body_label=self.context._text(row["body_label"]),
             body_intensity=body_intensity,
             body_burden_present=optional_bool(row["body_burden_present"]),
-            body_source=self._text(row["body_source"]),
-            body_expires_at=self._text(row["body_expires_at"]),
-            recovery_actions=self._loads_texts(row["recovery_actions"]),
-            social_battery=self._rhythm_score(row["social_battery"], 50),
-            attention_state=self._text(row["attention_state"]),
+            body_source=self.context._text(row["body_source"]),
+            body_expires_at=self.context._text(row["body_expires_at"]),
+            recovery_actions=self.context._loads_texts(row["recovery_actions"]),
+            social_battery=self.context._rhythm_score(row["social_battery"], 50),
+            attention_state=self.context._text(row["attention_state"]),
             optional_cycle_enabled=bool(row["optional_cycle_enabled"]),
-            optional_cycle_label=self._text(row["optional_cycle_label"]),
-            optional_cycle_intensity=self._rhythm_score(
+            optional_cycle_label=self.context._text(row["optional_cycle_label"]),
+            optional_cycle_intensity=self.context._rhythm_score(
                 row["optional_cycle_intensity"]
             ),
-            optional_cycle_source=self._text(row["optional_cycle_source"]),
-            summary=self._text(row["summary"]),
+            optional_cycle_source=self.context._text(row["optional_cycle_source"]),
+            summary=self.context._text(row["summary"]),
             lifecycle_kind=lifecycle_kind,
             weight=max(0.0, min(float(row["weight"] or 0.0), 3.0)),
-            status=self._text(row["status"]) or "active",
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            status=self.context._text(row["status"]) or "active",
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     def _rhythm_log_status(
@@ -140,8 +171,8 @@ class PhysiologicalRhythmArchiveMixin:
         if item.status != "active":
             return item
         now = now or datetime.datetime.now()
-        days = self._RHYTHM_LIFECYCLE_DAYS.get(item.lifecycle_kind, 1)
-        anchor = self._parse_rhythm_time(item.date) or self._parse_rhythm_time(
+        days = self.context._RHYTHM_LIFECYCLE_DAYS.get(item.lifecycle_kind, 1)
+        anchor = self.context._parse_rhythm_time(item.date) or self.context._parse_rhythm_time(
             item.updated_at
         )
         if anchor and anchor + datetime.timedelta(days=days) < now:
@@ -210,7 +241,7 @@ class PhysiologicalRhythmArchiveMixin:
         return result
 
     def _compact_active_lifecycle_rhythm_logs(self) -> int:
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             """
             SELECT id, lifecycle_kind FROM physiological_rhythm_logs
             WHERE status = 'active'
@@ -221,7 +252,7 @@ class PhysiologicalRhythmArchiveMixin:
         keep: set[str] = set()
         expired_ids: list[int] = []
         for row in rows:
-            kind = self._text(row["lifecycle_kind"])
+            kind = self.context._text(row["lifecycle_kind"])
             rhythm_id = int(row["id"] or 0)
             if not kind or rhythm_id <= 0:
                 continue
@@ -232,7 +263,7 @@ class PhysiologicalRhythmArchiveMixin:
         if not expired_ids:
             return 0
         placeholders = ",".join("?" for _ in expired_ids)
-        cursor = self._conn.execute(
+        cursor = self.context._conn.execute(
             f"""
             UPDATE physiological_rhythm_logs
             SET status = 'superseded',
@@ -256,36 +287,36 @@ class PhysiologicalRhythmArchiveMixin:
         )
         if not item:
             return None
-        now_text = self._rhythm_now_text()
+        now_text = self.context._rhythm_now_text()
         if not item.created_at:
             item.created_at = now_text
         if not item.updated_at:
             item.updated_at = now_text
 
         def dbwork():
-            recent_rows = self._conn.execute(
+            recent_rows = self.context._conn.execute(
                 """
                 SELECT * FROM physiological_rhythm_logs
                 WHERE date >= date(?, '-6 days')
                 ORDER BY date DESC, updated_at DESC, id DESC
                 LIMIT 12
                 """,
-                (self._text(item.date),),
+                (self.context._text(item.date),),
             ).fetchall()
             recent = [
-                self._compose_physiological_rhythm_log(row) for row in recent_rows
+                self.context._compose_physiological_rhythm_log(row) for row in recent_rows
             ]
-            item.lifecycle_kind = self._rhythm_lifecycle_kind(item, recent)
-            item.weight = self._rhythm_weight(item.lifecycle_kind)
+            item.lifecycle_kind = self.context._rhythm_lifecycle_kind(item, recent)
+            item.weight = self.context._rhythm_weight(item.lifecycle_kind)
 
             existing = None
             if item.id:
-                existing = self._conn.execute(
+                existing = self.context._conn.execute(
                     "SELECT * FROM physiological_rhythm_logs WHERE id = ?",
                     (int(item.id),),
                 ).fetchone()
             if existing is None:
-                existing = self._conn.execute(
+                existing = self.context._conn.execute(
                     """
                     SELECT * FROM physiological_rhythm_logs
                     WHERE date = ?
@@ -298,20 +329,20 @@ class PhysiologicalRhythmArchiveMixin:
                     LIMIT 1
                     """,
                     (
-                        self._text(item.date),
-                        self._text(item.source) or "state",
-                        self._text(item.energy_curve),
-                        self._text(item.body_label),
-                        self._text(item.attention_state),
-                        self._text(item.summary),
+                        self.context._text(item.date),
+                        self.context._text(item.source) or "state",
+                        self.context._text(item.energy_curve),
+                        self.context._text(item.body_label),
+                        self.context._text(item.attention_state),
+                        self.context._text(item.summary),
                     ),
                 ).fetchone()
             values = (
-                self._text(item.date),
-                self._text(item.source) or "state",
-                self._text(item.energy_curve),
-                self._text(item.body_label),
-                self._rhythm_score(item.body_intensity),
+                self.context._text(item.date),
+                self.context._text(item.source) or "state",
+                self.context._text(item.energy_curve),
+                self.context._text(item.body_label),
+                self.context._rhythm_score(item.body_intensity),
                 (
                     1
                     if item.body_burden_present is True
@@ -319,23 +350,23 @@ class PhysiologicalRhythmArchiveMixin:
                     if item.body_burden_present is False
                     else None
                 ),
-                self._text(item.body_source),
-                self._text(item.body_expires_at),
+                self.context._text(item.body_source),
+                self.context._text(item.body_expires_at),
                 json.dumps(list(item.recovery_actions or [])[:6], ensure_ascii=False),
-                self._rhythm_score(item.social_battery, 50),
-                self._text(item.attention_state),
+                self.context._rhythm_score(item.social_battery, 50),
+                self.context._text(item.attention_state),
                 1 if item.optional_cycle_enabled else 0,
-                self._text(item.optional_cycle_label),
-                self._rhythm_score(item.optional_cycle_intensity),
-                self._text(item.optional_cycle_source),
-                self._text(item.summary),
-                self._text(item.lifecycle_kind) or "transient",
+                self.context._text(item.optional_cycle_label),
+                self.context._rhythm_score(item.optional_cycle_intensity),
+                self.context._text(item.optional_cycle_source),
+                self.context._text(item.summary),
+                self.context._text(item.lifecycle_kind) or "transient",
                 float(item.weight or 0.0),
-                self._text(item.status) or "active",
+                self.context._text(item.status) or "active",
             )
             if existing:
                 rhythm_id = int(existing["id"] or item.id or 0)
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE physiological_rhythm_logs
                     SET date = ?, source = ?, energy_curve = ?, body_label = ?,
@@ -350,16 +381,16 @@ class PhysiologicalRhythmArchiveMixin:
                     """,
                     (*values, rhythm_id),
                 )
-                self._compact_active_lifecycle_rhythm_logs()
-                self._conn.commit()
-                self._invalidate_physiological_rhythm_trend_cache()
-                row = self._conn.execute(
+                self.context._compact_active_lifecycle_rhythm_logs()
+                self.context._conn.commit()
+                self.context._invalidate_physiological_rhythm_trend_cache()
+                row = self.context._conn.execute(
                     "SELECT * FROM physiological_rhythm_logs WHERE id = ?",
                     (rhythm_id,),
                 ).fetchone()
-                return self._compose_physiological_rhythm_log(row) if row else None
+                return self.context._compose_physiological_rhythm_log(row) if row else None
 
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO physiological_rhythm_logs(
                     date, source, energy_curve, body_label, body_intensity,
@@ -374,16 +405,16 @@ class PhysiologicalRhythmArchiveMixin:
                 values,
             )
             rhythm_id = int(cursor.lastrowid or 0)
-            self._compact_active_lifecycle_rhythm_logs()
-            self._conn.commit()
-            self._invalidate_physiological_rhythm_trend_cache()
-            row = self._conn.execute(
+            self.context._compact_active_lifecycle_rhythm_logs()
+            self.context._conn.commit()
+            self.context._invalidate_physiological_rhythm_trend_cache()
+            row = self.context._conn.execute(
                 "SELECT * FROM physiological_rhythm_logs WHERE id = ?",
                 (rhythm_id,),
             ).fetchone()
-            return self._compose_physiological_rhythm_log(row) if row else None
+            return self.context._compose_physiological_rhythm_log(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_physiological_rhythm_logs(
         self,
@@ -398,7 +429,7 @@ class PhysiologicalRhythmArchiveMixin:
             params: list[Any] = []
             if date:
                 clauses.append("date = ?")
-                params.append(self._text(date))
+                params.append(self.context._text(date))
             if active_only:
                 clauses.append("status = 'active'")
             if clauses:
@@ -407,20 +438,20 @@ class PhysiologicalRhythmArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
             now = datetime.datetime.now()
             items = [
-                self._rhythm_log_status(
-                    self._compose_physiological_rhythm_log(row), now
+                self.context._rhythm_log_status(
+                    self.context._compose_physiological_rhythm_log(row), now
                 )
                 for row in rows
             ]
             if active_only:
                 items = [item for item in items if item.status == "active"]
-                items = self._latest_active_rhythm_logs(items)
+                items = self.context._latest_active_rhythm_logs(items)
             return items
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_physiological_rhythm_trend(
         self, days: int = 7, *, limit: int = 20
@@ -429,22 +460,22 @@ class PhysiologicalRhythmArchiveMixin:
         limit = max(int(limit or 20), 1)
         now = datetime.datetime.now()
         cutoff = (now.date() - datetime.timedelta(days=days - 1)).strftime("%Y-%m-%d")
-        cache_key = self._physiological_rhythm_trend_cache_key(
+        cache_key = self.context._physiological_rhythm_trend_cache_key(
             days=days, limit=limit, now=now
         )
 
         def dbwork():
-            cache = getattr(self, "_physiological_rhythm_trend_cache", None)
+            cache = getattr(self.context, "_physiological_rhythm_trend_cache", None)
             if not isinstance(cache, dict):
-                self._physiological_rhythm_trend_cache = {}
-                cache = self._physiological_rhythm_trend_cache
+                self.context._physiological_rhythm_trend_cache = {}
+                cache = self.context._physiological_rhythm_trend_cache
             if cache_key in cache:
                 return copy.deepcopy(cache[cache_key])
 
             # 短期和持续节律在同一业务日可以同时有效。按日期只取一条会
             # 把其中一类误删，导致趋势摘要看不到另一条有效证据。短期/
             # 持续按生命周期各取最新一条，瞬时记录仍按日期取最新一条。
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT *
                 FROM physiological_rhythm_logs
@@ -457,9 +488,9 @@ class PhysiologicalRhythmArchiveMixin:
             seen_lifecycles: set[str] = set()
             seen_transient_dates: set[str] = set()
             for row in rows:
-                lifecycle = self._text(row["lifecycle_kind"]) or "transient"
-                date_text = self._text(row["date"])
-                if lifecycle in self._RHYTHM_SINGLE_ACTIVE_LIFECYCLES:
+                lifecycle = self.context._text(row["lifecycle_kind"]) or "transient"
+                date_text = self.context._text(row["date"])
+                if lifecycle in self.context._RHYTHM_SINGLE_ACTIVE_LIFECYCLES:
                     if lifecycle in seen_lifecycles:
                         continue
                     seen_lifecycles.add(lifecycle)
@@ -474,14 +505,14 @@ class PhysiologicalRhythmArchiveMixin:
             logs = [
                 item
                 for item in (
-                    self._rhythm_log_status(
-                        self._compose_physiological_rhythm_log(row), now
+                    self.context._rhythm_log_status(
+                        self.context._compose_physiological_rhythm_log(row), now
                     )
                     for row in rows
                 )
                 if item.status == "active"
             ]
-            logs = self._latest_active_rhythm_logs(logs)
+            logs = self.context._latest_active_rhythm_logs(logs)
 
             if not logs:
                 result = {
@@ -564,4 +595,4 @@ class PhysiologicalRhythmArchiveMixin:
             cache[cache_key] = copy.deepcopy(result)
             return result
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
@@ -8,13 +9,29 @@ from ..media.picture import routes
 from .markers import LOG_PREFIX
 
 
-class ExpressionHintMixin:
+class ExpressionHintService:
+    """按已启用通道和实际聊天节奏构造表达提示。"""
+
+    def __init__(
+        self,
+        *,
+        config: Callable[[], Any],
+        voice_cadence: Callable[[Any], dict[str, Any]],
+        voice_allowed: Callable[[Any], bool],
+        image_reference: Callable[[Any], Any],
+        media_cadence: Callable[[Any], str],
+    ) -> None:
+        self._config = config
+        self._voice_cadence = voice_cadence
+        self._voice_allowed = voice_allowed
+        self._image_reference = image_reference
+        self._media_cadence = media_cadence
+
     def _hidden_voice_cadence_hint(self, event: Any, probability: float) -> str:
-        snapshot = getattr(self, "_voice_switch_cadence_snapshot", None)
-        if not callable(snapshot) or event is None:
+        if event is None:
             return f"当前没有可用会话节奏记录；普通聊天语音概率参考为 {probability}%，仍以表达是否自然为准。"
 
-        cadence = snapshot(event)
+        cadence = self._voice_cadence(event)
         seconds_since_voice = cadence.get("seconds_since_voice")
         text_after_voice = int(cadence.get("text_after_voice") or 0)
         consecutive_voice = int(cadence.get("consecutive_voice") or 0)
@@ -48,17 +65,17 @@ class ExpressionHintMixin:
         )
 
     def _voice_expression_channel_enabled(self, event: Any = None) -> bool:
-        voice_config = getattr(self.config, "voice_generation", None)
+        voice_config = getattr(self._config(), "voice_generation", None)
         return bool(
             voice_config
             and getattr(voice_config, "enabled", False)
             and getattr(voice_config, "smart_switch_enabled", True)
-            and self._voice_allowed_for_scope(event or "")
+            and self._voice_allowed(event or "")
         )
 
     def _media_expression_channel_enabled(self) -> tuple[bool, bool]:
-        image_config = getattr(self.config, "image_generation", None)
-        video_config = getattr(self.config, "video_generation", None)
+        image_config = getattr(self._config(), "image_generation", None)
+        video_config = getattr(self._config(), "video_generation", None)
         return (
             bool(
                 image_config
@@ -71,23 +88,20 @@ class ExpressionHintMixin:
     def _hidden_image_reference_hint(self, event: Any = None) -> str:
         if event is None:
             return "当前没有可判定的消息事件；除非工具参数显式提供 reference_image，否则按没有真实参考图处理。"
-        resolver = getattr(self, "_resolve_life_image_reference", None)
-        has_reference = False
-        if callable(resolver):
-            try:
-                has_reference = bool(resolver(event))
-            except Exception as exc:
-                logger.debug(
-                    f"{LOG_PREFIX} 图片参考状态解析失败：{type(exc).__name__}",
-                    exc_info=True,
-                )
-                has_reference = False
+        try:
+            has_reference = bool(self._image_reference(event))
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 图片参考状态解析失败：{type(exc).__name__}",
+                exc_info=True,
+            )
+            has_reference = False
         if has_reference:
             return "当前消息或引用消息有可用图片。"
         return "当前消息和引用消息没有可用图片。"
 
     def build_hidden_expression_channel_hint(self, event: Any = None) -> str:
-        voice_config = getattr(self.config, "voice_generation", None)
+        voice_config = getattr(self._config(), "voice_generation", None)
         voice_enabled = bool(self._voice_expression_channel_enabled(event))
         image_enabled, video_enabled = self._media_expression_channel_enabled()
         if not (voice_enabled or image_enabled or video_enabled):
@@ -109,7 +123,7 @@ class ExpressionHintMixin:
                 ]
             )
         if image_enabled or video_enabled:
-            cadence_hint = self._hidden_media_cadence_hint(event)
+            cadence_hint = self._media_cadence(event)
             parts.extend(
                 [
                     "\n[HiddenMediaExpression] 图片或视频是否合适只根据对话意图、当下状态和表达自然度判断；不要靠固定词触发，也不要为了展示而调用。",
@@ -137,3 +151,6 @@ class ExpressionHintMixin:
                 )
         parts.append("\n</expression_channel>")
         return "".join(parts)
+
+
+__all__ = ["ExpressionHintService"]

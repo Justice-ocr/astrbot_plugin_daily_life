@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import uuid
 
@@ -9,11 +11,27 @@ from .tools import (
     get_weather_outfit_constraint,
 )
 
+from typing import Any, Protocol
+
 
 _CONDITION_FLAGS = ("is_rainy", "is_sunny", "is_cloudy", "is_foggy", "is_severe")
 
 
-class DailyClimateMixin:
+class DailyClimateComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    _get_provider: Any
+    _has_weather_safety_risk: Any
+    _task_provider_id: Any
+    config: Any
+
+
+class DailyClimateComponent:
+    def __init__(self, context: DailyClimateComponentContext) -> None:
+        self.context = context
+
     async def _classify_weather_condition(self, weather_data: object) -> object:
         if not isinstance(weather_data, dict) or weather_data.get("ok") is not True:
             return weather_data
@@ -26,16 +44,16 @@ class DailyClimateMixin:
         condition = str(weather.get("condition") or "").strip()
         if not condition:
             return weather_data
-        cache = self.__dict__.setdefault("_weather_condition_cache", {})
+        cache = self.context.__dict__.setdefault("_weather_condition_cache", {})
         flags = cache.get(condition)
         if flags is None:
-            provider_id = self._task_provider_id()
-            provider = await self._get_provider(provider_id)
+            provider_id = self.context._task_provider_id()
+            provider = await self.context._get_provider(provider_id)
             if provider is None:
                 return weather_data
             session_id = f"daily_life_weather_{uuid.uuid4().hex[:8]}"
             try:
-                answer = await self._call_llm_text(
+                answer = await self.context._call_llm_text(
                     provider,
                     "根据天气现象判断语义，只返回 JSON 对象，字段 "
                     "is_rainy、is_sunny、is_cloudy、is_foggy、is_severe 均须为布尔值。"
@@ -60,7 +78,7 @@ class DailyClimateMixin:
                 logger.warning(f"[天气] 天气现象分类失败：{exc}")
                 return weather_data
             finally:
-                await self._cleanup_conversation(session_id)
+                await self.context._cleanup_conversation(session_id)
         flags = {
             field: weather[field] if isinstance(weather.get(field), bool) else flags[field]
             for field in _CONDITION_FLAGS
@@ -81,20 +99,20 @@ class DailyClimateMixin:
         weather_section = f"\n天气：{weather_info['raw']}"
         if weather_info["temp"] is not None:
             weather_section += f"\n温度感受：{weather_info.get('temp_desc', '')}（{weather_info['temp']}°C）"
-        if self.config.weather.aware_outfit and weather_info["outfit_hint"]:
+        if self.context.config.weather.aware_outfit and weather_info["outfit_hint"]:
             weather_section += f"\n穿衣参考：{weather_info['outfit_hint']}"
-        if self.config.weather.aware_activity and weather_info["activity_hint"]:
+        if self.context.config.weather.aware_activity and weather_info["activity_hint"]:
             weather_section += f"\n活动参考：{weather_info['activity_hint']}"
 
         weather_constraint = get_weather_outfit_constraint(
-            weather_info, self.config.weather.aware_outfit
+            weather_info, self.context.config.weather.aware_outfit
         )
         activity_constraint = get_weather_activity_constraint(
-            weather_info, self.config.weather.aware_activity
+            weather_info, self.context.config.weather.aware_activity
         )
         constraint_section = ""
         if weather_constraint or activity_constraint:
-            if self._has_weather_safety_risk(weather_info):
+            if self.context._has_weather_safety_risk(weather_info):
                 constraint_section = "\n\n【天气安全约束 - 必须遵守】"
                 if weather_constraint:
                     constraint_section += f"\n穿搭安全：{weather_constraint}"
@@ -109,4 +127,4 @@ class DailyClimateMixin:
         return weather_section, constraint_section
 
 
-__all__ = ["DailyClimateMixin"]
+__all__ = ["DailyClimateComponent"]

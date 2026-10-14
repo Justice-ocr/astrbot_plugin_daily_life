@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -5,8 +7,19 @@ from astrbot.api import logger
 
 from .request import CommandRequest
 
+from typing import Protocol
 
-class SettingsCommandMixin:
+
+class SettingsCommandComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    runtime: Any
+
+
+class SettingsCommandComponent:
+    def __init__(self, context: SettingsCommandComponentContext) -> None:
+        self.context = context
+
     async def _time(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         if not req.param1:
             yield event.plain_result("时间格式错误，请使用 HH:MM 格式，例如 07:30。")
@@ -16,8 +29,8 @@ class SettingsCommandMixin:
             if not (0 <= raw_hour <= 23 and 0 <= raw_minute <= 59):
                 raise ValueError("小时需为0-23，分钟需为0-59")
             normalized_time = f"{raw_hour:02d}:{raw_minute:02d}"
-            self.runtime.rhythm.update_daily_time(normalized_time)
-            persisted = await self.runtime._persist_schedule_time(normalized_time)
+            self.context.runtime.rhythm.update_daily_time(normalized_time)
+            persisted = await self.context.runtime._persist_schedule_time(normalized_time)
             suffix = "已持久保存。" if persisted else "当前运行期间生效。"
             yield event.plain_result(
                 f"已将每日生活背景生成时间更新为 {normalized_time}，{suffix}"
@@ -30,9 +43,9 @@ class SettingsCommandMixin:
             yield event.plain_result("设置失败，请查看后台日志。")
 
     async def _config(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        config = self.runtime.config
+        config = self.context.runtime.config
         weather_status = "已配置" if config.weather.api_key else "未配置"
-        domains = getattr(self.runtime, "domains", None)
+        domains = getattr(self.context.runtime, "domains", None)
         map_context_resolver = getattr(domains, "ensure_map_context", None)
         if callable(map_context_resolver):
             await map_context_resolver()

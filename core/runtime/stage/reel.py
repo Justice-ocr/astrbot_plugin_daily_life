@@ -13,6 +13,8 @@ from ..markers import LOG_PREFIX
 from .error import MediaPromptExtractionError
 from .lens import clean_director_text
 
+from typing import Protocol
+
 
 @dataclass(frozen=True, slots=True)
 class DirectedImagePrompt:
@@ -22,7 +24,40 @@ class DirectedImagePrompt:
     needs_character_reference: bool = False
 
 
-class StageReelMixin:
+class StageReelComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _IMAGE_IDENTITY_CHARACTER: Any
+    _IMAGE_IDENTITY_UNKNOWN: Any
+    _character_appearance_context: Any
+    _direct_life_image_payload: Any
+    _media_director_call: Any
+    _media_director_context_text: Any
+    _media_director_current_day: Any
+    _media_director_emotion_context_text: Any
+    _media_director_recent_context_text: Any
+    _media_director_text_call: Any
+    _media_image_contains_character: Any
+    _media_image_director_prompt: Any
+    _media_image_director_provider_id: Any
+    _media_image_identity_route: Any
+    _media_image_needs_character_reference: Any
+    _media_image_preserve_user_request: Any
+    _media_image_prompt_from_payload: Any
+    _media_image_route_prompt: Any
+    _media_image_subject_kind: Any
+    _media_rewrite_prompt_from_payload: Any
+    _media_rewrite_prompt_from_response: Any
+    _remember_character_appearance_profile: Any
+    _strip_media_code_fence: Any
+    _validate_media_image_route_payload: Any
+    config: Any
+
+
+class StageReelComponent:
+    def __init__(self, context: StageReelComponentContext) -> None:
+        self.context = context
+
     _IMAGE_IDENTITY_CHARACTER = "角色本人"
     _IMAGE_IDENTITY_NONE = "无人物"
     _IMAGE_IDENTITY_UNKNOWN = "不确定"
@@ -35,7 +70,7 @@ class StageReelMixin:
     @staticmethod
     def _media_image_subject_kind(payload: dict[str, Any]) -> str:
         kind = clean_director_text(payload.get("subject_kind"), 24).lower()
-        if kind in StageReelMixin._IMAGE_SUBJECT_KINDS:
+        if kind in StageReelComponent._IMAGE_SUBJECT_KINDS:
             return kind
         return "unknown"
 
@@ -58,7 +93,7 @@ class StageReelMixin:
         *,
         identity_route: str = "",
     ) -> str:
-        self._validate_media_image_route_payload(
+        self.context._validate_media_image_route_payload(
             identity_route=identity_route, payload=payload
         )
         subject = clean_director_text(payload.get("subject"))
@@ -143,22 +178,22 @@ class StageReelMixin:
     @staticmethod
     def _media_image_identity_route(payload: dict[str, Any]) -> str:
         route = clean_director_text(payload.get("identity_route"), 24)
-        if route in StageReelMixin._IMAGE_IDENTITY_ROUTES:
+        if route in StageReelComponent._IMAGE_IDENTITY_ROUTES:
             return route
-        return StageReelMixin._IMAGE_IDENTITY_UNKNOWN
+        return StageReelComponent._IMAGE_IDENTITY_UNKNOWN
 
     @staticmethod
     def _media_image_contains_character(payload: dict[str, Any]) -> bool:
         return (
-            StageReelMixin._media_image_identity_route(payload)
-            == StageReelMixin._IMAGE_IDENTITY_CHARACTER
+            StageReelComponent._media_image_identity_route(payload)
+            == StageReelComponent._IMAGE_IDENTITY_CHARACTER
             and payload.get("contains_character") is True
         )
 
     @staticmethod
     def _media_image_needs_character_reference(payload: dict[str, Any]) -> bool:
         return (
-            StageReelMixin._media_image_contains_character(payload)
+            StageReelComponent._media_image_contains_character(payload)
             and payload.get("needs_character_reference") is True
         )
 
@@ -263,26 +298,26 @@ JSON 字段：
             if value:
                 return value
         try:
-            return self._media_image_prompt_from_payload(payload)
+            return self.context._media_image_prompt_from_payload(payload)
         except MediaPromptExtractionError:
             return ""
 
     def _media_rewrite_prompt_from_response(self, response: Any) -> str:
         if isinstance(response, dict):
-            return self._media_rewrite_prompt_from_payload(response)
-        raw = self._strip_media_code_fence(str(response or ""))
+            return self.context._media_rewrite_prompt_from_payload(response)
+        raw = self.context._strip_media_code_fence(str(response or ""))
         if not raw:
             return ""
         payload = extract_json_from_text(raw)
         if isinstance(payload, dict):
-            return self._media_rewrite_prompt_from_payload(payload)
+            return self.context._media_rewrite_prompt_from_payload(payload)
         for parser in (json.loads, ast.literal_eval):
             try:
                 parsed = parser(raw)
             except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
                 continue
             if isinstance(parsed, dict):
-                return self._media_rewrite_prompt_from_payload(parsed)
+                return self.context._media_rewrite_prompt_from_payload(parsed)
             if isinstance(parsed, str):
                 return clean_director_text(parsed, 600)
         if raw.startswith(("{", "[")) and raw.endswith(("}", "]")):
@@ -292,7 +327,7 @@ JSON 字段：
     async def _direct_life_image_prompt(
         self, event: Any, original_prompt: str, *, reference: bool = False
     ) -> str:
-        result = await self._direct_life_image_payload(
+        result = await self.context._direct_life_image_payload(
             event, original_prompt, reference=reference
         )
         return result.prompt
@@ -309,28 +344,28 @@ JSON 字段：
         if not original_prompt:
             return DirectedImagePrompt("")
         try:
-            day, now, using_extended_night = await self._media_director_current_day()
-            context = self._media_director_context_text(day, now, using_extended_night)
-            emotion_context = await self._media_director_emotion_context_text(
+            day, now, using_extended_night = await self.context._media_director_current_day()
+            context = self.context._media_director_context_text(day, now, using_extended_night)
+            emotion_context = await self.context._media_director_emotion_context_text(
                 day, event=event
             )
             if emotion_context:
                 context = f"{context}\n{emotion_context}"
-            recent_context = await self._media_director_recent_context_text(event)
+            recent_context = await self.context._media_director_recent_context_text(event)
             if judge_only:
-                route_payload = await self._media_director_call(
-                    self._media_image_route_prompt(
+                route_payload = await self.context._media_director_call(
+                    self.context._media_image_route_prompt(
                         context=context,
                         recent_context=recent_context,
                         original_prompt=original_prompt,
                         reference=reference,
                         judge_only=True,
                     ),
-                    provider_id=self._media_image_director_provider_id(),
+                    provider_id=self.context._media_image_director_provider_id(),
                 )
-                identity_route = self._media_image_identity_route(route_payload)
-                contains_character = self._media_image_contains_character(route_payload)
-                needs_character_reference = self._media_image_needs_character_reference(
+                identity_route = self.context._media_image_identity_route(route_payload)
+                contains_character = self.context._media_image_contains_character(route_payload)
+                needs_character_reference = self.context._media_image_needs_character_reference(
                     route_payload
                 )
                 logger.debug(
@@ -345,14 +380,14 @@ JSON 字段：
             persona = ""
             appearance_profile = ""
             appearance_context_getter = getattr(
-                self, "_character_appearance_context", None
+                self.context, "_character_appearance_context", None
             )
             if callable(appearance_context_getter):
                 persona, appearance_profile = await appearance_context_getter(
                     event, schedule_extract=False
                 )
-            payload = await self._media_director_call(
-                self._media_image_director_prompt(
+            payload = await self.context._media_director_call(
+                self.context._media_image_director_prompt(
                     context=context,
                     recent_context=recent_context,
                     original_prompt=original_prompt,
@@ -360,40 +395,40 @@ JSON 字段：
                     persona=persona,
                     appearance_profile=appearance_profile,
                 ),
-                provider_id=self._media_image_director_provider_id(),
+                provider_id=self.context._media_image_director_provider_id(),
             )
-            identity_route = self._media_image_identity_route(payload)
-            contains_character = self._media_image_contains_character(payload)
-            needs_character_reference = self._media_image_needs_character_reference(
+            identity_route = self.context._media_image_identity_route(payload)
+            contains_character = self.context._media_image_contains_character(payload)
+            needs_character_reference = self.context._media_image_needs_character_reference(
                 payload
             )
-            extracted_subject_kind = self._media_image_subject_kind(payload)
+            extracted_subject_kind = self.context._media_image_subject_kind(payload)
             extracted_character = extracted_subject_kind == "character"
             # 允许“不确定”路线由画面提取补充，但前置的明确路线不能被第二轮改写。
-            if extracted_character and identity_route == self._IMAGE_IDENTITY_UNKNOWN:
-                identity_route = self._IMAGE_IDENTITY_CHARACTER
+            if extracted_character and identity_route == self.context._IMAGE_IDENTITY_UNKNOWN:
+                identity_route = self.context._IMAGE_IDENTITY_CHARACTER
                 contains_character = True
                 needs_character_reference = True
                 logger.debug(
                     f"{LOG_PREFIX} 图片智能提取确认当前角色本人，已补充角色参考图需求"
                 )
-            elif extracted_character and identity_route == self._IMAGE_IDENTITY_CHARACTER:
+            elif extracted_character and identity_route == self.context._IMAGE_IDENTITY_CHARACTER:
                 contains_character = True
-            elif extracted_character and identity_route != self._IMAGE_IDENTITY_CHARACTER:
+            elif extracted_character and identity_route != self.context._IMAGE_IDENTITY_CHARACTER:
                 logger.debug(
                     f"{LOG_PREFIX} 图片身份路线保持{identity_route}；画面提取为角色设定主体，不使用当前角色参考图"
                 )
             if contains_character and persona:
                 remember_profile = getattr(
-                    self, "_remember_character_appearance_profile", None
+                    self.context, "_remember_character_appearance_profile", None
                 )
                 if callable(remember_profile):
                     remember_profile(persona, payload.get("appearance_profile"))
-            prompt = self._media_image_prompt_from_payload(
+            prompt = self.context._media_image_prompt_from_payload(
                 payload,
                 identity_route=identity_route,
             )
-            prompt = self._media_image_preserve_user_request(original_prompt, prompt)
+            prompt = self.context._media_image_preserve_user_request(original_prompt, prompt)
             logger.debug(f"{LOG_PREFIX} 图片智能提取：{prompt[:180]}")
             return DirectedImagePrompt(
                 prompt=prompt,
@@ -434,16 +469,16 @@ JSON 字段：
         )
         try:
             image_config = getattr(
-                getattr(self, "config", None), "image_generation", None
+                getattr(self.context, "config", None), "image_generation", None
             )
             provider_id = str(
                 getattr(image_config, "prompt_rewrite_provider", "") or ""
             ).strip()
-            text = await self._media_director_text_call(
+            text = await self.context._media_director_text_call(
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="图片轻量润色"),
                 provider_id=provider_id,
             )
-            value = self._media_rewrite_prompt_from_response(text)
+            value = self.context._media_rewrite_prompt_from_response(text)
             if value:
                 return value
         except Exception as exc:

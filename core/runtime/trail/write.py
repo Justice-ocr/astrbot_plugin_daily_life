@@ -8,10 +8,40 @@ from astrbot.api import logger
 from ...sources.platforms import parse_unified_origin
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class HistoryWriteMixin:
+
+class HistoryWriteComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _OBSERVED_USER_HISTORY_MARKER: Any
+    _append_assistant_history: Any
+    _append_platform_assistant_history: Any
+    _conversation_history_list: Any
+    _conversation_id_for_scope: Any
+    _event_session_id: Any
+    _event_user_history_media_label: Any
+    _history_content_has_media: Any
+    _history_item_matches: Any
+    _history_media_parts_from_event: Any
+    _history_message_parts_for_user: Any
+    _history_primary_text: Any
+    _history_user_item_matches: Any
+    _platform_media_part_from_history_payload: Any
+    _recent_matching_user_index: Any
+    _recent_plain_user_index_for_media: Any
+    _safe_event_call: Any
+    _user_history_item_from_event: Any
+    capture_proactive_chat_memory_reply: Any
+    context: Any
+
+
+class HistoryWriteComponent:
+    def __init__(self, context: HistoryWriteComponentContext) -> None:
+        self.context = context
+
     async def _conversation_id_for_scope(self, scope: str) -> str:
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "conversation_manager", None)
         if not manager or not scope:
             return ""
@@ -39,16 +69,16 @@ class HistoryWriteMixin:
         text = str(text or "").strip()
         if not scope or not text:
             return False
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "conversation_manager", None)
         if not manager:
             return False
         try:
-            cid = await self._conversation_id_for_scope(scope)
+            cid = await self.context._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
-            history = self._conversation_history_list(conversation)
+            history = self.context._conversation_history_list(conversation)
             history.append({"role": "assistant", "content": text})
             await manager.update_conversation(scope, cid, history=history)
             return True
@@ -61,19 +91,19 @@ class HistoryWriteMixin:
         text = str(text or "").strip()
         if not scope or not text:
             return False
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "conversation_manager", None)
         if not manager:
             return False
         try:
-            cid = await self._conversation_id_for_scope(scope)
+            cid = await self.context._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
-            history = self._conversation_history_list(conversation)
-            user_item = await self._user_history_item_from_event(scope, event, text)
+            history = self.context._conversation_history_list(conversation)
+            user_item = await self.context._user_history_item_from_event(scope, event, text)
             if any(
-                self._history_user_item_matches(item, user_item)
+                self.context._history_user_item_matches(item, user_item)
                 for item in history[-6:]
             ):
                 return False
@@ -91,26 +121,26 @@ class HistoryWriteMixin:
         *,
         media_label: str = "",
     ) -> bool:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         platform_id, user_id = parse_unified_origin(scope)
         if not platform_id or not user_id:
             return False
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "message_history_manager", None)
         insert = getattr(manager, "insert", None)
         if not callable(insert):
             return False
         text = str(text or "").strip()
-        message_parts = self._history_message_parts_for_user(text, media_label)
-        for part in await self._history_media_parts_from_event(event):
-            platform_part = await self._platform_media_part_from_history_payload(part)
+        message_parts = self.context._history_message_parts_for_user(text, media_label)
+        for part in await self.context._history_media_parts_from_event(event):
+            platform_part = await self.context._platform_media_part_from_history_payload(part)
             if platform_part:
                 message_parts.append(platform_part)
         content = {
             "type": "user",
             "message": message_parts,
             "timestamp": int(time.time()),
-            "source": self._OBSERVED_USER_HISTORY_MARKER,
+            "source": self.context._OBSERVED_USER_HISTORY_MARKER,
         }
         if text:
             content["text"] = text
@@ -119,8 +149,8 @@ class HistoryWriteMixin:
                 platform_id=platform_id,
                 user_id=user_id,
                 content=content,
-                sender_id=self._safe_event_call(event, "get_sender_id") or user_id,
-                sender_name=self._safe_event_call(event, "get_sender_name") or "",
+                sender_id=self.context._safe_event_call(event, "get_sender_id") or user_id,
+                sender_name=self.context._safe_event_call(event, "get_sender_name") or "",
             )
             return True
         except Exception as exc:
@@ -132,7 +162,7 @@ class HistoryWriteMixin:
     ) -> int:
         start = max(0, len(history) - 6)
         for index in range(len(history) - 1, start - 1, -1):
-            if self._history_user_item_matches(history[index], user_item):
+            if self.context._history_user_item_matches(history[index], user_item):
                 return index
         return -1
 
@@ -140,9 +170,9 @@ class HistoryWriteMixin:
         self, history: list[dict], user_item: dict[str, Any]
     ) -> int:
         expected_content = user_item.get("content")
-        if not self._history_content_has_media(expected_content):
+        if not self.context._history_content_has_media(expected_content):
             return -1
-        expected_text = self._history_primary_text(expected_content).strip()
+        expected_text = self.context._history_primary_text(expected_content).strip()
         if not expected_text:
             return -1
         start = max(0, len(history) - 6)
@@ -153,9 +183,9 @@ class HistoryWriteMixin:
                 or str(item.get("role") or "").strip() != "user"
             ):
                 continue
-            if self._history_content_has_media(item.get("content")):
+            if self.context._history_content_has_media(item.get("content")):
                 continue
-            if self._history_primary_text(item.get("content")).strip() == expected_text:
+            if self.context._history_primary_text(item.get("content")).strip() == expected_text:
                 return index
         return -1
 
@@ -171,33 +201,33 @@ class HistoryWriteMixin:
         assistant_text = str(assistant_text or "").strip()
         if not scope or not assistant_text:
             return False
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "conversation_manager", None)
         if not manager:
             return False
         try:
-            cid = await self._conversation_id_for_scope(scope)
+            cid = await self.context._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
-            history = self._conversation_history_list(conversation)
+            history = self.context._conversation_history_list(conversation)
             trailing_assistant_index = (
                 len(history) - 1
-                if self._history_item_matches(
+                if self.context._history_item_matches(
                     history[-1] if history else None, "assistant", assistant_text
                 )
                 else -1
             )
-            media_label_getter = getattr(self, "_event_user_history_media_label", None)
+            media_label_getter = getattr(self.context, "_event_user_history_media_label", None)
             media_label = (
                 media_label_getter(event) if callable(media_label_getter) else ""
             )
             if user_text or media_label:
-                user_item = await self._user_history_item_from_event(
+                user_item = await self.context._user_history_item_from_event(
                     scope, event, user_text, media_label=media_label
                 )
-                if self._recent_matching_user_index(history, user_item) < 0:
-                    enrich_index = self._recent_plain_user_index_for_media(
+                if self.context._recent_matching_user_index(history, user_item) < 0:
+                    enrich_index = self.context._recent_plain_user_index_for_media(
                         history, user_item
                     )
                     if enrich_index >= 0:
@@ -225,7 +255,7 @@ class HistoryWriteMixin:
         text = str(text or "").strip()
         if not scope or not text:
             return False
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         manager = getattr(context, "message_history_manager", None)
         insert = getattr(manager, "insert", None)
         if not callable(insert):
@@ -260,11 +290,11 @@ class HistoryWriteMixin:
         sender_name: str = "bot",
         media: str = "",
     ) -> None:
-        await self._append_assistant_history(scope, text)
-        await self._append_platform_assistant_history(
+        await self.context._append_assistant_history(scope, text)
+        await self.context._append_platform_assistant_history(
             scope, text, sender_name=sender_name
         )
-        capture = getattr(self, "capture_proactive_chat_memory_reply", None)
+        capture = getattr(self.context, "capture_proactive_chat_memory_reply", None)
         if callable(capture):
             try:
                 await capture(scope, text, media=media)

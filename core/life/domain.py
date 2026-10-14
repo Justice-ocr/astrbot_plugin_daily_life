@@ -18,9 +18,12 @@ from ..models import (
     LifeActionOutcome,
 )
 from .amap import AmapWebServiceClient
-from .audit import DailyLocationAuditMixin
-from .locator import DailyLocationPlanningMixin
 from .tools import get_week_id, timeline_execution_run, timeline_item_datetime
+
+from .locator import DailyLocationPlanningComponent
+from .audit import DailyLocationAuditComponent
+from functools import cached_property
+from ..composition import ComponentCall
 
 _TRAVEL_SPEED_METERS_PER_SECOND = {
     "walking": 1.25,
@@ -46,7 +49,7 @@ _POI_SEARCH_PROVENANCE_TTL_SECONDS = 15 * 60
 _POI_SEARCH_PROVENANCE_MAX_SCOPES = 256
 
 
-class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
+class LifeDomainService:
     """协调生活领域记录、动作副作用和上下文预算。"""
 
     def __init__(
@@ -680,7 +683,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     "meal_type": str(action.payload.get("meal_type") or ""),
                     "name": action.target or str(action.payload.get("name") or "用餐"),
                     "recipe_id": recipe_id,
-                    "status": "completed",
+                    "status": {"cook": "prepared", "order_food": "ordered"}.get(
+                        action.action_type, "completed"
+                    ),
                     "ingredients": ingredients,
                     "place": str(action.payload.get("place") or ""),
                     "source": source,
@@ -1614,10 +1619,18 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             )
         meals = snapshot["meals"]
         if meals:
+            meal_status_labels = {
+                "prepared": "已做好，未确认进食",
+                "ordered": "已下单，未确认送达或进食",
+                "completed": "已用餐",
+            }
             blocks.append(
                 "近期饮食："
                 + "；".join(
-                    f"{item.get('date')} {item.get('name')}" for item in meals[:4]
+                    f"{item.get('date')} {item.get('name')}（"
+                    + meal_status_labels.get(item.get("status"), "状态待确认")
+                    + "）"
+                    for item in meals[:4]
                 )
             )
         fitness = snapshot["fitness"]
@@ -1644,6 +1657,67 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         if len(text) <= limit:
             return text
         return text[: max(0, limit - 1)].rstrip() + "…"
+
+    _location_plan_text = staticmethod(DailyLocationPlanningComponent._location_plan_text)
+
+    _normalize_daily_location_requests = classmethod(DailyLocationPlanningComponent._normalize_daily_location_requests.__func__)
+
+    prepare_daily_location_candidates = ComponentCall("_part_daily_location_planning_component", DailyLocationPlanningComponent, "prepare_daily_location_candidates")
+
+    _select_location_candidate_route = ComponentCall("_part_daily_location_planning_component", DailyLocationPlanningComponent, "_select_location_candidate_route")
+
+    _timeline_item_duration_minutes = staticmethod(DailyLocationAuditComponent._timeline_item_duration_minutes)
+
+    audit_daily_locations = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "audit_daily_locations")
+
+    _location_search_results = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_location_search_results")
+
+    _canonicalize_location_entries = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_canonicalize_location_entries")
+
+    _apply_home_location_entry = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_apply_home_location_entry")
+
+    _canonicalize_poi_entry = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_canonicalize_poi_entry")
+
+    _resolve_poi_candidate = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_resolve_poi_candidate")
+
+    _fallback_poi_candidates = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_fallback_poi_candidates")
+
+    _disambiguate_poi_candidate = staticmethod(DailyLocationAuditComponent._disambiguate_poi_candidate)
+
+    _apply_verified_poi_entry = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_apply_verified_poi_entry")
+
+    _apply_non_poi_location_entry = staticmethod(DailyLocationAuditComponent._apply_non_poi_location_entry)
+
+    _normalize_location_entries = staticmethod(DailyLocationAuditComponent._normalize_location_entries)
+
+    _audit_location_routes = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_audit_location_routes")
+
+    _preselected_place_matches = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_preselected_place_matches")
+
+    _synchronize_travel_actions = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_synchronize_travel_actions")
+
+    _select_route_for_window = ComponentCall("_part_daily_location_audit_component", DailyLocationAuditComponent, "_select_route_for_window")
+
+    _normalize_route_result = staticmethod(DailyLocationAuditComponent._normalize_route_result)
+
+    _shift_timeline = staticmethod(DailyLocationAuditComponent._shift_timeline)
+
+    _travel_mode_label = staticmethod(DailyLocationAuditComponent._travel_mode_label)
+
+    _cities_match = staticmethod(DailyLocationAuditComponent._cities_match)
+
+    _replace_place_references = classmethod(DailyLocationAuditComponent._replace_place_references.__func__)
+
+    _downgrade_unverified_place = staticmethod(DailyLocationAuditComponent._downgrade_unverified_place)
+
+    @cached_property
+    def _part_daily_location_planning_component(self):
+        return DailyLocationPlanningComponent(self)
+
+    @cached_property
+    def _part_daily_location_audit_component(self):
+        return DailyLocationAuditComponent(self)
+
 
 
 __all__ = ["LifeDomainService"]

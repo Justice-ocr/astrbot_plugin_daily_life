@@ -18,6 +18,7 @@ class ContactNameResolver:
     """解析当前聊天发送者的用户昵称"""
 
     _NAME_CACHE_LIMIT = 512
+    _CONTACT_LOOKUP_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -77,6 +78,33 @@ class ContactNameResolver:
             return sender_name
         return default if is_weixin_oc_event(event_source) else sender_id or default
 
+    def cached_event_sender(self, event: Any, default: str = "用户") -> str:
+        """前台注入只读取已有资料，不等待平台连接或联系人 API。"""
+        source = self._event_source(event)
+        sender_id = self._safe_event_call(event, "get_sender_id")
+        origin = self._safe_event_attr(event, "unified_msg_origin")
+        target_uid = sender_id or origin
+        alias = self.get_relationship_alias(target_uid, event=event)
+        if alias:
+            return alias
+        adapter_id, probe_id = self._nickname_target(target_uid, event)
+        cached = self._cached_name(
+            self._onebot_name_cache, f"{adapter_id}:{probe_id}"
+        )
+        if cached:
+            return cached
+        if is_onebot_event(source) and probe_id.isdigit():
+            # 同一个查询任务同时供后台补齐和主动调用复用；前台不等待。
+            self._start_nickname_lookup(adapter_id, probe_id, target_uid, source)
+        event_name = self._clean_nickname_candidate(
+            self._safe_event_call(event, "get_sender_name"),
+            target_uid,
+            event=event,
+        )
+        if event_name:
+            return event_name
+        return default if is_weixin_oc_event(source) else sender_id or default
+
     def get_relationship_alias(self, target_uid: str, event: Any = None) -> str:
         aliases = self._normalize_relationship_aliases()
         for key in self._target_alias_keys(target_uid, event):
@@ -87,30 +115,38 @@ class ContactNameResolver:
 
     async def get_onebot_nickname(self, target_uid: str, event: Any = None) -> str:
         target_s = str(target_uid or "").strip()
-        adapter_id, real_id = parse_unified_origin(target_s)
-        probe_id = real_id or target_s
-        if not str(probe_id).isdigit():
+        adapter_id, probe_id = self._nickname_target(target_s, event)
+        if not probe_id.isdigit():
             return ""
-        cache_key = f"{adapter_id or ''}:{probe_id}"
+        cache_key = f"{adapter_id}:{probe_id}"
         cached = self._cached_name(self._onebot_name_cache, cache_key)
         if cached:
             return cached
-        pending = self._onebot_name_pending.get(cache_key)
-        if pending:
-            return await asyncio.shield(pending)
+        task = self._start_nickname_lookup(adapter_id, probe_id, target_s, event)
+        return await asyncio.shield(task) if task is not None else ""
 
-        await self.wait_for_platform_ready()
-        cached = self._cached_name(self._onebot_name_cache, cache_key)
-        if cached:
-            return cached
-        pending = self._onebot_name_pending.get(cache_key)
-        if pending:
-            return await asyncio.shield(pending)
-        bot = get_onebot_client(
-            self.context, target_s, event=event, adapter_id=adapter_id
+    def _nickname_target(self, target_uid: str, event: Any) -> tuple[str, str]:
+        adapter_id, real_id = parse_unified_origin(str(target_uid or ""))
+        event_adapter, _ = parse_unified_origin(
+            str(self._safe_event_attr(event, "unified_msg_origin") or "")
         )
-        task = asyncio.create_task(
-            self._fetch_onebot_nickname(cache_key, target_s, probe_id, event, bot)
+        return adapter_id or event_adapter or "", real_id or str(target_uid or "")
+
+    def _start_nickname_lookup(
+        self, adapter_id: str, probe_id: str, target_s: str, event: Any
+    ) -> asyncio.Task[str] | None:
+        cache_key = f"{adapter_id}:{probe_id}"
+        pending = self._onebot_name_pending.get(cache_key)
+        if pending is not None and not pending.done():
+            return pending
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(
+            self._lookup_onebot_nickname(
+                cache_key, adapter_id, target_s, probe_id, event
+            )
         )
         self._onebot_name_pending[cache_key] = task
         task.add_done_callback(
@@ -118,7 +154,23 @@ class ContactNameResolver:
                 self._onebot_name_pending, cache_key, done
             )
         )
-        return await asyncio.shield(task)
+        return task
+
+    async def _lookup_onebot_nickname(
+        self, cache_key: str, adapter_id: str, target_s: str, probe_id: str, event: Any
+    ) -> str:
+        try:
+            async with asyncio.timeout(self._CONTACT_LOOKUP_TIMEOUT_SECONDS):
+                await self.wait_for_platform_ready(event, target_umo=target_s)
+                bot = get_onebot_client(
+                    self.context, target_s, event=event, adapter_id=adapter_id
+                )
+                return await self._fetch_onebot_nickname(
+                    cache_key, target_s, probe_id, event, bot
+                )
+        except TimeoutError:
+            logger.debug(f"{self.log_prefix} 联系人备注查询超时，继续使用消息已有昵称")
+            return ""
 
     async def _fetch_onebot_nickname(
         self,
@@ -192,7 +244,7 @@ class ContactNameResolver:
         if pending:
             return await asyncio.shield(pending)
 
-        await self.wait_for_platform_ready()
+        await self.wait_for_platform_ready(event, target_umo=target_umo)
         cached = self._cached_name(self._onebot_group_name_cache, cache_key)
         if cached:
             return cached
@@ -216,13 +268,24 @@ class ContactNameResolver:
         )
         return await asyncio.shield(task)
 
-    async def wait_for_platform_ready(self) -> bool:
-        """在联系人查询前等待平台连接完成；无法等待时继续使用已有回退。"""
+    async def wait_for_platform_ready(
+        self, event: Any = None, *, target_umo: str = "", timeout: float = 3.0
+    ) -> bool:
+        """仅等待查询所用的 OneBot 平台，联系人补齐不占用前台预算。"""
         waiter = self._platform_ready_waiter
         if not callable(waiter):
             return True
         try:
-            result = waiter()
+            adapter_id, _ = parse_unified_origin(
+                target_umo
+            )
+            if not adapter_id:
+                adapter_id, _ = parse_unified_origin(
+                    str(self._safe_event_attr(event, "unified_msg_origin") or "")
+                )
+            result = waiter(
+                adapter_id=adapter_id or "", platform_type="aiocqhttp", timeout=timeout
+            )
             if inspect.isawaitable(result):
                 result = await result
             return bool(result)
@@ -243,8 +306,11 @@ class ContactNameResolver:
         bot: Any,
     ) -> str:
         try:
-            ret = await call_bot_action(
-                bot, "get_group_info", raise_missing=True, group_id=int(probe_id)
+            ret = await asyncio.wait_for(
+                call_bot_action(
+                    bot, "get_group_info", raise_missing=True, group_id=int(probe_id)
+                ),
+                timeout=self._CONTACT_LOOKUP_TIMEOUT_SECONDS,
             )
             if isinstance(ret, dict):
                 for key in ("group_remark", "group_memo", "group_name"):

@@ -18,8 +18,47 @@ from ...life.tools import (
 )
 from ...sources.platforms import parse_unified_origin
 
+from typing import Protocol
 
-class SnapshotExportMixin:
+
+class SnapshotExportComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_share_base_context: Any
+    _get_rich_context_parts: Any
+    _get_time_status: Any
+    _life_context_archive_snapshot: Any
+    _life_context_filter_people_records: Any
+    _life_context_meta_line: Any
+    _life_context_people_keys: Any
+    _life_context_schedule: Any
+    _life_context_status_line: Any
+    _life_context_subject: Any
+    _life_context_target_archive_snapshot: Any
+    _life_context_weather: Any
+    _resolve_life_context_day: Any
+    _schedule_context_state_refresh: Any
+    _settle_stale_reply_effects: Any
+    _share_behavior_payload: Any
+    _share_current_facts: Any
+    _share_episode_payload: Any
+    _share_exact_scope: Any
+    _share_expression_payload: Any
+    _share_focus_payload: Any
+    _share_guidance: Any
+    _share_interaction_payload: Any
+    _share_scope_context: Any
+    _share_terms_payload: Any
+    _share_text: Any
+    archive: Any
+    composer: Any
+    config: Any
+
+
+class SnapshotExportComponent:
+    def __init__(self, context: SnapshotExportComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _share_current_facts(data: Any) -> dict[str, Any]:
         """只导出自身当前事实，不暴露原始生命内核或私人目标数据。"""
@@ -68,6 +107,7 @@ class SnapshotExportMixin:
                     "hunger",
                     "thirst",
                     "social_battery",
+                    "discomfort",
                     "updated_at",
                     "uncertain_minutes",
                 )
@@ -82,7 +122,7 @@ class SnapshotExportMixin:
         using_extended_night: bool,
     ) -> list[str]:
         parts: list[str] = []
-        week_plan = await self.composer._get_week_plan()
+        week_plan = await self.context.composer._get_week_plan()
         if week_plan.generated:
             parts.append(f"📅 [本周主题] {week_plan.theme or '未设定'}")
             hint = resolve_daily_hint(week_plan, now, default="")
@@ -93,7 +133,7 @@ class SnapshotExportMixin:
     async def _resolve_life_context_day(
         self, now: datetime.datetime
     ) -> tuple[Any | None, str, bool, str]:
-        time_context = build_time_context(now, self.config.schedule_time)
+        time_context = build_time_context(now, self.context.config.schedule_time)
         today_str = time_context.now.strftime("%Y-%m-%d")
         yesterday_str = (time_context.now - datetime.timedelta(days=1)).strftime(
             "%Y-%m-%d"
@@ -101,17 +141,17 @@ class SnapshotExportMixin:
         is_extended_night = time_context.extended_night
 
         if is_extended_night:
-            data = await self.archive.get_day(yesterday_str)
+            data = await self.context.archive.get_day(yesterday_str)
             if data:
                 logger.debug("[生活上下文] 凌晨模式，使用昨日数据")
                 return data, yesterday_str, True, ""
             return None, "", True, "当前暂无日程记录 (休息中)"
 
-        data = await self.archive.get_day(today_str)
+        data = await self.context.archive.get_day(today_str)
         if data:
             return data, today_str, False, ""
 
-        data = await self.archive.get_day(yesterday_str)
+        data = await self.context.archive.get_day(yesterday_str)
         if data:
             return data, yesterday_str, True, ""
         return None, "", False, "当前暂无日程记录"
@@ -121,7 +161,7 @@ class SnapshotExportMixin:
     ) -> str:
         meta = data.meta
         if not is_extended_night:
-            return f"时段状态：{self._get_time_status(now)}"
+            return f"时段状态：{self.context._get_time_status(now)}"
         life_mode = meta.get("life_mode") or ""
         sleep_mode = meta.get("sleep_mode") or ""
         label = life_mode or sleep_mode or "延续昨日记录"
@@ -157,8 +197,8 @@ class SnapshotExportMixin:
     async def _life_context_schedule(
         self, data: Any, now: datetime.datetime, is_extended_night: bool
     ) -> str:
-        parts = [self._life_context_status_line(data, now, is_extended_night)]
-        meta_line = self._life_context_meta_line(data.meta)
+        parts = [self.context._life_context_status_line(data, now, is_extended_night)]
+        meta_line = self.context._life_context_meta_line(data.meta)
         if meta_line:
             parts.append(meta_line)
         timeline = format_timeline_to_text(
@@ -166,7 +206,7 @@ class SnapshotExportMixin:
         )
         parts.append(f"(昨日记录) {timeline}" if is_extended_night else timeline)
 
-        rich_parts = await self._get_rich_context_parts(data, now, is_extended_night)
+        rich_parts = await self.context._get_rich_context_parts(data, now, is_extended_night)
         if data.memo:
             rich_parts.append(f"📌 [今日备忘录] {data.memo}")
         if rich_parts:
@@ -193,7 +233,7 @@ class SnapshotExportMixin:
         }
 
     async def _life_context_archive_snapshot(self) -> dict[str, Any]:
-        await self._settle_stale_reply_effects()
+        await self.context._settle_stale_reply_effects()
         (
             relationships,
             places,
@@ -219,29 +259,29 @@ class SnapshotExportMixin:
             boundaries,
             health,
         ) = await asyncio.gather(
-            self.archive.get_recent_relationships(5),
-            self.archive.get_recent_places(8),
-            self.archive.get_recent_events(8),
-            self.archive.get_recent_chat_summaries(5),
-            self.archive.get_commitments(status="active", limit=8),
-            self.archive.get_life_episodes(limit=8),
-            self.archive.get_focus_targets(limit=8),
-            self.archive.get_behavior_feedback(limit=8),
-            self.archive.get_physiological_rhythm_logs(limit=8),
-            self.archive.get_physiological_rhythm_trend(days=7, limit=8),
-            self.archive.get_reply_effects(limit=8),
-            self.archive.get_memory_corrections(limit=8, unapplied_only=True),
-            self.archive.get_expression_profiles(limit=8),
-            self.archive.get_expression_reviews(limit=8),
-            self.archive.get_behavior_patterns(limit=8),
-            self.archive.get_behavior_scenes(limit=8),
-            self.archive.get_session_mid_summaries(limit=8),
-            self.archive.get_temporary_expression_states(limit=8),
-            self.archive.get_focus_slots(limit=8),
-            self.archive.get_expression_intents(limit=8),
-            self.archive.get_life_terms(limit=8),
-            self.archive.get_memory_boundaries(limit=8),
-            self.archive.get_life_health_report(self.config.storage),
+            self.context.archive.get_recent_relationships(5),
+            self.context.archive.get_recent_places(8),
+            self.context.archive.get_recent_events(8),
+            self.context.archive.get_recent_chat_summaries(5),
+            self.context.archive.get_commitments(status="active", limit=8),
+            self.context.archive.get_life_episodes(limit=8),
+            self.context.archive.get_focus_targets(limit=8),
+            self.context.archive.get_behavior_feedback(limit=8),
+            self.context.archive.get_physiological_rhythm_logs(limit=8),
+            self.context.archive.get_physiological_rhythm_trend(days=7, limit=8),
+            self.context.archive.get_reply_effects(limit=8),
+            self.context.archive.get_memory_corrections(limit=8, unapplied_only=True),
+            self.context.archive.get_expression_profiles(limit=8),
+            self.context.archive.get_expression_reviews(limit=8),
+            self.context.archive.get_behavior_patterns(limit=8),
+            self.context.archive.get_behavior_scenes(limit=8),
+            self.context.archive.get_session_mid_summaries(limit=8),
+            self.context.archive.get_temporary_expression_states(limit=8),
+            self.context.archive.get_focus_slots(limit=8),
+            self.context.archive.get_expression_intents(limit=8),
+            self.context.archive.get_life_terms(limit=8),
+            self.context.archive.get_memory_boundaries(limit=8),
+            self.context.archive.get_life_health_report(self.context.config.storage),
         )
         return {
             "relationships": relationships,
@@ -313,29 +353,29 @@ class SnapshotExportMixin:
     ) -> dict[str, Any]:
         scope = str(target_umo or "").strip()
         if not scope:
-            return await self._life_context_archive_snapshot()
+            return await self.context._life_context_archive_snapshot()
 
         is_group = ":GroupMessage:" in scope
         relationship_task = (
             asyncio.sleep(0, result=[])
             if is_group
-            else self.archive.get_relationships_for_target(scope, limit=1)
+            else self.context.archive.get_relationships_for_target(scope, limit=1)
         )
         relationships, summaries, places, events, commitments = await asyncio.gather(
             relationship_task,
-            self.archive.get_chat_summaries_for_session(scope, limit=5),
-            self.archive.get_recent_places(8),
-            self.archive.get_recent_events(8),
-            self.archive.get_commitments(status="active", limit=20),
+            self.context.archive.get_chat_summaries_for_session(scope, limit=5),
+            self.context.archive.get_recent_places(8),
+            self.context.archive.get_recent_events(8),
+            self.context.archive.get_commitments(status="active", limit=20),
         )
 
         if not relationships and not is_group:
             _, real_id = parse_unified_origin(scope)
-            relationship = await self.archive.get_relationship(real_id)
+            relationship = await self.context.archive.get_relationship(real_id)
             relationships = [relationship] if relationship else []
 
-        people_keys = self._life_context_people_keys(relationships)
-        events = self._life_context_filter_people_records(
+        people_keys = self.context._life_context_people_keys(relationships)
+        events = self.context._life_context_filter_people_records(
             events,
             people_keys,
             keep_without_people=True,
@@ -565,19 +605,19 @@ class SnapshotExportMixin:
     async def _share_guidance(
         self, target_umo: str, relationships: list[Any]
     ) -> dict[str, Any]:
-        scope, experience_scope, is_group, is_public = self._share_scope_context(
+        scope, experience_scope, is_group, is_public = self.context._share_scope_context(
             target_umo
         )
         is_private = bool(scope and not (is_group or is_public))
-        people_keys = self._life_context_people_keys(relationships)
+        people_keys = self.context._life_context_people_keys(relationships)
         profile_ids = [
-            self._share_text(item, "id", 120) or self._share_text(item, "user_id", 120)
+            self.context._share_text(item, "id", 120) or self.context._share_text(item, "user_id", 120)
             for item in relationships
         ]
         profile_id = next((value for value in profile_ids if value), "")
         _, real_id = parse_unified_origin(scope)
 
-        await self._settle_stale_reply_effects()
+        await self.context._settle_stale_reply_effects()
         (
             episodes,
             rhythm_trend,
@@ -593,46 +633,46 @@ class SnapshotExportMixin:
             session_behavior_feedback,
             terms,
         ) = await asyncio.gather(
-            self.archive.get_life_episodes(limit=16),
-            self.archive.get_physiological_rhythm_trend(days=7, limit=8),
-            self.archive.get_focus_targets(limit=6, scope=experience_scope)
+            self.context.archive.get_life_episodes(limit=16),
+            self.context.archive.get_physiological_rhythm_trend(days=7, limit=8),
+            self.context.archive.get_focus_targets(limit=6, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_focus_slots(limit=6, scope=experience_scope)
+            self.context.archive.get_focus_slots(limit=6, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_expression_profiles(limit=4, scope=experience_scope)
+            self.context.archive.get_expression_profiles(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_expression_profiles(
+            self.context.archive.get_expression_profiles(
                 limit=4, scope=experience_scope, profile_id=profile_id
             )
             if is_private and profile_id
             else asyncio.sleep(0, result=[]),
-            self.archive.get_temporary_expression_states(
+            self.context.archive.get_temporary_expression_states(
                 limit=3, scope=experience_scope
             )
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_behavior_patterns(limit=4, scope=experience_scope)
+            self.context.archive.get_behavior_patterns(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_behavior_scenes(limit=4, scope=experience_scope)
+            self.context.archive.get_behavior_scenes(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_reply_effects(limit=8, scope=scope)
+            self.context.archive.get_reply_effects(limit=8, scope=scope)
             if scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_behavior_feedback(
+            self.context.archive.get_behavior_feedback(
                 limit=8,
                 target_id=(real_id if is_group else scope),
             )
             if scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_behavior_feedback(limit=8, target_id=scope)
+            self.context.archive.get_behavior_feedback(limit=8, target_id=scope)
             if is_group and real_id and real_id != scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_life_terms(limit=4, scope=experience_scope)
+            self.context.archive.get_life_terms(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
         )
@@ -641,21 +681,21 @@ class SnapshotExportMixin:
         profile_keys: set[tuple[str, str, str]] = set()
         for item in [*scoped_profiles, *person_profiles]:
             key = (
-                self._share_text(item, "scope", 160),
-                self._share_text(item, "profile_id", 120),
-                self._share_text(item, "label", 80),
+                self.context._share_text(item, "scope", 160),
+                self.context._share_text(item, "profile_id", 120),
+                self.context._share_text(item, "label", 80),
             )
             if key not in profile_keys:
                 profile_keys.add(key)
                 profiles.append(item)
 
-        focus_targets = self._share_exact_scope(focus_targets, experience_scope)
-        focus_slots = self._share_exact_scope(focus_slots, experience_scope)
-        scoped_profiles = self._share_exact_scope(scoped_profiles, experience_scope)
-        temporary_states = self._share_exact_scope(temporary_states, experience_scope)
-        behavior_patterns = self._share_exact_scope(behavior_patterns, experience_scope)
-        behavior_scenes = self._share_exact_scope(behavior_scenes, experience_scope)
-        terms = self._share_exact_scope(terms, experience_scope)
+        focus_targets = self.context._share_exact_scope(focus_targets, experience_scope)
+        focus_slots = self.context._share_exact_scope(focus_slots, experience_scope)
+        scoped_profiles = self.context._share_exact_scope(scoped_profiles, experience_scope)
+        temporary_states = self.context._share_exact_scope(temporary_states, experience_scope)
+        behavior_patterns = self.context._share_exact_scope(behavior_patterns, experience_scope)
+        behavior_scenes = self.context._share_exact_scope(behavior_scenes, experience_scope)
+        terms = self.context._share_exact_scope(terms, experience_scope)
 
         profiles = [
             item
@@ -663,8 +703,8 @@ class SnapshotExportMixin:
             if item in scoped_profiles
             or (
                 is_private
-                and self._share_text(item, "scope", 160) == experience_scope
-                and self._share_text(item, "profile_id", 120) == profile_id
+                and self.context._share_text(item, "scope", 160) == experience_scope
+                and self.context._share_text(item, "profile_id", 120) == profile_id
             )
         ]
 
@@ -675,24 +715,24 @@ class SnapshotExportMixin:
             ]
         return {
             "version": 1,
-            "episodes": self._share_episode_payload(
+            "episodes": self.context._share_episode_payload(
                 episodes, people_keys, is_private=is_private
             ),
             "rhythm_trend": trend_summary,
-            "focus": self._share_focus_payload(focus_targets, focus_slots),
-            "expression": self._share_expression_payload(profiles, temporary_states),
-            "behavior": self._share_behavior_payload(
+            "focus": self.context._share_focus_payload(focus_targets, focus_slots),
+            "expression": self.context._share_expression_payload(profiles, temporary_states),
+            "behavior": self.context._share_behavior_payload(
                 behavior_patterns, behavior_scenes
             ),
-            "interaction": self._share_interaction_payload(
+            "interaction": self.context._share_interaction_payload(
                 reply_effects, [*behavior_feedback, *session_behavior_feedback]
             ),
-            "terms": self._share_terms_payload(terms),
+            "terms": self.context._share_terms_payload(terms),
         }
 
     def get_share_chat_style(self, *, scene: str = "") -> dict[str, Any]:
-        """仅导出配置中的表达软偏好，不携带会话记忆或发送规则。"""
-        style = getattr(self.config, "chat_style", None)
+        """导出配置中的语气与长度软偏好，不携带会话记忆或发送规则。"""
+        style = getattr(self.context.config, "chat_style", None)
         if not style or not bool(getattr(style, "enabled", False)):
             return {"enabled": False, "prompt": ""}
         prompt = format_chat_style_prompt(getattr(style, "casual_short_prompt", ""))
@@ -706,11 +746,8 @@ class SnapshotExportMixin:
                 "不补一段氛围描写或升华，不为了显得随性硬加口头禅。"
             )
         elif scene in {"qzone_comment", "qzone_reply"}:
-            prompt += (
-                " 这是公开评论或回评，不是私聊；只接住眼前这句话或这组图片最值得回应的一点，"
-                "有来有往即可，不写小作文、不连续夸赞、不反问续聊。"
-                "称呼和熟悉程度只参考当前对象的已确认关系，不公开私聊细节。"
-            )
+            limit = int(getattr(style, "casual_max_chars", 50) or 50)
+            prompt += f" 公开互动沿用平时说话的语气，轻闲聊参考长度约 {limit} 字；只作节奏参考。"
         elif scene in {"share_private", "share_group"}:
             audience = "群友" if scene == "share_group" else "当前私聊对象"
             limit = chat_style_length_limit(style, is_group=scene == "share_group")
@@ -731,21 +768,21 @@ class SnapshotExportMixin:
 
     async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:
         """向分享类插件暴露目标隔离且已提炼的生活上下文。"""
-        context = await self._build_share_base_context(target_umo)
+        context = await self.context._build_share_base_context(target_umo)
         if not context:
             return {}
-        context["share_guidance"] = await self._share_guidance(
+        context["share_guidance"] = await self.context._share_guidance(
             target_umo, list(context.get("relationships") or [])
         )
         from .sharing import share_continuity, share_timing
 
         try:
-            context["conversation_timing"] = await share_timing(self, target_umo)
+            context["conversation_timing"] = await share_timing(self.context, target_umo)
         except Exception as exc:
             logger.debug(f"[分享上下文] 会话时间暂不可用：{type(exc).__name__}")
         if context.get("current_facts", {}).get("valid") is not False:
             try:
-                context["continuity"] = await share_continuity(self, target_umo)
+                context["continuity"] = await share_continuity(self.context, target_umo)
             except Exception as exc:
                 logger.debug(f"[分享上下文] 连续生活摘要暂不可用：{type(exc).__name__}")
         return context
@@ -753,27 +790,27 @@ class SnapshotExportMixin:
     async def _build_share_base_context(self, target_umo: str = "") -> dict[str, Any]:
         """组装分享专用上下文的基础生活状态。"""
         now = life_now()
-        time_context = build_time_context(now, self.config.schedule_time)
+        time_context = build_time_context(now, self.context.config.schedule_time)
         (
             data,
             target_date_str,
             is_extended_night,
             missing_schedule,
-        ) = await self._resolve_life_context_day(now)
+        ) = await self.context._resolve_life_context_day(now)
         if missing_schedule:
             return {"schedule": missing_schedule}
         if not data or not target_date_str:
             return {}
-        self._schedule_context_state_refresh(target_date_str, data, now)
+        self.context._schedule_context_state_refresh(target_date_str, data, now)
 
         meta = data.meta
         memo = data.memo
         schedule, archive_snapshot = await asyncio.gather(
-            self._life_context_schedule(data, now, is_extended_night),
-            self._life_context_target_archive_snapshot(target_umo),
+            self.context._life_context_schedule(data, now, is_extended_night),
+            self.context._life_context_target_archive_snapshot(target_umo),
         )
         state_dict = data.state.as_dict() if data.state else {}
-        current_facts = self._share_current_facts(data)
+        current_facts = self.context._share_current_facts(data)
         if not current_facts["valid"]:
             # 历史记录仍保存在数据库中，不进入当前分享视图。
             return {
@@ -810,7 +847,7 @@ class SnapshotExportMixin:
         return {
             "current_facts": current_facts,
             "current_awareness": current_awareness,
-            "weather": self._life_context_weather(data),
+            "weather": self.context._life_context_weather(data),
             "outfit": data.outfit,
             "schedule": schedule,
             "meta": meta,
@@ -818,7 +855,7 @@ class SnapshotExportMixin:
             "timeline": [item.as_dict() for item in data.timeline],
             "memo": memo,
             "state": state_dict,
-            "subject": self._life_context_subject(state_dict, interrupt),
+            "subject": self.context._life_context_subject(state_dict, interrupt),
             "relationships": [
                 item.as_dict() for item in archive_snapshot["relationships"]
             ],

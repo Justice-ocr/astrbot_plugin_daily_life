@@ -19,6 +19,8 @@ from .routing import (
     route_query_modes,
 )
 
+from typing import Protocol
+
 _PLACE_KINDS = frozenset({"home", "poi", "generic", "transit", "online", "none"})
 _PLACE_SCOPES = frozenset({"local", "travel"})
 _TRAVEL_MODES = ROUTE_MODES
@@ -43,7 +45,43 @@ class _LocationAuditState:
     verified_count: int = 0
 
 
-class DailyLocationAuditMixin:
+class DailyLocationAuditComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_home_location_entry: Any
+    _apply_non_poi_location_entry: Any
+    _apply_verified_poi_entry: Any
+    _audit_location_routes: Any
+    _canonicalize_location_entries: Any
+    _canonicalize_poi_entry: Any
+    _cities_match: Any
+    _disambiguate_poi_candidate: Any
+    _downgrade_unverified_place: Any
+    _fallback_poi_candidates: Any
+    _location_search_results: Any
+    _map: Any
+    _normalize_location_entries: Any
+    _normalize_route_result: Any
+    _preselected_place_matches: Any
+    _replace_place_references: Any
+    _resolve_poi_candidate: Any
+    _route_minutes: Any
+    _select_route_for_window: Any
+    _shift_timeline: Any
+    _synchronize_travel_actions: Any
+    _timeline_item_duration_minutes: Any
+    _travel_mode_label: Any
+    ensure_map_context: Any
+    map_provider: Any
+    map_provider_label: Any
+    resolve_home_location: Any
+    settings: Any
+
+
+class DailyLocationAuditComponent:
+    def __init__(self, context: DailyLocationAuditComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _timeline_item_duration_minutes(item: dict[str, Any]) -> int:
         try:
@@ -75,10 +113,10 @@ class DailyLocationAuditMixin:
         """
         if not isinstance(payload, dict):
             return payload, ""
-        if not await self.ensure_map_context():
+        if not await self.context.ensure_map_context():
             return payload, ""
 
-        home_location = await self.resolve_home_location()
+        home_location = await self.context.resolve_home_location()
         if not home_location:
             logger.warning("[日程生成] 居住地暂时无法解析，本次跳过地图地点校正。")
             return payload, ""
@@ -104,7 +142,7 @@ class DailyLocationAuditMixin:
         home_city = str(home_location.get("city") or "").strip()
         home_coordinate = home_location.get("coordinate")
         home_address = str(home_location.get("formatted_address") or "").strip()
-        entries, search_requests, issue = self._normalize_location_entries(
+        entries, search_requests, issue = self.context._normalize_location_entries(
             timeline,
             home_city=home_city,
             allow_safe_corrections=allow_safe_corrections,
@@ -112,13 +150,13 @@ class DailyLocationAuditMixin:
         if issue:
             return payload, issue
 
-        search_results = await self._location_search_results(
+        search_results = await self.context._location_search_results(
             entries,
             search_requests,
             preselected_places,
         )
         audit_state = _LocationAuditState()
-        issue = self._canonicalize_location_entries(
+        issue = self.context._canonicalize_location_entries(
             entries,
             home_city=home_city,
             home_coordinate=home_coordinate,
@@ -132,7 +170,7 @@ class DailyLocationAuditMixin:
         if issue:
             return payload, issue
 
-        transitions, route_by_index, issue = await self._audit_location_routes(
+        transitions, route_by_index, issue = await self.context._audit_location_routes(
             entries,
             allow_safe_corrections=allow_safe_corrections,
             context=route_context,
@@ -151,7 +189,7 @@ class DailyLocationAuditMixin:
             corrected = (window_end + shifted_end - original_end) % 1440
             window["end"] = f"{corrected // 60:02d}:{corrected % 60:02d}"
 
-        issue = self._synchronize_travel_actions(
+        issue = self.context._synchronize_travel_actions(
             revised,
             entries=entries,
             route_by_index=route_by_index,
@@ -161,9 +199,9 @@ class DailyLocationAuditMixin:
             return payload, issue
 
         revised["places"] = audit_state.canonical_places
-        self._replace_place_references(revised, audit_state.substituted_places)
+        self.context._replace_place_references(revised, audit_state.substituted_places)
         revised["location_audit"] = {
-            "map_provider": self.map_provider_label,
+            "map_provider": self.context.map_provider_label,
             "home_city": home_city,
             "verified_places": audit_state.verified_count,
             "checked_routes": len(transitions),
@@ -176,7 +214,7 @@ class DailyLocationAuditMixin:
             f"[日程生成] 地图地点校正通过：地点={audit_state.verified_count}；"
             f"路线={len(transitions)}；地图替代={len(audit_state.substituted_places)}；"
             f"泛化降级={len(audit_state.downgraded_places)}；"
-            f"服务={self.map_provider_label}"
+            f"服务={self.context.map_provider_label}"
         )
         return revised, ""
 
@@ -196,7 +234,7 @@ class DailyLocationAuditMixin:
                 and entry["query"] == key[0]
                 and entry["city"] == key[1]
                 and any(
-                    self._preselected_place_matches(candidate, entry, key[1])
+                    self.context._preselected_place_matches(candidate, entry, key[1])
                     for candidate in preselected_places
                 )
                 for entry in entries
@@ -204,7 +242,7 @@ class DailyLocationAuditMixin:
         ]
         search_values = await asyncio.gather(
             *(
-                self._map.search_places(query, city_hint=city, limit=5)
+                self.context._map.search_places(query, city_hint=city, limit=5)
                 for query, city in search_keys
             )
         )
@@ -228,7 +266,7 @@ class DailyLocationAuditMixin:
         for entry in entries:
             kind = entry["kind"]
             if kind == "home":
-                self._apply_home_location_entry(
+                self.context._apply_home_location_entry(
                     entry,
                     home_city=home_city,
                     home_coordinate=home_coordinate,
@@ -237,7 +275,7 @@ class DailyLocationAuditMixin:
                 )
                 continue
             if kind == "poi":
-                issue = self._canonicalize_poi_entry(
+                issue = self.context._canonicalize_poi_entry(
                     entry,
                     preselected_places=preselected_places,
                     search_results=search_results,
@@ -248,7 +286,7 @@ class DailyLocationAuditMixin:
                 if issue:
                     return issue
                 continue
-            self._apply_non_poi_location_entry(entry, state=state)
+            self.context._apply_non_poi_location_entry(entry, state=state)
         return ""
 
     def _apply_home_location_entry(
@@ -271,7 +309,7 @@ class DailyLocationAuditMixin:
                 "place_address": home_address,
                 "place_latitude": float(home_coordinate[0]),
                 "place_longitude": float(home_coordinate[1]),
-                "place_coordinate_source": f"{self.map_provider}_home_address",
+                "place_coordinate_source": f"{self.context.map_provider}_home_address",
             }
         )
         entry.update(
@@ -292,7 +330,7 @@ class DailyLocationAuditMixin:
                 "hint": home_address,
                 "latitude": float(home_coordinate[0]),
                 "longitude": float(home_coordinate[1]),
-                "coordinate_source": f"{self.map_provider}_home_address",
+                "coordinate_source": f"{self.context.map_provider}_home_address",
             }
         )
 
@@ -306,7 +344,7 @@ class DailyLocationAuditMixin:
         allow_place_substitutions: bool,
         state: _LocationAuditState,
     ) -> str:
-        candidate, issue, downgraded = self._resolve_poi_candidate(
+        candidate, issue, downgraded = self.context._resolve_poi_candidate(
             entry,
             preselected_places=preselected_places,
             search_results=search_results,
@@ -316,7 +354,7 @@ class DailyLocationAuditMixin:
         )
         if issue or downgraded:
             return issue
-        self._apply_verified_poi_entry(entry, candidate, state=state)
+        self.context._apply_verified_poi_entry(entry, candidate, state=state)
         return ""
 
     def _resolve_poi_candidate(
@@ -335,7 +373,7 @@ class DailyLocationAuditMixin:
         preselected = [
             candidate
             for candidate in preselected_places
-            if self._preselected_place_matches(candidate, entry, target_city)
+            if self.context._preselected_place_matches(candidate, entry, target_city)
         ]
         candidates = preselected or [
             candidate
@@ -359,7 +397,7 @@ class DailyLocationAuditMixin:
             }
             candidate_values = list(unique_candidates.values())
         else:
-            candidate_values, issue, downgraded = self._fallback_poi_candidates(
+            candidate_values, issue, downgraded = self.context._fallback_poi_candidates(
                 entry,
                 candidates=candidates,
                 allow_safe_corrections=allow_safe_corrections,
@@ -369,7 +407,7 @@ class DailyLocationAuditMixin:
             if issue or downgraded:
                 return {}, issue, downgraded
 
-        candidate, issue = self._disambiguate_poi_candidate(
+        candidate, issue = self.context._disambiguate_poi_candidate(
             entry,
             candidate_values,
             allow_safe_corrections=(
@@ -378,7 +416,7 @@ class DailyLocationAuditMixin:
         )
         if issue:
             if allow_safe_corrections and not allow_place_substitutions:
-                self._downgrade_unverified_place(
+                self.context._downgrade_unverified_place(
                     item,
                     entry,
                     canonical_places=state.canonical_places,
@@ -391,14 +429,14 @@ class DailyLocationAuditMixin:
                 return {}, "", True
             return {}, issue, False
         candidate_city = str(candidate.get("city") or "").strip()
-        if target_city and not self._cities_match(candidate_city, target_city):
+        if target_city and not self.context._cities_match(candidate_city, target_city):
             issue = (
                 f"地点“{entry['place']}”解析到{candidate_city or '未知城市'}，"
                 f"与日程声明的{target_city}不一致"
             )
             if not allow_safe_corrections:
                 return {}, issue, False
-            self._downgrade_unverified_place(
+            self.context._downgrade_unverified_place(
                 item,
                 entry,
                 canonical_places=state.canonical_places,
@@ -426,7 +464,7 @@ class DailyLocationAuditMixin:
         same_city_candidates = [
             candidate
             for candidate in candidates
-            if self._cities_match(str(candidate.get("city") or "").strip(), target_city)
+            if self.context._cities_match(str(candidate.get("city") or "").strip(), target_city)
         ]
         suggestions = "、".join(
             str(candidate.get("name") or "").strip()
@@ -452,7 +490,7 @@ class DailyLocationAuditMixin:
                 f"同城地图候选“{canonical_name}”。"
             )
             return [candidate], "", False
-        self._downgrade_unverified_place(
+        self.context._downgrade_unverified_place(
             entry["item"],
             entry,
             canonical_places=state.canonical_places,
@@ -530,7 +568,7 @@ class DailyLocationAuditMixin:
                 "place_address": address,
                 "place_latitude": float(coordinate[0]),
                 "place_longitude": float(coordinate[1]),
-                "place_coordinate_source": f"{self.map_provider}_poi",
+                "place_coordinate_source": f"{self.context.map_provider}_poi",
             }
         )
         entry.update(
@@ -550,7 +588,7 @@ class DailyLocationAuditMixin:
                 "hint": address or entry["hint"],
                 "latitude": float(coordinate[0]),
                 "longitude": float(coordinate[1]),
-                "coordinate_source": f"{self.map_provider}_poi",
+                "coordinate_source": f"{self.context.map_provider}_poi",
             }
         )
 
@@ -770,7 +808,7 @@ class DailyLocationAuditMixin:
 
         route_values = await asyncio.gather(
             *(
-                self._map.route(
+                self.context._map.route(
                     transition["origin"]["coordinate"],
                     transition["destination"]["coordinate"],
                     transition["destination"]["mode"],
@@ -783,12 +821,12 @@ class DailyLocationAuditMixin:
         route_by_index: dict[int, dict[str, Any]] = {}
         for transition, route in zip(transitions, route_values, strict=True):
             mode = transition["destination"]["mode"]
-            route = self._normalize_route_result(
+            route = self.context._normalize_route_result(
                 route,
                 mode=mode,
                 straight_distance=transition["straight_distance"],
             )
-            required_minutes = self._route_minutes(route)
+            required_minutes = self.context._route_minutes(route)
             if (
                 transition["destination"]["scope"] == "local"
                 and required_minutes > LOCAL_SCOPE_MAX_TRAVEL_MINUTES
@@ -804,7 +842,7 @@ class DailyLocationAuditMixin:
             destination_index = transition["destination"]["index"]
             origin_minutes = unwrapped_minutes[origin_index]
             destination_minutes = unwrapped_minutes[destination_index]
-            origin_duration = self._timeline_item_duration_minutes(
+            origin_duration = self.context._timeline_item_duration_minutes(
                 transition["origin"]["item"]
             )
             available_minutes = (
@@ -829,7 +867,7 @@ class DailyLocationAuditMixin:
                         f"预计需要约 {required_minutes} 分钟，但时间轴只预留了 {available_minutes} 分钟",
                     )
                 original_mode = mode
-                choice = await self._select_route_for_window(
+                choice = await self.context._select_route_for_window(
                     transition,
                     requested_mode=mode,
                     requested_route=route,
@@ -844,7 +882,7 @@ class DailyLocationAuditMixin:
                     and required_minutes > available_minutes
                 ):
                     shift_minutes = required_minutes - available_minutes
-                    self._shift_timeline(
+                    self.context._shift_timeline(
                         entries,
                         unwrapped_minutes,
                         start_index=destination_index,
@@ -860,7 +898,7 @@ class DailyLocationAuditMixin:
                     logger.warning(
                         f"[日程生成] 从“{transition['origin']['place']}”到"
                         f"“{transition['destination']['place']}”综合距离、天气、体力和"
-                        f"时间安排后，已改用 {self._travel_mode_label(mode)}，预计约 "
+                        f"时间安排后，已改用 {self.context._travel_mode_label(mode)}，预计约 "
                         f"{required_minutes} 分钟。"
                     )
                 transition["destination"]["mode"] = mode
@@ -903,7 +941,7 @@ class DailyLocationAuditMixin:
             != str(entry.get("place") or "").strip()
         ):
             return False
-        if not self._cities_match(
+        if not self.context._cities_match(
             str(candidate.get("city") or "").strip(), target_city
         ):
             return False
@@ -986,7 +1024,7 @@ class DailyLocationAuditMixin:
                 required_minutes = max(
                     1,
                     planned_minutes,
-                    int(self.settings.default_travel_minutes),
+                    int(self.context.settings.default_travel_minutes),
                 )
                 destination["item"]["travel_mode"] = mode
                 destination["item"]["travel_detail"] = ""
@@ -1063,7 +1101,7 @@ class DailyLocationAuditMixin:
         alternative_modes = [mode for mode in modes if mode != requested_mode]
         alternative_values = await asyncio.gather(
             *(
-                self._map.route(
+                self.context._map.route(
                     transition["origin"]["coordinate"],
                     transition["destination"]["coordinate"],
                     mode,
@@ -1244,4 +1282,4 @@ class DailyLocationAuditMixin:
         )
 
 
-__all__ = ["DailyLocationAuditMixin"]
+__all__ = ["DailyLocationAuditComponent"]

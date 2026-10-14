@@ -8,47 +8,74 @@ from ...sources.location import enrich_location_message
 from ..elapsed import RECEIVED_AT, SENT_AT, event_time
 from .grain import StructuredMessage
 
+from typing import Protocol
 
-class StructuredForgeMixin:
+
+class StructuredForgeComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _STRUCTURED_EVENT_SEQUENCE_ATTR: Any
+    _event_group_meta: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _proactive_is_self_message: Any
+    _safe_event_call: Any
+    _structured_content_with_media: Any
+    _structured_extract_at_targets: Any
+    _structured_extract_reply: Any
+    _structured_find_message: Any
+    _structured_resolve_talking_to: Any
+    _structured_scope_messages: Any
+    _structured_self_id: Any
+    _structured_sender_card_from_event: Any
+    _structured_text: Any
+    _structured_upsert_message: Any
+
+
+class StructuredForgeComponent:
+    def __init__(self, context: StructuredForgeComponentContext) -> None:
+        self.context = context
+
     def note_structured_incoming_message(self, event: Any) -> StructuredMessage | None:
-        scope = self._event_session_id(event)
-        if not scope or self._proactive_is_self_message(event):
+        scope = self.context._event_session_id(event)
+        if not scope or self.context._proactive_is_self_message(event):
             return None
         enrich_location_message(event)
         content = str(getattr(event, "message_str", "") or "").strip()
-        items = self._event_message_items(event)
+        items = self.context._event_message_items(event)
         if not content and not items:
             return None
-        group_id, group_name = self._event_group_meta(event)
-        sender_id = self._safe_event_call(event, "get_sender_id")
+        group_id, group_name = self.context._event_group_meta(event)
+        sender_id = self.context._safe_event_call(event, "get_sender_id")
         sender_name = (
-            self._safe_event_call(event, "get_sender_name") or sender_id or "对方"
+            self.context._safe_event_call(event, "get_sender_name") or sender_id or "对方"
         )
-        message_id = self._event_message_id(event)
-        reply = self._structured_extract_reply(event, scope)
+        message_id = self.context._event_message_id(event)
+        reply = self.context._structured_extract_reply(event, scope)
         message = StructuredMessage(
             scope=scope,
             message_id=message_id,
             fallback_key=f"event:{id(event)}",
             sender_id=sender_id,
             sender_name=sender_name,
-            sender_card=self._structured_sender_card_from_event(event),
+            sender_card=self.context._structured_sender_card_from_event(event),
             group_id=group_id,
             group_name=group_name,
-            content=self._structured_content_with_media(content, items),
+            content=self.context._structured_content_with_media(content, items),
             timestamp=event_time(event, RECEIVED_AT) or time.time(),
             is_bot=False,
             reply_to_id=reply.get("message_id", ""),
             reply_to_sender_id=reply.get("sender_id", ""),
             reply_to_sender_name=reply.get("sender_name", ""),
             reply_to_content=reply.get("content", ""),
-            at_targets=self._structured_extract_at_targets(event),
+            at_targets=self.context._structured_extract_at_targets(event),
         )
-        self._structured_resolve_talking_to(
-            message, self._structured_self_id(event), source_event=event
+        self.context._structured_resolve_talking_to(
+            message, self.context._structured_self_id(event), source_event=event
         )
-        message = self._structured_upsert_message(message)
-        setattr(event, self._STRUCTURED_EVENT_SEQUENCE_ATTR, message.sequence)
+        message = self.context._structured_upsert_message(message)
+        setattr(event, self.context._STRUCTURED_EVENT_SEQUENCE_ATTR, message.sequence)
         return message
 
     def note_structured_bot_message(
@@ -67,16 +94,16 @@ class StructuredForgeMixin:
         group_id = group_name = ""
         sender_id = sender_name = ""
         if source_event is not None:
-            group_id, group_name = self._event_group_meta(source_event)
-            sender_id = self._structured_self_id(source_event)
+            group_id, group_name = self.context._event_group_meta(source_event)
+            sender_id = self.context._structured_self_id(source_event)
             sender_name = "我"
-            reply_to_id = reply_to_id or self._event_message_id(source_event)
+            reply_to_id = reply_to_id or self.context._event_message_id(source_event)
         elif "GroupMessage" in scope:
             _, group_id = parse_unified_origin(scope)
-        target = self._structured_find_message(scope, reply_to_id)
+        target = self.context._structured_find_message(scope, reply_to_id)
         message = StructuredMessage(
             scope=scope,
-            message_id=f"bot:{int(time.time() * 1000)}:{len(self._structured_scope_messages(scope))}",
+            message_id=f"bot:{int(time.time() * 1000)}:{len(self.context._structured_scope_messages(scope))}",
             fallback_key=f"bot:{id(content)}",
             sender_id=sender_id or "bot",
             sender_name=sender_name or "我",
@@ -92,8 +119,8 @@ class StructuredForgeMixin:
             reply_to_sender_name=target.display_sender if target else "",
             reply_to_content=target.content if target else "",
         )
-        self._structured_resolve_talking_to(message, sender_id)
-        return self._structured_upsert_message(message)
+        self.context._structured_resolve_talking_to(message, sender_id)
+        return self.context._structured_upsert_message(message)
 
     def update_structured_message_visual_summary(
         self,
@@ -103,11 +130,11 @@ class StructuredForgeMixin:
     ) -> StructuredMessage | None:
         scope = str(scope or "").strip()
         message_key = str(message_key or "").strip()
-        summary = self._structured_text(summary, 96).strip(" ：:，,。")
+        summary = self.context._structured_text(summary, 96).strip(" ：:，,。")
         if not scope or not message_key or not summary:
             return None
 
-        message = self._structured_find_message(scope, message_key)
+        message = self.context._structured_find_message(scope, message_key)
         if not message:
             return None
 
@@ -129,11 +156,11 @@ class StructuredForgeMixin:
     ) -> StructuredMessage | None:
         scope = str(scope or "").strip()
         message_key = str(message_key or "").strip()
-        summary = self._structured_text(summary, 120).strip(" ：:，,。")
+        summary = self.context._structured_text(summary, 120).strip(" ：:，,。")
         if not scope or not message_key or not summary:
             return None
 
-        message = self._structured_find_message(scope, message_key)
+        message = self.context._structured_find_message(scope, message_key)
         if not message:
             return None
 

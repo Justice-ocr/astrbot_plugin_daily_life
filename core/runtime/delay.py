@@ -2,8 +2,29 @@ from __future__ import annotations
 
 import random
 
+from typing import Any, Protocol
 
-class ChatDelayMixin:
+
+class ChatDelayComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _CHAT_STYLE_LEAD_LONG_DELAY_RANGE: Any
+    _CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE: Any
+    _CHAT_STYLE_LEAD_SHORT_DELAY_RANGE: Any
+    _CHAT_STYLE_LONG_DELAY_RANGE: Any
+    _CHAT_STYLE_SEGMENT_DELAY_RANGE: Any
+    _CHAT_STYLE_SHORT_DELAY_RANGE: Any
+    _chat_style_compact_text: Any
+    _chat_style_enabled: Any
+    _chat_style_segment_delay_seconds: Any
+    _chat_style_typing_weight: Any
+    config: Any
+
+
+class ChatDelayComponent:
+    def __init__(self, context: ChatDelayComponentContext) -> None:
+        self.context = context
+
     _CHAT_STYLE_SEGMENT_DELAY_RANGE = (0.8, 1.8)
     _CHAT_STYLE_SHORT_DELAY_RANGE = (0.45, 0.9)
     _CHAT_STYLE_LONG_DELAY_RANGE = (1.1, 2.1)
@@ -19,22 +40,22 @@ class ChatDelayMixin:
         *,
         previous_break_kind: str = "",
     ) -> tuple[float, float]:
-        previous_length = len(self._chat_style_compact_text(previous_segment))
-        next_length = len(self._chat_style_compact_text(next_segment))
-        previous_weight = self._chat_style_typing_weight(previous_segment)
-        next_weight = self._chat_style_typing_weight(next_segment)
+        previous_length = len(self.context._chat_style_compact_text(previous_segment))
+        next_length = len(self.context._chat_style_compact_text(next_segment))
+        previous_weight = self.context._chat_style_typing_weight(previous_segment)
+        next_weight = self.context._chat_style_typing_weight(next_segment)
         if 0 < previous_length <= 4 and next_length >= 5:
             if next_length <= 8:
-                return self._CHAT_STYLE_LEAD_SHORT_DELAY_RANGE
+                return self.context._CHAT_STYLE_LEAD_SHORT_DELAY_RANGE
             if next_length <= 16:
-                return self._CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE
-            return self._CHAT_STYLE_LEAD_LONG_DELAY_RANGE
+                return self.context._CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE
+            return self.context._CHAT_STYLE_LEAD_LONG_DELAY_RANGE
         length = max(previous_weight, next_weight)
         if length <= 12:
-            return self._CHAT_STYLE_SHORT_DELAY_RANGE
+            return self.context._CHAT_STYLE_SHORT_DELAY_RANGE
         if length >= 32:
-            return self._CHAT_STYLE_LONG_DELAY_RANGE
-        low, high = self._CHAT_STYLE_SEGMENT_DELAY_RANGE
+            return self.context._CHAT_STYLE_LONG_DELAY_RANGE
+        low, high = self.context._CHAT_STYLE_SEGMENT_DELAY_RANGE
         if previous_break_kind == "soft" and length >= 20:
             return low + 0.1, high + 0.1
         return low, high
@@ -47,7 +68,7 @@ class ChatDelayMixin:
         previous_break_kind: str = "",
     ) -> float:
         pause = "short" if previous_break_kind == "soft" else "normal"
-        return self._chat_style_segment_delay_seconds(
+        return self.context._chat_style_segment_delay_seconds(
             previous_segment, next_segment, pause=pause
         )
 
@@ -58,10 +79,10 @@ class ChatDelayMixin:
         *,
         pause: str = "normal",
     ) -> float:
-        checker = getattr(self, "_chat_style_enabled", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         if callable(checker) and not checker():
             return 0.0
-        settings = getattr(getattr(self, "config", None), "chat_style", None)
+        settings = getattr(getattr(self.context, "config", None), "chat_style", None)
         if not callable(checker) and not bool(
             settings and getattr(settings, "enabled", False)
         ):
@@ -93,8 +114,8 @@ class ChatDelayMixin:
         }
         low_ratio, high_ratio = ranges.get(pause, ranges["normal"])
         weight = max(
-            self._chat_style_typing_weight(previous_segment),
-            self._chat_style_typing_weight(next_segment),
+            self.context._chat_style_typing_weight(previous_segment),
+            self.context._chat_style_typing_weight(next_segment),
         )
         adjustment = min(0.15, weight * 0.006)
         span = maximum - minimum

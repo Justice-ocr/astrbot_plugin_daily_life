@@ -25,12 +25,16 @@ function addRelationshipName(index, key, label) {
   const raw = text(key).trim();
   const name = text(label).trim();
   if (!raw || !name || raw === name) return;
-  index.set(raw, name);
   const parts = raw.split(/[:：]/).map((part) => part.trim()).filter(Boolean);
   const id = parts.length > 1 ? parts[parts.length - 1] : raw;
-  if (id && id !== name) index.set(id, name);
+  const canonicalName = index.get(id) || name;
+  const set = (candidate) => {
+    if (!index.has(candidate)) index.set(candidate, canonicalName);
+  };
+  set(raw);
+  if (id && id !== canonicalName) set(id);
   RELATIONSHIP_REFERENCE_PREFIXES.forEach((prefix) => {
-    index.set(`${prefix}:${id}`, name);
+    set(`${prefix}:${id}`);
   });
 }
 
@@ -46,10 +50,20 @@ function addGroupScopeName(index, key, label) {
 
 export function relationshipNameIndex(status = {}) {
   const index = new Map();
-  objectItems(status.world?.relationships).forEach((item) => {
+  const relationships = objectItems(status.world?.relationships);
+  // 先登记每个关系档案自己的主键，再登记联系方式等别名。
+  // 错误档案的 user_id 不能覆盖真实档案的同名联系方式。
+  relationships.forEach((item) => {
     const label = relationshipDisplayName(item);
     if (!label) return;
-    ["id", "user_id", "profile_id", "target_scope"].forEach((key) => {
+    const id = text(item.id).trim();
+    if (id && id !== label && !index.has(id)) index.set(id, label);
+  });
+  relationships.forEach((item) => {
+    const label = relationshipDisplayName(item);
+    if (!label) return;
+    addRelationshipName(index, item.id, label);
+    ["user_id", "profile_id", "target_scope"].forEach((key) => {
       addRelationshipName(index, item[key], label);
     });
     objectItems(item.contacts).forEach((contact) => {

@@ -19,7 +19,7 @@ from core.life.appearance import (
 from core.life.tools import get_current_timeline_status
 from core.life.wardrobe import scene_category_for_place_kind
 from core.models import DayRecord, SleepState, TimelineItem
-from core.runtime.refresh import RefreshMixin
+from componentfixtures import RefreshComponent
 from support import LifeState
 
 
@@ -60,6 +60,27 @@ class LifeStateSubjectiveTest(unittest.TestCase):
 
 
 class SceneAwareOutfitTest(unittest.TestCase):
+    def test_home_slippers_survive_display_and_schedule_sync(self):
+        components = (
+            '{"main_clothing":{"state":"worn","description":"粉色家居服"},'
+            '"footwear":{"state":"worn","description":"粉色拖鞋","home_presence":"home"},'
+            '"carried_accessories":{"state":"removed","description":"项链","home_presence":"both"}}'
+        )
+        day = DayRecord(
+            date="2026-10-13", outfit="粉色家居服；粉色拖鞋",
+            timeline=[TimelineItem(time="20:00", activity="在家休息", place_kind="home")],
+            meta={"outfit_components": components, "outfit_scene_category": "home"},
+        )
+        for _ in range(2):
+            RefreshComponent._synchronize_outfit_with_schedule(
+                day, datetime.datetime(2026, 10, 13, 20, 30)
+            )
+            self.assertEqual(day.outfit, "粉色家居服；粉色拖鞋")
+            context = format_image_appearance_context(day)
+            self.assertIn("当前穿搭：粉色家居服；粉色拖鞋", context)
+            self.assertIn("鞋履=穿着：粉色拖鞋", context)
+            self.assertIn("随身配饰=已放下/脱下：项链", context)
+
     def test_current_schedule_location_projects_home_outfit_without_legacy_fallback(self):
         day = DayRecord(
             date="2026-05-24",
@@ -151,7 +172,7 @@ class SceneAwareOutfitTest(unittest.TestCase):
             },
         )
 
-        changed = RefreshMixin._synchronize_outfit_with_schedule(
+        changed = RefreshComponent._synchronize_outfit_with_schedule(
             day, datetime.datetime(2026, 5, 24, 21, 30)
         )
 
@@ -161,7 +182,7 @@ class SceneAwareOutfitTest(unittest.TestCase):
         self.assertIn('"state":"staged"', day.meta["outfit_components"])
 
         day.outfit = "白衬衫、运动鞋、帆布包"
-        changed = RefreshMixin._synchronize_outfit_with_schedule(
+        changed = RefreshComponent._synchronize_outfit_with_schedule(
             day, datetime.datetime(2026, 5, 24, 21, 31)
         )
         self.assertTrue(changed)
@@ -184,7 +205,7 @@ class SceneAwareOutfitTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            RefreshMixin._schedule_outfit_scene(
+            RefreshComponent._schedule_outfit_scene(
                 day, datetime.datetime(2026, 5, 24, 23, 30)
             ),
             "sleep",
@@ -284,6 +305,116 @@ class SceneAwareOutfitTest(unittest.TestCase):
         self.assertEqual(recovered["body_condition"]["label"], "清醒舒适")
         self.assertEqual(recovered["body_condition"]["intensity"], 0)
         self.assertFalse(recovered["body_condition"]["burden_present"])
+
+    def test_illness_course_survives_review_time_and_needs_recovery_evidence(self):
+        previous = {
+            "body_condition": {
+                "label": "嗓子有点疼，整个人发沉",
+                "intensity": 48,
+                "burden_present": True,
+                "kind": "illness_like",
+                "phase": "onset",
+                "started_at": "2026-05-24 09:00",
+                "source": "起床后自身的身体感受",
+                "expires_at": "2026-05-24 18:00",
+            },
+            "recovery_actions": ["今晚早点休息"],
+        }
+        no_evidence = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "已经好了",
+                    "intensity": 0,
+                    "burden_present": False,
+                    "kind": "illness_like",
+                    "phase": "resolved",
+                }
+            },
+            previous=previous,
+            now=datetime.datetime(2026, 5, 25, 9, 0),
+        )
+        body = no_evidence["body_condition"]
+        self.assertTrue(body["burden_present"])
+        self.assertEqual(body["label"], "嗓子有点疼，整个人发沉")
+        self.assertEqual(body["phase"], "ongoing")
+        self.assertEqual(body["started_at"], "2026-05-24 09:00")
+
+        improving = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "还没全好，但轻一点了",
+                    "burden_present": True,
+                    "kind": "illness_like",
+                    "phase": "recovering",
+                }
+            },
+            previous=previous,
+            now=datetime.datetime(2026, 5, 25, 10, 0),
+        )["body_condition"]
+        self.assertEqual(improving["kind"], "illness_like")
+        self.assertEqual(improving["phase"], "recovering")
+        self.assertEqual(improving["intensity"], 48)
+        self.assertEqual(improving["source"], "起床后自身的身体感受")
+
+        recovered = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "嗓子舒服了，体力也缓过来了",
+                    "intensity": 0,
+                    "burden_present": False,
+                    "kind": "illness_like",
+                    "phase": "resolved",
+                    "recovery_evidence": "昨晚实际休息后，今早自觉不适消退",
+                }
+            },
+            previous=previous,
+            now=datetime.datetime(2026, 5, 25, 9, 0),
+        )
+        body = recovered["body_condition"]
+        self.assertFalse(body["burden_present"])
+        self.assertEqual(body["intensity"], 0)
+        self.assertEqual(body["phase"], "resolved")
+        self.assertEqual(body["started_at"], "2026-05-24 09:00")
+        self.assertEqual(body["recovery_evidence"], "昨晚实际休息后，今早自觉不适消退")
+        self.assertEqual(recovered["recovery_actions"], [])
+
+    def test_active_illness_is_visible_in_state_context_and_survives_clamp(self):
+        previous = normalize_state(
+            {
+                "physiological_rhythm": {
+                    "body_condition": {
+                        "label": "身体发沉",
+                        "intensity": 45,
+                        "burden_present": True,
+                        "kind": "illness_like",
+                        "phase": "ongoing",
+                        "started_at": "2026-05-24",
+                        "source": "清醒后的身体感受",
+                    }
+                }
+            },
+            now=datetime.datetime(2026, 5, 24, 12, 0),
+        )
+        state = normalize_state(
+            {
+                "physiological_rhythm": {
+                    "body_condition": {
+                        "label": "舒服多了",
+                        "burden_present": False,
+                        "intensity": 0,
+                        "kind": "illness_like",
+                        "phase": "resolved",
+                        "recovery_evidence": "午休后实际感觉不适消退",
+                    }
+                }
+            },
+            now=datetime.datetime(2026, 5, 24, 16, 0),
+            previous=previous,
+            max_score_delta=12,
+        )
+        body = state["physiological_rhythm"]["body_condition"]
+        self.assertEqual(body["intensity"], 0)
+        self.assertFalse(body["burden_present"])
 
     def test_omitted_burden_flag_never_inherits_semantics_from_text_or_score(self):
         rhythm = normalize_physiological_rhythm(

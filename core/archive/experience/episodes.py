@@ -1,30 +1,51 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
 from ...models import LifeEpisodeRecord
 from ...models.coerce import compact_explanation_text
 
+from typing import Protocol
 
-class EpisodeArchiveMixin:
+
+class EpisodeArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_life_episode: Any
+    _conn: Any
+    _flag: Any
+    _get_ordered_texts_unlocked: Any
+    _get_people_unlocked: Any
+    _replace_people_unlocked: Any
+    _replace_texts_unlocked: Any
+    _run_db: Any
+    _text: Any
+
+
+class EpisodeArchiveComponent:
+    def __init__(self, context: EpisodeArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_life_episode(self, row: sqlite3.Row) -> LifeEpisodeRecord:
         return LifeEpisodeRecord(
             id=int(row["id"] or 0),
             date=row["date"],
-            title=self._text(row["title"]),
-            summary=self._text(row["summary"]),
+            title=self.context._text(row["title"]),
+            summary=self.context._text(row["summary"]),
             kind=row["kind"],
             source=row["source"],
-            related_people=self._get_people_unlocked(
+            related_people=self.context._get_people_unlocked(
                 "life_episode_people", "episode_id", row["id"]
             ),
-            related_places=self._get_ordered_texts_unlocked(
+            related_places=self.context._get_ordered_texts_unlocked(
                 "life_episode_places", "episode_id", row["id"], "place"
             ),
             impact=compact_explanation_text(row["impact"]),
             confidence=float(row["confidence"] or 0.0),
             status=row["status"],
             protected=bool(row["protected"]),
-            correction=self._text(row["correction"]),
+            correction=self.context._text(row["correction"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -40,7 +61,7 @@ class EpisodeArchiveMixin:
             episode_id = int(item.id or 0)
             if not episode_id:
                 if item.kind == "daily_plan" and item.source == "daily":
-                    existing = self._conn.execute(
+                    existing = self.context._conn.execute(
                         """
                         SELECT id
                         FROM life_episodes
@@ -49,10 +70,10 @@ class EpisodeArchiveMixin:
                         ORDER BY id DESC
                         LIMIT 1
                         """,
-                        (self._text(item.date),),
+                        (self.context._text(item.date),),
                     ).fetchone()
                 else:
-                    existing = self._conn.execute(
+                    existing = self.context._conn.execute(
                         """
                         SELECT id
                         FROM life_episodes
@@ -61,14 +82,14 @@ class EpisodeArchiveMixin:
                         LIMIT 1
                         """,
                         (
-                            self._text(item.date),
-                            self._text(item.title),
-                            self._text(item.source) or "daily",
+                            self.context._text(item.date),
+                            self.context._text(item.title),
+                            self.context._text(item.source) or "daily",
                         ),
                     ).fetchone()
                 episode_id = int(existing["id"]) if existing else 0
             if episode_id:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     UPDATE life_episodes
                     SET date = ?, title = ?, summary = ?, kind = ?, source = ?, impact = ?,
@@ -77,23 +98,23 @@ class EpisodeArchiveMixin:
                     WHERE id = ?
                     """,
                     (
-                        self._text(item.date),
-                        self._text(item.title),
-                        self._text(item.summary),
-                        self._text(item.kind) or "daily",
-                        self._text(item.source) or "daily",
-                        self._text(item.impact),
+                        self.context._text(item.date),
+                        self.context._text(item.title),
+                        self.context._text(item.summary),
+                        self.context._text(item.kind) or "daily",
+                        self.context._text(item.source) or "daily",
+                        self.context._text(item.impact),
                         max(float(item.confidence or 0.0), 0.0),
-                        self._text(item.status) or "open",
-                        self._flag(item.protected),
-                        self._text(item.correction),
+                        self.context._text(item.status) or "open",
+                        self.context._flag(item.protected),
+                        self.context._text(item.correction),
                         episode_id,
                     ),
                 )
                 if cursor.rowcount <= 0:
                     episode_id = 0
             if not episode_id:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     INSERT INTO life_episodes(
                         date, title, summary, kind, source, impact, confidence,
@@ -102,36 +123,36 @@ class EpisodeArchiveMixin:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
-                        self._text(item.date),
-                        self._text(item.title),
-                        self._text(item.summary),
-                        self._text(item.kind) or "daily",
-                        self._text(item.source) or "daily",
-                        self._text(item.impact),
+                        self.context._text(item.date),
+                        self.context._text(item.title),
+                        self.context._text(item.summary),
+                        self.context._text(item.kind) or "daily",
+                        self.context._text(item.source) or "daily",
+                        self.context._text(item.impact),
                         max(float(item.confidence or 0.0), 0.0),
-                        self._text(item.status) or "open",
-                        self._flag(item.protected),
-                        self._text(item.correction),
+                        self.context._text(item.status) or "open",
+                        self.context._flag(item.protected),
+                        self.context._text(item.correction),
                     ),
                 )
                 episode_id = int(cursor.lastrowid)
-            self._replace_people_unlocked(
+            self.context._replace_people_unlocked(
                 "life_episode_people", "episode_id", episode_id, item.related_people
             )
-            self._replace_texts_unlocked(
+            self.context._replace_texts_unlocked(
                 "life_episode_places",
                 "episode_id",
                 episode_id,
                 "place",
                 item.related_places,
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM life_episodes WHERE id = ?", (episode_id,)
             ).fetchone()
-            return self._compose_life_episode(row)
+            return self.context._compose_life_episode(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_life_episodes(
         self, limit: int = 20, status: str = ""
@@ -141,42 +162,42 @@ class EpisodeArchiveMixin:
             params: list[Any] = []
             if status:
                 sql += " WHERE status = ?"
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             sql += " ORDER BY date DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_life_episode(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_life_episode(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def correct_life_episode(
         self, episode_id: int, correction: str, *, protected: bool = True
     ) -> bool:
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE life_episodes
                 SET correction = ?, protected = ?, status = 'corrected', updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (self._text(correction), self._flag(protected), int(episode_id)),
+                (self.context._text(correction), self.context._flag(protected), int(episode_id)),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def set_life_episode_protected(
         self, episode_id: int, protected: bool
     ) -> bool:
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 "UPDATE life_episodes SET protected = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (self._flag(protected), int(episode_id)),
+                (self.context._flag(protected), int(episode_id)),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

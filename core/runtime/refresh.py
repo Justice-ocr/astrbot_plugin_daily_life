@@ -27,8 +27,47 @@ from ..models import DayRecord
 from .locks import operation_lock
 from .markers import LOG_PREFIX
 
+from typing import Protocol
 
-class RefreshMixin:
+
+class RefreshComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _auto_life_check_due: Any
+    _event_message_id: Any
+    _event_message_text: Any
+    _event_session_id: Any
+    _get_curr_period: Any
+    _meta_datetime: Any
+    _next_auto_life_check_at: Any
+    _outfit_context_signature: Any
+    _pending_commitment_outfit: Any
+    _run_autonomous_life_check: Any
+    _runtime_now: Any
+    _schedule_background_task: Any
+    _schedule_outfit_scene: Any
+    _schedule_outfit_scene_sync_needed: Any
+    _settle_timeline_planning: Any
+    _state_stability_signature: Any
+    _synchronize_outfit_with_schedule: Any
+    archive: Any
+    check_autonomous_life_update: Any
+    composer: Any
+    config: Any
+    domains: Any
+    ensure_injection_day_data: Any
+    event_was_recalled: Any
+    mark_page_status_changed: Any
+    reconcile_due_commitments_for_day: Any
+    refresh_state_for_day: Any
+    resolve_injection_target: Any
+    try_update_weather: Any
+
+
+class RefreshComponent:
+    def __init__(self, context: RefreshComponentContext) -> None:
+        self.context = context
+
     async def apply_rest_timing(
         self,
         event: Any,
@@ -36,15 +75,15 @@ class RefreshMixin:
         target_times: list[str],
     ) -> str:
         """将工具明确作出的决定应用到选中的日程条目。"""
-        now = self._runtime_now()
-        date, _ = await self.resolve_injection_target(now)
-        data = await self.ensure_injection_day_data(date, now)
+        now = self.context._runtime_now()
+        date, _ = await self.context.resolve_injection_target(now)
+        data = await self.context.ensure_injection_day_data(date, now)
         if data is None:
             return "当前没有可调整的生活日程。"
         changed = False
-        message_id = self._event_message_id(event)
-        event_key = f"{self._event_session_id(event)}:{message_id}" if message_id else ""
-        evidence = self._event_message_text(event)
+        message_id = self.context._event_message_id(event)
+        event_key = f"{self.context._event_session_id(event)}:{message_id}" if message_id else ""
+        evidence = self.context._event_message_text(event)
 
         def apply(latest: DayRecord) -> bool:
             nonlocal changed
@@ -55,8 +94,8 @@ class RefreshMixin:
             return changed
 
         # 使用数据库事务更新最新记录，不覆盖并发刷新的身体状态或日程。
-        await self.archive.mutate_day(data.date, apply)
-        notify = getattr(self, "mark_page_status_changed", None)
+        await self.context.archive.mutate_day(data.date, apply)
+        notify = getattr(self.context, "mark_page_status_changed", None)
         if changed and callable(notify):
             await notify("state")
         return "休息安排已调整。" if changed else "这段休息安排目前无法调整，请根据当前状态自然回应。"
@@ -81,15 +120,15 @@ class RefreshMixin:
             str((data.meta or {}).get("life_action_settlements") or ""),
             str((data.meta or {}).get("life_action_expirations") or ""),
         )
-        refine = getattr(self.composer, "refine_upcoming_anchors", None)
+        refine = getattr(self.context.composer, "refine_upcoming_anchors", None)
         if callable(refine):
             refine(data, now=now)
         sync_sessions = getattr(
-            getattr(self, "domains", None), "sync_activity_sessions", None
+            getattr(self.context, "domains", None), "sync_activity_sessions", None
         )
         if callable(sync_sessions):
             await sync_sessions(data, now=now)
-        settle = getattr(self.composer, "settle_completed_planned_actions", None)
+        settle = getattr(self.context.composer, "settle_completed_planned_actions", None)
         if callable(settle):
             await settle(data, now=now)
         if callable(sync_sessions):
@@ -112,16 +151,16 @@ class RefreshMixin:
             return None
 
     def _auto_life_check_due(self, data: DayRecord, now: datetime.datetime) -> bool:
-        next_check = self._meta_datetime(
+        next_check = self.context._meta_datetime(
             (data.meta or {}).get("auto_life_next_check_at", "")
         )
         if next_check is not None:
             return now >= next_check
-        interval = max(5, int(self.config.state.refresh_minutes or 30))
+        interval = max(5, int(self.context.config.state.refresh_minutes or 30))
         checked_at = (data.meta or {}).get("auto_life_last_checked_at", "")
         if not checked_at:
             return True
-        last = self._meta_datetime(checked_at)
+        last = self.context._meta_datetime(checked_at)
         if last is None:
             return True
         return (now - last).total_seconds() >= interval * 60
@@ -218,7 +257,7 @@ class RefreshMixin:
                 -1,
             )
 
-        scene_category = self._schedule_outfit_scene(data, now)
+        scene_category = self.context._schedule_outfit_scene(data, now)
         scene = {
             "home": "home",
             "sleep": "sleep",
@@ -291,7 +330,7 @@ class RefreshMixin:
             weather_kind = "rain"
         else:
             weather_kind = "dry"
-        pending_outfit, _ = self._pending_commitment_outfit(data, now)
+        pending_outfit, _ = self.context._pending_commitment_outfit(data, now)
         values = (
             # 普通活动、时段和实时数值都会频繁变化。只有实体生活场景、
             # 最近一次穿衣相关事件、穿衣相关天气或明确要求才触发重审。
@@ -389,7 +428,7 @@ class RefreshMixin:
         stable_checks: int,
         stable: bool,
     ) -> datetime.datetime:
-        base = max(5, int(self.config.state.refresh_minutes or 30))
+        base = max(5, int(self.context.config.state.refresh_minutes or 30))
         multiplier = min(3, stable_checks + 1) if stable else 1
         delay_minutes = min(90, base * multiplier)
         _, next_item = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
@@ -399,7 +438,7 @@ class RefreshMixin:
                 1, math.ceil((next_transition - now).total_seconds() / 60)
             )
             delay_minutes = min(delay_minutes, transition_minutes)
-        _, outfit_effective_at = self._pending_commitment_outfit(data, now)
+        _, outfit_effective_at = self.context._pending_commitment_outfit(data, now)
         if outfit_effective_at is not None:
             outfit_check_at = outfit_effective_at - datetime.timedelta(minutes=90)
             if outfit_check_at > now:
@@ -410,7 +449,7 @@ class RefreshMixin:
         return now + datetime.timedelta(minutes=delay_minutes)
 
     def _state_refresh_in_quiet_hours(self, now: datetime.datetime) -> bool:
-        quiet_hours = str(getattr(self.config.state, "quiet_hours", "") or "").strip()
+        quiet_hours = str(getattr(self.context.config.state, "quiet_hours", "") or "").strip()
         if not quiet_hours:
             return False
         start_text, sep, end_text = quiet_hours.partition("-")
@@ -443,27 +482,27 @@ class RefreshMixin:
         log_trigger: str = "",
         source_event: Any = None,
     ) -> DayRecord | None:
-        if not self.config.state.enabled:
-            return await self.archive.get_day(target_date_str)
-        if source_event is not None and self.event_was_recalled(
+        if not self.context.config.state.enabled:
+            return await self.context.archive.get_day(target_date_str)
+        if source_event is not None and self.context.event_was_recalled(
             source_event, log_skip=True
         ):
-            return await self.archive.get_day(target_date_str)
+            return await self.context.archive.get_day(target_date_str)
         if update_weather:
-            if source_event is not None and self.event_was_recalled(
+            if source_event is not None and self.context.event_was_recalled(
                 source_event, log_skip=True
             ):
-                return await self.archive.get_day(target_date_str)
-            await self.try_update_weather(target_date_str)
+                return await self.context.archive.get_day(target_date_str)
+            await self.context.try_update_weather(target_date_str)
 
-        data = await self.archive.get_day(target_date_str)
+        data = await self.context.archive.get_day(target_date_str)
         if not data:
             return None
-        commitment_changed = await self.reconcile_due_commitments_for_day(
+        commitment_changed = await self.context.reconcile_due_commitments_for_day(
             target_date_str, now
         )
         if commitment_changed:
-            data = await self.archive.get_day(target_date_str) or data
+            data = await self.context.archive.get_day(target_date_str) or data
         execution_changed = reconcile_timeline_execution(
             data.timeline,
             now,
@@ -471,13 +510,13 @@ class RefreshMixin:
             timeline_end=(data.meta or {}).get("life_window_end"),
             meta=data.meta,
         )
-        current_period = self._get_curr_period(now)
-        schedule_outfit_sync_needed = self._schedule_outfit_scene_sync_needed(data, now)
+        current_period = self.context._get_curr_period(now)
+        schedule_outfit_sync_needed = self.context._schedule_outfit_scene_sync_needed(data, now)
         outfit_context_changed = str(
             (data.meta or {}).get("auto_outfit_context", "") or ""
-        ) != self._outfit_context_signature(data, now, current_period)
+        ) != self.context._outfit_context_signature(data, now, current_period)
         if (
-            not self._auto_life_check_due(data, now)
+            not self.context._auto_life_check_due(data, now)
             and not commitment_changed
             and not execution_changed
             and not outfit_context_changed
@@ -485,12 +524,12 @@ class RefreshMixin:
         ):
             return data
 
-        async with operation_lock(self, f"state:{target_date_str}"):
-            if source_event is not None and self.event_was_recalled(
+        async with operation_lock(self.context, f"state:{target_date_str}"):
+            if source_event is not None and self.context.event_was_recalled(
                 source_event, log_skip=True
             ):
-                return await self.archive.get_day(target_date_str)
-            data = await self.archive.get_day(target_date_str)
+                return await self.context.archive.get_day(target_date_str)
+            data = await self.context.archive.get_day(target_date_str)
             if not data:
                 return data
             execution_changed = reconcile_timeline_execution(
@@ -500,17 +539,17 @@ class RefreshMixin:
                 timeline_end=(data.meta or {}).get("life_window_end"),
                 meta=data.meta,
             )
-            planning_changed = await self._settle_timeline_planning(data, now)
+            planning_changed = await self.context._settle_timeline_planning(data, now)
             if execution_changed or planning_changed:
-                await self.archive.save_day(data)
-            state_due = self._auto_life_check_due(data, now)
+                await self.context.archive.save_day(data)
+            state_due = self.context._auto_life_check_due(data, now)
             state_changed = False
             if state_due:
                 if log_trigger:
                     logger.debug(
                         f"{LOG_PREFIX} 触发大语言模型自主生活状态/穿搭检查：{log_trigger}"
                     )
-                state_before = self._state_stability_signature(data)
+                state_before = self.context._state_stability_signature(data)
                 state_kwargs: dict[str, Any] = {
                     "source": source,
                     "detail": detail,
@@ -519,24 +558,24 @@ class RefreshMixin:
                 }
                 if source_event is not None:
                     state_kwargs["source_event"] = source_event
-                refreshed = await self.refresh_state_for_day(
+                refreshed = await self.context.refresh_state_for_day(
                     target_date_str, data, now, **state_kwargs
                 )
                 data = refreshed or data
-                state_changed = self._state_stability_signature(data) != state_before
-            schedule_outfit_changed = self._synchronize_outfit_with_schedule(data, now)
+                state_changed = self.context._state_stability_signature(data) != state_before
+            schedule_outfit_changed = self.context._synchronize_outfit_with_schedule(data, now)
             if schedule_outfit_changed:
-                await self.archive.save_day(data)
+                await self.context.archive.save_day(data)
             outfit_context_changed = outfit_context_changed or schedule_outfit_changed
-            if source_event is not None and self.event_was_recalled(
+            if source_event is not None and self.context.event_was_recalled(
                 source_event, log_skip=True
             ):
                 return data
-            current_period = self._get_curr_period(now)
+            current_period = self.context._get_curr_period(now)
             previous_outfit_context = str(
                 (data.meta or {}).get("auto_outfit_context", "") or ""
             )
-            current_outfit_context = self._outfit_context_signature(
+            current_outfit_context = self.context._outfit_context_signature(
                 data, now, current_period
             )
             outfit_context_changed = (
@@ -549,10 +588,10 @@ class RefreshMixin:
                 # 自主巡检可能由定时器和聊天后台刷新同时触发。使用与
                 # 明确换装相同的租约，并在拿到锁后重新读取上下文，避免
                 # 两个已经排队的任务依次再次调用模型。
-                async with operation_lock(self, f"outfit:{target_date_str}"):
-                    latest = await self.archive.get_day(target_date_str)
+                async with operation_lock(self.context, f"outfit:{target_date_str}"):
+                    latest = await self.context.archive.get_day(target_date_str)
                     if latest:
-                        latest_context = self._outfit_context_signature(
+                        latest_context = self.context._outfit_context_signature(
                             latest, now, current_period
                         )
                         latest_recorded = str(
@@ -572,26 +611,26 @@ class RefreshMixin:
                             outfit_before = (data.outfit, data.time_period)
                             outfit_kwargs: dict[str, Any] = {"current_time": now}
                             pending_outfit_instruction, _ = (
-                                self._pending_commitment_outfit(data, now)
+                                self.context._pending_commitment_outfit(data, now)
                             )
                             if pending_outfit_instruction:
                                 outfit_kwargs["instruction"] = (
                                     pending_outfit_instruction
                                 )
                                 outfit_kwargs["instruction_source"] = "commitment"
-                            if source_event is not None and self._event_message_id(
+                            if source_event is not None and self.context._event_message_id(
                                 source_event
                             ):
                                 outfit_kwargs["should_abort"] = lambda: (
-                                    self.event_was_recalled(source_event, log_skip=True)
+                                    self.context.event_was_recalled(source_event, log_skip=True)
                                 )
-                            updated = await self.composer.update_outfit(
+                            updated = await self.context.composer.update_outfit(
                                 target_date_str, current_period, **outfit_kwargs
                             )
                             data = (
                                 updated
                                 or data
-                                or await self.archive.get_day(target_date_str)
+                                or await self.context.archive.get_day(target_date_str)
                             )
                             outfit_changed = bool(
                                 data
@@ -606,25 +645,25 @@ class RefreshMixin:
                                     current_outfit_context
                                 )
                                 outfit_context_recorded = True
-                                await self.archive.save_day(data)
+                                await self.context.archive.save_day(data)
             else:
                 logger.debug(f"{LOG_PREFIX} 穿搭上下文未变化，跳过本次穿搭模型判断")
-            if source_event is not None and self.event_was_recalled(
+            if source_event is not None and self.context.event_was_recalled(
                 source_event, log_skip=True
             ):
                 return data
             if not state_due and not outfit_context_changed:
                 if execution_changed or commitment_changed:
-                    await self.mark_page_status_changed("timeline_execution")
+                    await self.context.mark_page_status_changed("timeline_execution")
                 return data
             if data:
                 if not state_due:
                     if outfit_context_recorded or not outfit_context_changed:
                         data.meta["auto_outfit_context"] = (
-                            self._outfit_context_signature(data, now, current_period)
+                            self.context._outfit_context_signature(data, now, current_period)
                         )
-                        await self.archive.save_day(data)
-                        await self.mark_page_status_changed(
+                        await self.context.archive.save_day(data)
+                        await self.context.mark_page_status_changed(
                             "outfit_update"
                             if outfit_context_changed
                             else "timeline_execution"
@@ -650,10 +689,10 @@ class RefreshMixin:
                 data.meta["auto_life_last_checked_at"] = now.strftime("%Y-%m-%d %H:%M")
                 data.meta["auto_life_stable_checks"] = str(stable_checks)
                 if outfit_context_recorded or not outfit_context_changed:
-                    data.meta["auto_outfit_context"] = self._outfit_context_signature(
+                    data.meta["auto_outfit_context"] = self.context._outfit_context_signature(
                         data, now, current_period
                     )
-                next_check = self._next_auto_life_check_at(
+                next_check = self.context._next_auto_life_check_at(
                     data,
                     now,
                     stable_checks=stable_checks,
@@ -662,21 +701,21 @@ class RefreshMixin:
                 data.meta["auto_life_next_check_at"] = next_check.strftime(
                     "%Y-%m-%d %H:%M"
                 )
-                await self.archive.save_day(data)
-            if source_event is not None and self.event_was_recalled(
+                await self.context.archive.save_day(data)
+            if source_event is not None and self.context.event_was_recalled(
                 source_event, log_skip=True
             ):
                 return data
-            await self.mark_page_status_changed(status_reason)
+            await self.context.mark_page_status_changed(status_reason)
             return data
 
     async def check_autonomous_life_update(self) -> None:
-        if not self.config.state.enabled:
+        if not self.context.config.state.enabled:
             return
 
-        now = self._runtime_now()
-        target_date_str, _ = await self.resolve_injection_target(now)
-        await self._run_autonomous_life_check(
+        now = self.context._runtime_now()
+        target_date_str, _ = await self.context.resolve_injection_target(now)
+        await self.context._run_autonomous_life_check(
             target_date_str,
             now,
             source="auto",
@@ -688,7 +727,7 @@ class RefreshMixin:
         )
 
     async def check_period_transition(self) -> None:
-        await self.check_autonomous_life_update()
+        await self.context.check_autonomous_life_update()
 
     def _schedule_context_state_refresh(
         self,
@@ -696,12 +735,12 @@ class RefreshMixin:
         data: DayRecord,
         now: datetime.datetime,
     ) -> None:
-        if not self.config.state.enabled:
+        if not self.context.config.state.enabled:
             return
-        if not state_is_stale(data.state, now, self.config.state.refresh_minutes):
+        if not state_is_stale(data.state, now, self.context.config.state.refresh_minutes):
             return
-        self._schedule_background_task(
-            self.refresh_state_for_day(
+        self.context._schedule_background_task(
+            self.context.refresh_state_for_day(
                 target_date_str,
                 data,
                 now,

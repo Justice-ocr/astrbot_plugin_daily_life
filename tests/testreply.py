@@ -10,6 +10,129 @@ from core.runtime.delivery import BackgroundTextMode
 
 
 class SemanticSegmentTest(unittest.TestCase):
+    def test_short_lead_fallback_sends_clean_parts_without_t2i_threshold(self):
+        source = "少贫嘴，喜欢我也抵消不了刚才扣的敷衍分。"
+        responses = (
+            json.dumps({"segments": [{"text": source}]}, ensure_ascii=False),
+            "{}",
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                runtime = self._runtime(response)
+                runtime.config.chat_style.private_casual_max_chars = 10
+                runtime.context = Context(Provider([]), config={"t2i": False})
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+                event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+                self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+                self.assertTrue(asyncio.run(runtime.send_chat_style_segments_if_needed(event)))
+                self.assertEqual(
+                    [message.chain[0].text for message in event.sent_messages],
+                    ["少贫嘴", "喜欢我也抵消不了刚才扣的敷衍分"],
+                )
+
+    def test_single_reply_cleans_punctuation_even_when_plan_fails(self):
+        source = "明天再聊吧。"
+        responses = (
+            json.dumps({"segments": [{"text": source}]}, ensure_ascii=False),
+            "{}",
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                runtime = self._runtime(response)
+                runtime.context = Context(Provider([]), config={"t2i": False})
+                event = Event()
+                event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+                self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+                self.assertEqual(event.get_result().chain[0].text, "明天再聊吧")
+
+    def test_existing_text_parts_do_not_require_another_model_call(self):
+        runtime = self._runtime("{}")
+        event = Event()
+        event.set_result(event.chain_result([
+            types.SimpleNamespace(text="今天有点累"),
+            types.SimpleNamespace(text="先休息一下"),
+        ]))
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+        self.assertEqual(runtime.composer.prompts, [])
+        self.assertEqual([item.text for item in event.get_result().chain],
+                         ["今天有点累", "先休息一下"])
+
+    def test_foreground_segmentation_stops_at_budget(self):
+        runtime = self._runtime("{}")
+        runtime.context = Context(Provider([]), config={"t2i": False})
+        runtime._SEMANTIC_FOREGROUND_BUDGET_SECONDS = 0.01
+
+        async def slow_plan(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        runtime._semantic_segment_plan_text = slow_plan
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+        event.message_str = "聊聊今天"
+        event.set_result(
+            event.chain_result([types.SimpleNamespace(text="今天先休息一下。晚点再出门。")])
+        )
+        asyncio.run(asyncio.wait_for(runtime.apply_semantic_segment_before_send(event), 0.2))
+        self.assertEqual(runtime.semantic_segment_status()["metrics"]["planning_failed"], 1)
+        self.assertEqual(
+            [item.text for item in event.get_result().chain],
+            ["今天先休息一下", "晚点再出门"],
+        )
+        self.assertTrue(asyncio.run(runtime.send_chat_style_segments_if_needed(event)))
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            ["今天先休息一下", "晚点再出门"],
+        )
+
+    def test_foreground_timeout_still_cleans_single_reply_punctuation(self):
+        for source in (
+            "上次不知道是谁走一千多步就喊腿酸的？",
+            "你倒打一耙的本事真是越来越熟练了。",
+        ):
+            for cleanup_enabled in (True, False):
+                with self.subTest(source=source, cleanup_enabled=cleanup_enabled):
+                    runtime = self._runtime("{}")
+                    runtime.config.chat_style.punctuation_cleanup_enabled = cleanup_enabled
+                    runtime.config.chat_style.private_casual_max_chars = 10
+                    runtime.context = Context(
+                        Provider([]), config={"t2i": True, "t2i_word_threshold": 300}
+                    )
+                    runtime._SEMANTIC_FOREGROUND_BUDGET_SECONDS = 0.01
+
+                    async def slow_plan(*args, **kwargs):
+                        await asyncio.Event().wait()
+
+                    runtime._semantic_segment_plan_text = slow_plan
+                    event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+                    event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+                    async def decorate():
+                        await runtime.apply_semantic_segment_before_send(event)
+                        runtime.apply_chat_style_before_send(event)
+
+                    asyncio.run(asyncio.wait_for(decorate(), 0.2))
+                    expected = source[:-1] if cleanup_enabled else source
+                    self.assertEqual(event.get_result().chain[0].text, expected)
+                    self.assertIsNone(getattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, None))
+                    self.assertEqual(runtime.semantic_segment_status()["metrics"]["planning_failed"], 1)
+
+    def test_empty_plan_cannot_bypass_single_reply_cleanup(self):
+        from core.runtime.reply import SemanticSegmentPlan
+
+        runtime = self._runtime("{}")
+        runtime.context = Context(Provider([]), config={"t2i": False})
+
+        async def empty_plan(*args, **kwargs):
+            return SemanticSegmentPlan(())
+
+        runtime._semantic_segment_plan_text = empty_plan
+        event = Event()
+        event.set_result(event.chain_result([types.SimpleNamespace(text="明天再聊吧。")]))
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+        self.assertEqual(event.get_result().chain[0].text, "明天再聊吧")
+        self.assertIsNone(getattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, None))
+
     def _runtime(
         self, semantic_response, *, semantic_provider="", daily_life_provider=""
     ):

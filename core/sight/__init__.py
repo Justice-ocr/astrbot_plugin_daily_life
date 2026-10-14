@@ -1,4 +1,4 @@
-from .bridge import SightMixin
+from .bridge import SightComponent
 from .clip import SightClip, SightInsight
 from .sample import SightFrame
 from .transcript import TranscriptResult, TranscriptSegment
@@ -8,7 +8,7 @@ __all__ = [
     "SightClip",
     "SightFrame",
     "SightInsight",
-    "SightMixin",
+    "SightComponent",
     "SightVault",
     "TranscriptResult",
     "TranscriptSegment",

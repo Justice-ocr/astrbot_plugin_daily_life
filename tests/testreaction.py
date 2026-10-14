@@ -1,13 +1,15 @@
 import json
 import unittest
 
+from runtimehelpers import DailyLifeRuntime, Event, types
+
 from core.outcome import ToolResultText
 from core.runtime.reaction import (
     TOOL_REACTION_FAILED,
     TOOL_REACTION_PROCESSING,
     TOOL_REACTION_SUCCESS,
+    ToolReactionService,
 )
-from runtimehelpers import DailyLifeRuntime, Event, types
 
 
 class ReactionBot:
@@ -237,7 +239,7 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
         )
         await runtime.note_tool_reaction_message_sent(event)
 
-        state = next(iter(runtime._tool_reaction_states().values()))
+        state = next(iter(runtime.tool_reactions._tool_reaction_states().values()))
         self.assertEqual(state["successes"], 1)
         self.assertEqual(
             [item["emoji_id"] for item in bot.calls],
@@ -365,7 +367,7 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(event.get_result(), None if suppressed else result)
 
     async def test_contract_specific_results_do_not_use_generic_failure_matching(self):
-        outcome = DailyLifeRuntime._tool_reaction_outcome
+        outcome = ToolReactionService._tool_reaction_outcome
 
         self.assertEqual(
             outcome(

@@ -10,6 +10,8 @@ import datetime
 import hashlib
 from typing import Any
 
+from .learning import learn_adjustment, learning_context, observe_outcome
+
 from ..clock import now as life_now
 from .goals import remember_goal_review_evidence
 
@@ -219,6 +221,7 @@ def update_self_model(
             "practice_minutes": item.get("practice_minutes", 0),
             "sessions": item.get("sessions", 0),
             "verified_mastery": False,
+            "assessments": item.get("assessments", [])[-4:],
         }
         for name, item in (skills if isinstance(skills, dict) else {}).items()
         if isinstance(item, dict)
@@ -449,6 +452,9 @@ def record_action_outcome(
         "evidence_ids": evidence[:12],
         "observed": True,
     }
+    observe_outcome(world, outcome, run)
+    if run and run.get("artifact_parent"):
+        outcome["artifact_parent"] = run["artifact_parent"]
     _bounded_append(outcomes, outcome, _OUTCOME_LIMIT)
     remember_goal_review_evidence(world, outcome)
     record_event(
@@ -575,6 +581,7 @@ def apply_action_reflections(
         outcome["obstacle"] = _text(raw.get("obstacle"), 240)
         outcome["next_step"] = _text(raw.get("next_step"), 240)
         outcome["next_step_source"] = "post_action_plan"
+        learn_adjustment(world, outcome, raw)
         artifact = raw.get("artifact")
         if isinstance(artifact, dict) and artifact.get("kind") in {
             "practice_note",
@@ -704,6 +711,7 @@ def sync_kernel_from_day(
             "practice_minutes": item.get("practice_minutes", 0),
             "sessions": item.get("sessions", 0),
             "verified_mastery": False,
+            "assessments": item.get("assessments", [])[-4:],
         }
         for name, item in (world.get("skills") or {}).items()
         if isinstance(item, dict)
@@ -731,6 +739,16 @@ def kernel_context(world: dict[str, Any]) -> str:
         f"- 社交电量：{_score(social.get('battery'), 50):.0f}/100；最近会话：{social.get('last_scope') or '无'}。",
         f"- 自主性：{agency.get('run_status') or '空闲'}；当前行动编号：{agency.get('current_action_id') or '无'}；自身目标：{agency.get('goal_count', 0)} 个。",
     ]
+    experience = learning_context(world)
+    if experience:
+        lines.append(experience)
+    for skill in model.get("capabilities", [])[-4:]:
+        for assessment in skill.get("assessments", [])[-2:]:
+            lines.append(f"- {skill['name']}成果自评：{assessment['criterion']}；"
+                         f"{assessment['verdict']}；{assessment['reason']}；"
+                         f"后续方向 {assessment.get('next_step') or '未提出'}。")
+    if world.get("body_observations"):
+        lines.append("- 身体照料的执行记录（不等于已经康复）：" + str(world["body_observations"][-4:]))
     interests = [
         _text(item.get("label"), 100)
         for item in model.get("interests", [])

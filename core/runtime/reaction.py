@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from astrbot.api import logger
@@ -67,30 +68,48 @@ _TOOL_MEDIA_CONTRACTS = {
 }
 
 
-class ToolReactionMixin:
+class ToolReactionService:
     """按用户消息聚合耗时工具状态，并在整轮结束后标记最终结果。"""
 
+    def __init__(
+        self,
+        *,
+        message_id: Callable[[Any], str],
+        session_id: Callable[[Any], str],
+        event_sources: Callable[[Any], Iterable[Any]],
+        was_recalled: Callable[[Any], bool],
+        background_request: Callable[[Any, str], dict[str, Any] | None],
+    ) -> None:
+        self._message_id = message_id
+        self._session_id = session_id
+        self._event_sources = event_sources
+        self._was_recalled = was_recalled
+        self._background_request = background_request
+        self._states: dict[str, dict[str, Any]] = {}
+        self._sent: dict[str, set[int]] = {}
+
     def _tool_reaction_states(self) -> dict[str, dict[str, Any]]:
-        store = getattr(self, "_life_tool_reaction_states", None)
-        if not isinstance(store, dict):
-            store = {}
-            self._life_tool_reaction_states = store
-        return store
+        return self._states
 
     def _tool_reaction_sent(self) -> dict[str, set[int]]:
-        store = getattr(self, "_life_tool_reaction_sent", None)
-        if not isinstance(store, dict):
-            store = {}
-            self._life_tool_reaction_sent = store
-        return store
+        return self._sent
+
+    def evict_scopes(self, scopes: set[str]) -> None:
+        for store in (self._states, self._sent):
+            for key in list(store):
+                if key.partition("\n")[0] in scopes:
+                    store.pop(key, None)
+
+    def clear(self) -> None:
+        self._states.clear()
+        self._sent.clear()
 
     @staticmethod
     def _tool_reaction_name(tool: Any) -> str:
         return str(getattr(tool, "name", tool) or "").strip()
 
     def _tool_reaction_message_id(self, event: Any) -> int | None:
-        getter = getattr(self, "_event_message_id", None)
-        value = str(getter(event) if callable(getter) else "").strip()
+        value = str(self._message_id(event) or "").strip()
         if not value:
             return None
         try:
@@ -99,8 +118,7 @@ class ToolReactionMixin:
             return None
 
     def _tool_reaction_bot(self, event: Any) -> Any | None:
-        sources = getattr(self, "_event_sources", None)
-        values = sources(event) if callable(sources) else [event]
+        values = self._event_sources(event)
         for source in values:
             bot = getattr(source, "bot", None)
             if callable(getattr(bot, "set_msg_emoji_like", None)):
@@ -111,8 +129,7 @@ class ToolReactionMixin:
         message_id = self._tool_reaction_message_id(event)
         if message_id is None:
             return None
-        scope_getter = getattr(self, "_event_session_id", None)
-        scope = str(scope_getter(event) if callable(scope_getter) else "").strip()
+        scope = str(self._session_id(event) or "").strip()
         return scope, message_id
 
     def _tool_reaction_key(self, event: Any, tool_name: str = "") -> str:
@@ -124,13 +141,7 @@ class ToolReactionMixin:
         return f"{scope}\n{message_id}"
 
     def _tool_reaction_was_recalled(self, event: Any) -> bool:
-        checker = getattr(self, "_event_message_was_recalled", None)
-        if not callable(checker):
-            return False
-        try:
-            return bool(checker(event))
-        except Exception:
-            return False
+        return bool(self._was_recalled(event))
 
     @staticmethod
     def _new_tool_reaction_state() -> dict[str, Any]:
@@ -287,7 +298,7 @@ class ToolReactionMixin:
             "life_video_note",
             "life_style_learn",
         }:
-            marker = self._background_tool_request(event, tool_name)
+            marker = self._background_request(event, tool_name)
             status = marker.get("status") if marker else ""
             if status in {"sent", "failed", "cancelled"}:
                 outcome = "success" if status == "sent" else status
@@ -599,10 +610,10 @@ class ToolReactionMixin:
         if isinstance(value, dict):
             return json.dumps(value, ensure_ascii=False)
         if isinstance(value, (list, tuple)):
-            return ToolReactionMixin._tool_reaction_sequence_text(value)
+            return ToolReactionService._tool_reaction_sequence_text(value)
         for attr in ("completion_text", "content", "text", "result"):
             current = getattr(value, attr, None)
-            text = ToolReactionMixin._tool_reaction_nested_value(current)
+            text = ToolReactionService._tool_reaction_nested_value(current)
             if text:
                 return text
         return ""
@@ -627,7 +638,7 @@ class ToolReactionMixin:
         if isinstance(value, dict):
             return json.dumps(value, ensure_ascii=False)
         if isinstance(value, (list, tuple)):
-            return ToolReactionMixin._tool_reaction_sequence_text(value)
+            return ToolReactionService._tool_reaction_sequence_text(value)
         return ""
 
     @staticmethod
@@ -649,5 +660,5 @@ __all__ = [
     "TOOL_REACTION_NAMES",
     "TOOL_REACTION_PROCESSING",
     "TOOL_REACTION_SUCCESS",
-    "ToolReactionMixin",
+    "ToolReactionService",
 ]

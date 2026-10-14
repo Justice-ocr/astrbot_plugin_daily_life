@@ -6,8 +6,28 @@ from typing import Any
 
 from ..models import STYLE_CATALOG_KIND_SET, StyleCatalogItemRecord
 
+from typing import Protocol
 
-class StyleCatalogArchiveMixin:
+
+class StyleCatalogArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_style_catalog_item: Any
+    _conn: Any
+    _run_db: Any
+    _style_attributes: Any
+    _style_catalog_ids: Any
+    _style_catalog_status: Any
+    _style_hash_distance: Any
+    _text: Any
+    _wardrobe_item_state_unlocked: Any
+    get_style_catalog_items: Any
+
+
+class StyleCatalogArchiveComponent:
+    def __init__(self, context: StyleCatalogArchiveComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _style_catalog_status(value: object) -> str:
         return str(value or "").strip().lower()
@@ -28,7 +48,7 @@ class StyleCatalogArchiveMixin:
             attributes = json.loads(row["attributes_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
             attributes = {}
-        wardrobe_reader = getattr(self, "_wardrobe_item_state_unlocked", None)
+        wardrobe_reader = getattr(self.context, "_wardrobe_item_state_unlocked", None)
         if callable(wardrobe_reader):
             state = wardrobe_reader(int(row["id"]))
             if state:
@@ -48,7 +68,7 @@ class StyleCatalogArchiveMixin:
             preference_score=float(row["preference_score"] or 0.0),
             feedback_count=int(row["feedback_count"] or 0),
             seen_count=int(row["seen_count"] or 1),
-            status=self._style_catalog_status(row["status"] or "active"),
+            status=self.context._style_catalog_status(row["status"] or "active"),
             last_used_at=str(row["last_used_at"] or ""),
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
@@ -62,7 +82,7 @@ class StyleCatalogArchiveMixin:
             return None
 
         def write() -> StyleCatalogItemRecord | None:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO style_catalog_items(
                     kind, title, description, image_path, source_url, source_scope,
@@ -91,33 +111,33 @@ class StyleCatalogArchiveMixin:
                 """,
                 (
                     item.kind,
-                    self._text(item.title),
-                    self._text(item.description),
-                    self._text(item.image_path),
-                    self._text(item.source_url),
-                    self._text(item.source_scope),
-                    self._text(item.source_kind),
-                    self._text(item.source_image_hash),
+                    self.context._text(item.title),
+                    self.context._text(item.description),
+                    self.context._text(item.image_path),
+                    self.context._text(item.source_url),
+                    self.context._text(item.source_scope),
+                    self.context._text(item.source_kind),
+                    self.context._text(item.source_image_hash),
                     json.dumps(
-                        self._style_attributes(item.attributes), ensure_ascii=False
+                        self.context._style_attributes(item.attributes), ensure_ascii=False
                     ),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
                     max(-2.0, min(float(item.preference_score or 0.0), 2.0)),
-                    self._style_catalog_status(item.status) or "active",
-                    self._text(item.created_at),
+                    self.context._style_catalog_status(item.status) or "active",
+                    self.context._text(item.created_at),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 """
                 SELECT * FROM style_catalog_items
                 WHERE source_image_hash = ? AND kind = ?
                 """,
                 (item.source_image_hash, item.kind),
             ).fetchone()
-            return self._compose_style_catalog_item(row) if row else None
+            return self.context._compose_style_catalog_item(row) if row else None
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_style_catalog_items(
         self,
@@ -128,9 +148,9 @@ class StyleCatalogArchiveMixin:
         source_scope: str = "",
         limit: int = 12,
     ) -> list[StyleCatalogItemRecord]:
-        normalized_kind = self._text(kind).lower()
-        normalized_status = self._style_catalog_status(status)
-        normalized_scope = self._text(source_scope)
+        normalized_kind = self.context._text(kind).lower()
+        normalized_status = self.context._style_catalog_status(status)
+        normalized_scope = self.context._text(source_scope)
         normalized_ids = []
         for value in ids or ():
             try:
@@ -158,7 +178,7 @@ class StyleCatalogArchiveMixin:
                 clauses.append(f"id IN ({placeholders})")
                 values.extend(normalized_ids)
             where = " WHERE " + " AND ".join(clauses) if clauses else ""
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT * FROM style_catalog_items{where}
                 ORDER BY CASE
@@ -174,16 +194,16 @@ class StyleCatalogArchiveMixin:
                 """,
                 (*values, safe_limit),
             ).fetchall()
-            return [self._compose_style_catalog_item(row) for row in rows]
+            return [self.context._compose_style_catalog_item(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_style_catalog_counts(
         self, *, status: str = "active"
     ) -> dict[str, int]:
         """按类别统计衣橱条目，不受候选展示数量限制。"""
 
-        normalized_status = self._style_catalog_status(status)
+        normalized_status = self.context._style_catalog_status(status)
 
         def read() -> dict[str, int]:
             clauses = ""
@@ -191,7 +211,7 @@ class StyleCatalogArchiveMixin:
             if normalized_status:
                 clauses = " WHERE status = ?"
                 values = (normalized_status,)
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT kind, COUNT(*) AS item_count
                 FROM style_catalog_items{clauses}
@@ -205,7 +225,7 @@ class StyleCatalogArchiveMixin:
                 if str(row["kind"] or "") in STYLE_CATALOG_KIND_SET
             }
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_style_catalog_item(
         self, item_id: int
@@ -218,12 +238,12 @@ class StyleCatalogArchiveMixin:
             return None
 
         def read() -> StyleCatalogItemRecord | None:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
-            return self._compose_style_catalog_item(row) if row else None
+            return self.context._compose_style_catalog_item(row) if row else None
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     @staticmethod
     def _style_hash_distance(left: str, right: str) -> int:
@@ -239,18 +259,18 @@ class StyleCatalogArchiveMixin:
         *,
         max_distance: int = 5,
     ) -> StyleCatalogItemRecord | None:
-        normalized_kind = self._text(kind).lower()
-        normalized_hash = self._text(perceptual_hash).lower()
+        normalized_kind = self.context._text(kind).lower()
+        normalized_hash = self.context._text(perceptual_hash).lower()
         if normalized_kind not in STYLE_CATALOG_KIND_SET or not normalized_hash:
             return None
-        candidates = await self.get_style_catalog_items(
+        candidates = await self.context.get_style_catalog_items(
             kind=normalized_kind, status="", limit=500
         )
         ranked = []
         for item in candidates:
             attributes = item.attributes if isinstance(item.attributes, dict) else {}
-            candidate_hash = self._text(attributes.get("perceptual_hash")).lower()
-            distance = self._style_hash_distance(normalized_hash, candidate_hash)
+            candidate_hash = self.context._text(attributes.get("perceptual_hash")).lower()
+            distance = self.context._style_hash_distance(normalized_hash, candidate_hash)
             if distance <= max(0, int(max_distance)):
                 ranked.append((distance, -float(item.confidence or 0.0), item))
         return min(ranked, default=(0, 0.0, None), key=lambda value: value[:2])[2]
@@ -269,7 +289,7 @@ class StyleCatalogArchiveMixin:
             return None
 
         def write() -> StyleCatalogItemRecord | None:
-            existing = self._conn.execute(
+            existing = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
             if not existing or str(existing["kind"] or "") != incoming.kind:
@@ -277,7 +297,7 @@ class StyleCatalogArchiveMixin:
             use_incoming = float(incoming.confidence or 0.0) >= float(
                 existing["confidence"] or 0.0
             )
-            current_status = self._style_catalog_status(
+            current_status = self.context._style_catalog_status(
                 existing["status"] or "active"
             )
             next_status = (
@@ -285,7 +305,7 @@ class StyleCatalogArchiveMixin:
                 if current_status == "pending" and incoming.status == "active"
                 else current_status
             )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE style_catalog_items
                 SET title = CASE WHEN ? THEN ? ELSE title END,
@@ -300,31 +320,31 @@ class StyleCatalogArchiveMixin:
                 """,
                 (
                     int(use_incoming),
-                    self._text(incoming.title),
+                    self.context._text(incoming.title),
                     int(use_incoming),
-                    self._text(incoming.description),
-                    self._text(incoming.source_url),
-                    self._text(incoming.source_url),
-                    self._text(incoming.source_scope),
-                    self._text(incoming.source_scope),
-                    self._text(incoming.source_kind),
-                    self._text(incoming.source_kind),
+                    self.context._text(incoming.description),
+                    self.context._text(incoming.source_url),
+                    self.context._text(incoming.source_url),
+                    self.context._text(incoming.source_scope),
+                    self.context._text(incoming.source_scope),
+                    self.context._text(incoming.source_kind),
+                    self.context._text(incoming.source_kind),
                     int(use_incoming),
                     json.dumps(
-                        self._style_attributes(incoming.attributes), ensure_ascii=False
+                        self.context._style_attributes(incoming.attributes), ensure_ascii=False
                     ),
                     max(0.0, min(float(incoming.confidence or 0.0), 1.0)),
                     next_status,
                     normalized_id,
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
-            return self._compose_style_catalog_item(row) if row else None
+            return self.context._compose_style_catalog_item(row) if row else None
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def revise_style_catalog_item(
         self,
@@ -340,7 +360,7 @@ class StyleCatalogArchiveMixin:
             normalized_id = int(item_id)
         except (TypeError, ValueError):
             return None
-        normalized_status = self._style_catalog_status(status)
+        normalized_status = self.context._style_catalog_status(status)
         if normalized_id <= 0 or normalized_status not in {
             "active",
             "pending",
@@ -350,7 +370,7 @@ class StyleCatalogArchiveMixin:
             return None
 
         def write() -> StyleCatalogItemRecord | None:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE style_catalog_items
                 SET title = ?, description = ?, attributes_json = ?,
@@ -358,9 +378,9 @@ class StyleCatalogArchiveMixin:
                 WHERE id = ?
                 """,
                 (
-                    self._text(title),
-                    self._text(description),
-                    json.dumps(self._style_attributes(attributes), ensure_ascii=False),
+                    self.context._text(title),
+                    self.context._text(description),
+                    json.dumps(self.context._style_attributes(attributes), ensure_ascii=False),
                     max(0.0, min(float(confidence or 0.0), 1.0)),
                     normalized_status,
                     normalized_id,
@@ -368,29 +388,29 @@ class StyleCatalogArchiveMixin:
             )
             if int(cursor.rowcount or 0) <= 0:
                 return None
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
-            return self._compose_style_catalog_item(row) if row else None
+            return self.context._compose_style_catalog_item(row) if row else None
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def set_style_catalog_status(
         self,
         item_ids: list[int] | tuple[int, ...],
         status: str,
     ) -> int:
-        normalized_status = self._style_catalog_status(status)
+        normalized_status = self.context._style_catalog_status(status)
         if normalized_status not in {"active", "pending", "rejected", "disabled"}:
             return 0
-        normalized = self._style_catalog_ids(item_ids)
+        normalized = self.context._style_catalog_ids(item_ids)
         if not normalized:
             return 0
 
         def write() -> int:
             placeholders = ",".join("?" for _ in normalized)
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 f"""
                 UPDATE style_catalog_items
                 SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -398,28 +418,28 @@ class StyleCatalogArchiveMixin:
                 """,
                 (normalized_status, *normalized),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(int(cursor.rowcount or 0), 0)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def delete_style_catalog_items(
         self, item_ids: list[int] | tuple[int, ...]
     ) -> int:
-        normalized = self._style_catalog_ids(item_ids)
+        normalized = self.context._style_catalog_ids(item_ids)
         if not normalized:
             return 0
 
         def write() -> int:
             placeholders = ",".join("?" for _ in normalized)
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 f"DELETE FROM style_catalog_items WHERE id IN ({placeholders})",
                 tuple(normalized),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(int(cursor.rowcount or 0), 0)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     @staticmethod
     def _style_catalog_ids(values: object) -> list[int]:
@@ -436,13 +456,13 @@ class StyleCatalogArchiveMixin:
     async def get_recent_style_catalog_items(
         self, source_scope: str, *, limit: int = 6
     ) -> list[StyleCatalogItemRecord]:
-        scope = self._text(source_scope)
+        scope = self.context._text(source_scope)
         if not scope:
             return []
         safe_limit = max(1, min(int(limit or 6), 30))
 
         def read() -> list[StyleCatalogItemRecord]:
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT * FROM style_catalog_items
                 WHERE source_scope = ?
@@ -451,9 +471,9 @@ class StyleCatalogArchiveMixin:
                 """,
                 (scope, safe_limit),
             ).fetchall()
-            return [self._compose_style_catalog_item(row) for row in rows]
+            return [self.context._compose_style_catalog_item(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def add_style_catalog_feedback(
         self,
@@ -472,7 +492,7 @@ class StyleCatalogArchiveMixin:
             return None
         if normalized_id <= 0:
             return None
-        normalized_sentiment = self._text(sentiment).lower()
+        normalized_sentiment = self.context._text(sentiment).lower()
         if normalized_sentiment not in {"prefer", "dislike", "neutral", "disable"}:
             normalized_sentiment = "neutral"
         try:
@@ -480,12 +500,12 @@ class StyleCatalogArchiveMixin:
         except (TypeError, ValueError):
             delta = 0.0
         delta = max(-1.0, min(delta, 1.0))
-        normalized_status = self._style_catalog_status(status)
+        normalized_status = self.context._style_catalog_status(status)
         if normalized_status not in {"active", "pending", "rejected", "disabled"}:
             normalized_status = ""
 
         def write() -> StyleCatalogItemRecord | None:
-            existing = self._conn.execute(
+            existing = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
             if not existing:
@@ -493,10 +513,10 @@ class StyleCatalogArchiveMixin:
             next_score = max(
                 -2.0, min(float(existing["preference_score"] or 0.0) + delta, 2.0)
             )
-            next_status = normalized_status or self._style_catalog_status(
+            next_status = normalized_status or self.context._style_catalog_status(
                 existing["status"] or "active"
             )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO style_catalog_feedback(
                     item_id, scope, feedback, sentiment, score_delta, reason
@@ -504,14 +524,14 @@ class StyleCatalogArchiveMixin:
                 """,
                 (
                     normalized_id,
-                    self._text(scope),
-                    self._text(feedback),
+                    self.context._text(scope),
+                    self.context._text(feedback),
                     normalized_sentiment,
                     delta,
-                    self._text(reason),
+                    self.context._text(reason),
                 ),
             )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE style_catalog_items
                 SET preference_score = ?, feedback_count = feedback_count + 1,
@@ -520,24 +540,24 @@ class StyleCatalogArchiveMixin:
                 """,
                 (next_score, next_status, normalized_id),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)
             ).fetchone()
-            return self._compose_style_catalog_item(row) if row else None
+            return self.context._compose_style_catalog_item(row) if row else None
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def mark_style_catalog_used(
         self, item_ids: list[int] | tuple[int, ...]
     ) -> int:
-        normalized = self._style_catalog_ids(item_ids)
+        normalized = self.context._style_catalog_ids(item_ids)
         if not normalized:
             return 0
 
         def write() -> int:
             placeholders = ",".join("?" for _ in normalized)
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"SELECT id, attributes_json FROM style_catalog_items "
                 f"WHERE status = 'active' AND id IN ({placeholders})",
                 tuple(normalized),
@@ -554,7 +574,7 @@ class StyleCatalogArchiveMixin:
                 except (TypeError, ValueError):
                     used_count = 0
                 attributes["used_count"] = max(0, used_count) + 1
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE style_catalog_items
                     SET attributes_json = ?, last_used_at = CURRENT_TIMESTAMP,
@@ -563,10 +583,10 @@ class StyleCatalogArchiveMixin:
                     """,
                     (json.dumps(attributes, ensure_ascii=False), int(row["id"])),
                 )
-            self._conn.commit()
+            self.context._conn.commit()
             return len(rows)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
 
-__all__ = ["StyleCatalogArchiveMixin"]
+__all__ = ["StyleCatalogArchiveComponent"]

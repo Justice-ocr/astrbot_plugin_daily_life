@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import sqlite3
 from dataclasses import replace
@@ -5,8 +7,28 @@ from typing import Any
 
 from ...models import EmotionArcRecord
 
+from typing import Protocol
 
-class EmotionArchiveMixin:
+
+class EmotionArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _clamp_score: Any
+    _compact_active_emotion_arcs: Any
+    _compose_emotion_arc: Any
+    _conn: Any
+    _decay_emotion_arc: Any
+    _default_emotion_expiry: Any
+    _emotion_now_text: Any
+    _parse_emotion_time: Any
+    _run_db: Any
+    _text: Any
+
+
+class EmotionArchiveComponent:
+    def __init__(self, context: EmotionArchiveComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _emotion_now_text() -> str:
         return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -48,7 +70,7 @@ class EmotionArchiveMixin:
             return item.expires_at
         if item.layer == "relationship":
             return ""
-        created = self._parse_emotion_time(item.created_at) or datetime.datetime.now()
+        created = self.context._parse_emotion_time(item.created_at) or datetime.datetime.now()
         if item.layer == "daily":
             hours = 48
         else:
@@ -58,25 +80,25 @@ class EmotionArchiveMixin:
     def _compose_emotion_arc(self, row: sqlite3.Row) -> EmotionArcRecord:
         return EmotionArcRecord(
             id=int(row["id"] or 0),
-            scope=self._text(row["scope"]),
-            date=self._text(row["date"]),
-            label=self._text(row["label"]),
+            scope=self.context._text(row["scope"]),
+            date=self.context._text(row["date"]),
+            label=self.context._text(row["label"]),
             valence=max(-100, min(int(row["valence"] or 0), 100)),
-            arousal=self._clamp_score(row["arousal"]),
-            intensity=self._clamp_score(row["intensity"]),
-            stability=self._clamp_score(row["stability"]),
-            trigger=self._text(row["trigger"]),
-            evidence=self._text(row["evidence"]),
-            influence=self._text(row["influence"]),
-            expires_at=self._text(row["expires_at"]),
-            status=self._text(row["status"]) or "active",
-            layer=self._text(row["layer"]) or "transient",
+            arousal=self.context._clamp_score(row["arousal"]),
+            intensity=self.context._clamp_score(row["intensity"]),
+            stability=self.context._clamp_score(row["stability"]),
+            trigger=self.context._text(row["trigger"]),
+            evidence=self.context._text(row["evidence"]),
+            influence=self.context._text(row["influence"]),
+            expires_at=self.context._text(row["expires_at"]),
+            status=self.context._text(row["status"]) or "active",
+            layer=self.context._text(row["layer"]) or "transient",
             baseline=max(0.0, min(float(row["baseline"] or 0.0), 100.0)),
             half_life_minutes=max(float(row["half_life_minutes"] or 240.0), 1.0),
-            last_decay_at=self._text(row["last_decay_at"]),
-            source=self._text(row["source"]) or "state",
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            last_decay_at=self.context._text(row["last_decay_at"]),
+            source=self.context._text(row["source"]) or "state",
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     def _decay_emotion_arc(
@@ -85,16 +107,16 @@ class EmotionArchiveMixin:
         if item.status != "active":
             return item
         now = now or datetime.datetime.now()
-        expires_at = self._parse_emotion_time(item.expires_at)
-        reference_at = self._parse_emotion_time(
+        expires_at = self.context._parse_emotion_time(item.expires_at)
+        reference_at = self.context._parse_emotion_time(
             item.last_decay_at
-        ) or self._parse_emotion_time(item.updated_at)
+        ) or self.context._parse_emotion_time(item.updated_at)
         if expires_at and expires_at <= now:
             return replace(
                 item,
                 intensity=0,
                 status="expired",
-                last_decay_at=self._emotion_now_text(),
+                last_decay_at=self.context._emotion_now_text(),
             )
         if not reference_at:
             return item
@@ -104,17 +126,17 @@ class EmotionArchiveMixin:
         return replace(
             item,
             intensity=max(0, min(round(decayed), 100)),
-            last_decay_at=self._emotion_now_text(),
+            last_decay_at=self.context._emotion_now_text(),
         )
 
     def _compact_active_emotion_arcs(
         self, *, scope: str, layer: str, label: str, keep_id: int
     ) -> int:
-        scope_text = self._text(scope)
-        label_text = self._text(label)
+        scope_text = self.context._text(scope)
+        label_text = self.context._text(label)
         if not label_text or not keep_id:
             return 0
-        cursor = self._conn.execute(
+        cursor = self.context._conn.execute(
             """
             UPDATE emotion_arcs
             SET status = 'superseded',
@@ -126,7 +148,7 @@ class EmotionArchiveMixin:
               AND label = ?
               AND id <> ?
             """,
-            (scope_text, self._text(layer) or "transient", label_text, keep_id),
+            (scope_text, self.context._text(layer) or "transient", label_text, keep_id),
         )
         return int(cursor.rowcount or 0)
 
@@ -138,23 +160,23 @@ class EmotionArchiveMixin:
         )
         if not item:
             return None
-        now_text = self._emotion_now_text()
+        now_text = self.context._emotion_now_text()
         if not item.created_at:
             item.created_at = now_text
         if not item.updated_at:
             item.updated_at = now_text
         if not item.last_decay_at:
             item.last_decay_at = now_text
-        item.expires_at = self._default_emotion_expiry(item)
+        item.expires_at = self.context._default_emotion_expiry(item)
 
         def dbwork():
             existing = None
             if item.id:
-                existing = self._conn.execute(
+                existing = self.context._conn.execute(
                     "SELECT * FROM emotion_arcs WHERE id = ?", (int(item.id),)
                 ).fetchone()
             if existing is None:
-                existing = self._conn.execute(
+                existing = self.context._conn.execute(
                     """
                     SELECT * FROM emotion_arcs
                     WHERE scope = ?
@@ -167,17 +189,17 @@ class EmotionArchiveMixin:
                     LIMIT 1
                     """,
                     (
-                        self._text(item.scope),
-                        self._text(item.date),
-                        self._text(item.label),
-                        self._text(item.source) or "state",
-                        self._text(item.trigger),
-                        self._text(item.evidence),
+                        self.context._text(item.scope),
+                        self.context._text(item.date),
+                        self.context._text(item.label),
+                        self.context._text(item.source) or "state",
+                        self.context._text(item.trigger),
+                        self.context._text(item.evidence),
                     ),
                 ).fetchone()
             if existing:
                 arc_id = int(existing["id"] or item.id or 0)
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE emotion_arcs
                     SET valence = ?,
@@ -196,32 +218,32 @@ class EmotionArchiveMixin:
                     """,
                     (
                         max(-100, min(int(item.valence or 0), 100)),
-                        self._clamp_score(item.arousal),
-                        self._clamp_score(item.intensity),
-                        self._clamp_score(item.stability),
-                        self._text(item.influence),
-                        self._text(item.expires_at),
-                        self._text(item.status) or "active",
-                        self._text(item.layer) or "transient",
+                        self.context._clamp_score(item.arousal),
+                        self.context._clamp_score(item.intensity),
+                        self.context._clamp_score(item.stability),
+                        self.context._text(item.influence),
+                        self.context._text(item.expires_at),
+                        self.context._text(item.status) or "active",
+                        self.context._text(item.layer) or "transient",
                         max(0.0, min(float(item.baseline), 100.0)),
                         max(float(item.half_life_minutes), 1.0),
-                        self._text(item.last_decay_at),
+                        self.context._text(item.last_decay_at),
                         arc_id,
                     ),
                 )
-                self._compact_active_emotion_arcs(
-                    scope=self._text(item.scope),
-                    layer=self._text(item.layer),
-                    label=self._text(item.label),
+                self.context._compact_active_emotion_arcs(
+                    scope=self.context._text(item.scope),
+                    layer=self.context._text(item.layer),
+                    label=self.context._text(item.label),
                     keep_id=arc_id,
                 )
-                self._conn.commit()
-                row = self._conn.execute(
+                self.context._conn.commit()
+                row = self.context._conn.execute(
                     "SELECT * FROM emotion_arcs WHERE id = ?", (arc_id,)
                 ).fetchone()
-                return self._compose_emotion_arc(row) if row else None
+                return self.context._compose_emotion_arc(row) if row else None
 
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO emotion_arcs(
                     scope, date, label, valence, arousal, intensity, stability,
@@ -232,39 +254,39 @@ class EmotionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
-                    self._text(item.scope),
-                    self._text(item.date),
-                    self._text(item.label) or "情绪波动",
+                    self.context._text(item.scope),
+                    self.context._text(item.date),
+                    self.context._text(item.label) or "情绪波动",
                     max(-100, min(int(item.valence or 0), 100)),
-                    self._clamp_score(item.arousal),
-                    self._clamp_score(item.intensity),
-                    self._clamp_score(item.stability),
-                    self._text(item.trigger),
-                    self._text(item.evidence),
-                    self._text(item.influence),
-                    self._text(item.expires_at),
-                    self._text(item.status) or "active",
-                    self._text(item.layer) or "transient",
+                    self.context._clamp_score(item.arousal),
+                    self.context._clamp_score(item.intensity),
+                    self.context._clamp_score(item.stability),
+                    self.context._text(item.trigger),
+                    self.context._text(item.evidence),
+                    self.context._text(item.influence),
+                    self.context._text(item.expires_at),
+                    self.context._text(item.status) or "active",
+                    self.context._text(item.layer) or "transient",
                     max(0.0, min(float(item.baseline), 100.0)),
                     max(float(item.half_life_minutes), 1.0),
-                    self._text(item.last_decay_at),
-                    self._text(item.source) or "state",
+                    self.context._text(item.last_decay_at),
+                    self.context._text(item.source) or "state",
                 ),
             )
             arc_id = int(cursor.lastrowid or 0)
-            self._compact_active_emotion_arcs(
-                scope=self._text(item.scope),
-                layer=self._text(item.layer),
-                label=self._text(item.label) or "情绪波动",
+            self.context._compact_active_emotion_arcs(
+                scope=self.context._text(item.scope),
+                layer=self.context._text(item.layer),
+                label=self.context._text(item.label) or "情绪波动",
                 keep_id=arc_id,
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM emotion_arcs WHERE id = ?", (arc_id,)
             ).fetchone()
-            return self._compose_emotion_arc(row) if row else None
+            return self.context._compose_emotion_arc(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_emotion_arcs(
         self,
@@ -279,7 +301,7 @@ class EmotionArchiveMixin:
             sql = "SELECT * FROM emotion_arcs"
             clauses = []
             params: list[Any] = []
-            scope_text = self._text(scope)
+            scope_text = self.context._text(scope)
             if scope_text:
                 if include_global:
                     clauses.append("scope IN (?, '')")
@@ -289,7 +311,7 @@ class EmotionArchiveMixin:
                     params.append(scope_text)
             if date:
                 clauses.append("date = ?")
-                params.append(self._text(date))
+                params.append(self.context._text(date))
             if active_only:
                 clauses.append("status = 'active'")
                 clauses.append(
@@ -301,16 +323,16 @@ class EmotionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
             now = datetime.datetime.now()
             items = [
                 item
                 for item in (
-                    self._decay_emotion_arc(self._compose_emotion_arc(row), now)
+                    self.context._decay_emotion_arc(self.context._compose_emotion_arc(row), now)
                     for row in rows
                 )
                 if not active_only or item.intensity > 0
             ]
             return items
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

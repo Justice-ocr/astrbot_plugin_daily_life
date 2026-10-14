@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
 import uuid
@@ -13,8 +15,50 @@ from ....prompts import cache_friendly_prompt
 from ....sight.animated import prepare_animated_image
 from ...markers import LOG_PREFIX
 
+from typing import Protocol
 
-class EmojiVisionMixin:
+
+class EmojiVisionComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    EMOJI_ASSET_ALLOWED_REACTION_TYPES: Any
+    EMOJI_ASSET_MIN_PLAIN_IMAGE_CONFIDENCE: Any
+    EMOJI_ASSET_REJECTED_STATUSES: Any
+    _EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS: Any
+    _EMOJI_VISION_TIMEOUT_SECONDS: Any
+    _apply_visual_context_summary: Any
+    _cache_emoji_asset_path: Any
+    _call_emoji_vision_payload: Any
+    _call_emoji_vision_provider: Any
+    _call_prepared_emoji_vision_payload: Any
+    _completion_text: Any
+    _emoji_asset_cache_candidates: Any
+    _emoji_asset_confidence: Any
+    _emoji_asset_is_inline_source: Any
+    _emoji_asset_is_remote: Any
+    _emoji_asset_readable_source: Any
+    _emoji_asset_rejected_reason: Any
+    _emoji_asset_review_status: Any
+    _emoji_auto_collect_enabled: Any
+    _emoji_can_accept_ready_asset: Any
+    _float_payload: Any
+    _list_payload: Any
+    _local_path_from_file_uri: Any
+    _mark_emoji_asset_failed: Any
+    _prune_extra_ready_emoji_assets: Any
+    _save_plain_image_emoji_candidate: Any
+    _str_payload: Any
+    _visual_context_summary_from_payload: Any
+    archive: Any
+    close_text_session: Any
+    config: Any
+    get_text_provider_candidates: Any
+
+
+class EmojiVisionComponent:
+    def __init__(self, context: EmojiVisionComponentContext) -> None:
+        self.context = context
+
     _EMOJI_VISION_TIMEOUT_SECONDS = 35.0
     _EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS = 20.0
 
@@ -25,12 +69,12 @@ class EmojiVisionMixin:
     def _emoji_asset_readable_source(self, path: str) -> str:
         path = str(path or "").strip()
         if path.startswith("file://"):
-            path = self._local_path_from_file_uri(path)
+            path = self.context._local_path_from_file_uri(path)
         if not path:
             return ""
         if path.startswith(
             ("http://", "https://")
-        ) or self._emoji_asset_is_inline_source(path):
+        ) or self.context._emoji_asset_is_inline_source(path):
             return path
         return path if Path(path).exists() else ""
 
@@ -81,13 +125,13 @@ class EmojiVisionMixin:
         session_prefix: str,
         task_label: str,
     ) -> dict[str, Any]:
-        async with asyncio.timeout(self._EMOJI_VISION_TIMEOUT_SECONDS):
+        async with asyncio.timeout(self.context._EMOJI_VISION_TIMEOUT_SECONDS):
             image, animation_hint = await asyncio.to_thread(
                 prepare_animated_image, image
             )
             if animation_hint:
                 prompt = f"{prompt}\n\n{animation_hint}"
-            return await self._call_prepared_emoji_vision_payload(
+            return await self.context._call_prepared_emoji_vision_payload(
                 prompt, image, session_prefix=session_prefix, task_label=task_label
             )
 
@@ -100,11 +144,11 @@ class EmojiVisionMixin:
         task_label: str,
     ) -> dict[str, Any]:
         provider_id = str(
-            getattr(getattr(self.config, "vision", None), "provider", "") or ""
+            getattr(getattr(self.context.config, "vision", None), "provider", "") or ""
         ).strip()
         last_error: Exception = RuntimeError("视觉模型不可用")
         index = 0
-        async for provider in self.get_text_provider_candidates(provider_id):
+        async for provider in self.context.get_text_provider_candidates(provider_id):
             session_id = f"{session_prefix}_{uuid.uuid4().hex[:8]}"
             if index:
                 session_id = f"{session_id}_fallback"
@@ -118,14 +162,14 @@ class EmojiVisionMixin:
                 ):
                     raise RuntimeError("视觉模型不支持图片输入")
                 result = await asyncio.wait_for(
-                    self._call_emoji_vision_provider(
+                    self.context._call_emoji_vision_provider(
                         provider, prompt, image, session_id
                     ),
-                    timeout=self._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS,
+                    timeout=self.context._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS,
                 )
                 if result is None:
                     raise RuntimeError("视觉模型未返回结果")
-                payload = extract_json_from_text(self._completion_text(result))
+                payload = extract_json_from_text(self.context._completion_text(result))
                 if not isinstance(payload, dict):
                     raise RuntimeError("视觉模型未返回有效结果")
                 if not any(
@@ -139,10 +183,10 @@ class EmojiVisionMixin:
                 logger.warning(
                     f"{LOG_PREFIX} {task_label}模型识别失败："
                     f"{type(exc).__name__}；单模型上限="
-                    f"{self._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS:.0f}秒"
+                    f"{self.context._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS:.0f}秒"
                 )
             finally:
-                await self.close_text_session(session_id)
+                await self.context.close_text_session(session_id)
             index += 1
         raise last_error
 
@@ -160,9 +204,9 @@ class EmojiVisionMixin:
         if not update_asset and not context_scope:
             return
         path = str(asset.file_path or "").strip()
-        readable_path = self._emoji_asset_readable_source(path)
+        readable_path = self.context._emoji_asset_readable_source(path)
         if path and not readable_path:
-            await self.archive.upsert_emoji_asset(
+            await self.context.archive.upsert_emoji_asset(
                 EmojiAssetRecord(
                     id=asset.id,
                     file_hash=asset.file_hash,
@@ -205,13 +249,13 @@ class EmojiVisionMixin:
             "不确定能否作为表情发送时 sendable=false。"
         )
         try:
-            payload = await self._call_emoji_vision_payload(
+            payload = await self.context._call_emoji_vision_payload(
                 prompt,
                 path,
                 session_prefix="daily_life_emoji_vision",
                 task_label="表情视觉",
             )
-            self._apply_visual_context_summary(
+            self.context._apply_visual_context_summary(
                 context_scope,
                 context_message_key,
                 payload,
@@ -219,11 +263,11 @@ class EmojiVisionMixin:
             )
             if not update_asset:
                 return
-            status = self._emoji_asset_review_status(asset, payload)
+            status = self.context._emoji_asset_review_status(asset, payload)
             rejected_reason = (
-                "" if status == "ready" else self._emoji_asset_rejected_reason(payload)
+                "" if status == "ready" else self.context._emoji_asset_rejected_reason(payload)
             )
-            if status == "ready" and not await self._emoji_can_accept_ready_asset(
+            if status == "ready" and not await self.context._emoji_can_accept_ready_asset(
                 exclude_hash=asset.file_hash
             ):
                 status = "rejected"
@@ -233,12 +277,12 @@ class EmojiVisionMixin:
                     "id": asset.id,
                     "file_hash": asset.file_hash,
                     "file_path": asset.file_path,
-                    "label": self._str_payload(payload.get("label")),
-                    "description": self._str_payload(payload.get("description")),
-                    "emotion_category": self._str_payload(
+                    "label": self.context._str_payload(payload.get("label")),
+                    "description": self.context._str_payload(payload.get("description")),
+                    "emotion_category": self.context._str_payload(
                         payload.get("emotion_category")
                     ),
-                    "emotions": self._list_payload(payload.get("emotions")),
+                    "emotions": self.context._list_payload(payload.get("emotions")),
                     "source_scope": asset.source_scope,
                     "source_message_id": asset.source_message_id,
                     "source_url": asset.source_url,
@@ -248,25 +292,25 @@ class EmojiVisionMixin:
                         and asset.source_kind in {"review", "verified"}
                         else asset.source_kind
                     ),
-                    "asset_type": self._str_payload(payload.get("asset_type"))
+                    "asset_type": self.context._str_payload(payload.get("asset_type"))
                     or asset.asset_type,
-                    "confidence": self._emoji_asset_confidence(asset, payload),
+                    "confidence": self.context._emoji_asset_confidence(asset, payload),
                     "sendable": status == "ready",
                     "rejected_reason": rejected_reason,
                     "status": status,
                 }
             )
             if updated:
-                saved = await self.archive.upsert_emoji_asset(updated)
+                saved = await self.context.archive.upsert_emoji_asset(updated)
                 if saved and saved.status == "ready":
-                    await self._prune_extra_ready_emoji_assets()
+                    await self.context._prune_extra_ready_emoji_assets()
                 logger.debug(
                     f"{LOG_PREFIX} 表情素材识别完成：{updated.label or updated.file_hash}，状态={updated.status}"
                 )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 表情视觉识别跳过：{exc}")
             if not preserve_on_failure:
-                await self._mark_emoji_asset_failed(asset, str(exc)[:120])
+                await self.context._mark_emoji_asset_failed(asset, str(exc)[:120])
 
     async def _save_plain_image_emoji_candidate(
         self,
@@ -278,7 +322,7 @@ class EmojiVisionMixin:
         context_message_key: str,
         cache_sources: list[str] | None = None,
     ) -> None:
-        if not self._emoji_auto_collect_enabled():
+        if not self.context._emoji_auto_collect_enabled():
             return
         if optional_bool(payload.get("is_emoji_asset")) is not True:
             return
@@ -286,10 +330,10 @@ class EmojiVisionMixin:
         fingerprint = str(fingerprint or "").strip()
         if not image or not fingerprint:
             return
-        existing = await self.archive.get_emoji_asset_by_hash(fingerprint)
+        existing = await self.context.archive.get_emoji_asset_by_hash(fingerprint)
         if (
             existing
-            and str(existing.status or "") in self.EMOJI_ASSET_REJECTED_STATUSES
+            and str(existing.status or "") in self.context.EMOJI_ASSET_REJECTED_STATUSES
         ):
             return
         if existing and str(existing.status or "") == "ready":
@@ -300,26 +344,26 @@ class EmojiVisionMixin:
             file_path=image,
             source_scope=context_scope,
             source_message_id=context_message_key,
-            source_url=image if self._emoji_asset_is_remote(image) else "",
+            source_url=image if self.context._emoji_asset_is_remote(image) else "",
             source_kind="review",
             asset_type="image",
             sendable=False,
             status="reviewing",
         )
-        status = self._emoji_asset_review_status(candidate, payload)
+        status = self.context._emoji_asset_review_status(candidate, payload)
         if status != "ready":
             logger.debug(
-                f"{LOG_PREFIX} 图片未收集为表情：{self._emoji_asset_rejected_reason(payload)}"
+                f"{LOG_PREFIX} 图片未收集为表情：{self.context._emoji_asset_rejected_reason(payload)}"
             )
             return
-        if not await self._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
+        if not await self.context._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
             logger.debug(f"{LOG_PREFIX} 图片未收集为表情：表情库已满")
             return
 
         cached_path = None
         cached_source = ""
-        for source in self._emoji_asset_cache_candidates(image, cache_sources):
-            cached_path = await self._cache_emoji_asset_path(
+        for source in self.context._emoji_asset_cache_candidates(image, cache_sources):
+            cached_path = await self.context._cache_emoji_asset_path(
                 {"path": source}, fingerprint
             )
             if cached_path:
@@ -334,27 +378,27 @@ class EmojiVisionMixin:
             {
                 "file_hash": fingerprint,
                 "file_path": str(cached_path),
-                "label": self._str_payload(payload.get("label")),
-                "description": self._str_payload(payload.get("description")),
-                "emotion_category": self._str_payload(payload.get("emotion_category")),
-                "emotions": self._list_payload(payload.get("emotions")),
+                "label": self.context._str_payload(payload.get("label")),
+                "description": self.context._str_payload(payload.get("description")),
+                "emotion_category": self.context._str_payload(payload.get("emotion_category")),
+                "emotions": self.context._list_payload(payload.get("emotions")),
                 "source_scope": context_scope,
                 "source_message_id": context_message_key,
                 "source_url": cached_source
-                if self._emoji_asset_is_remote(cached_source)
+                if self.context._emoji_asset_is_remote(cached_source)
                 else "",
                 "source_kind": "verified",
-                "asset_type": self._str_payload(payload.get("asset_type")) or "image",
-                "confidence": self._emoji_asset_confidence(candidate, payload),
+                "asset_type": self.context._str_payload(payload.get("asset_type")) or "image",
+                "confidence": self.context._emoji_asset_confidence(candidate, payload),
                 "sendable": True,
                 "rejected_reason": "",
                 "status": "ready",
             }
         )
         if updated:
-            saved = await self.archive.upsert_emoji_asset(updated)
+            saved = await self.context.archive.upsert_emoji_asset(updated)
             if saved and saved.status == "ready":
-                await self._prune_extra_ready_emoji_assets()
+                await self.context._prune_extra_ready_emoji_assets()
             logger.debug(
                 f"{LOG_PREFIX} 图片已收集为表情素材：{updated.label or updated.file_hash}"
             )
@@ -378,19 +422,19 @@ class EmojiVisionMixin:
         candidates: list[str],
         fingerprint: str,
     ) -> tuple[str, list[str]]:
-        normalized = self._emoji_asset_cache_candidates("", candidates)
+        normalized = self.context._emoji_asset_cache_candidates("", candidates)
         if not normalized:
             return "", []
         fingerprint = str(fingerprint or "").strip()
         if not fingerprint:
             return "", normalized
         for source in normalized:
-            cached_path = await self._cache_emoji_asset_path(
+            cached_path = await self.context._cache_emoji_asset_path(
                 {"path": source}, fingerprint
             )
             if cached_path:
                 cached_source = str(cached_path)
-                return cached_source, self._emoji_asset_cache_candidates(
+                return cached_source, self.context._emoji_asset_cache_candidates(
                     cached_source, normalized
                 )
         return "", normalized
@@ -398,7 +442,7 @@ class EmojiVisionMixin:
     def _emoji_asset_confidence(
         self, asset: EmojiAssetRecord, payload: dict[str, Any]
     ) -> float:
-        value = self._float_payload(
+        value = self.context._float_payload(
             payload.get("confidence"), 1.0 if asset.source_kind == "trusted" else 0.0
         )
         return max(0.0, min(value, 1.0))
@@ -406,23 +450,23 @@ class EmojiVisionMixin:
     def _emoji_asset_review_status(
         self, asset: EmojiAssetRecord, payload: dict[str, Any]
     ) -> str:
-        raw_status = self._str_payload(payload.get("status"), "ready").lower()
+        raw_status = self.context._str_payload(payload.get("status"), "ready").lower()
         if raw_status in {"disabled", "failed", "rejected"}:
             return "rejected"
         sendable = optional_bool(payload.get("sendable"))
         is_emoji_asset = optional_bool(payload.get("is_emoji_asset"))
-        label = self._str_payload(payload.get("label"))
+        label = self.context._str_payload(payload.get("label"))
         emotions = [
-            self._str_payload(item)
-            for item in self._list_payload(payload.get("emotions"))
-            if self._str_payload(item)
+            self.context._str_payload(item)
+            for item in self.context._list_payload(payload.get("emotions"))
+            if self.context._str_payload(item)
         ]
         has_metadata = bool(label and emotions)
         if asset.source_kind in {"review", "verified"}:
             if is_emoji_asset is not True or sendable is not True:
                 return "rejected"
-            asset_type = self._str_payload(payload.get("asset_type")).lower()
-            if asset_type not in self.EMOJI_ASSET_ALLOWED_REACTION_TYPES:
+            asset_type = self.context._str_payload(payload.get("asset_type")).lower()
+            if asset_type not in self.context.EMOJI_ASSET_ALLOWED_REACTION_TYPES:
                 return "rejected"
             if optional_bool(payload.get("standalone_reaction")) is not True:
                 return "rejected"
@@ -431,8 +475,8 @@ class EmojiVisionMixin:
             if optional_bool(payload.get("information_dominant")) is not False:
                 return "rejected"
             if (
-                self._emoji_asset_confidence(asset, payload)
-                < self.EMOJI_ASSET_MIN_PLAIN_IMAGE_CONFIDENCE
+                self.context._emoji_asset_confidence(asset, payload)
+                < self.context.EMOJI_ASSET_MIN_PLAIN_IMAGE_CONFIDENCE
             ):
                 return "rejected"
             return "ready" if has_metadata else "rejected"
@@ -441,15 +485,15 @@ class EmojiVisionMixin:
         return "ready" if has_metadata else "rejected"
 
     def _emoji_asset_rejected_reason(self, payload: dict[str, Any]) -> str:
-        reason = self._str_payload(payload.get("rejected_reason"))
+        reason = self.context._str_payload(payload.get("rejected_reason"))
         if reason:
             return reason[:160]
         if optional_bool(payload.get("is_emoji_asset")) is not True:
             return "不是可复用的聊天表情"
         if optional_bool(payload.get("sendable")) is not True:
             return "不适合直接作为聊天反应发送"
-        asset_type = self._str_payload(payload.get("asset_type")).lower()
-        if asset_type not in self.EMOJI_ASSET_ALLOWED_REACTION_TYPES:
+        asset_type = self.context._str_payload(payload.get("asset_type")).lower()
+        if asset_type not in self.context.EMOJI_ASSET_ALLOWED_REACTION_TYPES:
             return "素材类型不属于表情"
         if optional_bool(payload.get("standalone_reaction")) is not True:
             return "不是可独立使用的聊天反应"
@@ -457,10 +501,10 @@ class EmojiVisionMixin:
             return "图片含义依赖原始语境"
         if optional_bool(payload.get("information_dominant")) is not False:
             return "图片主要用于传递信息"
-        confidence = self._float_payload(payload.get("confidence"), 0.0)
-        if confidence < self.EMOJI_ASSET_MIN_PLAIN_IMAGE_CONFIDENCE:
+        confidence = self.context._float_payload(payload.get("confidence"), 0.0)
+        if confidence < self.context.EMOJI_ASSET_MIN_PLAIN_IMAGE_CONFIDENCE:
             return "表情识别置信度不足"
-        if not self._str_payload(payload.get("label")) or not self._list_payload(
+        if not self.context._str_payload(payload.get("label")) or not self.context._list_payload(
             payload.get("emotions")
         ):
             return "表情标签信息不完整"
@@ -475,7 +519,7 @@ class EmojiVisionMixin:
         cache_sources: list[str] | None = None,
     ) -> None:
         path = str(path or "").strip()
-        readable_path = self._emoji_asset_readable_source(path)
+        readable_path = self.context._emoji_asset_readable_source(path)
         if path and not readable_path:
             return
         path = readable_path or path
@@ -498,21 +542,21 @@ class EmojiVisionMixin:
             "主要功能是传递信息时 information_dominant=true。"
         )
         try:
-            payload = await self._call_emoji_vision_payload(
+            payload = await self.context._call_emoji_vision_payload(
                 prompt,
                 path,
                 session_prefix="daily_life_visual",
                 task_label="图片上下文",
             )
-            summary = self._visual_context_summary_from_payload(payload)
+            summary = self.context._visual_context_summary_from_payload(payload)
             logger.debug(f"{LOG_PREFIX} 图片上下文识别完成：{summary or '已解析'}")
-            self._apply_visual_context_summary(
+            self.context._apply_visual_context_summary(
                 context_scope,
                 context_message_key,
                 payload,
                 fingerprint,
             )
-            await self._save_plain_image_emoji_candidate(
+            await self.context._save_plain_image_emoji_candidate(
                 payload,
                 image=path,
                 fingerprint=fingerprint,
@@ -523,13 +567,13 @@ class EmojiVisionMixin:
         except Exception as exc:
             logger.warning(
                 f"{LOG_PREFIX} 图片上下文识别未完成：{type(exc).__name__}；"
-                f"总上限={self._EMOJI_VISION_TIMEOUT_SECONDS:.0f}秒"
+                f"总上限={self.context._EMOJI_VISION_TIMEOUT_SECONDS:.0f}秒"
             )
 
     async def _mark_emoji_asset_failed(
         self, asset: EmojiAssetRecord, reason: str = ""
     ) -> None:
-        await self.archive.upsert_emoji_asset(
+        await self.context.archive.upsert_emoji_asset(
             EmojiAssetRecord(
                 id=asset.id,
                 file_hash=asset.file_hash,

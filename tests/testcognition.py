@@ -1,4 +1,5 @@
 import sqlite3
+import datetime
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,9 +18,70 @@ from core.archive.tables import (
     WORLD_SQL,
 )
 from support import LifeArchive
+from core.clock import now as life_now
 
 
 class CognitionArchiveTest(unittest.IsolatedAsyncioTestCase):
+    async def test_temporal_fact_preserves_expiry_across_time_formats(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                fact = await archive.write_temporal_fact("ADD", {
+                    "scope": "private:time", "subject": "self",
+                    "predicate": "current_place", "object_value": "旧地点",
+                    "valid_from": "2026-10-11T08:00:00+08:00",
+                    "valid_to": "2026-10-11 10:00:00",
+                })
+                self.assertEqual(fact.valid_from, "2026-10-11 08:00:00")
+                self.assertEqual(fact.valid_to, "2026-10-11 10:00:00")
+                during = await archive.get_temporal_facts(
+                    scope="private:time", subject="self", predicate="current_place",
+                    as_of="2026-10-11T01:00:00Z",
+                )
+                after = await archive.get_temporal_facts(
+                    scope="private:time", subject="self", predicate="current_place",
+                    as_of="2026-10-11 10:00:00",
+                )
+                self.assertEqual([item.id for item in during], [fact.id])
+                self.assertEqual(after, [])
+                self.assertIsNone(await archive.get_current_temporal_fact(
+                    "private:time", "self", "current_place"
+                ))
+            finally:
+                archive.close()
+
+    async def test_future_fact_can_coexist_with_current_fact_without_resurfacing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                present = life_now().replace(microsecond=0)
+                future = present + datetime.timedelta(days=1)
+                base = {
+                    "scope": "private:future", "subject": "self",
+                    "predicate": "current_outfit", "source": "manual",
+                }
+                scheduled = await archive.write_temporal_fact("ADD", {
+                    **base, "object_value": "明天外出装",
+                    "valid_from": future.isoformat(sep=" "),
+                })
+                self.assertIsNone(await archive.get_current_temporal_fact(
+                    "private:future", "self", "current_outfit"
+                ))
+                current = await archive.write_temporal_fact("ADD", {
+                    **base, "object_value": "今晚居家服",
+                    "valid_from": present.isoformat(sep=" "),
+                })
+                self.assertEqual(current.valid_to, future.isoformat(sep=" "))
+                self.assertEqual((await archive.get_current_temporal_fact(
+                    "private:future", "self", "current_outfit"
+                )).id, current.id)
+                future_hits = await archive.get_temporal_facts(
+                    scope="private:future", subject="self", predicate="current_outfit",
+                    as_of=future.isoformat(sep=" "),
+                )
+                self.assertEqual([item.id for item in future_hits], [scheduled.id])
+            finally:
+                archive.close()
     def test_version_two_database_migrates_cognition_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "daily_life.db"

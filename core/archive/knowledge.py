@@ -9,6 +9,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
+from ..clock import local_datetime, now as life_now
 from ..models import (
     AffectiveStateRecord,
     DecisionTraceRecord,
@@ -23,9 +24,41 @@ from ..models import (
 )
 from ..models.coerce import compact_explanation_text
 
+from typing import Protocol
 
-class CognitionArchiveMixin:
+
+class CognitionArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _cognition_json: Any
+    _cognition_now: Any
+    _cognition_timestamp: Any
+    _cognition_value: Any
+    _compose_affective_state: Any
+    _compose_decision_trace: Any
+    _compose_durable_task: Any
+    _compose_fact_evidence: Any
+    _compose_grounded_diary: Any
+    _compose_life_action_outcome: Any
+    _compose_life_action_receipt: Any
+    _compose_persona_assertion: Any
+    _compose_reflection: Any
+    _compose_temporal_fact: Any
+    _conn: Any
+    _flag: Any
+    _run_db: Any
+    _temporal_source_priority: Any
+    _text: Any
+    add_fact_evidence_signal: Any
+    get_current_temporal_fact: Any
+    write_temporal_fact: Any
+
+
+class CognitionArchiveComponent:
     """持久化时间化认知、任务、情绪和动作结算。"""
+
+    def __init__(self, context: CognitionArchiveComponentContext) -> None:
+        self.context = context
 
     async def record_public_activity(self, receipt: dict[str, Any]) -> bool:
         """持久化幂等的发布回执，不触发聊天侧效果。"""
@@ -49,14 +82,14 @@ class CognitionArchiveMixin:
         }
 
         def write() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 "INSERT OR IGNORE INTO durable_tasks(task_key, kind, payload_json, status, priority, available_at, max_attempts, result_json, created_at, updated_at, completed_at) VALUES (?, 'public_activity_receipt', ?, 'completed', 0, ?, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (key, self._cognition_json(payload, default={}), self._cognition_now()),
+                (key, self.context._cognition_json(payload, default={}), self.context._cognition_now()),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return bool(cursor.rowcount)
 
-        await self._run_db(write)
+        await self.context._run_db(write)
         return True
 
     _TEMPORAL_SOURCE_PRIORITY = {
@@ -74,22 +107,21 @@ class CognitionArchiveMixin:
 
     @staticmethod
     def _cognition_now() -> str:
-        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return life_now().strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def _cognition_timestamp(value: Any) -> datetime.datetime | None:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = f"{text[:-1]}+00:00"
-        try:
-            parsed = datetime.datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        if parsed.tzinfo is not None:
-            parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-        return parsed
+        return local_datetime(value)
+
+    @staticmethod
+    def _temporal_time_text(value: Any) -> str:
+        """把事实时间统一成角色生活时区，保留已有记录的本地时间语义。"""
+        parsed = CognitionArchiveComponent._cognition_timestamp(value)
+        if parsed is None:
+            raise ValueError("时间化事实的时间格式无效")
+        return parsed.isoformat(
+            sep=" ", timespec="microseconds" if parsed.microsecond else "seconds"
+        )
 
     @classmethod
     def _temporal_source_priority(cls, source: Any) -> int:
@@ -121,22 +153,22 @@ class CognitionArchiveMixin:
     def _compose_temporal_fact(self, row: sqlite3.Row) -> TemporalFactRecord:
         return TemporalFactRecord(
             id=int(row["id"] or 0),
-            scope=self._text(row["scope"]),
-            subject=self._text(row["subject"]),
-            predicate=self._text(row["predicate"]),
-            object_value=self._cognition_value(row["object_json"], default=None),
-            observed_at=self._text(row["observed_at"]),
-            valid_from=self._text(row["valid_from"]),
-            valid_to=self._text(row["valid_to"]),
+            scope=self.context._text(row["scope"]),
+            subject=self.context._text(row["subject"]),
+            predicate=self.context._text(row["predicate"]),
+            object_value=self.context._cognition_value(row["object_json"], default=None),
+            observed_at=self.context._text(row["observed_at"]),
+            valid_from=self.context._text(row["valid_from"]),
+            valid_to=self.context._text(row["valid_to"]),
             confidence=max(0.0, min(float(row["confidence"] or 0.0), 1.0)),
-            status=self._text(row["status"]) or "active",
-            source=self._text(row["source"]) or "observation",
-            source_type=self._text(row["source_type"]),
-            source_id=self._text(row["source_id"]),
-            provenance=self._cognition_value(row["provenance_json"], default={}),
+            status=self.context._text(row["status"]) or "active",
+            source=self.context._text(row["source"]) or "observation",
+            source_type=self.context._text(row["source_type"]),
+            source_id=self.context._text(row["source_id"]),
+            provenance=self.context._cognition_value(row["provenance_json"], default={}),
             supersedes_id=int(row["supersedes_id"] or 0),
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def write_temporal_fact(
@@ -158,31 +190,87 @@ class CognitionArchiveMixin:
             ValueError: 操作、结构化键或状态前置条件无效。
         """
 
-        action = self._text(operation).upper()
+        action = self.context._text(operation).upper()
         if action not in {"ADD", "UPDATE", "INVALIDATE", "NONE"}:
             raise ValueError("事实操作必须是 ADD、UPDATE、INVALIDATE 或 NONE")
         item = TemporalFactRecord.from_value(fact)
         if not item:
             raise ValueError("时间化事实必须包含 scope、subject 和 predicate")
-        now = self._cognition_now()
-        effective_at = item.valid_from or item.observed_at or now
-        object_json = self._cognition_json(item.object_value, default=None)
+        now = self.context._cognition_now()
+        effective_at = self._temporal_time_text(item.valid_from or item.observed_at or now)
+        observed_at = self._temporal_time_text(item.observed_at or now)
+        valid_to = self._temporal_time_text(item.valid_to) if item.valid_to else ""
+        if valid_to and valid_to <= effective_at:
+            raise ValueError("时间化事实的失效时间必须晚于生效时间")
+        object_json = self.context._cognition_json(item.object_value, default=None)
 
         def dbwork() -> TemporalFactRecord | None:
-            current = self._conn.execute(
+            def close_uncertain():
+                self.context._conn.execute(
+                    "UPDATE temporal_facts SET status='superseded',valid_to=?,updated_at=CURRENT_TIMESTAMP WHERE scope=? AND subject=? AND predicate=? AND status='uncertain' AND life_timestamp(valid_from)<=life_timestamp(?)",
+                    (effective_at, item.scope, item.subject, item.predicate, effective_at),
+                )
+
+            epistemic = item.provenance.get("epistemic_status")
+            if epistemic in {"inferred", "uncertain"} and action != "NONE":
+                if action == "INVALIDATE":
+                    return None
+                newer = self.context._conn.execute(
+                    "SELECT id FROM temporal_facts WHERE scope=? AND subject=? AND predicate=? AND status<>'uncertain' AND COALESCE(json_extract(provenance_json,'$.epistemic_status'),'') NOT IN ('inferred','uncertain') AND life_timestamp(valid_from)>life_timestamp(?) LIMIT 1",
+                    (item.scope, item.subject, item.predicate, effective_at),
+                ).fetchone()
+                if newer:
+                    return None
+                # 推测独立保存，不能替代或撤销当前事实；同一来源重复处理不增加可信度。
+                previous = self.context._conn.execute(
+                    "SELECT * FROM temporal_facts WHERE scope=? AND subject=? AND predicate=? AND status='uncertain' AND source_id=? AND object_json=? ORDER BY id DESC LIMIT 1",
+                    (item.scope, item.subject, item.predicate, item.source_id, object_json),
+                ).fetchone()
+                if previous:
+                    return self.context._compose_temporal_fact(previous)
+                confidence = min(item.confidence, 0.5 if epistemic == "inferred" else 0.4)
+                start = self.context._cognition_timestamp(effective_at)
+                end = (start + datetime.timedelta(days=7)).isoformat(sep=" ") if start else now
+                cursor = self.context._conn.execute(
+                    "INSERT INTO temporal_facts(scope,subject,predicate,object_json,observed_at,valid_from,valid_to,confidence,status,source,source_type,source_id,provenance_json) VALUES(?,?,?,?,?,?,?,?,'uncertain',?,?,?,?)",
+                    (item.scope, item.subject, item.predicate, object_json, observed_at,
+                     effective_at, end, confidence, item.source, item.source_type, item.source_id,
+                     self.context._cognition_json(item.provenance, default={})),
+                )
+                self.context._conn.commit()
+                return self.context._compose_temporal_fact(self.context._conn.execute("SELECT * FROM temporal_facts WHERE id=?", (cursor.lastrowid,)).fetchone())
+            current = self.context._conn.execute(
                 """
                 SELECT * FROM temporal_facts
                 WHERE scope = ? AND subject = ? AND predicate = ?
-                  AND status = 'active' AND valid_to = ''
-                ORDER BY id DESC LIMIT 1
+                  AND status IN ('active', 'superseded', 'invalidated')
+                  AND life_timestamp(valid_from) <= life_timestamp(?)
+                  AND (valid_to = '' OR life_timestamp(valid_to) > life_timestamp(?))
+                ORDER BY life_timestamp(valid_from) DESC, id DESC LIMIT 1
                 """,
-                (item.scope, item.subject, item.predicate),
+                (item.scope, item.subject, item.predicate, effective_at, effective_at),
+            ).fetchone()
+            next_row = self.context._conn.execute(
+                """
+                SELECT * FROM temporal_facts
+                WHERE scope = ? AND subject = ? AND predicate = ?
+                  AND status IN ('active', 'superseded', 'invalidated')
+                  AND life_timestamp(valid_from) > life_timestamp(?)
+                ORDER BY life_timestamp(valid_from), id LIMIT 1
+                """,
+                (item.scope, item.subject, item.predicate, effective_at),
             ).fetchone()
             if action == "NONE":
-                return self._compose_temporal_fact(current) if current else None
+                return self.context._compose_temporal_fact(current) if current else None
+            if next_row is not None and (
+                self.context._cognition_timestamp(next_row["valid_from"])
+                <= self.context._cognition_timestamp(now)
+            ):
+                # 延迟到达的旧观察不能覆盖已经生效的较新记录。
+                return self.context._compose_temporal_fact(next_row)
             if current is not None:
-                incoming_time = self._cognition_timestamp(effective_at)
-                current_time = self._cognition_timestamp(
+                incoming_time = self.context._cognition_timestamp(effective_at)
+                current_time = self.context._cognition_timestamp(
                     current["valid_from"]
                     or current["observed_at"]
                     or current["created_at"]
@@ -196,15 +284,15 @@ class CognitionArchiveMixin:
                     incoming_time is not None
                     and current_time is not None
                     and incoming_time == current_time
-                    and self._temporal_source_priority(item.source)
-                    < self._temporal_source_priority(current["source"])
+                    and self.context._temporal_source_priority(item.source)
+                    < self.context._temporal_source_priority(current["source"])
                 )
                 if is_older or is_lower_at_same_time:
-                    return self._compose_temporal_fact(current)
+                    return self.context._compose_temporal_fact(current)
             if action == "INVALIDATE":
                 if not current:
                     return None
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE temporal_facts
                     SET valid_to = ?, status = 'invalidated', updated_at = CURRENT_TIMESTAMP
@@ -212,21 +300,29 @@ class CognitionArchiveMixin:
                     """,
                     (effective_at, int(current["id"])),
                 )
-                self._conn.commit()
-                row = self._conn.execute(
+                close_uncertain()
+                self.context._conn.commit()
+                row = self.context._conn.execute(
                     "SELECT * FROM temporal_facts WHERE id = ?", (int(current["id"]),)
                 ).fetchone()
-                return self._compose_temporal_fact(row)
+                return self.context._compose_temporal_fact(row)
             if action == "ADD" and current:
-                if self._text(current["object_json"]) == object_json:
-                    return self._compose_temporal_fact(current)
+                if self.context._text(current["object_json"]) == object_json:
+                    close_uncertain()
+                    self.context._conn.commit()
+                    return self.context._compose_temporal_fact(current)
                 raise ValueError("同一结构化事实键已有当前值，请使用 UPDATE")
             if action == "UPDATE" and not current:
                 raise ValueError("要更新的结构化事实不存在，请先使用 ADD")
 
             supersedes_id = int(current["id"] or 0) if current else 0
+            bounded_valid_to = valid_to
+            if next_row is not None:
+                next_start = self._temporal_time_text(next_row["valid_from"])
+                if not bounded_valid_to or next_start < bounded_valid_to:
+                    bounded_valid_to = next_start
             if current:
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE temporal_facts
                     SET valid_to = ?, status = 'superseded', updated_at = CURRENT_TIMESTAMP
@@ -234,13 +330,13 @@ class CognitionArchiveMixin:
                     """,
                     (effective_at, supersedes_id),
                 )
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO temporal_facts(
                     scope, subject, predicate, object_json, observed_at, valid_from,
                     valid_to, confidence, status, source, source_type, source_id,
                     provenance_json, supersedes_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, '', ?, 'active', ?, ?, ?, ?, ?,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?,
                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
@@ -248,24 +344,26 @@ class CognitionArchiveMixin:
                     item.subject,
                     item.predicate,
                     object_json,
-                    item.observed_at or now,
+                    observed_at,
                     effective_at,
+                    bounded_valid_to,
                     item.confidence,
                     item.source,
                     item.source_type,
                     item.source_id,
-                    self._cognition_json(item.provenance, default={}),
+                    self.context._cognition_json(item.provenance, default={}),
                     supersedes_id or None,
                 ),
             )
             fact_id = int(cursor.lastrowid)
-            self._conn.commit()
-            row = self._conn.execute(
+            close_uncertain()
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM temporal_facts WHERE id = ?", (fact_id,)
             ).fetchone()
-            return self._compose_temporal_fact(row)
+            return self.context._compose_temporal_fact(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_current_temporal_fact(
         self, scope: str, subject: str, predicate: str
@@ -282,18 +380,21 @@ class CognitionArchiveMixin:
         """
 
         def dbwork() -> TemporalFactRecord | None:
-            row = self._conn.execute(
+            now = self.context._cognition_now()
+            row = self.context._conn.execute(
                 """
                 SELECT * FROM temporal_facts
                 WHERE scope = ? AND subject = ? AND predicate = ?
-                  AND status = 'active' AND valid_to = ''
-                ORDER BY id DESC LIMIT 1
+                  AND status IN ('active', 'superseded', 'invalidated')
+                  AND life_timestamp(valid_from) <= life_timestamp(?)
+                  AND (valid_to = '' OR life_timestamp(valid_to) > life_timestamp(?))
+                ORDER BY life_timestamp(valid_from) DESC, id DESC LIMIT 1
                 """,
-                (self._text(scope), self._text(subject), self._text(predicate)),
+                (self.context._text(scope), self.context._text(subject), self.context._text(predicate), now, now),
             ).fetchone()
-            return self._compose_temporal_fact(row) if row else None
+            return self.context._compose_temporal_fact(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_temporal_facts(
         self,
@@ -303,6 +404,7 @@ class CognitionArchiveMixin:
         predicate: str = "",
         as_of: str = "",
         limit: int = 100,
+        include_uncertain: bool = False,
     ) -> list[TemporalFactRecord]:
         """按当前状态或指定时间点查询事实。
 
@@ -320,8 +422,8 @@ class CognitionArchiveMixin:
         def dbwork() -> list[TemporalFactRecord]:
             clauses: list[str] = []
             params: list[Any] = []
-            if self._text(scope):
-                scope_text = self._text(scope)
+            if self.context._text(scope):
+                scope_text = self.context._text(scope)
                 if scope_text != "global":
                     clauses.append("(scope = ? OR scope = 'global')")
                     params.append(scope_text)
@@ -329,26 +431,34 @@ class CognitionArchiveMixin:
                     clauses.append("scope = ?")
                     params.append(scope_text)
             for column, value in (("subject", subject), ("predicate", predicate)):
-                if self._text(value):
+                if self.context._text(value):
                     clauses.append(f"{column} = ?")
-                    params.append(self._text(value))
+                    params.append(self.context._text(value))
+            point = self._temporal_time_text(as_of) if as_of else self.context._cognition_now()
+            clauses.extend([
+                "life_timestamp(valid_from) <= life_timestamp(?)",
+                "(valid_to = '' OR life_timestamp(valid_to) > life_timestamp(?))",
+            ])
+            params.extend([point, point])
             if as_of:
-                point = self._text(as_of)
-                clauses.extend(["valid_from <= ?", "(valid_to = '' OR valid_to > ?)"])
-                params.extend([point, point])
+                if not include_uncertain:
+                    clauses.append("COALESCE(json_extract(provenance_json,'$.epistemic_status'),'') NOT IN ('inferred','uncertain')")
             else:
-                clauses.extend(["status = 'active'", "valid_to = ''"])
+                if include_uncertain:
+                    clauses.append("status IN ('active', 'superseded', 'invalidated', 'uncertain')")
+                else:
+                    clauses.append("status IN ('active', 'superseded', 'invalidated')")
             sql = "SELECT * FROM temporal_facts"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
-            sql += " ORDER BY valid_from DESC, id DESC"
+            sql += " ORDER BY life_timestamp(valid_from) DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_temporal_fact(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_temporal_fact(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def upsert_current_temporal_fact(
         self,
@@ -384,18 +494,18 @@ class CognitionArchiveMixin:
             当前有效事实；输入无效时返回空。
         """
 
-        normalized_scope = self._text(scope)
-        normalized_subject = self._text(subject)
-        normalized_predicate = self._text(predicate)
+        normalized_scope = self.context._text(scope)
+        normalized_subject = self.context._text(subject)
+        normalized_predicate = self.context._text(predicate)
         if not (normalized_scope and normalized_subject and normalized_predicate):
             return None
-        current = await self.get_current_temporal_fact(
+        current = await self.context.get_current_temporal_fact(
             normalized_scope, normalized_subject, normalized_predicate
         )
         operation = "ADD"
         if current is not None:
             operation = "NONE" if current.object_value == object_value else "UPDATE"
-        fact = await self.write_temporal_fact(
+        fact = await self.context.write_temporal_fact(
             operation,
             {
                 "scope": normalized_scope,
@@ -415,7 +525,7 @@ class CognitionArchiveMixin:
             fact and operation != "NONE" and (current is None or fact.id != current.id)
         )
         if wrote_new_version and evidence_summary:
-            await self.add_fact_evidence_signal(
+            await self.context.add_fact_evidence_signal(
                 {
                     "fact_id": fact.id,
                     "signal": "reinforce",
@@ -434,15 +544,15 @@ class CognitionArchiveMixin:
         return FactEvidenceSignalRecord(
             id=int(row["id"] or 0),
             fact_id=int(row["fact_id"] or 0),
-            signal=self._text(row["signal"]) or "reinforce",
+            signal=self.context._text(row["signal"]) or "reinforce",
             weight=max(float(row["weight"] or 0.0), 0.0),
             confidence=max(0.0, min(float(row["confidence"] or 0.0), 1.0)),
-            summary=self._text(row["summary"]),
-            source=self._text(row["source"]) or "observation",
-            source_id=self._text(row["source_id"]),
-            observed_at=self._text(row["observed_at"]),
-            provenance=self._cognition_value(row["provenance_json"], default={}),
-            created_at=self._text(row["created_at"]),
+            summary=self.context._text(row["summary"]),
+            source=self.context._text(row["source"]) or "observation",
+            source_id=self.context._text(row["source_id"]),
+            observed_at=self.context._text(row["observed_at"]),
+            provenance=self.context._cognition_value(row["provenance_json"], default={}),
+            created_at=self.context._text(row["created_at"]),
         )
 
     async def add_fact_evidence_signal(
@@ -465,12 +575,12 @@ class CognitionArchiveMixin:
             raise ValueError("事实证据必须包含 fact_id 和有效的 signal")
 
         def dbwork() -> FactEvidenceSignalRecord:
-            fact = self._conn.execute(
+            fact = self.context._conn.execute(
                 "SELECT 1 FROM temporal_facts WHERE id = ?", (item.fact_id,)
             ).fetchone()
             if not fact:
                 raise ValueError("目标事实不存在")
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO fact_evidence_signals(
                     fact_id, signal, weight, confidence, summary, source,
@@ -485,18 +595,18 @@ class CognitionArchiveMixin:
                     item.summary,
                     item.source,
                     item.source_id,
-                    item.observed_at or self._cognition_now(),
-                    self._cognition_json(item.provenance, default={}),
+                    item.observed_at or self.context._cognition_now(),
+                    self.context._cognition_json(item.provenance, default={}),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM fact_evidence_signals WHERE id = ?",
                 (int(cursor.lastrowid),),
             ).fetchone()
-            return self._compose_fact_evidence(row)
+            return self.context._compose_fact_evidence(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_temporal_fact_confidence(self, fact_id: int) -> float:
         """聚合事实本体和正反证据的置信度。
@@ -512,12 +622,12 @@ class CognitionArchiveMixin:
         """
 
         def dbwork() -> float:
-            fact = self._conn.execute(
+            fact = self.context._conn.execute(
                 "SELECT confidence FROM temporal_facts WHERE id = ?", (int(fact_id),)
             ).fetchone()
             if not fact:
                 raise ValueError("目标事实不存在")
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 "SELECT signal, weight, confidence FROM fact_evidence_signals WHERE fact_id = ?",
                 (int(fact_id),),
             ).fetchall()
@@ -535,27 +645,27 @@ class CognitionArchiveMixin:
             adjustment = 0.35 * signed_total / (1.0 + weighted_total)
             return max(0.0, min(float(fact["confidence"] or 0.0) + adjustment, 1.0))
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_reflection(self, row: sqlite3.Row) -> ReflectionRecord:
         return ReflectionRecord(
             id=int(row["id"] or 0),
-            scope=self._text(row["scope"]),
-            kind=self._text(row["kind"]) or "reflection",
-            summary=self._text(row["summary"]),
+            scope=self.context._text(row["scope"]),
+            kind=self.context._text(row["kind"]) or "reflection",
+            summary=self.context._text(row["summary"]),
             importance=max(0.0, min(float(row["importance"] or 0.0), 1.0)),
-            evidence_ids=self._cognition_value(row["evidence_ids_json"], default=[]),
-            assertion_subject=self._text(row["assertion_subject"]),
-            assertion_predicate=self._text(row["assertion_predicate"]),
-            assertion_object=self._cognition_value(
+            evidence_ids=self.context._cognition_value(row["evidence_ids_json"], default=[]),
+            assertion_subject=self.context._text(row["assertion_subject"]),
+            assertion_predicate=self.context._text(row["assertion_predicate"]),
+            assertion_object=self.context._cognition_value(
                 row["assertion_object_json"], default=None
             ),
             confidence=max(0.0, min(float(row["confidence"] or 0.0), 1.0)),
-            status=self._text(row["status"]) or "pending",
-            source=self._text(row["source"]) or "reflection",
-            promoted_at=self._text(row["promoted_at"]),
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            status=self.context._text(row["status"]) or "pending",
+            source=self.context._text(row["source"]) or "reflection",
+            promoted_at=self.context._text(row["promoted_at"]),
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def save_reflection(
@@ -578,7 +688,7 @@ class CognitionArchiveMixin:
             raise ValueError("反思摘要不能为空")
 
         def dbwork() -> ReflectionRecord:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO reflections(
                     scope, kind, summary, importance, evidence_ids_json,
@@ -592,23 +702,23 @@ class CognitionArchiveMixin:
                     item.kind,
                     item.summary,
                     item.importance,
-                    self._cognition_json(item.evidence_ids, default=[]),
+                    self.context._cognition_json(item.evidence_ids, default=[]),
                     item.assertion_subject,
                     item.assertion_predicate,
-                    self._cognition_json(item.assertion_object, default=None),
+                    self.context._cognition_json(item.assertion_object, default=None),
                     item.confidence,
                     item.status,
                     item.source,
                     item.promoted_at,
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM reflections WHERE id = ?", (int(cursor.lastrowid),)
             ).fetchone()
-            return self._compose_reflection(row)
+            return self.context._compose_reflection(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_reflections(
         self, *, scope: str = "", status: str = "", limit: int = 100
@@ -620,10 +730,10 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if status:
                 clauses.append("status = ?")
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             sql = "SELECT * FROM reflections"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
@@ -631,25 +741,25 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_reflection(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_reflection(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_persona_assertion(self, row: sqlite3.Row) -> PersonaAssertionRecord:
         return PersonaAssertionRecord(
             id=int(row["id"] or 0),
-            scope=self._text(row["scope"]),
-            subject=self._text(row["subject"]),
-            predicate=self._text(row["predicate"]),
-            object_value=self._cognition_value(row["object_json"], default=None),
+            scope=self.context._text(row["scope"]),
+            subject=self.context._text(row["subject"]),
+            predicate=self.context._text(row["predicate"]),
+            object_value=self.context._cognition_value(row["object_json"], default=None),
             confidence=max(0.0, min(float(row["confidence"] or 0.0), 1.0)),
             source_reflection_id=int(row["source_reflection_id"] or 0),
-            valid_from=self._text(row["valid_from"]),
-            valid_to=self._text(row["valid_to"]),
-            status=self._text(row["status"]) or "active",
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            valid_from=self.context._text(row["valid_from"]),
+            valid_to=self.context._text(row["valid_to"]),
+            status=self.context._text(row["status"]) or "active",
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def promote_reflections(
@@ -670,7 +780,7 @@ class CognitionArchiveMixin:
         evidence_threshold = max(int(min_evidence), 1)
 
         def dbwork() -> list[PersonaAssertionRecord]:
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT * FROM reflections
                 WHERE status = 'pending' AND importance >= ?
@@ -680,9 +790,9 @@ class CognitionArchiveMixin:
                 (threshold, max(int(limit), 1)),
             ).fetchall()
             promoted: list[PersonaAssertionRecord] = []
-            now = self._cognition_now()
+            now = self.context._cognition_now()
             for row in rows:
-                evidence_ids = self._cognition_value(
+                evidence_ids = self.context._cognition_value(
                     row["evidence_ids_json"], default=[]
                 )
                 if (
@@ -690,7 +800,7 @@ class CognitionArchiveMixin:
                     or len(evidence_ids) < evidence_threshold
                 ):
                     continue
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE persona_assertions
                     SET valid_to = ?, status = 'superseded', updated_at = CURRENT_TIMESTAMP
@@ -699,12 +809,12 @@ class CognitionArchiveMixin:
                     """,
                     (
                         now,
-                        self._text(row["scope"]),
-                        self._text(row["assertion_subject"]),
-                        self._text(row["assertion_predicate"]),
+                        self.context._text(row["scope"]),
+                        self.context._text(row["assertion_subject"]),
+                        self.context._text(row["assertion_predicate"]),
                     ),
                 )
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     INSERT INTO persona_assertions(
                         scope, subject, predicate, object_json, confidence,
@@ -714,16 +824,16 @@ class CognitionArchiveMixin:
                               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
-                        self._text(row["scope"]),
-                        self._text(row["assertion_subject"]),
-                        self._text(row["assertion_predicate"]),
-                        self._text(row["assertion_object_json"]) or "null",
+                        self.context._text(row["scope"]),
+                        self.context._text(row["assertion_subject"]),
+                        self.context._text(row["assertion_predicate"]),
+                        self.context._text(row["assertion_object_json"]) or "null",
                         max(0.0, min(float(row["confidence"] or 0.0), 1.0)),
                         int(row["id"]),
                         now,
                     ),
                 )
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE reflections
                     SET status = 'promoted', promoted_at = ?, updated_at = CURRENT_TIMESTAMP
@@ -731,15 +841,15 @@ class CognitionArchiveMixin:
                     """,
                     (now, int(row["id"])),
                 )
-                saved = self._conn.execute(
+                saved = self.context._conn.execute(
                     "SELECT * FROM persona_assertions WHERE id = ?",
                     (int(cursor.lastrowid),),
                 ).fetchone()
-                promoted.append(self._compose_persona_assertion(saved))
-            self._conn.commit()
+                promoted.append(self.context._compose_persona_assertion(saved))
+            self.context._conn.commit()
             return promoted
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_persona_assertions(
         self, *, scope: str = "", active_only: bool = True, limit: int = 100
@@ -760,7 +870,7 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if active_only:
                 clauses.extend(["status = 'active'", "valid_to = ''"])
             sql = "SELECT * FROM persona_assertions"
@@ -770,29 +880,29 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_persona_assertion(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_persona_assertion(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_durable_task(self, row: sqlite3.Row) -> DurableTaskRecord:
         return DurableTaskRecord(
             id=int(row["id"] or 0),
-            task_key=self._text(row["task_key"]),
-            kind=self._text(row["kind"]),
-            payload=self._cognition_value(row["payload_json"], default={}),
-            status=self._text(row["status"]) or "pending",
+            task_key=self.context._text(row["task_key"]),
+            kind=self.context._text(row["kind"]),
+            payload=self.context._cognition_value(row["payload_json"], default={}),
+            status=self.context._text(row["status"]) or "pending",
             priority=int(row["priority"] or 0),
-            available_at=self._text(row["available_at"]),
-            lease_owner=self._text(row["lease_owner"]),
-            lease_expires_at=self._text(row["lease_expires_at"]),
+            available_at=self.context._text(row["available_at"]),
+            lease_owner=self.context._text(row["lease_owner"]),
+            lease_expires_at=self.context._text(row["lease_expires_at"]),
             attempts=int(row["attempts"] or 0),
             max_attempts=int(row["max_attempts"] or 0),
-            last_error=self._text(row["last_error"]),
-            result=self._cognition_value(row["result_json"], default={}),
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
-            completed_at=self._text(row["completed_at"]),
+            last_error=self.context._text(row["last_error"]),
+            result=self.context._cognition_value(row["result_json"], default={}),
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
+            completed_at=self.context._text(row["completed_at"]),
         )
 
     async def enqueue_durable_task(
@@ -826,12 +936,12 @@ class CognitionArchiveMixin:
             ValueError: 幂等键或类型为空。
         """
 
-        key = self._text(task_key)
-        task_kind = self._text(kind)
+        key = self.context._text(task_key)
+        task_kind = self.context._text(kind)
         if not (key and task_kind):
             raise ValueError("持久任务必须包含 task_key 和 kind")
-        owner = self._text(lease_owner)
-        now = self._cognition_now()
+        owner = self.context._text(lease_owner)
+        now = self.context._cognition_now()
         status = "leased" if owner else "pending"
         lease_expires_at = ""
         if owner:
@@ -841,7 +951,7 @@ class CognitionArchiveMixin:
             ).strftime("%Y-%m-%d %H:%M:%S")
 
         def dbwork() -> DurableTaskRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT OR IGNORE INTO durable_tasks(
                     task_key, kind, payload_json, status, priority, available_at,
@@ -852,22 +962,22 @@ class CognitionArchiveMixin:
                 (
                     key,
                     task_kind,
-                    self._cognition_json(payload, default={}),
+                    self.context._cognition_json(payload, default={}),
                     status,
                     max(0, min(int(priority), 100)),
-                    self._text(available_at) or now,
+                    self.context._text(available_at) or now,
                     owner,
                     lease_expires_at,
                     max(int(max_attempts), 1),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM durable_tasks WHERE task_key = ?", (key,)
             ).fetchone()
-            return self._compose_durable_task(row)
+            return self.context._compose_durable_task(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def reschedule_durable_task(self, task_key: str, available_at: str) -> bool:
         """刷新尚未执行的持久任务时间。
@@ -876,13 +986,13 @@ class CognitionArchiveMixin:
         悄悄改写而继续使用旧的执行上下文。
         """
 
-        key = self._text(task_key)
-        point = self._text(available_at)
+        key = self.context._text(task_key)
+        point = self.context._text(available_at)
         if not key or not point:
             return False
 
         def dbwork() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET available_at = ?, last_error = '', result_json = ?,
@@ -891,14 +1001,14 @@ class CognitionArchiveMixin:
                 """,
                 (
                     point,
-                    self._cognition_json({}, default={}),
+                    self.context._cognition_json({}, default={}),
                     key,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_durable_tasks(
         self, *, status: str = "", kind: str = "", limit: int = 100
@@ -910,10 +1020,10 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if status:
                 clauses.append("status = ?")
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             if kind:
                 clauses.append("kind = ?")
-                params.append(self._text(kind))
+                params.append(self.context._text(kind))
             sql = "SELECT * FROM durable_tasks"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
@@ -921,20 +1031,20 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_durable_task(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_durable_task(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_durable_task(self, task_key: str) -> DurableTaskRecord | None:
         def dbwork() -> DurableTaskRecord | None:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM durable_tasks WHERE task_key = ?",
-                (self._text(task_key),),
+                (self.context._text(task_key),),
             ).fetchone()
-            return self._compose_durable_task(row) if row else None
+            return self.context._compose_durable_task(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def recover_expired_durable_tasks(self, *, now: str = "") -> int:
         """释放过期租约并终止超过重试上限的任务。
@@ -946,39 +1056,41 @@ class CognitionArchiveMixin:
             被恢复或终止的任务数量。
         """
 
-        point = self._text(now) or self._cognition_now()
+        point = self.context._text(now) or self.context._cognition_now()
 
         def dbwork() -> int:
-            terminal = self._conn.execute(
+            terminal = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'dead', lease_owner = '', lease_expires_at = '',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'leased' AND lease_expires_at <> ?
-                  AND lease_expires_at <= ? AND attempts >= max_attempts
+                  AND life_timestamp(lease_expires_at) <= life_timestamp(?)
+                  AND attempts >= max_attempts
                 """,
                 ("", point),
             )
-            recovered = self._conn.execute(
+            recovered = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'pending', lease_owner = '', lease_expires_at = '',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'leased' AND lease_expires_at <> ?
-                  AND lease_expires_at <= ? AND attempts < max_attempts
+                  AND life_timestamp(lease_expires_at) <= life_timestamp(?)
+                  AND attempts < max_attempts
                 """,
                 ("", point),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(terminal.rowcount or 0) + int(recovered.rowcount or 0)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def recover_leased_durable_tasks(self) -> int:
         """在插件启动时释放旧进程留下的全部任务租约。"""
 
         def dbwork() -> int:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
@@ -986,10 +1098,10 @@ class CognitionArchiveMixin:
                 WHERE status = 'leased'
                 """
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(int(cursor.rowcount or 0), 0)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def lease_durable_tasks(
         self,
@@ -998,6 +1110,7 @@ class CognitionArchiveMixin:
         limit: int = 1,
         lease_seconds: int = 60,
         now: str = "",
+        include_kinds: tuple[str, ...] | list[str] = (),
         exclude_kinds: tuple[str, ...] | list[str] = (),
         exclude_task_ids: tuple[int, ...] | list[int] = (),
     ) -> list[DurableTaskRecord]:
@@ -1016,37 +1129,43 @@ class CognitionArchiveMixin:
             ValueError: 执行器标识为空。
         """
 
-        lease_owner = self._text(owner)
+        lease_owner = self.context._text(owner)
         if not lease_owner:
             raise ValueError("任务租约必须包含 owner")
-        point = self._text(now) or self._cognition_now()
-        try:
-            point_value = datetime.datetime.fromisoformat(point.replace("Z", "+00:00"))
-            point_value = point_value.replace(tzinfo=None)
-        except ValueError as exc:
-            raise ValueError("任务租约时间格式无效") from exc
+        point = self.context._text(now) or self.context._cognition_now()
+        point_value = local_datetime(point)
+        if point_value is None:
+            raise ValueError("任务租约时间格式无效")
         lease_until = (
             point_value + datetime.timedelta(seconds=max(lease_seconds, 1))
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         def dbwork() -> list[DurableTaskRecord]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
                     lease_owner = '', lease_expires_at = '', updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'leased' AND lease_expires_at <> '' AND lease_expires_at <= ?
+                WHERE status = 'leased' AND lease_expires_at <> ''
+                  AND life_timestamp(lease_expires_at) <= life_timestamp(?)
                 """,
                 (point,),
             )
             excluded = tuple(
-                sorted({self._text(item) for item in exclude_kinds if self._text(item)})
+                sorted({self.context._text(item) for item in exclude_kinds if self.context._text(item)})
+            )
+            included = tuple(
+                sorted({self.context._text(item) for item in include_kinds if self.context._text(item)})
             )
             where = (
                 "status = 'pending' AND attempts < max_attempts "
-                "AND (available_at = '' OR available_at <= ?)"
+                "AND (available_at = '' OR life_timestamp(available_at) <= life_timestamp(?))"
             )
             params: list[Any] = [point]
+            if included:
+                placeholders = ",".join("?" for _ in included)
+                where += f" AND kind IN ({placeholders})"
+                params.extend(included)
             if excluded:
                 placeholders = ",".join("?" for _ in excluded)
                 where += f" AND kind NOT IN ({placeholders})"
@@ -1056,7 +1175,7 @@ class CognitionArchiveMixin:
                 where += f" AND id NOT IN ({placeholders})"
                 params.extend(int(item) for item in exclude_task_ids)
             params.append(max(int(limit), 1))
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 "SELECT id FROM durable_tasks WHERE "
                 + where
                 + " ORDER BY priority DESC, id ASC LIMIT ?",
@@ -1064,7 +1183,7 @@ class CognitionArchiveMixin:
             ).fetchall()
             ids = [int(row["id"]) for row in rows]
             for task_id in ids:
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE durable_tasks
                     SET status = 'leased', lease_owner = ?, lease_expires_at = ?,
@@ -1073,17 +1192,17 @@ class CognitionArchiveMixin:
                     """,
                     (lease_owner, lease_until, task_id),
                 )
-            self._conn.commit()
+            self.context._conn.commit()
             if not ids:
                 return []
             placeholders = ",".join("?" for _ in ids)
-            leased = self._conn.execute(
+            leased = self.context._conn.execute(
                 f"SELECT * FROM durable_tasks WHERE id IN ({placeholders}) AND lease_owner = ? ORDER BY priority DESC, id ASC",
                 (*ids, lease_owner),
             ).fetchall()
-            return [self._compose_durable_task(row) for row in leased]
+            return [self.context._compose_durable_task(row) for row in leased]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def update_durable_task_progress(
         self, task_id: int, owner: str, progress: dict[str, Any]
@@ -1091,41 +1210,41 @@ class CognitionArchiveMixin:
         """在释放租约之前持久化已取得的产物，避免恢复时重复获取。"""
 
         def dbwork() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """UPDATE durable_tasks SET result_json = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND status = 'leased' AND lease_owner = ?""",
                 (
-                    self._cognition_json({"progress": progress}, default={}),
+                    self.context._cognition_json({"progress": progress}, default={}),
                     int(task_id),
-                    self._text(owner),
+                    self.context._text(owner),
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return bool(cursor.rowcount)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def renew_durable_task_lease(
         self, task_id: int, owner: str, *, lease_seconds: int = 1800
     ) -> bool:
         """仅为当前仍有效的租约续期，过期租约不能重新取得所有权。"""
-        point = self._cognition_now()
+        point = self.context._cognition_now()
         expires = (
             datetime.datetime.fromisoformat(point)
             + datetime.timedelta(seconds=max(1, lease_seconds))
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         def dbwork() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """UPDATE durable_tasks SET lease_expires_at = ?
                 WHERE id = ? AND status = 'leased' AND lease_owner = ?
                 AND lease_expires_at > ?""",
-                (expires, int(task_id), self._text(owner), point),
+                (expires, int(task_id), self.context._text(owner), point),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return bool(cursor.rowcount)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def complete_durable_task(
         self, task_id: int, result: dict[str, Any], *, owner: str = ""
@@ -1146,8 +1265,8 @@ class CognitionArchiveMixin:
             params: list[Any] = [int(task_id)]
             if owner:
                 clauses.append("lease_owner = ?")
-                params.append(self._text(owner))
-            cursor = self._conn.execute(
+                params.append(self.context._text(owner))
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'completed', result_json = ?, lease_owner = '',
@@ -1155,15 +1274,15 @@ class CognitionArchiveMixin:
                 WHERE """
                 + " AND ".join(clauses),
                 (
-                    self._cognition_json(result, default={}),
-                    self._cognition_now(),
+                    self.context._cognition_json(result, default={}),
+                    self.context._cognition_now(),
                     *params,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def complete_durable_task_by_key(
         self, task_key: str, result: dict[str, Any]
@@ -1178,12 +1297,12 @@ class CognitionArchiveMixin:
             是否成功收束任务。
         """
 
-        key = self._text(task_key)
+        key = self.context._text(task_key)
         if not key:
             return False
 
         def dbwork() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'completed', result_json = ?, lease_owner = '',
@@ -1191,15 +1310,15 @@ class CognitionArchiveMixin:
                 WHERE task_key = ? AND status IN ('pending', 'leased')
                 """,
                 (
-                    self._cognition_json(result, default={}),
-                    self._cognition_now(),
+                    self.context._cognition_json(result, default={}),
+                    self.context._cognition_now(),
                     key,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def fail_durable_task_by_key(
         self, task_key: str, error: str, result: dict[str, Any] | None = None
@@ -1210,12 +1329,12 @@ class CognitionArchiveMixin:
         失败状态必须在重启后仍可被恢复器和状态查询识别。
         """
 
-        key = self._text(task_key)
+        key = self.context._text(task_key)
         if not key:
             return False
 
         def dbwork() -> bool:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'failed', result_json = ?, last_error = ?,
@@ -1224,16 +1343,16 @@ class CognitionArchiveMixin:
                 WHERE task_key = ? AND status IN ('pending', 'leased')
                 """,
                 (
-                    self._cognition_json(result, default={}),
-                    self._text(error),
-                    self._cognition_now(),
+                    self.context._cognition_json(result, default={}),
+                    self.context._text(error),
+                    self.context._cognition_now(),
                     key,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def finalize_durable_task(
         self,
@@ -1257,7 +1376,7 @@ class CognitionArchiveMixin:
         """
 
         def dbwork() -> bool:
-            normalized_owner = self._text(owner)
+            normalized_owner = self.context._text(owner)
             if normalized_owner:
                 status_clause = (
                     "(status = 'pending' OR (status = 'leased' AND lease_owner = ?))"
@@ -1266,7 +1385,7 @@ class CognitionArchiveMixin:
             else:
                 status_clause = "status = 'pending'"
                 status_params = ()
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 f"""
                 UPDATE durable_tasks
                 SET status = 'completed', result_json = ?, lease_owner = '',
@@ -1274,16 +1393,16 @@ class CognitionArchiveMixin:
                 WHERE id = ? AND {status_clause}
                 """,
                 (
-                    self._cognition_json(result, default={}),
-                    self._cognition_now(),
+                    self.context._cognition_json(result, default={}),
+                    self.context._cognition_now(),
                     int(task_id),
                     *status_params,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def fail_durable_task(
         self,
@@ -1312,8 +1431,8 @@ class CognitionArchiveMixin:
             params: list[Any] = [int(task_id)]
             if owner:
                 clauses.append("lease_owner = ?")
-                params.append(self._text(owner))
-            cursor = self._conn.execute(
+                params.append(self.context._text(owner))
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = CASE
@@ -1325,16 +1444,16 @@ class CognitionArchiveMixin:
                 WHERE """
                 + " AND ".join(clauses),
                 (
-                    self._flag(permanent),
-                    self._text(error),
-                    self._text(retry_at) or self._cognition_now(),
+                    self.context._flag(permanent),
+                    self.context._text(error),
+                    self.context._text(retry_at) or self.context._cognition_now(),
                     *params,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def defer_durable_task(
         self,
@@ -1347,7 +1466,7 @@ class CognitionArchiveMixin:
     ) -> bool:
         """把条件尚未满足的已租用任务延期，不记作执行失败。"""
 
-        result = {"outcome": "deferred", "reason": self._text(reason)}
+        result = {"outcome": "deferred", "reason": self.context._text(reason)}
         if isinstance(progress, dict):
             result["progress"] = progress
 
@@ -1356,8 +1475,8 @@ class CognitionArchiveMixin:
             params: list[Any] = [int(task_id)]
             if owner:
                 clauses.append("lease_owner = ?")
-                params.append(self._text(owner))
-            cursor = self._conn.execute(
+                params.append(self.context._text(owner))
+            cursor = self.context._conn.execute(
                 """
                 UPDATE durable_tasks
                 SET status = 'pending', available_at = ?, lease_owner = '',
@@ -1366,29 +1485,29 @@ class CognitionArchiveMixin:
                 WHERE """
                 + " AND ".join(clauses),
                 (
-                    self._text(available_at) or self._cognition_now(),
-                    self._cognition_json(result, default={}),
+                    self.context._text(available_at) or self.context._cognition_now(),
+                    self.context._cognition_json(result, default={}),
                     *params,
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return int(cursor.rowcount or 0) > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_decision_trace(self, row: sqlite3.Row) -> DecisionTraceRecord:
         return DecisionTraceRecord(
             id=int(row["id"] or 0),
-            trace_id=self._text(row["trace_id"]),
-            scope=self._text(row["scope"]),
-            stage=self._text(row["stage"]),
-            reason_code=self._text(row["reason_code"]),
-            decision=self._text(row["decision"]),
-            scores=self._cognition_value(row["score_json"], default={}),
-            evidence=self._cognition_value(row["evidence_json"], default=[]),
+            trace_id=self.context._text(row["trace_id"]),
+            scope=self.context._text(row["scope"]),
+            stage=self.context._text(row["stage"]),
+            reason_code=self.context._text(row["reason_code"]),
+            decision=self.context._text(row["decision"]),
+            scores=self.context._cognition_value(row["score_json"], default={}),
+            evidence=self.context._cognition_value(row["evidence_json"], default=[]),
             outcome=compact_explanation_text(row["outcome"]),
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def save_decision_trace(
@@ -1407,13 +1526,13 @@ class CognitionArchiveMixin:
         """
 
         raw = trace.as_dict() if isinstance(trace, DecisionTraceRecord) else dict(trace)
-        trace_id = self._text(raw.get("trace_id")) or uuid.uuid4().hex
-        stage = self._text(raw.get("stage"))
+        trace_id = self.context._text(raw.get("trace_id")) or uuid.uuid4().hex
+        stage = self.context._text(raw.get("stage"))
         if not stage:
             raise ValueError("决策轨迹必须包含 stage")
 
         def dbwork() -> DecisionTraceRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO decision_traces(
                     trace_id, scope, stage, reason_code, decision, score_json,
@@ -1427,23 +1546,23 @@ class CognitionArchiveMixin:
                 """,
                 (
                     trace_id,
-                    self._text(raw.get("scope")),
+                    self.context._text(raw.get("scope")),
                     stage,
-                    self._text(raw.get("reason_code")),
-                    self._text(raw.get("decision")),
-                    self._cognition_json(raw.get("scores"), default={}),
-                    self._cognition_json(raw.get("evidence"), default=[]),
+                    self.context._text(raw.get("reason_code")),
+                    self.context._text(raw.get("decision")),
+                    self.context._cognition_json(raw.get("scores"), default={}),
+                    self.context._cognition_json(raw.get("evidence"), default=[]),
                     compact_explanation_text(raw.get("outcome")),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM decision_traces WHERE trace_id = ? AND stage = ?",
                 (trace_id, stage),
             ).fetchone()
-            return self._compose_decision_trace(row)
+            return self.context._compose_decision_trace(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_decision_traces(
         self, *, scope: str = "", trace_id: str = "", limit: int = 100
@@ -1464,10 +1583,10 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if trace_id:
                 clauses.append("trace_id = ?")
-                params.append(self._text(trace_id))
+                params.append(self.context._text(trace_id))
             sql = "SELECT * FROM decision_traces"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
@@ -1475,27 +1594,27 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_decision_trace(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_decision_trace(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_life_action_outcome(self, row: sqlite3.Row) -> LifeActionOutcomeRecord:
         return LifeActionOutcomeRecord(
             id=int(row["id"] or 0),
-            action_id=self._text(row["action_id"]),
-            date=self._text(row["date"]),
-            action_type=self._text(row["action_type"]),
-            target=self._text(row["target"]),
-            preconditions=self._cognition_value(row["preconditions_json"], default={}),
-            effects=self._cognition_value(row["effects_json"], default={}),
-            status=self._text(row["status"]) or "proposed",
-            reason=self._text(row["reason"]),
-            evidence=self._cognition_value(row["evidence_json"], default=[]),
-            started_at=self._text(row["started_at"]),
-            committed_at=self._text(row["committed_at"]),
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            action_id=self.context._text(row["action_id"]),
+            date=self.context._text(row["date"]),
+            action_type=self.context._text(row["action_type"]),
+            target=self.context._text(row["target"]),
+            preconditions=self.context._cognition_value(row["preconditions_json"], default={}),
+            effects=self.context._cognition_value(row["effects_json"], default={}),
+            status=self.context._text(row["status"]) or "proposed",
+            reason=self.context._text(row["reason"]),
+            evidence=self.context._cognition_value(row["evidence_json"], default=[]),
+            started_at=self.context._text(row["started_at"]),
+            committed_at=self.context._text(row["committed_at"]),
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def save_life_action_outcome(
@@ -1515,16 +1634,16 @@ class CognitionArchiveMixin:
 
         serializer = getattr(outcome, "as_dict", None)
         raw = serializer() if callable(serializer) else dict(outcome)
-        action_id = self._text(raw.get("action_id"))
-        action_type = self._text(raw.get("action_type"))
+        action_id = self.context._text(raw.get("action_id"))
+        action_type = self.context._text(raw.get("action_type"))
         if not (action_id and action_type):
             raise ValueError("生活动作结算必须包含 action_id 和 action_type")
         evidence = raw.get("evidence")
         if not isinstance(evidence, list):
-            evidence = [evidence] if self._text(evidence) else []
+            evidence = [evidence] if self.context._text(evidence) else []
 
         def dbwork() -> LifeActionOutcomeRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO life_action_outcomes(
                     action_id, date, action_type, target, preconditions_json,
@@ -1541,27 +1660,27 @@ class CognitionArchiveMixin:
                 """,
                 (
                     action_id,
-                    self._text(raw.get("date")),
+                    self.context._text(raw.get("date")),
                     action_type,
-                    self._text(raw.get("target") or raw.get("timeline_index")),
-                    self._cognition_json(raw.get("preconditions"), default={}),
-                    self._cognition_json(
+                    self.context._text(raw.get("target") or raw.get("timeline_index")),
+                    self.context._cognition_json(raw.get("preconditions"), default={}),
+                    self.context._cognition_json(
                         raw.get("effects", raw.get("state_changes")), default={}
                     ),
-                    self._text(raw.get("status")) or "proposed",
-                    self._text(raw.get("reason")),
-                    self._cognition_json(evidence, default=[]),
-                    self._text(raw.get("started_at")),
-                    self._text(raw.get("committed_at")),
+                    self.context._text(raw.get("status")) or "proposed",
+                    self.context._text(raw.get("reason")),
+                    self.context._cognition_json(evidence, default=[]),
+                    self.context._text(raw.get("started_at")),
+                    self.context._text(raw.get("committed_at")),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM life_action_outcomes WHERE action_id = ?", (action_id,)
             ).fetchone()
-            return self._compose_life_action_outcome(row)
+            return self.context._compose_life_action_outcome(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_life_action_outcomes(
         self, *, date: str = "", status: str = "", limit: int = 100
@@ -1582,10 +1701,10 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if date:
                 clauses.append("date = ?")
-                params.append(self._text(date))
+                params.append(self.context._text(date))
             if status:
                 clauses.append("status = ?")
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             sql = "SELECT * FROM life_action_outcomes"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
@@ -1593,25 +1712,25 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_life_action_outcome(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_life_action_outcome(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_life_action_receipt(self, row: sqlite3.Row) -> LifeActionReceiptRecord:
         return LifeActionReceiptRecord(
             id=int(row["id"] or 0),
-            receipt_id=self._text(row["receipt_id"]),
-            action_id=self._text(row["action_id"]),
-            date=self._text(row["date"]),
-            action_type=self._text(row["action_type"]),
-            status=self._text(row["status"]) or "confirmed",
-            evidence=self._cognition_value(row["evidence_json"], default=[]),
-            source=self._text(row["source"]),
-            source_id=self._text(row["source_id"]),
-            artifact_path=self._text(row["artifact_path"]),
-            occurred_at=self._text(row["occurred_at"]),
-            created_at=self._text(row["created_at"]),
+            receipt_id=self.context._text(row["receipt_id"]),
+            action_id=self.context._text(row["action_id"]),
+            date=self.context._text(row["date"]),
+            action_type=self.context._text(row["action_type"]),
+            status=self.context._text(row["status"]) or "confirmed",
+            evidence=self.context._cognition_value(row["evidence_json"], default=[]),
+            source=self.context._text(row["source"]),
+            source_id=self.context._text(row["source_id"]),
+            artifact_path=self.context._text(row["artifact_path"]),
+            occurred_at=self.context._text(row["occurred_at"]),
+            created_at=self.context._text(row["created_at"]),
         )
 
     async def save_life_action_receipt(
@@ -1631,19 +1750,19 @@ class CognitionArchiveMixin:
 
         serializer = getattr(receipt, "as_dict", None)
         raw = serializer() if callable(serializer) else dict(receipt)
-        receipt_id = self._text(raw.get("receipt_id")) or uuid.uuid4().hex
-        action_id = self._text(raw.get("action_id"))
+        receipt_id = self.context._text(raw.get("receipt_id")) or uuid.uuid4().hex
+        action_id = self.context._text(raw.get("action_id"))
         if not action_id:
             raise ValueError("动作回执必须包含 action_id")
-        status = self._text(raw.get("status") or "confirmed").lower()
+        status = self.context._text(raw.get("status") or "confirmed").lower()
         if status not in {"confirmed", "simulated", "failed", "cancelled"}:
             raise ValueError("动作回执状态无效")
         evidence = raw.get("evidence")
         if not isinstance(evidence, list):
-            evidence = [evidence] if self._text(evidence) else []
+            evidence = [evidence] if self.context._text(evidence) else []
 
         def dbwork() -> LifeActionReceiptRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO life_action_receipts(
                     receipt_id, action_id, date, action_type, status, evidence_json,
@@ -1659,23 +1778,23 @@ class CognitionArchiveMixin:
                 (
                     receipt_id,
                     action_id,
-                    self._text(raw.get("date")),
-                    self._text(raw.get("action_type")),
+                    self.context._text(raw.get("date")),
+                    self.context._text(raw.get("action_type")),
                     status,
-                    self._cognition_json(evidence, default=[]),
-                    self._text(raw.get("source")),
-                    self._text(raw.get("source_id")),
-                    self._text(raw.get("artifact_path"))[:1000],
-                    self._text(raw.get("occurred_at")),
+                    self.context._cognition_json(evidence, default=[]),
+                    self.context._text(raw.get("source")),
+                    self.context._text(raw.get("source_id")),
+                    self.context._text(raw.get("artifact_path"))[:1000],
+                    self.context._text(raw.get("occurred_at")),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM life_action_receipts WHERE receipt_id = ?", (receipt_id,)
             ).fetchone()
-            return self._compose_life_action_receipt(row)
+            return self.context._compose_life_action_receipt(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_life_action_receipts(
         self, *, action_id: str = "", limit: int = 100
@@ -1693,24 +1812,24 @@ class CognitionArchiveMixin:
         def dbwork() -> list[LifeActionReceiptRecord]:
             params: list[Any] = []
             sql = "SELECT * FROM life_action_receipts"
-            if self._text(action_id):
+            if self.context._text(action_id):
                 sql += " WHERE action_id = ?"
-                params.append(self._text(action_id))
+                params.append(self.context._text(action_id))
             sql += " ORDER BY id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_life_action_receipt(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_life_action_receipt(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_affective_state(self, row: sqlite3.Row) -> AffectiveStateRecord:
         return AffectiveStateRecord(
             id=int(row["id"] or 0),
-            scope=self._text(row["scope"]),
-            layer=self._text(row["layer"]) or "transient",
-            label=self._text(row["label"]),
+            scope=self.context._text(row["scope"]),
+            layer=self.context._text(row["layer"]) or "transient",
+            label=self.context._text(row["label"]),
             valence=max(-1.0, min(float(row["valence"] or 0.0), 1.0)),
             arousal=max(0.0, min(float(row["arousal"] or 0.0), 1.0)),
             intensity=max(0.0, min(float(row["intensity"] or 0.0), 1.0)),
@@ -1718,13 +1837,13 @@ class CognitionArchiveMixin:
             decay_half_life_minutes=max(
                 float(row["decay_half_life_minutes"] or 240.0), 1.0
             ),
-            evidence=self._cognition_value(row["evidence_json"], default=[]),
-            valid_from=self._text(row["valid_from"]),
-            valid_to=self._text(row["valid_to"]),
-            status=self._text(row["status"]) or "active",
-            source=self._text(row["source"]) or "state",
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            evidence=self.context._cognition_value(row["evidence_json"], default=[]),
+            valid_from=self.context._text(row["valid_from"]),
+            valid_to=self.context._text(row["valid_to"]),
+            status=self.context._text(row["status"]) or "active",
+            source=self.context._text(row["source"]) or "state",
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def save_affective_state(
@@ -1745,17 +1864,17 @@ class CognitionArchiveMixin:
         raw = (
             state.as_dict() if isinstance(state, AffectiveStateRecord) else dict(state)
         )
-        scope = self._text(raw.get("scope"))
-        layer = self._text(raw.get("layer") or "transient")
-        label = self._text(raw.get("label"))
+        scope = self.context._text(raw.get("scope"))
+        layer = self.context._text(raw.get("layer") or "transient")
+        label = self.context._text(raw.get("label"))
         if (
             not scope
             or not label
             or layer not in {"transient", "daily", "relationship"}
         ):
             raise ValueError("情绪状态必须包含 scope、label 和有效 layer")
-        now = self._cognition_now()
-        valid_from = self._text(raw.get("valid_from")) or now
+        now = self.context._cognition_now()
+        valid_from = self.context._text(raw.get("valid_from")) or now
         numeric_values: dict[str, float] = {}
         for key, default in (
             ("valence", 0.0),
@@ -1772,7 +1891,7 @@ class CognitionArchiveMixin:
                 numeric_values[key] = default
 
         def dbwork() -> AffectiveStateRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE affective_states
                 SET valid_to = ?, status = 'superseded', updated_at = CURRENT_TIMESTAMP
@@ -1781,7 +1900,7 @@ class CognitionArchiveMixin:
                 """,
                 (valid_from, scope, layer, label),
             )
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO affective_states(
                     scope, layer, label, valence, arousal, intensity, baseline,
@@ -1799,18 +1918,18 @@ class CognitionArchiveMixin:
                     max(0.0, min(numeric_values["intensity"], 1.0)),
                     max(0.0, min(numeric_values["baseline"], 1.0)),
                     max(numeric_values["decay_half_life_minutes"], 1.0),
-                    self._cognition_json(raw.get("evidence"), default=[]),
+                    self.context._cognition_json(raw.get("evidence"), default=[]),
                     valid_from,
-                    self._text(raw.get("source")) or "state",
+                    self.context._text(raw.get("source")) or "state",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM affective_states WHERE id = ?", (int(cursor.lastrowid),)
             ).fetchone()
-            return self._compose_affective_state(row)
+            return self.context._compose_affective_state(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_affective_states(
         self,
@@ -1841,10 +1960,10 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if layer:
                 clauses.append("layer = ?")
-                params.append(self._text(layer))
+                params.append(self.context._text(layer))
             if active_only:
                 clauses.extend(["status = 'active'", "valid_to = ''"])
             sql = "SELECT * FROM affective_states"
@@ -1854,23 +1973,17 @@ class CognitionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            states = [self._compose_affective_state(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            states = [self.context._compose_affective_state(row) for row in rows]
             if not apply_decay:
                 return states
-            try:
-                point = datetime.datetime.fromisoformat(
-                    (self._text(at) or self._cognition_now()).replace("Z", "+00:00")
-                ).replace(tzinfo=None)
-            except ValueError:
-                point = datetime.datetime.now()
+            point = local_datetime(self.context._text(at) or self.context._cognition_now())
+            if point is None:
+                point = life_now()
             decayed: list[AffectiveStateRecord] = []
             for item in states:
-                try:
-                    started = datetime.datetime.fromisoformat(
-                        item.valid_from.replace("Z", "+00:00")
-                    ).replace(tzinfo=None)
-                except ValueError:
+                started = local_datetime(item.valid_from)
+                if started is None:
                     decayed.append(item)
                     continue
                 elapsed_minutes = max((point - started).total_seconds() / 60.0, 0.0)
@@ -1879,20 +1992,20 @@ class CognitionArchiveMixin:
                 decayed.append(replace(item, intensity=max(0.0, min(intensity, 1.0))))
             return decayed
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_grounded_diary(self, row: sqlite3.Row) -> GroundedDiaryEntryRecord:
         return GroundedDiaryEntryRecord(
             id=int(row["id"] or 0),
-            date=self._text(row["date"]),
-            scope=self._text(row["scope"]),
-            title=self._text(row["title"]),
-            summary=self._text(row["summary"]),
-            evidence_ids=self._cognition_value(row["evidence_ids_json"], default=[]),
-            mood_label=self._text(row["mood_label"]),
-            source=self._text(row["source"]) or "daily_review",
-            created_at=self._text(row["created_at"]),
-            updated_at=self._text(row["updated_at"]),
+            date=self.context._text(row["date"]),
+            scope=self.context._text(row["scope"]),
+            title=self.context._text(row["title"]),
+            summary=self.context._text(row["summary"]),
+            evidence_ids=self.context._cognition_value(row["evidence_ids_json"], default=[]),
+            mood_label=self.context._text(row["mood_label"]),
+            source=self.context._text(row["source"]) or "daily_review",
+            created_at=self.context._text(row["created_at"]),
+            updated_at=self.context._text(row["updated_at"]),
         )
 
     async def save_grounded_diary_entry(
@@ -1915,19 +2028,19 @@ class CognitionArchiveMixin:
             if isinstance(entry, GroundedDiaryEntryRecord)
             else dict(entry)
         )
-        date = self._text(raw.get("date"))
-        scope = self._text(raw.get("scope"))
-        summary = self._text(raw.get("summary"))
+        date = self.context._text(raw.get("date"))
+        scope = self.context._text(raw.get("scope"))
+        summary = self.context._text(raw.get("summary"))
         evidence_ids = raw.get("evidence_ids")
         if not date or not scope or not summary:
             raise ValueError("日记必须包含 date、scope 和 summary")
         if not isinstance(evidence_ids, list) or not any(
-            self._text(item) for item in evidence_ids
+            self.context._text(item) for item in evidence_ids
         ):
             raise ValueError("日记必须引用至少一条已落库证据")
 
         def dbwork() -> GroundedDiaryEntryRecord:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO grounded_diary_entries(
                     date, scope, title, summary, evidence_ids_json, mood_label,
@@ -1942,21 +2055,21 @@ class CognitionArchiveMixin:
                 (
                     date,
                     scope,
-                    self._text(raw.get("title")),
+                    self.context._text(raw.get("title")),
                     summary,
-                    self._cognition_json(evidence_ids, default=[]),
-                    self._text(raw.get("mood_label")),
-                    self._text(raw.get("source")) or "daily_review",
+                    self.context._cognition_json(evidence_ids, default=[]),
+                    self.context._text(raw.get("mood_label")),
+                    self.context._text(raw.get("source")) or "daily_review",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM grounded_diary_entries WHERE date = ? AND scope = ?",
                 (date, scope),
             ).fetchone()
-            return self._compose_grounded_diary(row)
+            return self.context._compose_grounded_diary(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_grounded_diary_entries(
         self, *, scope: str = "", limit: int = 30
@@ -1976,15 +2089,15 @@ class CognitionArchiveMixin:
             params: list[Any] = []
             if scope:
                 sql += " WHERE scope = ?"
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             sql += " ORDER BY date DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_grounded_diary(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_grounded_diary(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
 
-__all__ = ["CognitionArchiveMixin"]
+__all__ = ["CognitionArchiveComponent"]

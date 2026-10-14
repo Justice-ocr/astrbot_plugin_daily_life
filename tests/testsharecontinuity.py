@@ -14,7 +14,7 @@ from PIL import Image
 
 from core.archive import LifeArchive
 from core.runtime.mirror.sharing import project_continuity, share_timing
-from core.runtime.receipt import RuntimeActionReceiptMixin
+from componentfixtures import RuntimeActionReceiptComponent
 from core.sight.sharemedia import describe_share_video, prepare_share_image
 
 
@@ -118,7 +118,7 @@ class ShareContinuityTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             archive = LifeArchive(Path(folder) / "life.db")
             try:
-                runtime = RuntimeActionReceiptMixin()
+                runtime = RuntimeActionReceiptComponent()
                 runtime.archive = archive
                 runtime.note_conversation_sent = lambda *args: None
                 scope = "qq:FriendMessage:alice"

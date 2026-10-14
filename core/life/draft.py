@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from ..models import WeekPlanRecord
 from ..prompts import (
+    BODY_CONDITION_JSON_EXAMPLE,
     CORE_APPEARANCE_PREFERENCE_RULES,
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
@@ -14,8 +17,29 @@ from .wardrobe import (
     OUTFIT_STYLE_POOL_ENUM,
 )
 
+from typing import Any, Protocol
 
-class DailyDraftMixin:
+
+class DailyDraftComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_contract_prompt: Any
+    _contract_json_text: Any
+    _coverage_contract: Any
+    _timeline_prompt_chat_section: Any
+    _timeline_prompt_dynamic_sections: Any
+    _timeline_prompt_fixed_contract: Any
+    _timeline_prompt_memo_section: Any
+    _timeline_prompt_persona_section: Any
+    _timeline_prompt_repeat_section: Any
+    _timeline_prompt_week_section: Any
+    config: Any
+
+
+class DailyDraftComponent:
+    def __init__(self, context: DailyDraftComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _timeline_prompt_persona_section(persona: str) -> str:
         return f"## 👤 角色设定\n{persona}" if persona else "## 👤 角色设定\n无"
@@ -43,7 +67,7 @@ class DailyDraftMixin:
     def _timeline_prompt_chat_section(self, recent_chats: str) -> str:
         if not recent_chats or recent_chats == "无":
             return ""
-        return f"## 💬 最近聊天参考\n{self.config.chat_prompt}\n{recent_chats}"
+        return f"## 💬 最近聊天参考\n{self.context.config.chat_prompt}\n{recent_chats}"
 
     @staticmethod
     def _timeline_prompt_memo_section(memo_str: str) -> str:
@@ -63,9 +87,9 @@ class DailyDraftMixin:
         )
 
     def _timeline_prompt_fixed_contract(self, expected_coverage: str) -> str:
-        contract_section = self._build_contract_prompt(expected_coverage)
-        contract_example = self._contract_json_text(
-            self._coverage_contract(expected_coverage)
+        contract_section = self.context._build_contract_prompt(expected_coverage)
+        contract_example = self.context._contract_json_text(
+            self.context._coverage_contract(expected_coverage)
         ).replace("\n", "\n  ")
         return f"""生成当前角色的自主生活背景。
 当前/目标时间线索只是现实时间提示，不是强制生活状态；睡眠、熬夜、赖床、出门和换装都由 life_decision 自主判断。
@@ -112,7 +136,7 @@ class DailyDraftMixin:
     "sleep": {{"quality": 0-100, "depth": "awake | light_rest | light_sleep | deep_sleep", "summary": "昨晚睡眠概况"}},
     "physiological_rhythm": {{
       "energy_curve": "今天精力起伏的短句概括",
-      "body_condition": {{"label": "身体状态", "intensity": "burden_present=true 时填写身体负荷强度 0-100，否则填 0", "burden_present": "布尔值，true 表示当前确有身体负荷，false 表示当前无身体负荷", "source": "依据来源", "expires_at": "YYYY-MM-DD、YYYY-MM-DD HH:MM 或空字符串"}},
+      "body_condition": {BODY_CONDITION_JSON_EXAMPLE},
       "recovery_actions": ["今天自然采用的恢复动作"],
       "social_battery": 0-100,
       "attention_state": "注意力/感官负荷状态",
@@ -167,7 +191,7 @@ class DailyDraftMixin:
 - 日程安排保持开放：近期地点只是连续性参考，不是固定路线；在休息日、外出意愿较高、周计划/聊天/承诺支持时，可以低频安排周边游、短途旅行或新的本地探索，schedule_intent 可使用 travel。旅行不是每天必须出现的轮换任务；没有可靠目标城市时使用本地游览或泛化场景，不虚构跨城事实。
 - decision_summary 是后台观察用的内部决策摘要，不是给用户看的旁白；只写真实参与判断的依据，不要为了填字段罗列所有资料。
 2. state 要求：
-{self.config.state_prompt}
+{self.context.config.state_prompt}
 - mood_score 是心情正向程度；emotional_stability 是情绪稳定，两者不要混同。
 - stress 表示主观压力感，busyness 表示日程占用；sleepiness 是实时困倦度，sleep.quality 是睡眠质量。
 - outgoing 表示外出意愿，interaction_capacity 表示当前场景下回应、接话、继续交流的意愿与余力。
@@ -178,16 +202,14 @@ class DailyDraftMixin:
 - 这些主观注意力字段由我结合生活决策、日程密度、体力、困意、社交意愿和记忆自主判断，不要套固定时间规则。
 - sleep.depth 是今天此刻/该日主状态的休息层级：awake=清醒，light_rest=浅休息，light_sleep=浅睡眠，deep_sleep=深度睡眠。由 life_decision、体力、困意、昨日睡眠债、时间轴和可打断等级共同决定；不要因为出现某个具体时段就机械套用。
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
-- body_condition.burden_present 是身体负荷的唯一语义开关：有负荷填 true 并让 intensity、source、recovery_actions 与期限相互一致；无负荷填 false、intensity=0。不要让消费端从 label、source、summary 或其他自然语言反推身体负荷。
-- 下方“状态因果线索”只根据已有体力、睡眠、压力和身体负荷提示需要留意的连续变化。没有事实依据时保持稳定，不得按日期、时段或随机性制造不适、疾病或情绪低潮。
-- 如果自主决定出现会延续到之后的轻微不适或生活情绪事件，填写 life_decision.life_event，并让 state、timeline 和恢复动作一致；普通瞬时心情无需强行创建事件。
+- 下方“状态因果线索”和最近身体状态共同参与判断；仍在持续的生病感保留 kind、起始时间和当前阶段，不因换日清零，也不重复创建同一身体事件。
+- 身体状态、timeline 和 planned_actions 应一致：需要休养时安排可执行的低强度活动与照顾动作；身体感受属于此刻，恢复安排属于未来，不提前写成已经恢复。其他可延续的生活事件按需填写 life_decision.life_event。
 3. outfit 要求：
 - outfit 必须体现 life_decision.outfit 的决定；顶层 outfit 只表示当前/目标时刻已经穿在身上的衣服，未来换装不能提前覆盖。
 {OUTFIT_CONTINUITY_RULES}
 - outfit_components 是当前穿搭的组成状态账本，必须分别填写主体服装、鞋履、外层和随身配饰；场景变化时更新对应组成，不能只改整句 outfit。
 - 单纯“回家”不能默认补写换衣；timeline 只有在真实发生换衣动作时才写换装。
 - 当前/目标时刻仍在外出、路上、购物、吃饭或约会中时，穿搭必须适合当下场景和天气。
-- 晚餐、散步、拍照等轻松晚间外出，如果主体服装仍干净、舒适且适合天气，优先沿用主体，只调整鞋履、外层或随身配饰；不要因为进入夜间就自动改成睡衣、礼服或整套新衣。
 - 当前/目标时刻在家或睡眠/休息状态时，不适配眼前场景的组成只记录为 staged 或 removed；未来安排只能作为账本中的待用状态，不能提前写入顶层 outfit 或当前 change_outfit 的 target。
 - 保持视觉一致性：outfit 的颜色、材质和配饰要与 life_decision.mood、天气、活动和状态自然协调；style 只写穿搭风格，色彩细节放在顶层 outfit。
 - 当前外观描述规则：
@@ -198,7 +220,7 @@ class DailyDraftMixin:
 - 不要把 hair_style 或 hair 重复塞进顶层 outfit；不要写原因解释或日程流水账。
 - 清醒整日计划如果从睡眠穿搭开始，应在首个持续家务、学习、工作、运动、社交、拍摄或外出活动前自然安排晨间换装；恢复日、继续睡眠或明确休养可以保持睡眠穿搭。换装必须同时写入 timeline 与 planned_actions，并从视觉衣橱选择日间造型。
 4. timeline 要求 (关键)：
-{self.config.timeline_prompt}
+{self.context.config.timeline_prompt}
 - 每个节点填写 day_offset：目标生活日期当天为 0，跨午夜后的次日为 1；time 仍写 HH:MM，按完整日期时间递增排列。
 - 未来节点只描述拟进行的活动、准备与合理持续时间，不预写已经完成的结果、必然出现的情绪或困意，也不替对方安排尚未确认的动作。休息是否开始应结合届时聊天、体力和困意重新判断。
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
@@ -224,13 +246,13 @@ class DailyDraftMixin:
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
 - 如果某项内部动作确实推进输入中角色自身长期目标的可继续阶段，payload.goal_id 和 payload.step_id 填写该目标与阶段编号；不能跳过依赖、关联已完成阶段或把用户目标当成角色目标。完成进度由执行器累计，不在计划中声称已经完成练习。
 - 现有可用食材库存是会变化的生活事实，不得长期只当作背景。若在家自制、现做、加热、调配，或明确使用其中食材，优先生成 cook；从库存中选择实际用到的名称并填写正数 ingredients，系统会按此扣减。不要为了清库存机械安排做饭，也不要虚构库存里没有的食材。
-- meal 表示外食、现成餐食或无法确认用料的直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，必须填写至少一项 ingredients，会按库存校验并扣减，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替实际在家烹饪，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
+- meal 表示实际进食，不校验或扣减家庭库存；cook 表示食物准备，必须填写至少一项 ingredients，会按库存校验并扣减，同时保存食谱；order_food 只表示下单，不证明送达或进食。做饭、下单和用餐是独立阶段，只有 meal 产生饱腹收益；不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
 - 不要从 activity 文案隐含领域参数；没有可靠参数就保留空 payload。
 - 做生活决策时独立评估今天是否适合有目的的身体活动：结合体力、身体状态、天气、近期运动负荷、日程密度和角色兴趣自主决定，也可以合理地不安排；不得为了填充生活实况面板机械增加运动。
 - 只有节点的主要目的确实是锻炼、舒展身体或运动恢复时才使用 exercise。通勤、普通出行、购物、逛街、游览、社交和拍照过程中的走动仍按各自真实目的记录，不能仅因存在步行或体力消耗就算作运动。
 - 安排 exercise 时，timeline 必须有语义一致的明确运动节点，并填写具体 target、合理 duration_minutes 和 payload.intensity；没有对应运动节点时不得单独制造 exercise 动作。
 5. 地点与事件要求：
-{self.config.world_prompt}
+{self.context.config.world_prompt}
 """
 
     def _timeline_prompt_dynamic_sections(
@@ -261,8 +283,8 @@ class DailyDraftMixin:
         season_context: str = "",
     ) -> list[str]:
         return [
-            self._timeline_prompt_persona_section(persona),
-            self._timeline_prompt_week_section(
+            self.context._timeline_prompt_persona_section(persona),
+            self.context._timeline_prompt_week_section(
                 week_plan,
                 today_hint=today_hint,
                 today_suggested=today_suggested,
@@ -278,14 +300,14 @@ class DailyDraftMixin:
             constraint_section.strip(),
             inertia_section.strip(),
             previous_context.strip(),
-            self._timeline_prompt_chat_section(recent_chats),
+            self.context._timeline_prompt_chat_section(recent_chats),
             world_context.strip(),
             lifecycle_context.strip(),
             autonomy_context.strip(),
             person_fact_context.strip(),
             replacement_context.strip(),
-            self._timeline_prompt_memo_section(memo_str),
-            self._timeline_prompt_repeat_section(history_schedules_str),
+            self.context._timeline_prompt_memo_section(memo_str),
+            self.context._timeline_prompt_repeat_section(history_schedules_str),
         ]
 
     def _build_timeline_prompt(
@@ -315,8 +337,8 @@ class DailyDraftMixin:
         calendar_context: str = "",
         season_context: str = "",
     ) -> str:
-        fixed = self._timeline_prompt_fixed_contract(expected_coverage)
-        dynamic_sections = self._timeline_prompt_dynamic_sections(
+        fixed = self.context._timeline_prompt_fixed_contract(expected_coverage)
+        dynamic_sections = self.context._timeline_prompt_dynamic_sections(
             date_str=date_str,
             period_cn=period_cn,
             weather_section=weather_section,
@@ -345,4 +367,4 @@ class DailyDraftMixin:
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="今日生活资料")
 
 
-__all__ = ["DailyDraftMixin"]
+__all__ = ["DailyDraftComponent"]

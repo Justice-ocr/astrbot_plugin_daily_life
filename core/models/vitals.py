@@ -51,6 +51,10 @@ class BodyCondition:
     burden_present: bool | None = None
     source: str = ""
     expires_at: str = ""
+    kind: str = ""
+    phase: str = ""
+    started_at: str = ""
+    recovery_evidence: str = ""
 
     @staticmethod
     def from_value(value: Any) -> "BodyCondition":
@@ -70,6 +74,10 @@ class BodyCondition:
             burden_present=burden_present,
             source=source,
             expires_at=_clean_text(raw.get("expires_at"), 32),
+            kind=_clean_text(raw.get("kind"), 24),
+            phase=_clean_text(raw.get("phase"), 24),
+            started_at=_clean_text(raw.get("started_at"), 32),
+            recovery_evidence=_clean_text(raw.get("recovery_evidence"), 120),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -84,6 +92,14 @@ class BodyCondition:
             result["source"] = self.source
         if self.expires_at:
             result["expires_at"] = self.expires_at
+        if self.kind:
+            result["kind"] = self.kind
+        if self.phase:
+            result["phase"] = self.phase
+        if self.started_at:
+            result["started_at"] = self.started_at
+        if self.recovery_evidence:
+            result["recovery_evidence"] = self.recovery_evidence
         return result
 
 

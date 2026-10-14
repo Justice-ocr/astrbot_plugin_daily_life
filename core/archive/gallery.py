@@ -7,8 +7,22 @@ import sqlite3
 from ..clock import today as life_today
 from ..models import ReversePromptRecord
 
+from typing import Any, Protocol
 
-class MediaArchiveMixin:
+
+class MediaArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_reverse_prompt: Any
+    _conn: Any
+    _run_db: Any
+    _text: Any
+
+
+class MediaArchiveComponent:
+    def __init__(self, context: MediaArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_reverse_prompt(self, row: sqlite3.Row) -> ReversePromptRecord:
         try:
             keywords = json.loads(row["keywords"] or "[]")
@@ -44,7 +58,7 @@ class MediaArchiveMixin:
             return None
 
         def write() -> ReversePromptRecord | None:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO reverse_prompts(
                     scope, prompt, image_path, title, keywords, ratio, usage, profile,
@@ -53,42 +67,42 @@ class MediaArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP))
                 """,
                 (
-                    self._text(item.scope),
-                    self._text(item.prompt),
-                    self._text(item.image_path),
-                    self._text(item.title),
+                    self.context._text(item.scope),
+                    self.context._text(item.prompt),
+                    self.context._text(item.image_path),
+                    self.context._text(item.title),
                     json.dumps(item.keywords, ensure_ascii=False),
-                    self._text(item.ratio),
-                    self._text(item.usage),
-                    self._text(item.profile),
-                    self._text(item.source_prompt),
+                    self.context._text(item.ratio),
+                    self.context._text(item.usage),
+                    self.context._text(item.profile),
+                    self.context._text(item.source_prompt),
                     json.dumps(item.analysis, ensure_ascii=False),
-                    self._text(item.source_image_hash),
-                    self._text(item.created_at),
+                    self.context._text(item.source_image_hash),
+                    self.context._text(item.created_at),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM reverse_prompts WHERE id = ?",
                 (cursor.lastrowid,),
             ).fetchone()
-            return self._compose_reverse_prompt(row) if row else None
+            return self.context._compose_reverse_prompt(row) if row else None
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_latest_reverse_prompt(self, scope: str) -> ReversePromptRecord | None:
-        scope = self._text(scope)
+        scope = self.context._text(scope)
         if not scope:
             return None
 
         def read() -> ReversePromptRecord | None:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM reverse_prompts WHERE scope = ? ORDER BY id DESC LIMIT 1",
                 (scope,),
             ).fetchone()
-            return self._compose_reverse_prompt(row) if row else None
+            return self.context._compose_reverse_prompt(row) if row else None
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_reverse_prompt_by_fingerprint(
         self,
@@ -98,14 +112,14 @@ class MediaArchiveMixin:
         source_prompt: str = "",
     ) -> ReversePromptRecord | None:
         values = tuple(
-            self._text(value)
+            self.context._text(value)
             for value in (scope, source_image_hash, profile, source_prompt)
         )
         if not values[0] or not values[1] or not values[2]:
             return None
 
         def read() -> ReversePromptRecord | None:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 """
                 SELECT * FROM reverse_prompts
                 WHERE scope = ? AND source_image_hash = ? AND profile = ?
@@ -115,9 +129,9 @@ class MediaArchiveMixin:
                 """,
                 values,
             ).fetchone()
-            return self._compose_reverse_prompt(row) if row else None
+            return self.context._compose_reverse_prompt(row) if row else None
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def cleanup_reverse_prompts(self, keep_days: int) -> int:
         try:
@@ -131,11 +145,11 @@ class MediaArchiveMixin:
         )
 
         def write() -> int:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 "DELETE FROM reverse_prompts WHERE created_at < ?",
                 (cutoff,),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(int(cursor.rowcount or 0), 0)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)

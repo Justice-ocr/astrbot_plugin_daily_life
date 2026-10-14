@@ -1,6 +1,6 @@
-from .packet import PacketMixin
-from .profile import ProfileMixin
-from .target import TargetMixin
+from .packet import PacketComponent
+from .profile import ProfileComponent
+from .target import TargetComponent
 
 
-__all__ = ["PacketMixin", "ProfileMixin", "TargetMixin"]
+__all__ = ["PacketComponent", "ProfileComponent", "TargetComponent"]

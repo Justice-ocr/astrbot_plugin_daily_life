@@ -325,13 +325,26 @@ class ChatSummaryRecord:
             people = [people]
         elif not isinstance(people, list):
             people = []
+        names: list[str] = []
+        for item in people:
+            if isinstance(item, dict):
+                name = str(
+                    item.get("name")
+                    or item.get("display_name")
+                    or item.get("profile_id")
+                    or ""
+                ).strip()
+            else:
+                name = str(item or "").strip()
+            if name and name not in names:
+                names.append(name)
         return ChatSummaryRecord(
             id=optional_int(raw.get("id")) or 0,
             session_id=str(raw.get("session_id") or "").strip(),
             date=str(raw.get("date") or "").strip(),
             brief=brief,
             long_summary=long_summary,
-            people=[str(item).strip() for item in people if str(item).strip()],
+            people=names,
             source=str(raw.get("source") or "chat").strip(),
             created_at=str(raw.get("created_at") or "").strip(),
         )

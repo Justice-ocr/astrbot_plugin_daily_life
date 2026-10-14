@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 import uuid
@@ -20,11 +22,43 @@ from ..prompts import (
     cache_friendly_prompt,
 )
 from .condition import format_state_prompt
+from .itinerary import EDIT_ACTION_RULES, compile_edited_actions, itinerary_wardrobe_context
 from .people import INVITE_PERSON_TEXT_PATHS
 from .tools import extract_json_from_text, timeline_item_datetime
 
+from typing import Any, Protocol
 
-class InviteMixin:
+
+class InviteComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_timeline_edits: Any
+    _audit_future_timeline: Any
+    _audit_person_payload: Any
+    _build_autonomous_life_context: Any
+    _build_person_fact_context: Any
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    _get_persona: Any
+    _get_provider: Any
+    _merge_audited_places: Any
+    _restore_protected_timeline: Any
+    _reusable_location_candidates: Any
+    _route_anchor_from_past_timeline: Any
+    _save_life_decision_record: Any
+    _serialized_current_places: Any
+    _split_timeline_at: Any
+    _task_provider_id: Any
+    archive: Any
+    _style_catalog_context: Any
+    config: Any
+    domains: Any
+
+
+class InviteComponent:
+    def __init__(self, context: InviteComponentContext) -> None:
+        self.context = context
+
     _TIMELINE_AUDIT_ROUTE_FIELDS = (
         "time",
         "day_offset",
@@ -301,26 +335,26 @@ class InviteMixin:
         """审计可变的未来日程，历史节点绝不接受地图回写。"""
 
         location_auditor = getattr(
-            getattr(self, "domains", None), "audit_daily_locations", None
+            getattr(self.context, "domains", None), "audit_daily_locations", None
         )
         if not callable(location_auditor):
             return list(mutable_timeline), {}, ""
 
-        route_anchor = self._route_anchor_from_past_timeline(past_timeline)
+        route_anchor = self.context._route_anchor_from_past_timeline(past_timeline)
         audit_timeline = [
             item.as_dict()
             for item in ([route_anchor] if route_anchor is not None else [])
             + mutable_timeline
         ]
         audit_kwargs = {"allow_safe_corrections": True}
-        reusable_places = self._reusable_location_candidates(current_places)
+        reusable_places = self.context._reusable_location_candidates(current_places)
         if reusable_places:
             audit_kwargs["preselected_places"] = reusable_places
         audited, location_reason = await location_auditor(
             {
                 "timeline": audit_timeline,
                 "planned_actions": [],
-                "places": self._serialized_current_places(current_places),
+                "places": self.context._serialized_current_places(current_places),
             },
             **audit_kwargs,
         )
@@ -337,7 +371,7 @@ class InviteMixin:
             audited_future, mutable_timeline, strict=True
         ):
             audited_item.activity_kind = original_item.activity_kind
-        restored_future = self._restore_protected_timeline(
+        restored_future = self.context._restore_protected_timeline(
             audited_future,
             protected_timeline,
             mutable_timeline,
@@ -346,7 +380,7 @@ class InviteMixin:
         return (
             restored_future,
             {
-                "places": self._merge_audited_places(
+                "places": self.context._merge_audited_places(
                     timeline=complete_timeline,
                     current_places=current_places,
                     audited_places=audited.get("places", []),
@@ -366,16 +400,17 @@ class InviteMixin:
         current_state: LifeState | None = None,
         current_places: list | None = None,
     ):
-        past_timeline, future_timeline = self._split_timeline_at(
+        past_timeline, future_timeline = self.context._split_timeline_at(
             current_timeline, current_time, date_str
         )
 
-        persona = await self._get_persona()
-        person_facts = await self._build_person_fact_context(
+        persona = await self.context._get_persona()
+        person_facts = await self.context._build_person_fact_context(
             persona=persona,
             explicit_instruction=invite_text,
         )
-        autonomy_context = await self._build_autonomous_life_context(current_time)
+        autonomy_context = await self.context._build_autonomous_life_context(current_time)
+        wardrobe_context = await itinerary_wardrobe_context(self.context, date_str, current_time)
         fixed = f"""对方向我提出了共同活动或陪伴请求。我要结合自己的真实意愿、当前状态、已经确认的安排和双方关系，决定自然答应、换个时间，还是拒绝。
 
 通用自主原则：
@@ -402,6 +437,9 @@ class InviteMixin:
 4. 如果不接受但愿意改约，请给出 alternative_time；如果完全不想去则留空。
 5. 允许输出 preference_points 和 life_events，但只能基于当前邀约和状态，不要编造。
 
+动作执行契约：
+{EDIT_ACTION_RULES}
+
 严格返回 JSON：
 {{
   "decision": "accept | reject | propose_alternative",
@@ -411,6 +449,7 @@ class InviteMixin:
   "response_tone": "符合关系和当下状态的简短语气描述，不写最终台词",
   "alternative_time": "可选改约时间或空字符串",
   "impact": "这次邀约对今日状态、社交意愿或后续日程的影响",
+  "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
   "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-1.0, "evidence": "依据"}}],
   "life_events": [{{"title": "邀约相关生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}]
@@ -431,18 +470,20 @@ JSON 输出要求：
 {json.dumps([item.as_dict() for item in future_timeline], ensure_ascii=False)}
 
 短期目标、修正和近期决策参考：
-{autonomy_context or "暂无"}"""
+{autonomy_context or "暂无"}
+
+{wardrobe_context}"""
         if person_facts.has_external_people:
             dynamic += "\n\n" + person_facts.format_for_generation()
         prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="邀约现场")
         session_id = ""
         try:
-            provider_id = self._task_provider_id(self.config.invite.provider)
-            provider = await self._get_provider(provider_id)
+            provider_id = self.context._task_provider_id(self.context.config.invite.provider)
+            provider = await self.context._get_provider(provider_id)
             if not provider:
                 return "当前没有可用的 LLM，暂时不想改变计划。", None, {}
             session_id = f"daily_life_invite_{uuid.uuid4().hex[:8]}"
-            completion_text = await self._call_llm_text(
+            completion_text = await self.context._call_llm_text(
                 provider,
                 prompt,
                 session_id,
@@ -451,7 +492,7 @@ JSON 输出要求：
             result = extract_json_from_text(completion_text)
 
             if isinstance(result, dict):
-                audit = await self._audit_person_payload(
+                audit = await self.context._audit_person_payload(
                     result,
                     context=person_facts,
                     patterns=INVITE_PERSON_TEXT_PATHS,
@@ -473,7 +514,7 @@ JSON 输出要求：
                         # 结构化编辑，保持后续日程合并的执行依据。
                         result["timeline_edits"] = raw_edits
                     merged_future, protected_future, edit_issue = (
-                        self._apply_timeline_edits(future_timeline, raw_edits)
+                        self.context._apply_timeline_edits(future_timeline, raw_edits)
                     )
                     if merged_future is None:
                         accepted = False
@@ -484,7 +525,7 @@ JSON 输出要求：
                         result["timeline_issue"] = edit_issue
                     if accepted:
                         audited_future, audit_details, location_reason = (
-                            await self._audit_future_timeline(
+                            await self.context._audit_future_timeline(
                                 past_timeline=past_timeline,
                                 mutable_timeline=merged_future,
                                 protected_timeline=protected_future,
@@ -502,12 +543,24 @@ JSON 输出要求：
                             result["location_issue"] = location_reason
                         else:
                             new_timeline = past_timeline + (audited_future or [])
+                            action_issue = await compile_edited_actions(
+                                self.context, result, new_timeline,
+                                date_str=date_str, source="invite",
+                            )
+                            if action_issue:
+                                accepted = False
+                                decision = "propose_alternative"
+                                new_timeline = None
+                                result.update(
+                                    accept=False, decision=decision,
+                                    reason=action_issue, action_issue=action_issue,
+                                )
                             if audit_details:
                                 result["_audited_places"] = audit_details["places"]
                                 result["_location_audit"] = audit_details[
                                     "location_audit"
                                 ]
-                await self._save_life_decision_record(
+                await self.context._save_life_decision_record(
                     kind="invite",
                     date=date_str,
                     subject=user_name,
@@ -534,7 +587,7 @@ JSON 输出要求：
             logger.error(f"[邀约处理] 处理失败：{e}")
         finally:
             if session_id:
-                await self._cleanup_conversation(session_id)
+                await self.context._cleanup_conversation(session_id)
         return "感觉脑子有点乱，目前不想改变计划。", None, {}
 
     async def reconcile_commitment_with_timeline(
@@ -563,15 +616,16 @@ JSON 输出要求：
             合并后的完整时间轴和结构化协调结果；无需调整时，时间轴为空。
         """
 
-        past_timeline, future_timeline = self._split_timeline_at(
+        past_timeline, future_timeline = self.context._split_timeline_at(
             current_timeline, current_time, date_str
         )
-        persona = await self._get_persona()
-        person_facts = await self._build_person_fact_context(
+        persona = await self.context._get_persona()
+        person_facts = await self.context._build_person_fact_context(
             persona=persona,
             explicit_instruction=commitment.content,
         )
-        autonomy_context = await self._build_autonomous_life_context(current_time)
+        autonomy_context = await self.context._build_autonomous_life_context(current_time)
+        wardrobe_context = await itinerary_wardrobe_context(self.context, date_str, current_time)
         fixed = f"""一条聊天中已经保存的未来约定或承诺刚刚出现。请判断它是否属于当前角色、是否已经确认，以及是否应当修改今天尚未发生的生活安排。
 
 通用自主原则：
@@ -594,11 +648,15 @@ JSON 输出要求：
 7. 媒体承诺只安排明确约定的未来时刻；正在执行的拍摄或重试不另增日程。活动描述只写已确认的目标，不补写未经证实的姿势、环境或前置动作。
 8. shared_activity 仅在证据明确双方已确认一起参与活动时为 true；单方计划、普通提醒和媒体交付不得视为共同活动。
 
+动作执行契约：
+{EDIT_ACTION_RULES}
+
 严格返回 JSON：
 {{
   "should_apply": true/false,
   "shared_activity": true/false,
   "reason": "是否进入当天生活的依据",
+  "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
   "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "outfit_instruction": "承诺中明确确认的穿搭要求或空字符串",
   "outfit_effective_time": "HH:MM 或空字符串",
@@ -620,18 +678,20 @@ JSON 输出要求：
 {json.dumps([item.as_dict() for item in future_timeline], ensure_ascii=False)}
 
 短期目标、修正和近期决策参考：
-{autonomy_context or "暂无"}"""
+{autonomy_context or "暂无"}
+
+{wardrobe_context}"""
         if person_facts.has_external_people:
             dynamic += "\n\n" + person_facts.format_for_generation()
         prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="承诺执行协调")
         session_id = ""
         try:
-            provider_id = self._task_provider_id(self.config.commitments.provider)
-            provider = await self._get_provider(provider_id)
+            provider_id = self.context._task_provider_id(self.context.config.commitments.provider)
+            provider = await self.context._get_provider(provider_id)
             if not provider:
                 return None, {}
             session_id = f"daily_life_commitment_reconcile_{uuid.uuid4().hex[:8]}"
-            completion_text = await self._call_llm_text(
+            completion_text = await self.context._call_llm_text(
                 provider,
                 prompt,
                 session_id,
@@ -640,7 +700,7 @@ JSON 输出要求：
             result = extract_json_from_text(completion_text)
             if not isinstance(result, dict) or result.get("should_apply") is not True:
                 return None, result if isinstance(result, dict) else {}
-            audit = await self._audit_person_payload(
+            audit = await self.context._audit_person_payload(
                 result,
                 context=person_facts,
                 patterns=INVITE_PERSON_TEXT_PATHS,
@@ -653,7 +713,7 @@ JSON 输出要求：
                 return None, {}
             result = audit.payload
             raw_edits = result.get("timeline_edits")
-            merged_future, protected_future, edit_issue = self._apply_timeline_edits(
+            merged_future, protected_future, edit_issue = self.context._apply_timeline_edits(
                 future_timeline, raw_edits
             )
             if merged_future is None:
@@ -661,7 +721,7 @@ JSON 输出要求：
                 result["reconcile_issue"] = edit_issue
                 return None, result
             audited_future, audit_details, location_reason = (
-                await self._audit_future_timeline(
+                await self.context._audit_future_timeline(
                     past_timeline=past_timeline,
                     mutable_timeline=merged_future,
                     protected_timeline=protected_future,
@@ -674,10 +734,17 @@ JSON 输出要求：
                 result["_retryable"] = True
                 return None, result
             candidate_timeline = past_timeline + (audited_future or [])
+            action_issue = await compile_edited_actions(
+                self.context, result, candidate_timeline,
+                date_str=date_str, source="commitment",
+            )
+            if action_issue:
+                result.update(_retryable=True, reconcile_issue=action_issue)
+                return None, result
             if audit_details:
                 result["_audited_places"] = audit_details["places"]
                 result["_location_audit"] = audit_details["location_audit"]
-            await self._save_life_decision_record(
+            await self.context._save_life_decision_record(
                 kind="commitment_reconcile",
                 date=date_str,
                 subject=str(commitment.id or commitment.content[:80]),
@@ -693,4 +760,4 @@ JSON 输出要求：
             return None, {}
         finally:
             if session_id:
-                await self._cleanup_conversation(session_id)
+                await self.context._cleanup_conversation(session_id)

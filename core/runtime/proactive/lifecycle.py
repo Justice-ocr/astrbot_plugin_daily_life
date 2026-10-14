@@ -1,10 +1,28 @@
+from __future__ import annotations
+
 import datetime
 import math
 from typing import Any
 
+from typing import Protocol
 
-class ProactiveLifecycleMixin:
+
+class ProactiveLifecycleComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _PROACTIVE_LIFECYCLE_TRANSITIONS: Any
+    _PROACTIVE_UTILITY_FIELDS: Any
+    _PROACTIVE_UTILITY_THRESHOLD: Any
+    _proactive_score: Any
+    _proactive_social_lifecycle: Any
+    _proactive_social_sessions: Any
+
+
+class ProactiveLifecycleComponent:
     """管理主动社交生命周期与确定性收益裁定。"""
+
+    def __init__(self, context: ProactiveLifecycleComponentContext) -> None:
+        self.context = context
 
     _PROACTIVE_UTILITY_FIELDS = (
         "benefit",
@@ -35,10 +53,10 @@ class ProactiveLifecycleMixin:
 
     def _proactive_social_sessions(self) -> dict[str, dict[str, Any]]:
         """返回按会话保存的主动社交状态。"""
-        sessions = getattr(self, "_proactive_social_lifecycle", None)
+        sessions = getattr(self.context, "_proactive_social_lifecycle", None)
         if not isinstance(sessions, dict):
             sessions = {}
-            self._proactive_social_lifecycle = sessions
+            self.context._proactive_social_lifecycle = sessions
         return sessions
 
     def _proactive_lifecycle_snapshot(self, key: str) -> dict[str, Any]:
@@ -50,7 +68,7 @@ class ProactiveLifecycleMixin:
         Returns:
             当前生命周期快照；尚无记录时返回空字典。
         """
-        state = self._proactive_social_sessions().get(str(key or ""))
+        state = self.context._proactive_social_sessions().get(str(key or ""))
         return dict(state) if isinstance(state, dict) else {}
 
     def _transition_proactive_lifecycle(
@@ -85,12 +103,12 @@ class ProactiveLifecycleMixin:
         """
         key = str(key or "").strip()
         state = str(state or "").strip()
-        if state not in self._PROACTIVE_LIFECYCLE_TRANSITIONS:
+        if state not in self.context._PROACTIVE_LIFECYCLE_TRANSITIONS:
             raise ValueError(f"未知主动社交状态：{state}")
-        sessions = self._proactive_social_sessions()
+        sessions = self.context._proactive_social_sessions()
         current = sessions.get(key) if key else None
         current_state = str((current or {}).get("state") or "")
-        allowed = self._PROACTIVE_LIFECYCLE_TRANSITIONS.get(current_state, set())
+        allowed = self.context._PROACTIVE_LIFECYCLE_TRANSITIONS.get(current_state, set())
         if state != current_state and state not in allowed:
             raise ValueError(
                 f"主动社交状态不能从 {current_state or '初始'} 转为 {state}"
@@ -146,9 +164,9 @@ class ProactiveLifecycleMixin:
     ) -> tuple[int, bool]:
         """五项评分必须完整有效；缺项时主动发送裁定无效。"""
         valid = True
-        for field in self._PROACTIVE_UTILITY_FIELDS:
+        for field in self.context._PROACTIVE_UTILITY_FIELDS:
             field_present = field in payload
-            score, field_valid = self._proactive_score(payload.get(field))
+            score, field_valid = self.context._proactive_score(payload.get(field))
             payload[field] = score
             valid = valid and field_present and field_valid
         utility = (
@@ -159,6 +177,6 @@ class ProactiveLifecycleMixin:
             - int(payload["uncertainty"])
         )
         payload["utility"] = utility
-        payload["utility_threshold"] = self._PROACTIVE_UTILITY_THRESHOLD
+        payload["utility_threshold"] = self.context._PROACTIVE_UTILITY_THRESHOLD
         payload["utility_scores_valid"] = valid
         return utility, valid

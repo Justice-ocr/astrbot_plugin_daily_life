@@ -1,18 +1,36 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
 from ..models import ChatSummaryRecord
 
+from typing import Protocol
 
-class SummaryArchiveMixin:
+
+class SummaryArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_chat_summary: Any
+    _conn: Any
+    _get_people_unlocked: Any
+    _replace_people_unlocked: Any
+    _run_db: Any
+    _text: Any
+
+
+class SummaryArchiveComponent:
+    def __init__(self, context: SummaryArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_chat_summary(self, row: sqlite3.Row) -> ChatSummaryRecord:
         return ChatSummaryRecord(
             id=int(row["id"] or 0),
             session_id=row["session_id"],
             date=row["date"],
-            brief=self._text(row["brief"]),
-            long_summary=self._text(row["long_summary"]),
-            people=self._get_people_unlocked(
+            brief=self.context._text(row["brief"]),
+            long_summary=self.context._text(row["long_summary"]),
+            people=self.context._get_people_unlocked(
                 "chat_summary_people", "summary_id", row["id"]
             ),
             source=row["source"],
@@ -28,18 +46,18 @@ class SummaryArchiveMixin:
 
         def write() -> ChatSummaryRecord:
             if item.id:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     UPDATE chat_summaries
                     SET session_id = ?, date = ?, brief = ?, long_summary = ?, source = ?
                     WHERE id = ?
                     """,
                     (
-                        self._text(item.session_id),
-                        self._text(item.date),
-                        self._text(item.brief),
-                        self._text(item.long_summary),
-                        self._text(item.source) or "chat",
+                        self.context._text(item.session_id),
+                        self.context._text(item.date),
+                        self.context._text(item.brief),
+                        self.context._text(item.long_summary),
+                        self.context._text(item.source) or "chat",
                         int(item.id),
                     ),
                 )
@@ -47,30 +65,30 @@ class SummaryArchiveMixin:
                 if cursor.rowcount <= 0:
                     item.id = 0
             if not item.id:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     INSERT INTO chat_summaries(session_id, date, brief, long_summary, source)
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        self._text(item.session_id),
-                        self._text(item.date),
-                        self._text(item.brief),
-                        self._text(item.long_summary),
-                        self._text(item.source) or "chat",
+                        self.context._text(item.session_id),
+                        self.context._text(item.date),
+                        self.context._text(item.brief),
+                        self.context._text(item.long_summary),
+                        self.context._text(item.source) or "chat",
                     ),
                 )
                 summary_id = int(cursor.lastrowid)
-            self._replace_people_unlocked(
+            self.context._replace_people_unlocked(
                 "chat_summary_people", "summary_id", summary_id, item.people
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM chat_summaries WHERE id = ?", (summary_id,)
             ).fetchone()
-            return self._compose_chat_summary(row)
+            return self.context._compose_chat_summary(row)
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_recent_chat_summaries(
         self, limit: int = 8
@@ -81,15 +99,15 @@ class SummaryArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
-            return [self._compose_chat_summary(row) for row in rows]
+            rows = self.context._conn.execute(sql, params).fetchall()
+            return [self.context._compose_chat_summary(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_chat_summaries_for_session(
         self, session_id: str, limit: int = 5
     ) -> list[ChatSummaryRecord]:
-        scope = self._text(session_id)
+        scope = self.context._text(session_id)
         if not scope:
             return []
 
@@ -99,7 +117,7 @@ class SummaryArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_chat_summary(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_chat_summary(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)

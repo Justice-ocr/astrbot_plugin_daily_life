@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
@@ -8,19 +10,35 @@ from ...models import (
 )
 from .lines import _pack_lines, _unpack_lines
 
+from typing import Protocol
 
-class BehaviorArchiveMixin:
+
+class BehaviorArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_behavior_pattern: Any
+    _compose_behavior_scene: Any
+    _compose_session_mid_summary: Any
+    _conn: Any
+    _run_db: Any
+    _text: Any
+
+
+class BehaviorArchiveComponent:
+    def __init__(self, context: BehaviorArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_behavior_pattern(self, row: sqlite3.Row) -> BehaviorPatternRecord:
         return BehaviorPatternRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
             scene=row["scene"],
-            pattern=self._text(row["pattern"]),
-            suggested_action=self._text(row["suggested_action"]),
+            pattern=self.context._text(row["pattern"]),
+            suggested_action=self.context._text(row["suggested_action"]),
             confidence=float(row["confidence"] or 0.0),
             support_count=int(row["support_count"] or 0),
             score=float(row["score"] or 0.0),
-            evidence=self._text(row["evidence"]),
+            evidence=self.context._text(row["evidence"]),
             source=row["source"],
             last_seen=row["last_seen"],
             created_at=row["created_at"],
@@ -35,12 +53,12 @@ class BehaviorArchiveMixin:
         )
         if not item:
             return None
-        scope = self._text(item.scope)
-        scene = self._text(item.scene)
-        pattern_text = self._text(item.pattern)
+        scope = self.context._text(item.scope)
+        scene = self.context._text(item.scene)
+        pattern_text = self.context._text(item.pattern)
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO behavior_patterns(
                     scope, scene, pattern, suggested_action, confidence, support_count,
@@ -61,23 +79,23 @@ class BehaviorArchiveMixin:
                     scope,
                     scene,
                     pattern_text,
-                    self._text(item.suggested_action),
+                    self.context._text(item.suggested_action),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
                     max(1, int(item.support_count or 1)),
                     max(-5.0, min(float(item.score or 0.0), 5.0)),
-                    self._text(item.evidence),
-                    self._text(item.source) or "chat_memory",
-                    self._text(item.last_seen),
+                    self.context._text(item.evidence),
+                    self.context._text(item.source) or "chat_memory",
+                    self.context._text(item.last_seen),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM behavior_patterns WHERE scope = ? AND scene = ? AND pattern = ?",
                 (scope, scene, pattern_text),
             ).fetchone()
-            return self._compose_behavior_pattern(row) if row else None
+            return self.context._compose_behavior_pattern(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_behavior_patterns(
         self,
@@ -92,10 +110,10 @@ class BehaviorArchiveMixin:
             clauses = []
             if scope:
                 clauses.append("(scope = ? OR scope = '')")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if scene:
                 clauses.append("scene = ?")
-                params.append(self._text(scene))
+                params.append(self.context._text(scene))
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += (
@@ -104,20 +122,20 @@ class BehaviorArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_behavior_pattern(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_behavior_pattern(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_behavior_scene(self, row: sqlite3.Row) -> BehaviorSceneRecord:
         return BehaviorSceneRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
-            scene=self._text(row["scene"]),
+            scene=self.context._text(row["scene"]),
             cues=_unpack_lines(row["cues"]),
-            preferred_action=self._text(row["preferred_action"]),
-            avoid_action=self._text(row["avoid_action"]),
-            outcome_hint=self._text(row["outcome_hint"]),
+            preferred_action=self.context._text(row["preferred_action"]),
+            avoid_action=self.context._text(row["avoid_action"]),
+            outcome_hint=self.context._text(row["outcome_hint"]),
             confidence=float(row["confidence"] or 0.0),
             support_count=int(row["support_count"] or 0),
             last_seen=row["last_seen"],
@@ -134,11 +152,11 @@ class BehaviorArchiveMixin:
         )
         if not item:
             return None
-        scope = self._text(item.scope)
-        scene_text = self._text(item.scene)
+        scope = self.context._text(item.scope)
+        scene_text = self.context._text(item.scene)
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO behavior_scenes(
                     scope, scene, cues, preferred_action, avoid_action, outcome_hint,
@@ -160,23 +178,23 @@ class BehaviorArchiveMixin:
                     scope,
                     scene_text,
                     _pack_lines(item.cues),
-                    self._text(item.preferred_action),
-                    self._text(item.avoid_action),
-                    self._text(item.outcome_hint),
+                    self.context._text(item.preferred_action),
+                    self.context._text(item.avoid_action),
+                    self.context._text(item.outcome_hint),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
                     max(1, int(item.support_count or 1)),
-                    self._text(item.last_seen),
-                    self._text(item.source) or "chat_memory",
+                    self.context._text(item.last_seen),
+                    self.context._text(item.source) or "chat_memory",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM behavior_scenes WHERE scope = ? AND scene = ?",
                 (scope, scene_text),
             ).fetchone()
-            return self._compose_behavior_scene(row) if row else None
+            return self.context._compose_behavior_scene(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_behavior_scenes(
         self,
@@ -189,25 +207,25 @@ class BehaviorArchiveMixin:
             params: list[Any] = []
             if scope:
                 sql += " WHERE scope = ? OR scope = ''"
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             sql += (
                 " ORDER BY confidence DESC, support_count DESC, last_seen DESC, id DESC"
             )
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_behavior_scene(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_behavior_scene(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_session_mid_summary(self, row: sqlite3.Row) -> SessionMidSummaryRecord:
         return SessionMidSummaryRecord(
             session_id=row["session_id"],
-            scope_label=self._text(row["scope_label"]),
-            summary=self._text(row["summary"]),
-            topic=self._text(row["topic"]),
-            mood=self._text(row["mood"]),
+            scope_label=self.context._text(row["scope_label"]),
+            summary=self.context._text(row["summary"]),
+            topic=self.context._text(row["topic"]),
+            mood=self.context._text(row["mood"]),
             participants=_unpack_lines(row["participants"]),
             message_count=int(row["message_count"] or 0),
             last_message_id=row["last_message_id"],
@@ -226,10 +244,10 @@ class BehaviorArchiveMixin:
         )
         if not item:
             return None
-        session_id = self._text(item.session_id)
+        session_id = self.context._text(item.session_id)
 
         def dbwork():
-            existing = self._conn.execute(
+            existing = self.context._conn.execute(
                 "SELECT message_count FROM session_mid_summaries WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
@@ -237,7 +255,7 @@ class BehaviorArchiveMixin:
                 int(item.message_count or 0),
                 int(existing["message_count"] or 0) + 1 if existing else 1,
             )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO session_mid_summaries(
                     session_id, scope_label, summary, topic, mood, participants,
@@ -257,24 +275,24 @@ class BehaviorArchiveMixin:
                 """,
                 (
                     session_id,
-                    self._text(item.scope_label),
-                    self._text(item.summary),
-                    self._text(item.topic),
-                    self._text(item.mood),
+                    self.context._text(item.scope_label),
+                    self.context._text(item.summary),
+                    self.context._text(item.topic),
+                    self.context._text(item.mood),
                     _pack_lines(item.participants),
                     message_count,
-                    self._text(item.last_message_id),
-                    self._text(item.source) or "chat_memory",
+                    self.context._text(item.last_message_id),
+                    self.context._text(item.source) or "chat_memory",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM session_mid_summaries WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-            return self._compose_session_mid_summary(row) if row else None
+            return self.context._compose_session_mid_summary(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_session_mid_summaries(
         self,
@@ -287,12 +305,12 @@ class BehaviorArchiveMixin:
             params: list[Any] = []
             if session_id:
                 sql += " WHERE session_id = ?"
-                params.append(self._text(session_id))
+                params.append(self.context._text(session_id))
             sql += " ORDER BY updated_at DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_session_mid_summary(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_session_mid_summary(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

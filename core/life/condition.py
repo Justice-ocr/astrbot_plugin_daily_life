@@ -58,6 +58,8 @@ WATCH_STATES = {"blackout", "peek", "skim_window", "active_watch", "engaged"}
 INTERRUPT_LEVELS = {"ordinary", "medium", "high"}
 INTERRUPT_RANK = {"ordinary": 1, "medium": 2, "high": 3}
 SLEEP_DEPTHS = {"awake", "light_rest", "light_sleep", "deep_sleep"}
+BODY_CONDITION_KINDS = {"ordinary", "discomfort", "illness_like"}
+BODY_CONDITION_PHASES = {"none", "onset", "ongoing", "recovering", "resolved"}
 
 PHYSIOLOGICAL_RHYTHM_DEFAULTS = {
     "energy_curve": "全天平稳",
@@ -67,6 +69,10 @@ PHYSIOLOGICAL_RHYTHM_DEFAULTS = {
         "burden_present": False,
         "source": "生活状态",
         "expires_at": "",
+        "kind": "ordinary",
+        "phase": "none",
+        "started_at": "",
+        "recovery_evidence": "",
     },
     "recovery_actions": [],
     "social_battery": 55,
@@ -197,8 +203,9 @@ def format_daily_variability_prompt(date_value: Any, *, state: Any = None) -> st
     return (
         f"身体状态线索：{labels[signal['body']]}；"
         f"情绪状态线索：{labels[signal['mood']]}。"
-        "只能根据既有体力、睡眠、压力和身体负荷做连续的小幅变化；"
-        "不得根据日期、时段或随机性凭空制造不适、疾病或情绪低潮。"
+        "既有体力、睡眠、压力和身体负荷是连续性依据；"
+        "角色也可以低频觉察新身体感受并记录来源，无新感受时保持稳定。"
+        "不得根据日期、时段或随机抽签安排生病或情绪低潮。"
     )
 
 
@@ -217,6 +224,114 @@ def _normalize_optional_cycle(raw_cycle: dict) -> dict:
     }
 
 
+def _normalize_body_condition(
+    raw_value: Any,
+    previous: Any,
+    now: datetime.datetime | None,
+) -> dict:
+    raw = _raw_rhythm(raw_value).copy()
+    prev = _raw_rhythm(previous).copy()
+    if _choice(raw.get("kind"), BODY_CONDITION_KINDS, "ordinary") != "illness_like":
+        if _expired_date(raw.get("expires_at"), now):
+            raw = {}
+    if _choice(prev.get("kind"), BODY_CONDITION_KINDS, "ordinary") != "illness_like":
+        if _expired_date(prev.get("expires_at"), now):
+            prev = {}
+
+    previous_intensity = normalize_body_burden_intensity(
+        prev.get("intensity"), burden_present=prev.get("burden_present")
+    )
+    previous_illness = (
+        prev.get("kind") == "illness_like" and previous_intensity > 0
+    )
+    raw_burden = _bool_flag(raw.get("burden_present"))
+    explicit_resolution = (
+        raw.get("kind") == "illness_like"
+        and raw.get("phase") == "resolved"
+        and raw.get("burden_present") is False
+        and bool(_compact_text(raw.get("recovery_evidence"), 120))
+    )
+    if previous_illness and explicit_resolution:
+        raw["started_at"] = prev.get("started_at") or raw.get("started_at")
+    if previous_illness and not explicit_resolution:
+        if not (raw_burden and raw.get("kind") == "illness_like"):
+            raw = prev.copy()
+            if raw.get("phase") == "onset":
+                raw["phase"] = "ongoing"
+            raw_burden = True
+        else:
+            raw["started_at"] = prev.get("started_at") or raw.get("started_at")
+            raw["source"] = raw.get("source") or prev.get("source")
+            if raw.get("intensity") is None:
+                raw["intensity"] = prev.get("intensity")
+            if not raw.get("phase"):
+                raw["phase"] = prev.get("phase") or "ongoing"
+            if raw["phase"] == "onset":
+                raw["phase"] = "ongoing"
+
+    # 普通短时不适在期限内延续；缺少负荷开关的文本不产生新症状。
+    if (
+        not previous_illness
+        and previous_intensity >= 20
+        and prev.get("expires_at")
+        and not _expired_date(prev.get("expires_at"), now)
+        and "burden_present" not in raw
+    ):
+        raw = prev.copy()
+        raw_burden = True
+
+    burden = raw_burden if raw else previous_intensity > 0 if prev else False
+    intensity = normalize_body_burden_intensity(
+        raw.get("intensity") if raw else prev.get("intensity"),
+        burden_present=burden,
+    )
+    if burden:
+        intensity = max(20, intensity)
+    kind = _choice(raw.get("kind"), BODY_CONDITION_KINDS, "ordinary")
+    if burden and kind == "ordinary":
+        kind = "discomfort"
+    if kind == "illness_like" and burden and not _compact_text(raw.get("source"), 60):
+        kind = "discomfort"
+    if not burden and not explicit_resolution:
+        kind = "ordinary"
+
+    if kind == "illness_like":
+        phase = _choice(raw.get("phase"), BODY_CONDITION_PHASES, "ongoing")
+        if burden and phase in {"none", "resolved"}:
+            phase = "ongoing"
+        if not burden:
+            phase = "resolved"
+        started_at = _compact_text(
+            raw.get("started_at") or (now or life_now()).strftime("%Y-%m-%d"), 32
+        )
+    else:
+        phase = "none"
+        started_at = ""
+
+    defaults = PHYSIOLOGICAL_RHYTHM_DEFAULTS["body_condition"]
+    return {
+        "label": _compact_text(
+            raw.get("label") or prev.get("label") or defaults["label"], 60
+        ),
+        "intensity": intensity,
+        "burden_present": burden,
+        "source": _compact_text(
+            raw.get("source") or prev.get("source") or defaults["source"], 60
+        ),
+        "expires_at": _compact_text(
+            "" if phase == "resolved" else raw.get("expires_at")
+            or (prev.get("expires_at") if burden else ""),
+            32,
+        ),
+        "kind": kind,
+        "phase": phase,
+        "started_at": started_at,
+        "recovery_evidence": _compact_text(
+            raw.get("recovery_evidence") if phase == "resolved" else "", 120
+        ),
+    }
+
+
 def normalize_physiological_rhythm(
     raw_value: Any,
     *,
@@ -227,74 +342,17 @@ def normalize_physiological_rhythm(
     raw = _raw_rhythm(raw_value)
     prev = _raw_rhythm(previous)
     defaults = PHYSIOLOGICAL_RHYTHM_DEFAULTS
-    raw_condition = _raw_rhythm(raw.get("body_condition"))
-    prev_condition = _raw_rhythm(prev.get("body_condition"))
-    if _expired_date(raw_condition.get("expires_at"), now):
-        raw_condition = {}
-    if _expired_date(prev_condition.get("expires_at"), now):
-        prev_condition = {}
-
-    condition_default = defaults["body_condition"]
-    previous_intensity = normalize_body_burden_intensity(
-        prev_condition.get("intensity"),
-        burden_present=prev_condition.get("burden_present"),
+    condition = _normalize_body_condition(
+        raw.get("body_condition"), prev.get("body_condition"), now
     )
-    raw_burden_present = _bool_flag(raw_condition.get("burden_present"))
-    raw_explicitly_declares_burden = "burden_present" in raw_condition
-    raw_intensity = (
-        normalize_body_burden_intensity(
-            raw_condition.get("intensity"),
-            burden_present=raw_burden_present,
-        )
-        if raw_condition.get("intensity") is not None
-        else None
-    )
-    # 有明确期限的短期不适不能被下一轮普通刷新瞬间改写为健康；
-    # 到期后或出现新的明确身体事实时再自然更新。
-    if (
-        previous_intensity >= 20
-        and prev_condition.get("expires_at")
-        and not _expired_date(prev_condition.get("expires_at"), now)
-        and not raw_explicitly_declares_burden
-    ):
-        raw_condition = {}
-        raw_intensity = None
-    condition = {
-        "label": _compact_text(
-            raw_condition.get("label")
-            or prev_condition.get("label")
-            or condition_default["label"],
-            60,
-        ),
-        "intensity": _clamp_score(
-            raw_intensity if raw_condition else None,
-            previous_intensity
-            if prev_condition
-            else int(condition_default["intensity"]),
-        ),
-        "burden_present": (
-            raw_burden_present
-            if raw_condition
-            else bool(previous_intensity > 0)
-            if prev_condition
-            else bool(condition_default["burden_present"])
-        ),
-        "source": _compact_text(
-            raw_condition.get("source")
-            or prev_condition.get("source")
-            or condition_default["source"],
-            60,
-        ),
-        "expires_at": _compact_text(
-            raw_condition.get("expires_at") or prev_condition.get("expires_at") or "",
-            32,
-        ),
-    }
 
     optional_cycle = _normalize_optional_cycle(_raw_rhythm(raw.get("optional_cycle")))
 
     actions = _list_texts(
-        raw.get("recovery_actions") or prev.get("recovery_actions"), limit=5
+        raw.get("recovery_actions")
+        if condition["phase"] == "resolved"
+        else raw.get("recovery_actions") or prev.get("recovery_actions"),
+        limit=5,
     )
     social_default = _clamp_score(
         default_social_battery, int(defaults["social_battery"])
@@ -337,9 +395,20 @@ def format_physiological_rhythm_prompt(value: Any) -> str:
         if isinstance(rhythm.get("optional_cycle"), dict)
         else {}
     )
+    body_text = f"身体状态：{condition.get('label')}({condition.get('intensity')}/100)"
+    if condition.get("kind") == "illness_like":
+        phase_label = {
+            "onset": "刚开始不舒服",
+            "ongoing": "还在不舒服",
+            "recovering": "逐渐恢复",
+            "resolved": "已经缓过来",
+        }.get(condition.get("phase"), "身体不适")
+        body_text += f"，{phase_label}"
+        if condition.get("started_at"):
+            body_text += f"，始于{condition['started_at']}"
     parts = [
+        body_text,
         f"精力曲线：{rhythm.get('energy_curve')}",
-        f"身体状态：{condition.get('label')}({condition.get('intensity')}/100)",
         f"社交电量：{rhythm.get('social_battery')}/100",
         f"注意力：{rhythm.get('attention_state')}",
     ]
@@ -415,7 +484,7 @@ def normalize_state(
         previous_body = previous_rhythm.get("body_condition")
         previous_body = previous_body if isinstance(previous_body, dict) else {}
         body = rhythm.get("body_condition")
-        if isinstance(body, dict):
+        if isinstance(body, dict) and body.get("burden_present"):
             previous_intensity = _clamp_score(previous_body.get("intensity"), 0)
             maximum_body_delta = max(1, min(int(max_score_delta) * 2, 100))
             body["intensity"] = max(

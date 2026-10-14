@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from typing import Any
 
@@ -16,18 +18,69 @@ from ....prompts import (
     cache_friendly_prompt,
 )
 
+from typing import Protocol
 
-class ProactivePromptMixin:
+
+class ProactivePromptComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_recent_context_for_proactive: Any
+    _build_recent_group_awareness_for_proactive: Any
+    _chat_style_enabled: Any
+    _current_proactive_persona: Any
+    _event_group_meta: Any
+    _event_is_group_message: Any
+    _event_session_id: Any
+    _format_behavior_patterns_for_proactive: Any
+    _format_behavior_scenes_for_proactive: Any
+    _format_candidate_recent_messages: Any
+    _format_expression_profiles_for_proactive: Any
+    _format_expression_reviews_for_proactive: Any
+    _format_focus_slots_for_proactive: Any
+    _format_life_terms_for_proactive: Any
+    _format_mid_summaries_for_proactive: Any
+    _format_proactive_air_state: Any
+    _format_proactive_persona_context: Any
+    _format_reply_effects_for_proactive: Any
+    _format_temporary_expression_states_for_proactive: Any
+    _proactive_focus_lines: Any
+    _proactive_person_fact_context: Any
+    _proactive_prompt_dynamic: Any
+    _proactive_prompt_fixed: Any
+    _proactive_prompt_records: Any
+    _proactive_prompt_scene: Any
+    _proactive_readiness_text: Any
+    _proactive_relationship_context: Any
+    _proactive_reply_limit_for_prompt: Any
+    _proactive_scope_key: Any
+    _proactive_summary_lines: Any
+    _proactive_voice_call_capability: Any
+    _proactive_voice_capability: Any
+    _settle_stale_reply_effects: Any
+    archive: Any
+    build_hidden_activity_hint: Any
+    build_memos_hidden_context: Any
+    composer: Any
+    config: Any
+    format_structured_message_context: Any
+    resolve_interaction_context: Any
+    voice_call: Any
+
+
+class ProactivePromptComponent:
+    def __init__(self, context: ProactivePromptComponentContext) -> None:
+        self.context = context
+
     def _proactive_voice_call_capability(self, event: Any) -> str:
         """把实时通话能力作为主动性决策的事实输入，而不是固定意愿。"""
 
-        if self._event_is_group_message(event):
+        if self.context._event_is_group_message(event):
             return "不可用：实时通话只支持私聊"
-        manager = getattr(self, "voice_call", None)
+        manager = getattr(self.context, "voice_call", None)
         checker = getattr(manager, "proactive_invite_available", None)
         if callable(checker):
             try:
-                if checker(self._event_session_id(event)):
+                if checker(self.context._event_session_id(event)):
                     return "可用：仅在确实想听对方声音且此刻适合时邀请"
             except Exception:
                 pass
@@ -41,7 +94,7 @@ class ProactivePromptMixin:
         relationships: list[Any],
     ):
         builder = getattr(
-            getattr(self, "composer", None), "_build_person_fact_context", None
+            getattr(self.context, "composer", None), "_build_person_fact_context", None
         )
         if callable(builder):
             return await builder(
@@ -67,57 +120,57 @@ class ProactivePromptMixin:
         now: datetime.datetime,
     ) -> dict[str, Any]:
         expression_scope = group_id or session_id
-        relationships = await self.archive.get_recent_relationships(6)
-        summaries = await self.archive.get_recent_chat_summaries(6)
-        focus_targets = await self.archive.get_focus_targets(5)
-        expression_profiles = await self.archive.get_expression_profiles(
+        relationships = await self.context.archive.get_recent_relationships(6)
+        summaries = await self.context.archive.get_recent_chat_summaries(6)
+        focus_targets = await self.context.archive.get_focus_targets(5)
+        expression_profiles = await self.context.archive.get_expression_profiles(
             limit=5, scope=expression_scope
         )
-        behavior_patterns = await self.archive.get_behavior_patterns(
+        behavior_patterns = await self.context.archive.get_behavior_patterns(
             limit=5, scope=expression_scope
         )
-        await self._settle_stale_reply_effects()
+        await self.context._settle_stale_reply_effects()
         return {
             "relationships": relationships,
             "summaries": summaries,
             "focus_targets": focus_targets,
             "expression_profiles": expression_profiles,
             "behavior_patterns": behavior_patterns,
-            "reply_effects": await self.archive.get_reply_effects(
+            "reply_effects": await self.context.archive.get_reply_effects(
                 limit=4, scope=session_id
             ),
-            "expression_reviews": await self.archive.get_expression_reviews(
+            "expression_reviews": await self.context.archive.get_expression_reviews(
                 limit=3, scope=session_id
             ),
-            "behavior_scenes": await self.archive.get_behavior_scenes(
+            "behavior_scenes": await self.context.archive.get_behavior_scenes(
                 limit=4, scope=expression_scope
             ),
-            "focus_slots": await self.archive.get_focus_slots(
+            "focus_slots": await self.context.archive.get_focus_slots(
                 limit=4, scope=expression_scope
             ),
-            "mid_summaries": await self.archive.get_session_mid_summaries(
+            "mid_summaries": await self.context.archive.get_session_mid_summaries(
                 limit=3, session_id=session_id
             ),
-            "temporary_expression_states": await self.archive.get_temporary_expression_states(
+            "temporary_expression_states": await self.context.archive.get_temporary_expression_states(
                 limit=3, scope=expression_scope
             ),
-            "life_terms": await self.archive.get_life_terms(
+            "life_terms": await self.context.archive.get_life_terms(
                 limit=6, scope=expression_scope
             ),
-            "group_awareness": await self._build_recent_group_awareness_for_proactive(
+            "group_awareness": await self.context._build_recent_group_awareness_for_proactive(
                 event
             ),
-            "recent_context": await self._build_recent_context_for_proactive(
+            "recent_context": await self.context._build_recent_context_for_proactive(
                 session_id, limit=12
             ),
-            "structured": self.format_structured_message_context(event, limit=8),
-            "memos_context": await self.build_memos_hidden_context(
+            "structured": self.context.format_structured_message_context(event, limit=8),
+            "memos_context": await self.context.build_memos_hidden_context(
                 event, message, sender_name=sender_name
             ),
-            "candidate_messages": self._format_candidate_recent_messages(
+            "candidate_messages": self.context._format_candidate_recent_messages(
                 event, sender_name
             ),
-            "air_state": self._format_proactive_air_state(scope_key, now)
+            "air_state": self.context._format_proactive_air_state(scope_key, now)
             if scope_key
             else "暂无会话空气记录。",
         }
@@ -160,9 +213,9 @@ class ProactivePromptMixin:
         ]
 
     def _proactive_reply_limit_for_prompt(self) -> int:
-        proactive_limit = self.config.proactive.max_reply_length
-        style = getattr(self.config, "chat_style", None)
-        checker = getattr(self, "_chat_style_enabled", None)
+        proactive_limit = self.context.config.proactive.max_reply_length
+        style = getattr(self.context.config, "chat_style", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         if not style or (callable(checker) and not checker()):
             return proactive_limit
         if not callable(checker) and not bool(getattr(style, "enabled", False)):
@@ -222,9 +275,9 @@ class ProactivePromptMixin:
         readiness: dict[str, Any] | None,
     ) -> dict[str, Any]:
         message = str(getattr(event, "message_str", "") or "").strip()
-        group_id, group_name = self._event_group_meta(event)
-        session_id = self._event_session_id(event)
-        scope_key = self._proactive_scope_key(event)
+        group_id, group_name = self.context._event_group_meta(event)
+        session_id = self.context._event_session_id(event)
+        scope_key = self.context._proactive_scope_key(event)
         last_activity_at = getattr(event, "proactive_last_activity_at", None)
         last_bot_reply_at = getattr(event, "proactive_last_bot_reply_at", None)
         pending_count = max(1, int(getattr(event, "proactive_pending_count", 1) or 1))
@@ -238,7 +291,7 @@ class ProactivePromptMixin:
         state = normalize_state(
             day.state.as_dict() if day and getattr(day, "state", None) else {}
         )
-        records = await self._proactive_prompt_records(
+        records = await self.context._proactive_prompt_records(
             event,
             sender_name=sender_name,
             message=message,
@@ -250,24 +303,24 @@ class ProactivePromptMixin:
         timeline = format_timeline_to_text(getattr(day, "timeline", []) if day else [], timeline_date=getattr(day, "date", None), meta=getattr(day, "meta", None))
         meta = getattr(day, "meta", {}) if day else {}
         activity = (
-            self.build_hidden_activity_hint(day, now, using_extended_night)[1]
+            self.context.build_hidden_activity_hint(day, now, using_extended_night)[1]
             if day
             else "暂无当前生活记录"
         )
-        is_group = self._event_is_group_message(event)
-        persona = await self._current_proactive_persona(session_id)
-        person_facts = await self._proactive_person_fact_context(
+        is_group = self.context._event_is_group_message(event)
+        persona = await self.context._current_proactive_persona(session_id)
+        person_facts = await self.context._proactive_person_fact_context(
             persona=persona,
             message=message,
             relationships=records["relationships"],
         )
-        interaction_context = await self.resolve_interaction_context(
+        interaction_context = await self.context.resolve_interaction_context(
             event=event,
             now=now,
         )
-        style = getattr(self.config, "chat_style", None)
-        summary_lines = self._proactive_summary_lines(records["summaries"])
-        focus_lines = self._proactive_focus_lines(records["focus_targets"])
+        style = getattr(self.context.config, "chat_style", None)
+        summary_lines = self.context._proactive_summary_lines(records["summaries"])
+        focus_lines = self.context._proactive_focus_lines(records["focus_targets"])
         return {
             "activity": activity,
             "audience_name": "群友" if is_group else "对方",
@@ -279,21 +332,21 @@ class ProactivePromptMixin:
             "focus_text": chr(10).join(focus_lines)
             if focus_lines
             else "暂无近期关注目标。",
-            "frequency": self.config.proactive.talk_frequency
+            "frequency": self.context.config.proactive.talk_frequency
             if is_group
-            else self.config.proactive.private_talk_frequency,
-            "voice_call_capability": self._proactive_voice_call_capability(event),
-            "voice_message_capability": self._proactive_voice_capability(session_id),
+            else self.context.config.proactive.private_talk_frequency,
+            "voice_call_capability": self.context._proactive_voice_call_capability(event),
+            "voice_message_capability": self.context._proactive_voice_capability(session_id),
             "message": message,
             "meta": meta,
             "now": now,
             "pending_count": pending_count,
-            "persona_context": self._format_proactive_persona_context(persona),
+            "persona_context": self.context._format_proactive_persona_context(persona),
             "person_fact_context": person_facts,
-            "proactive_limit": self._proactive_reply_limit_for_prompt(),
-            "readiness_text": self._proactive_readiness_text(readiness),
+            "proactive_limit": self.context._proactive_reply_limit_for_prompt(),
+            "readiness_text": self.context._proactive_readiness_text(readiness),
             "records": records,
-            "relationship_context": self._proactive_relationship_context(
+            "relationship_context": self.context._proactive_relationship_context(
                 records["relationships"]
             ),
             "sender_name": sender_name,
@@ -302,7 +355,7 @@ class ProactivePromptMixin:
             "style_prompt": format_chat_style_prompt(
                 getattr(style, "casual_short_prompt", "")
             )
-            if style and self._chat_style_enabled()
+            if style and self.context._chat_style_enabled()
             else "",
             "summary_text": chr(10).join(summary_lines)
             if summary_lines
@@ -394,34 +447,34 @@ MemOS 外部长期记忆参考：
 {records["memos_context"] or "暂无外部长期记忆参考。"}
 
 会话中期摘要：
-{self._format_mid_summaries_for_proactive(records["mid_summaries"])}
+{self.context._format_mid_summaries_for_proactive(records["mid_summaries"])}
 
 此刻表达状态：
-{self._format_temporary_expression_states_for_proactive(records["temporary_expression_states"])}
+{self.context._format_temporary_expression_states_for_proactive(records["temporary_expression_states"])}
 
 表达习惯参考：
-{self._format_expression_profiles_for_proactive(records["expression_profiles"])}
+{self.context._format_expression_profiles_for_proactive(records["expression_profiles"])}
 
 行为模式参考：
-{self._format_behavior_patterns_for_proactive(records["behavior_patterns"])}
+{self.context._format_behavior_patterns_for_proactive(records["behavior_patterns"])}
 
 行为场景簇参考：
-{self._format_behavior_scenes_for_proactive(records["behavior_scenes"])}
+{self.context._format_behavior_scenes_for_proactive(records["behavior_scenes"])}
 
 闲时回复效果参考：
-{self._format_reply_effects_for_proactive(records["reply_effects"])}
+{self.context._format_reply_effects_for_proactive(records["reply_effects"])}
 
 表达自然度参考：
-{self._format_expression_reviews_for_proactive(records["expression_reviews"])}
+{self.context._format_expression_reviews_for_proactive(records["expression_reviews"])}
 
 语言参考：
-{self._format_life_terms_for_proactive(records["life_terms"])}
+{self.context._format_life_terms_for_proactive(records["life_terms"])}
 
 近期关注目标：
 {scene["focus_text"]}
 
 短期注意槽：
-{self._format_focus_slots_for_proactive(records["focus_slots"])}
+{self.context._format_focus_slots_for_proactive(records["focus_slots"])}
 
 当前生活状态：
 - 日期记录：{scene["target_date_str"]}；是否延续凌晨记录：{scene["using_extended_night_text"]}
@@ -480,7 +533,7 @@ MemOS 外部长期记忆参考：
         using_extended_night: bool,
         readiness: dict[str, Any] | None = None,
     ) -> str:
-        scene = await self._proactive_prompt_scene(
+        scene = await self.context._proactive_prompt_scene(
             event,
             sender_name,
             now,
@@ -490,5 +543,5 @@ MemOS 外部长期记忆参考：
             readiness,
         )
         return cache_friendly_prompt(
-            self._proactive_prompt_fixed(), self._proactive_prompt_dynamic(scene)
+            self.context._proactive_prompt_fixed(), self.context._proactive_prompt_dynamic(scene)
         )

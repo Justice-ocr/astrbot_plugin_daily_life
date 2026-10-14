@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,7 +22,6 @@ class RuntimeScopeState:
     PRUNE_INTERVAL_SECONDS = 60.0
 
     _SCOPE_STORES = (
-        "_conversation_receipts",
         "_response_gate_last_reply_at",
         "_response_gate_last_seen_at",
         "_response_gate_first_seen_at",
@@ -48,21 +48,21 @@ class RuntimeScopeState:
         "_life_media_cadence",
         "_life_photo_suite_last_tasks",
         "_life_reverse_prompt_cache",
-        "_t2i_forward_cache",
         "_tool_reply_rounds",
         "_voice_switch_rounds",
         "_voice_switch_cadence",
-        "_recalled_messages",
     )
 
     def __init__(
         self,
         runtime: Any,
         *,
+        evict_services: Callable[[set[str]], None] | None = None,
         max_scopes: int = DEFAULT_MAX_SCOPES,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
     ) -> None:
         self.runtime = runtime
+        self._evict_services = evict_services
         self.max_scopes = max(1, int(max_scopes))
         self.idle_seconds = max(60.0, float(idle_seconds))
         self._entries: dict[str, RuntimeScopeEntry] = {}
@@ -168,6 +168,8 @@ class RuntimeScopeState:
             return
 
         self._cancel_idle_tasks(aliases)
+        if self._evict_services is not None:
+            self._evict_services(aliases)
         for name in self._SCOPE_STORES:
             store = getattr(self.runtime, name, None)
             if not isinstance(store, dict):

@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
+from ...life.curation import current_wardrobe_choice, wardrobe_choice_text
 from ...models import (
     STYLE_CATALOG_KIND_SET,
     StyleCatalogItemRecord,
 )
 from ...paths import STYLE_CATALOG_DIR_NAME, runtime_data_root
 from .codec import encode_base64, file_sha256
+
+from typing import Any, Protocol
 
 CLOSET_IMAGE_MAX_MB = 20
 CLOSET_BACKUP_MAX_MB = 500
@@ -24,29 +27,57 @@ CLOSET_BACKUP_VERSION = 1
 CLOSET_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
 
-class PortalClosetMixin:
+class PortalClosetComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _page_closet_event: Any
+    _page_closet_generation_timeouts: Any
+    _page_closet_ids: Any
+    _page_closet_item: Any
+    _page_closet_mime: Any
+    _page_closet_path: Any
+    _page_closet_payload: Any
+    _page_closet_record: Any
+    _page_closet_text: Any
+    _page_closet_transfer_path: Any
+    _page_delete_closet_files: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_read_closet_backup: Any
+    _page_receive_upload: Any
+    _page_safe_closet_path: Any
+    _page_schedule_closet_cleanup: Any
+    _page_send_download: Any
+    _page_write_closet_backup: Any
+    runtime: Any
+
+
+class PortalClosetComponent:
+    def __init__(self, context: PortalClosetComponentContext) -> None:
+        self.context = context
+
     async def page_closet_list(self):
-        return await self._page_json(self._page_closet_payload)
+        return await self.context._page_json(self.context._page_closet_payload)
 
     async def page_closet_import(self):
         async def handler():
             kind = "auto"
             note = ""
-            target = self._page_closet_transfer_path("import", ".upload")
+            target = self.context._page_closet_transfer_path("import", ".upload")
             try:
-                upload = await self._page_receive_upload(
+                upload = await self.context._page_receive_upload(
                     target,
                     max_bytes=CLOSET_IMAGE_MAX_MB * 1024 * 1024,
                 )
-                filename = self._page_closet_text(upload.get("filename"), 160)
-                mime = self._page_closet_text(upload.get("mime"), 80).lower()
+                filename = self.context._page_closet_text(upload.get("filename"), 160)
+                mime = self.context._page_closet_text(upload.get("mime"), 80).lower()
                 suffix = Path(filename).suffix.lower()
                 if suffix not in CLOSET_IMAGE_SUFFIXES or (
                     mime and not mime.startswith("image/")
                 ):
                     raise ValueError("仅支持 PNG、JPG、WEBP、GIF 或 BMP 图片")
                 detail = "；".join(part for part in (note, filename) if part)
-                learned = await self.runtime._learn_style_catalog_image(
+                learned = await self.context.runtime._learn_style_catalog_image(
                     None,
                     str(target),
                     source_kind="manual",
@@ -56,18 +87,18 @@ class PortalClosetMixin:
                 )
                 if not learned:
                     raise ValueError("图片中没有足够清晰、可保存的衣橱信息")
-                payload = await self._page_closet_payload()
-                payload["imported"] = [self._page_closet_item(item) for item in learned]
+                payload = await self.context._page_closet_payload()
+                payload["imported"] = [self.context._page_closet_item(item) for item in learned]
                 return payload
             finally:
                 await asyncio.to_thread(target.unlink, missing_ok=True)
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_generate(self):
         async def handler():
-            body = await self._page_json_body()
-            generation_mode = self._page_closet_text(
+            body = await self.context._page_json_body()
+            generation_mode = self.context._page_closet_text(
                 body.get("generation_mode"), 32
             ).lower()
             if generation_mode not in {"text_to_image", "image_to_image"}:
@@ -76,9 +107,9 @@ class PortalClosetMixin:
                 count = max(1, int(body.get("count") or 1))
             except (TypeError, ValueError):
                 count = 1
-            result = await self.runtime.life_style_generate(
-                self._page_closet_event(),
-                requirement=self._page_closet_text(
+            result = await self.context.runtime.life_style_generate(
+                self.context._page_closet_event(),
+                requirement=self.context._page_closet_text(
                     body.get("requirement") or body.get("note"), 1000
                 ),
                 generation_mode=generation_mode,
@@ -86,17 +117,17 @@ class PortalClosetMixin:
             )
             if str(getattr(result, "status", "ok")) not in {"ok", "submitted"}:
                 raise ValueError(str(result) or "创意衣橱生成失败")
-            payload = await self._page_closet_payload()
+            payload = await self.context._page_closet_payload()
             payload["message"] = str(result)
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_preview(self):
         async def handler():
-            body = await self._page_json_body()
-            item = await self._page_closet_record(body.get("id"))
-            path = self._page_safe_closet_path(item.image_path)
+            body = await self.context._page_json_body()
+            item = await self.context._page_closet_record(body.get("id"))
+            path = self.context._page_safe_closet_path(item.image_path)
             if not await asyncio.to_thread(path.is_file):
                 raise ValueError("衣橱素材图片不存在")
             size = await asyncio.to_thread(lambda: path.stat().st_size)
@@ -104,35 +135,35 @@ class PortalClosetMixin:
                 raise ValueError(f"衣橱素材图片不能超过 {CLOSET_IMAGE_MAX_MB} MB")
             data = await asyncio.to_thread(path.read_bytes)
             encoded = await asyncio.to_thread(encode_base64, data)
-            return {"data_url": f"data:{self._page_closet_mime(path)};base64,{encoded}"}
+            return {"data_url": f"data:{self.context._page_closet_mime(path)};base64,{encoded}"}
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_status(self):
         async def handler():
-            body = await self._page_json_body()
-            ids = self._page_closet_ids(body)
+            body = await self.context._page_json_body()
+            ids = self.context._page_closet_ids(body)
             if not ids:
                 raise ValueError("请选择要更新的衣橱素材")
-            status = self._page_closet_text(body.get("status"), 24).lower()
+            status = self.context._page_closet_text(body.get("status"), 24).lower()
             if status not in {"active", "pending", "rejected", "disabled"}:
                 raise ValueError("衣橱素材状态无效")
-            updated = await self.runtime.archive.set_style_catalog_status(ids, status)
+            updated = await self.context.runtime.archive.set_style_catalog_status(ids, status)
             if updated <= 0:
                 raise ValueError("没有找到可更新的衣橱素材")
-            payload = await self._page_closet_payload()
+            payload = await self.context._page_closet_payload()
             payload["updated_records"] = updated
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_feedback(self):
         async def handler():
-            body = await self._page_json_body()
-            ids = self._page_closet_ids(body)
+            body = await self.context._page_json_body()
+            ids = self.context._page_closet_ids(body)
             if not ids:
                 raise ValueError("请选择要反馈的衣橱素材")
-            sentiment = self._page_closet_text(body.get("sentiment"), 24).lower()
+            sentiment = self.context._page_closet_text(body.get("sentiment"), 24).lower()
             settings = {
                 "prefer": (0.35, "active", "面板标记喜欢"),
                 "dislike": (-0.45, "rejected", "面板标记不喜欢"),
@@ -144,7 +175,7 @@ class PortalClosetMixin:
             delta, status, reason = settings[sentiment]
             updated = 0
             for item_id in ids:
-                saved = await self.runtime.archive.add_style_catalog_feedback(
+                saved = await self.context.runtime.archive.add_style_catalog_feedback(
                     item_id,
                     scope="dashboard",
                     feedback=reason,
@@ -156,43 +187,43 @@ class PortalClosetMixin:
                 updated += int(saved is not None)
             if updated <= 0:
                 raise ValueError("没有找到可更新的衣橱素材")
-            payload = await self._page_closet_payload()
+            payload = await self.context._page_closet_payload()
             payload["updated_records"] = updated
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_review(self):
         async def handler():
-            body = await self._page_json_body()
+            body = await self.context._page_json_body()
             try:
                 item_id = int(body.get("id") or 0)
             except (TypeError, ValueError):
                 item_id = 0
             if item_id <= 0:
                 raise ValueError("请选择要重新识别的衣橱素材")
-            updated = await self.runtime.review_style_catalog_item(
+            updated = await self.context.runtime.review_style_catalog_item(
                 item_id,
-                note=self._page_closet_text(body.get("note"), 500),
+                note=self.context._page_closet_text(body.get("note"), 500),
             )
-            payload = await self._page_closet_payload()
-            payload["item"] = self._page_closet_item(updated)
+            payload = await self.context._page_closet_payload()
+            payload["item"] = self.context._page_closet_item(updated)
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_delete(self):
         async def handler():
-            body = await self._page_json_body()
-            ids = self._page_closet_ids(body)
+            body = await self.context._page_json_body()
+            ids = self.context._page_closet_ids(body)
             if not ids:
                 raise ValueError("请选择要删除的衣橱素材")
-            records = await self.runtime.archive.get_style_catalog_items(
+            records = await self.context.runtime.archive.get_style_catalog_items(
                 status="", ids=ids, limit=len(ids)
             )
-            deleted_records = await self.runtime.archive.delete_style_catalog_items(ids)
-            deleted_files = await self._page_delete_closet_files(records)
-            payload = await self._page_closet_payload()
+            deleted_records = await self.context.runtime.archive.delete_style_catalog_items(ids)
+            deleted_files = await self.context._page_delete_closet_files(records)
+            payload = await self.context._page_closet_payload()
             payload.update(
                 {
                     "deleted_records": deleted_records,
@@ -201,16 +232,16 @@ class PortalClosetMixin:
             )
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_closet_backup(self):
-        items = await self.runtime.archive.get_style_catalog_items(
+        items = await self.context.runtime.archive.get_style_catalog_items(
             status="", limit=500
         )
-        target = self._page_closet_transfer_path("backup", ".zip")
-        meta = await asyncio.to_thread(self._page_write_closet_backup, items, target)
-        self._page_schedule_closet_cleanup(target)
-        return await self._page_send_download(
+        target = self.context._page_closet_transfer_path("backup", ".zip")
+        meta = await asyncio.to_thread(self.context._page_write_closet_backup, items, target)
+        self.context._page_schedule_closet_cleanup(target)
+        return await self.context._page_send_download(
             target,
             mime="application/zip",
             filename=meta["filename"],
@@ -218,26 +249,26 @@ class PortalClosetMixin:
 
     async def page_closet_restore(self):
         async def handler():
-            target = self._page_closet_transfer_path("restore", ".zip")
+            target = self.context._page_closet_transfer_path("restore", ".zip")
             try:
-                upload = await self._page_receive_upload(
+                upload = await self.context._page_receive_upload(
                     target,
                     max_bytes=CLOSET_BACKUP_MAX_MB * 1024 * 1024,
                 )
                 if not str(upload.get("filename") or "").lower().endswith(".zip"):
                     raise ValueError("请选择 ZIP 衣橱备份文件")
                 records, meta = await asyncio.to_thread(
-                    self._page_read_closet_backup, target
+                    self.context._page_read_closet_backup, target
                 )
             finally:
                 await asyncio.to_thread(target.unlink, missing_ok=True)
             restored = 0
             for record in records:
                 restored += int(
-                    await self.runtime.archive.upsert_style_catalog_item(record)
+                    await self.context.runtime.archive.upsert_style_catalog_item(record)
                     is not None
                 )
-            payload = await self._page_closet_payload()
+            payload = await self.context._page_closet_payload()
             payload.update(
                 {
                     "restored": restored,
@@ -247,24 +278,24 @@ class PortalClosetMixin:
             )
             return payload
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def _page_closet_payload(self) -> dict:
-        items = await self.runtime.archive.get_style_catalog_items(
+        items = await self.context.runtime.archive.get_style_catalog_items(
             status="", limit=500
         )
-        wardrobe_getter = getattr(self.runtime.archive, "get_wardrobe_snapshot", None)
+        wardrobe_getter = getattr(self.context.runtime.archive, "get_wardrobe_snapshot", None)
         wardrobe = await wardrobe_getter() if callable(wardrobe_getter) else {}
         for item in items:
             asset = wardrobe.get("items", {}).get(str(item.id))
             if asset:
                 item.attributes["wardrobe"] = asset
-        payload = [self._page_closet_item(item) for item in items]
+        payload = [self.context._page_closet_item(item) for item in items]
         source_groups = {
             str(item.get("source_group_key") or item.get("id")) for item in payload
         }
         creative_settings = getattr(
-            getattr(getattr(self.runtime, "config", None), "image_generation", None),
+            getattr(getattr(self.context.runtime, "config", None), "image_generation", None),
             "creative_wardrobe",
             None,
         )
@@ -276,9 +307,11 @@ class PortalClosetMixin:
         return {
             "items": payload,
             "wardrobe": {"aesthetics": wardrobe.get("profile", {}).get("aesthetics", []),
+                         "choice": current_wardrobe_choice(wardrobe),
+                         "choice_text": wardrobe_choice_text(current_wardrobe_choice(wardrobe)),
                          "jobs": [{"status": job["status"], "requirement": job["payload"].get("requirement", ""), "error": job["error"]} for job in wardrobe.get("jobs", [])]},
             "default_generation_mode": default_generation_mode,
-            "generation_timeout_seconds": self._page_closet_generation_timeouts(),
+            "generation_timeout_seconds": self.context._page_closet_generation_timeouts(),
             "stats": {
                 "total": len(payload),
                 "source_groups": len(source_groups),
@@ -304,7 +337,7 @@ class PortalClosetMixin:
         }
 
     def _page_closet_generation_timeouts(self) -> dict[str, int]:
-        config = getattr(self.runtime, "config", None)
+        config = getattr(self.context.runtime, "config", None)
         image = getattr(config, "image_generation", None)
         llm_timeout = max(10, int(getattr(config, "llm_timeout_seconds", 120) or 120))
 
@@ -324,7 +357,7 @@ class PortalClosetMixin:
     def _page_closet_item(self, item: StyleCatalogItemRecord) -> dict:
         data = item.as_dict()
         attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
-        status = self._page_closet_text(data.get("status"), 24).lower()
+        status = self.context._page_closet_text(data.get("status"), 24).lower()
         if status not in {"active", "pending", "disabled", "rejected"}:
             status = "pending"
         data["status"] = status
@@ -332,19 +365,19 @@ class PortalClosetMixin:
             used_count = max(0, int(attributes.get("used_count") or 0))
         except (TypeError, ValueError):
             used_count = 0
-        path = self._page_closet_path(str(item.image_path or ""))
-        source_host = self._page_closet_text(attributes.get("source_host"), 160)
+        path = self.context._page_closet_path(str(item.image_path or ""))
+        source_host = self.context._page_closet_text(attributes.get("source_host"), 160)
         if not source_host and item.source_url:
             try:
-                source_host = self._page_closet_text(urlsplit(item.source_url).hostname, 160)
+                source_host = self.context._page_closet_text(urlsplit(item.source_url).hostname, 160)
             except ValueError:
                 source_host = ""
         data.update(
             {
                 "source_group_key": str(item.source_image_hash or f"id:{item.id}"),
                 "source_host": source_host,
-                "source_batch_id": self._page_closet_text(attributes.get("source_batch_id"), 120),
-                "source_query": self._page_closet_text(attributes.get("source_query"), 500),
+                "source_batch_id": self.context._page_closet_text(attributes.get("source_batch_id"), 120),
+                "source_query": self.context._page_closet_text(attributes.get("source_query"), 500),
                 "used_count": used_count,
                 "file_name": path.name if path else Path(str(item.image_path or "")).name,
                 "file_size": path.stat().st_size if path and path.is_file() else 0,
@@ -364,20 +397,20 @@ class PortalClosetMixin:
             item_id = int(value or 0)
         except (TypeError, ValueError):
             item_id = 0
-        item = await self.runtime.archive.get_style_catalog_item(item_id)
+        item = await self.context.runtime.archive.get_style_catalog_item(item_id)
         if not item:
             raise ValueError("衣橱素材不存在")
         return item
 
     def _page_closet_path(self, path_text: str) -> Path | None:
         try:
-            return self._page_safe_closet_path(path_text)
+            return self.context._page_safe_closet_path(path_text)
         except ValueError:
             return None
 
     def _page_safe_closet_path(self, path_text: str) -> Path:
         root = (
-            runtime_data_root(getattr(self.runtime, "data_path", None))
+            runtime_data_root(getattr(self.context.runtime, "data_path", None))
             / STYLE_CATALOG_DIR_NAME
         ).resolve()
         path = Path(str(path_text or "")).expanduser().resolve()
@@ -390,7 +423,7 @@ class PortalClosetMixin:
     async def _page_delete_closet_files(
         self, records: list[StyleCatalogItemRecord]
     ) -> int:
-        remaining = await self.runtime.archive.get_style_catalog_items(
+        remaining = await self.context.runtime.archive.get_style_catalog_items(
             status="", limit=500
         )
         used_paths = {str(item.image_path or "") for item in remaining}
@@ -401,7 +434,7 @@ class PortalClosetMixin:
             if not path_text or path_text in used_paths or path_text in seen:
                 continue
             seen.add(path_text)
-            path = self._page_closet_path(path_text)
+            path = self.context._page_closet_path(path_text)
             if path and await asyncio.to_thread(path.is_file):
                 await asyncio.to_thread(path.unlink, missing_ok=True)
                 deleted += 1
@@ -423,7 +456,7 @@ class PortalClosetMixin:
                 item = record.as_dict()
                 item["original_id"] = item.pop("id", 0)
                 item["backup_asset"] = ""
-                path = self._page_closet_path(str(record.image_path or ""))
+                path = self.context._page_closet_path(str(record.image_path or ""))
                 if path and path.is_file():
                     digest = file_sha256(path)
                     asset_name = written.get(digest)
@@ -476,7 +509,7 @@ class PortalClosetMixin:
             ):
                 raise ValueError("衣橱备份格式或版本不受支持")
             root = (
-                runtime_data_root(getattr(self.runtime, "data_path", None))
+                runtime_data_root(getattr(self.context.runtime, "data_path", None))
                 / STYLE_CATALOG_DIR_NAME
             )
             root.mkdir(parents=True, exist_ok=True)
@@ -489,8 +522,8 @@ class PortalClosetMixin:
                     continue
                 item = dict(raw)
                 item.pop("original_id", None)
-                asset_name = self._page_closet_text(item.pop("backup_asset", ""), 300)
-                expected_hash = self._page_closet_text(
+                asset_name = self.context._page_closet_text(item.pop("backup_asset", ""), 300)
+                expected_hash = self.context._page_closet_text(
                     item.pop("backup_sha256", ""), 64
                 ).lower()
                 if asset_name:
@@ -525,11 +558,11 @@ class PortalClosetMixin:
             return records, {"files": restored_files, "skipped_records": skipped}
 
     def _page_closet_transfer_path(self, prefix: str, suffix: str) -> Path:
-        root = runtime_data_root(getattr(self.runtime, "data_path", None)) / "transfer"
+        root = runtime_data_root(getattr(self.context.runtime, "data_path", None)) / "transfer"
         return root / f"closet_{prefix}_{secrets.token_hex(8)}{suffix}"
 
     def _page_schedule_closet_cleanup(self, path: Path) -> None:
-        scheduler = getattr(self.runtime, "_schedule_background_task", None)
+        scheduler = getattr(self.context.runtime, "_schedule_background_task", None)
         if not callable(scheduler):
             return
 
@@ -589,4 +622,4 @@ class PortalClosetMixin:
         return DashboardEvent()
 
 
-__all__ = ["PortalClosetMixin"]
+__all__ = ["PortalClosetComponent"]

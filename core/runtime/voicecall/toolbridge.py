@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
+from ..tooling import tool_argument_parameters, validate_tool_arguments
+
 
 VOICE_CALL_END_TOOL_NAME = "life_voice_call_end"
 _RECURSIVE_TOOLS = frozenset({"life_voice_call_invite", VOICE_CALL_END_TOOL_NAME})
@@ -263,7 +265,7 @@ class VoiceCallToolBridge:
                     "type": "function",
                     "name": name,
                     "description": description,
-                    "parameters": _clean_schema(getattr(tool, "parameters", {})),
+                    "parameters": _clean_schema(tool_argument_parameters(tool)),
                 }
             )
         return schemas
@@ -282,7 +284,11 @@ class VoiceCallToolBridge:
     async def call(self, name: str, arguments: Mapping[str, Any] | None = None) -> str:
         async with self._lock:
             if str(name or "").strip() == VOICE_CALL_END_TOOL_NAME:
-                args = dict(arguments or {}) if isinstance(arguments, Mapping) else {}
+                args = {} if arguments is None else arguments
+                if error := validate_tool_arguments(
+                    VOICE_CALL_END_TOOL_NAME, _VOICE_CALL_END_SCHEMA["parameters"], args
+                ):
+                    return error
                 reason = str(args.get("reason") or "Bot结束通话").strip()[:160]
                 request = getattr(self.manager, "request_hangup", None)
                 if callable(request) and request(self.invite, reason):
@@ -293,10 +299,11 @@ class VoiceCallToolBridge:
             tool = self._find(name)
             if tool is None:
                 return f"未找到可用工具：{str(name or '').strip()[:80]}"
-            try:
-                args = dict(arguments or {})
-            except (TypeError, ValueError):
-                args = {}
+            args = {} if arguments is None else arguments
+            if error := validate_tool_arguments(
+                tool.name, tool_argument_parameters(tool), args
+            ):
+                return error
             event = VoiceCallToolEvent(self.invite, self.runtime)
             try:
                 from astrbot.core.agent.run_context import ContextWrapper

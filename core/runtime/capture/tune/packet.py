@@ -15,8 +15,27 @@ from ....prompts import (
 from ...markers import LOG_PREFIX
 from ..boundary import format_speaker_boundary
 
+from typing import Any, Protocol
 
-class PacketMixin:
+
+class PacketComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _MEMORY_PAYLOAD_CALIBRATION_KEYS: Any
+    _build_memory_payload_calibration_prompt: Any
+    _get_memory_provider: Any
+    _memory_payload_has_saveable_context: Any
+    _merge_memory_payload_revision: Any
+    _str_payload: Any
+    call_text_model: Any
+    close_text_session: Any
+    config: Any
+
+
+class PacketComponent:
+    def __init__(self, context: PacketComponentContext) -> None:
+        self.context = context
+
     _MEMORY_PAYLOAD_CALIBRATION_KEYS = {
         "brief",
         "long_summary",
@@ -57,7 +76,7 @@ class PacketMixin:
             return False
         if bool(payload.get("worth_saving")):
             return True
-        for key in self._MEMORY_PAYLOAD_CALIBRATION_KEYS - {
+        for key in self.context._MEMORY_PAYLOAD_CALIBRATION_KEYS - {
             "brief",
             "long_summary",
             "people",
@@ -76,7 +95,7 @@ class PacketMixin:
         persona_hint: str,
     ) -> str:
         sender_name = meta.get("sender_name") or meta.get("sender_profile_id") or "未知"
-        current_role_label = self._str_payload(meta.get("current_role_label")) or "我"
+        current_role_label = self.context._str_payload(meta.get("current_role_label")) or "我"
         speaker_boundary = format_speaker_boundary(
             current_role_label=current_role_label,
             speaker_name=sender_name,
@@ -157,16 +176,16 @@ JSON 输出要求：
             revised = {
                 key: value
                 for key, value in revision.items()
-                if key in self._MEMORY_PAYLOAD_CALIBRATION_KEYS
+                if key in self.context._MEMORY_PAYLOAD_CALIBRATION_KEYS
             }
         if not revised:
             return payload
         merged = copy.deepcopy(payload)
         for key, value in revised.items():
-            if key not in self._MEMORY_PAYLOAD_CALIBRATION_KEYS:
+            if key not in self.context._MEMORY_PAYLOAD_CALIBRATION_KEYS:
                 continue
             if key in {"brief", "long_summary"}:
-                text = self._str_payload(value)
+                text = self.context._str_payload(value)
                 if text:
                     merged[key] = text
                 continue
@@ -195,23 +214,23 @@ JSON 输出要求：
         meta: dict[str, str],
         persona_hint: str,
     ) -> dict:
-        persona_hint = self._str_payload(persona_hint)
-        if not self._memory_payload_has_saveable_context(payload):
+        persona_hint = self.context._str_payload(persona_hint)
+        if not self.context._memory_payload_has_saveable_context(payload):
             return payload
         try:
-            provider = await self._get_memory_provider()
+            provider = await self.context._get_memory_provider()
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 聊天记忆语义校准无法获取模型：{exc}")
             return payload
         if not provider:
             return payload
         session_id = f"daily_life_memory_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self._build_memory_payload_calibration_prompt(
+        prompt = self.context._build_memory_payload_calibration_prompt(
             payload, meta, persona_hint
         )
         try:
-            provider_id = self.config.memory.provider
-            text = await self.call_text_model(
+            provider_id = self.context.config.memory.provider
+            text = await self.context.call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -221,7 +240,7 @@ JSON 输出要求：
             revision = extract_json_from_text(text)
             if not isinstance(revision, dict):
                 return payload
-            calibrated = self._merge_memory_payload_revision(payload, revision)
+            calibrated = self.context._merge_memory_payload_revision(payload, revision)
             has_interaction_candidate = any(
                 isinstance(item, dict)
                 and str(item.get("predicate") or "").strip() == "interaction_mode"
@@ -253,4 +272,4 @@ JSON 输出要求：
             logger.debug(f"{LOG_PREFIX} 聊天记忆语义校准跳过：{e}")
             return payload
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)

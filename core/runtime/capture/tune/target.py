@@ -14,8 +14,28 @@ from ....prompts import (
 )
 from ...markers import LOG_PREFIX
 
+from typing import Any, Protocol
 
-class TargetMixin:
+
+class TargetComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _MEMORY_TARGET_CALIBRATION_KEYS: Any
+    _build_memory_target_calibration_prompt: Any
+    _get_memory_provider: Any
+    _list_payload: Any
+    _memory_target_has_saveable_context: Any
+    _merge_memory_target_revision: Any
+    _str_payload: Any
+    call_text_model: Any
+    close_text_session: Any
+    config: Any
+
+
+class TargetComponent:
+    def __init__(self, context: TargetComponentContext) -> None:
+        self.context = context
+
     _MEMORY_TARGET_CALIBRATION_KEYS = {
         "subjective_name",
         "subjective_tags",
@@ -28,10 +48,10 @@ class TargetMixin:
     def _memory_target_has_saveable_context(self, target: dict) -> bool:
         return isinstance(target, dict) and any(
             [
-                self._str_payload(target.get("note")),
-                self._str_payload(target.get("relationship_story")),
-                self._list_payload(target.get("points")),
-                self._list_payload(target.get("subjective_tags") or target.get("tags")),
+                self.context._str_payload(target.get("note")),
+                self.context._str_payload(target.get("relationship_story")),
+                self.context._list_payload(target.get("points")),
+                self.context._list_payload(target.get("subjective_tags") or target.get("tags")),
             ]
         )
 
@@ -76,7 +96,7 @@ JSON 输出要求：
 目标人物：{target_name}
 消息传输范围：{"群聊" if meta.get("is_group") == "true" else "私聊"}（只表示平台通道，不代表现实距离）
 现实互动方式：{meta.get("interaction_mode_label") or "未知"}
-目标人物在人设中的线索：{self._str_payload(persona_hint)}
+目标人物在人设中的线索：{self.context._str_payload(persona_hint)}
 原始目标记忆 JSON：
 {json.dumps(target, ensure_ascii=False, indent=2)}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="待审阅目标记忆")
@@ -89,16 +109,16 @@ JSON 输出要求：
             revised = {
                 key: value
                 for key, value in revision.items()
-                if key in self._MEMORY_TARGET_CALIBRATION_KEYS
+                if key in self.context._MEMORY_TARGET_CALIBRATION_KEYS
             }
         if not revised:
             return target
         merged = copy.deepcopy(target)
         for key, value in revised.items():
-            if key not in self._MEMORY_TARGET_CALIBRATION_KEYS:
+            if key not in self.context._MEMORY_TARGET_CALIBRATION_KEYS:
                 continue
             if key in {"subjective_name", "relationship_story", "note"}:
-                text = self._str_payload(value)
+                text = self.context._str_payload(value)
                 if text:
                     merged[key] = text
                 continue
@@ -112,19 +132,19 @@ JSON 输出要求：
         meta: dict[str, str],
         persona_hint: str,
     ) -> dict:
-        persona_hint = self._str_payload(persona_hint)
-        if not persona_hint or not self._memory_target_has_saveable_context(target):
+        persona_hint = self.context._str_payload(persona_hint)
+        if not persona_hint or not self.context._memory_target_has_saveable_context(target):
             return target
-        provider = await self._get_memory_provider()
+        provider = await self.context._get_memory_provider()
         if not provider:
             return target
         session_id = f"daily_life_memory_target_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self._build_memory_target_calibration_prompt(
+        prompt = self.context._build_memory_target_calibration_prompt(
             target, meta, persona_hint
         )
         try:
-            provider_id = self.config.memory.provider
-            text = await self.call_text_model(
+            provider_id = self.context.config.memory.provider
+            text = await self.context.call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -134,7 +154,7 @@ JSON 输出要求：
             revision = extract_json_from_text(text)
             if not isinstance(revision, dict):
                 return target
-            calibrated = self._merge_memory_target_revision(target, revision)
+            calibrated = self.context._merge_memory_target_revision(target, revision)
             if calibrated != target and bool(revision.get("needs_revision")):
                 logger.debug(
                     f"{LOG_PREFIX} 已语义校准目标记忆：{target.get('name') or target.get('profile_id') or '未知'}"
@@ -144,4 +164,4 @@ JSON 输出要求：
             logger.debug(f"{LOG_PREFIX} 目标记忆语义校准跳过：{e}")
             return target
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)

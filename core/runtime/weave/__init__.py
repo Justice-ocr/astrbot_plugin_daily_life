@@ -1,18 +1,5 @@
-from .dock import StructuredDockMixin
-from .forge import StructuredForgeMixin
-from .glance import StructuredGlanceMixin
-from .grain import StructuredBaseMixin, StructuredMessage, StructuredTarget
-from .route import StructuredRouteMixin
+"""职责独立的生活组件。"""
 
+from .grain import StructuredMessage, StructuredTarget
 
-class StructuredContextMixin(
-    StructuredBaseMixin,
-    StructuredDockMixin,
-    StructuredRouteMixin,
-    StructuredForgeMixin,
-    StructuredGlanceMixin,
-):
-    pass
-
-
-__all__ = ["StructuredContextMixin", "StructuredMessage", "StructuredTarget"]
+__all__ = ["StructuredMessage", "StructuredTarget"]

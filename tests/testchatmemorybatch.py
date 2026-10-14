@@ -92,6 +92,18 @@ class ChatMemoryArchiveTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(first["batch_key"], second["batch_key"])
 
+    async def test_retry_backoff_does_not_restart_batch_immediately(self):
+        await self.archive.enqueue_chat_memory_message(self.snapshot())
+        first = await self.archive.begin_chat_memory_batch(
+            "private:1", max_messages=10, max_chars=1000
+        )
+        self.assertEqual(await self.archive.fail_chat_memory_batch(
+            first["id"], "稍后重试", retry_after_seconds=600,
+        ), "retry_wait")
+        self.assertIsNone(await self.archive.begin_chat_memory_batch(
+            "private:1", max_messages=10, max_chars=1000
+        ))
+
 
 class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -263,6 +275,17 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(batch["messages"][0]["role"], "assistant")
         self.assertEqual(batch["messages"][0]["message_text"], "到时候我联系你")
+        self.assertEqual(batch["messages"][0]["user_id"], "")
+
+    async def test_self_message_is_not_captured_as_user_memory(self):
+        self.runtime._proactive_is_self_message = lambda event: True
+
+        inserted = await self.runtime.capture_chat_memory_message(
+            SimpleNamespace(message_str="刚发出的主动消息")
+        )
+
+        self.assertFalse(inserted)
+        self.assertEqual(await self.runtime.archive.list_chat_memory_sessions(), [])
 
     async def test_proactive_voice_memory_keeps_media_fact(self):
         await self.runtime.capture_proactive_chat_memory_reply(
@@ -333,6 +356,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "id": 1,
                     "message_id": "m1",
+                    "role": "user",
                     "sender_profile_id": "u1",
                     "sender_name": "Alice",
                     "platform": "onebot",
@@ -341,6 +365,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "id": 2,
                     "message_id": "m2",
+                    "role": "user",
                     "sender_profile_id": "u2",
                     "sender_name": "Bob",
                     "platform": "telegram",
@@ -379,6 +404,119 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 ("u2", "Bob", "telegram", "2002", "m2"),
             ],
         )
+
+    async def test_memory_targets_reject_assistant_profiles(self):
+        calls = []
+
+        async def save_targets(payload, meta):
+            calls.append((payload, meta))
+            return [{"profile_id": meta["sender_profile_id"]}]
+
+        self.runtime._save_memory_targets = save_targets
+        batch = {
+            "messages": [
+                {"id": 1, "role": "user", "sender_profile_id": "u1", "sender_name": "Alice"},
+                {"id": 2, "role": "assistant", "sender_profile_id": "bot", "sender_name": "我"},
+                {"id": 3, "role": "assistant", "sender_profile_id": "self-id", "sender_name": "我"},
+            ],
+        }
+        payload = {
+            "memory_targets": [
+                {"profile_id": "u1", "note": "用户线索"},
+                {"profile_id": "bot", "note": "错误的自我关系"},
+                {"profile_id": "self-id", "note": "错误的自我关系"},
+            ],
+        }
+
+        saved = await self.runtime._save_batch_memory_targets(payload, batch, {})
+
+        self.assertEqual([item["profile_id"] for item in saved], ["u1"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["sender_name"], "Alice")
+
+    async def test_batch_observation_uses_user_even_when_assistant_replies_last(self):
+        user = ChatMemoryArchiveTest.snapshot(message_id="u1", text="一起看电影")
+        user["id"] = 1
+        assistant = ChatMemoryArchiveTest.snapshot(message_id="", text="好呀")
+        assistant.update(
+            {
+                "id": 2,
+                "role": "assistant",
+                "sender_profile_id": "bot",
+                "sender_name": "我",
+                "user_id": "user-1",
+            }
+        )
+        await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": False,
+                "visibility": {"level": "focused", "attention_level": 82, "reason": "用户提出安排"},
+                "action_decision": {"action": "observe", "reason": "已看到用户的安排"},
+            },
+            {"session_id": "private:1", "messages": [user, assistant]},
+        )
+
+        visibility = (await self.runtime.archive.get_message_visibility_records(10))[0]
+        decision = (await self.runtime.archive.get_action_decision_records(10))[0]
+        self.assertEqual((visibility.sender_profile_id, visibility.sender_name), ("user-1", "Alice"))
+        self.assertEqual((decision.sender_profile_id, decision.sender_name), ("user-1", "Alice"))
+        self.assertEqual((visibility.message_id, decision.message_id), ("u1", "u1"))
+
+    async def test_assistant_only_batch_does_not_create_user_observation(self):
+        assistant = ChatMemoryArchiveTest.snapshot(message_id="", text="我收拾好了")
+        assistant.update(
+            {
+                "id": 1,
+                "role": "assistant",
+                "sender_profile_id": "bot",
+                "sender_name": "我",
+            }
+        )
+        await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": False,
+                "visibility": {"level": "focused", "attention_level": 82, "reason": "正在发送主动消息"},
+                "action_decision": {"action": "observe", "reason": "正在发送主动消息"},
+            },
+            {"session_id": "private:1", "messages": [assistant]},
+        )
+
+        self.assertEqual(await self.runtime.archive.get_message_visibility_records(10), [])
+        self.assertEqual(await self.runtime.archive.get_action_decision_records(10), [])
+
+    async def test_summary_people_use_message_identities(self):
+        async def learn_preferences_from_payload(payload, *, date_str, source):
+            return []
+
+        self.runtime.composer = SimpleNamespace(
+            learn_preferences_from_payload=learn_preferences_from_payload
+        )
+        self.runtime._schedule_chat_memory_memos = lambda *args, **kwargs: None
+        user = ChatMemoryArchiveTest.snapshot(message_id="u1", text="晚上一起看电影")
+        user["id"] = 1
+        assistant = ChatMemoryArchiveTest.snapshot(message_id="", text="好呀")
+        assistant.update(
+            {
+                "id": 2,
+                "role": "assistant",
+                "sender_profile_id": "bot",
+                "sender_name": "我",
+            }
+        )
+
+        saved = await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": True,
+                "brief": "晚上约好一起看电影",
+                "people": [
+                    {"profile_id": "user-1", "name": "错误称呼"},
+                    {"profile_id": "bot", "name": "李知恬"},
+                ],
+            },
+            {"session_id": "private:1", "messages": [user, assistant]},
+        )
+
+        self.assertEqual(saved.people, ["Alice", "我"])
 
     def test_batch_prompt_exposes_all_dashboard_memory_categories(self):
         message = ChatMemoryArchiveTest.snapshot(

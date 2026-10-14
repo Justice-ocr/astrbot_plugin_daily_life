@@ -1,4 +1,6 @@
 """保存有版本的共同活动、物品及显式纠正。"""
+from __future__ import annotations
+
 
 from __future__ import annotations
 
@@ -10,13 +12,31 @@ from typing import Any
 from ..clock import now as life_now
 from ..models import LongTermMemoryRecord
 
+from typing import Protocol
 
-class LivingArchiveMixin:
+
+class LivingArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _conn: Any
+    _life_entity_unlocked: Any
+    _living_projection_unlocked: Any
+    _run_db: Any
+    _save_life_entity_unlocked: Any
+    _upsert_long_term_memory_unlocked: Any
+    life_entity_id: Any
+    living_revision: Any
+
+
+class LivingArchiveComponent:
+    def __init__(self, context: LivingArchiveComponentContext) -> None:
+        self.context = context
+
     def _living_projection_unlocked(self, item: dict[str, Any]) -> dict[str, Any]:
         """约定的最终状态优先于活动检查点，避免取消后仍显示可继续。"""
         if item.get("kind") != "shared_activity":
             return item
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT status FROM commitments WHERE id=?", (item.get("commitment_id"),)
         ).fetchone()
         status = row[0] if row else "missing"
@@ -33,7 +53,7 @@ class LivingArchiveMixin:
         return item
 
     def _life_entity_unlocked(self, entity_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT payload_json FROM continuous_life_entries WHERE id=? AND kind IN ('shared_activity','object','correction')",
             (entity_id,),
         ).fetchone()
@@ -59,7 +79,7 @@ class LivingArchiveMixin:
             or not evidence_id
         ):
             raise ValueError("生活记录缺少有效种类、归属或证据。")
-        previous = self._life_entity_unlocked(item["id"])
+        previous = self.context._life_entity_unlocked(item["id"])
         if previous and previous["scope"] != item["scope"]:
             raise ValueError("当前会话无权修改该生活记录。")
         if previous and evidence_id in previous.get("evidence_ids", []):
@@ -86,7 +106,7 @@ class LivingArchiveMixin:
                 "evidence": evidence[:1200],
                 "before": {
                     key: (previous or {}).get(key)
-                    for key in ("state", "location", "progress", "content", "detail")
+                    for key in ("state", "location", "progress", "content", "detail", "owner", "quantity", "unit", "available_at")
                 },
             },
         ][-20:]
@@ -95,7 +115,7 @@ class LivingArchiveMixin:
             if result.get("state") in {"completed", "cancelled", "archived"}
             else ""
         )
-        self._conn.execute(
+        self.context._conn.execute(
             """INSERT INTO continuous_life_entries(id,kind,date,scope,occurred_at,summary,payload_json)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             date=excluded.date,occurred_at=excluded.occurred_at,summary=excluded.summary,payload_json=excluded.payload_json""",
@@ -125,30 +145,30 @@ class LivingArchiveMixin:
             else:
                 clauses.append("kind IN ('object','shared_activity','correction')")
             params.append(max(1, min(limit, 128)))
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"SELECT payload_json FROM continuous_life_entries WHERE {' AND '.join(clauses)} "
                 "ORDER BY CASE kind WHEN 'correction' THEN 0 WHEN 'shared_activity' THEN 1 ELSE 2 END, "
                 "CASE WHEN date='' THEN 0 ELSE 1 END, occurred_at DESC, id DESC LIMIT ?",
                 params,
             ).fetchall()
             return [
-                self._living_projection_unlocked(json.loads(row[0])) for row in rows
+                self.context._living_projection_unlocked(json.loads(row[0])) for row in rows
             ]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_living_entity(
         self, entity_id: str, scope: str
     ) -> dict[str, Any] | None:
         def read():
-            item = self._life_entity_unlocked(entity_id)
+            item = self.context._life_entity_unlocked(entity_id)
             return (
-                self._living_projection_unlocked(item)
+                self.context._living_projection_unlocked(item)
                 if item and item["scope"] in {scope, "global"}
                 else None
             )
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def ensure_shared_activity(self, commitment: Any) -> dict[str, Any] | None:
         if (
@@ -161,13 +181,13 @@ class LivingArchiveMixin:
             return None
 
         def write():
-            entity_id = self.life_entity_id(
+            entity_id = self.context.life_entity_id(
                 "shared_activity", commitment.source_session, str(commitment.id)
             )
-            existing = self._life_entity_unlocked(entity_id)
+            existing = self.context._life_entity_unlocked(entity_id)
             if existing:
                 return existing
-            result = self._save_life_entity_unlocked(
+            result = self.context._save_life_entity_unlocked(
                 {
                     "id": entity_id,
                     "kind": "shared_activity",
@@ -183,11 +203,11 @@ class LivingArchiveMixin:
                 evidence_id=f"commitment:{commitment.id}",
                 evidence=commitment.source_message or commitment.content,
             )
-            self._conn.commit()
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context._conn.commit()
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def update_shared_activity(
         self,
@@ -204,7 +224,7 @@ class LivingArchiveMixin:
         from ..life.entities import activity_change
 
         def write():
-            current = self._life_entity_unlocked(entity_id)
+            current = self.context._life_entity_unlocked(entity_id)
             if (
                 not current
                 or current["kind"] != "shared_activity"
@@ -213,7 +233,7 @@ class LivingArchiveMixin:
                 raise ValueError("未找到本会话的共同活动。")
             if evidence_id in current.get("evidence_ids", []):
                 return current
-            commitment = self._conn.execute(
+            commitment = self.context._conn.execute(
                 "SELECT status FROM commitments WHERE id=?", (current["commitment_id"],)
             ).fetchone()
             if not commitment or commitment[0] in {
@@ -226,9 +246,9 @@ class LivingArchiveMixin:
             item = activity_change(
                 current, state=state, detail=detail, progress=progress
             )
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                result = self._save_life_entity_unlocked(
+                result = self.context._save_life_entity_unlocked(
                     item,
                     evidence_id=evidence_id,
                     evidence=evidence,
@@ -236,19 +256,19 @@ class LivingArchiveMixin:
                 )
                 if state in {"completed", "cancelled"}:
                     status = "done" if state == "completed" else "cancelled"
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE commitments SET status=?,completed_at=? WHERE id=?",
                         (status, result["at"], current["commitment_id"]),
                     )
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE conversation_action_items SET status=?,updated_at=CURRENT_TIMESTAMP WHERE commitment_id=?",
                         (status, current["commitment_id"]),
                     )
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE long_term_memories SET status='superseded' WHERE source_table='continuous_life_entries' AND source_id=? AND status='active'",
                     (entity_id,),
                 )
-                self._upsert_long_term_memory_unlocked(
+                self.context._upsert_long_term_memory_unlocked(
                     LongTermMemoryRecord(
                         scope=scope,
                         category="shared_activity",
@@ -259,14 +279,14 @@ class LivingArchiveMixin:
                         session_id=scope,
                     )
                 )
-                self._conn.commit()
+                self.context._conn.commit()
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def update_life_object(
         self,
@@ -281,11 +301,16 @@ class LivingArchiveMixin:
         evidence_id: str,
         evidence: str,
         revision: int,
+        owner: str = "",
+        quantity: float | None = None,
+        unit: str = "",
+        available_at: str = "",
     ) -> dict[str, Any]:
         from ..life.entities import object_change
+        from ..life.resources import resource_properties
 
         def write():
-            existing = self._life_entity_unlocked(entity_id) if entity_id else None
+            existing = self.context._life_entity_unlocked(entity_id) if entity_id else None
             if entity_id and (
                 not existing
                 or existing["scope"] != scope
@@ -293,7 +318,7 @@ class LivingArchiveMixin:
             ):
                 raise ValueError("未找到本会话的物品或作品。")
             current = existing or {
-                "id": self.life_entity_id(
+                "id": self.context.life_entity_id(
                     "object", scope, f"{evidence_id}:{title.strip()}"
                 ),
                 "kind": "object",
@@ -309,34 +334,44 @@ class LivingArchiveMixin:
                 content=content,
             )
             # 对真实媒体和领域物品的引用不可由自然语言伪造或覆盖。
+            result = resource_properties(result, owner=owner, quantity=quantity,
+                                         unit=unit, available_at=available_at)
             if existing and existing.get("resource"):
                 result["resource"] = existing["resource"]
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                result = self._save_life_entity_unlocked(
+                result = self.context._save_life_entity_unlocked(
                     result,
                     evidence_id=evidence_id,
                     evidence=evidence,
                     expected_revision=revision,
                 )
-                self._conn.commit()
+                self.context._conn.commit()
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     def _archive_life_artifact_unlocked(self, outcome: dict[str, Any]) -> None:
         artifact = outcome.get("artifact") or {}
         if outcome.get("status") != "committed" or not artifact.get("content"):
             return
         action_id = outcome["action_id"]
-        entity_id = self.life_entity_id("object", "global", f"artifact:{action_id}")
-        if self._life_entity_unlocked(entity_id):
+        entity_id = self.context.life_entity_id("object", "global", f"artifact:{action_id}")
+        if self.context._life_entity_unlocked(entity_id):
             return
-        self._save_life_entity_unlocked(
+        parent = outcome.get("artifact_parent") or {}
+        parent_item = self.context._life_entity_unlocked(parent.get("id", ""))
+        if parent_item and parent_item.get("artifact_version"):
+            series_id = parent_item["series_id"]
+            row = self.context._conn.execute("SELECT MAX(json_extract(payload_json,'$.artifact_version')) FROM continuous_life_entries WHERE kind='object' AND scope='global' AND json_extract(payload_json,'$.series_id')=?", (series_id,)).fetchone()
+            version = int(row[0] or 0) + 1
+        else:
+            series_id, version, parent_item = entity_id, 1, None
+        self.context._save_life_entity_unlocked(
             {
                 "id": entity_id,
                 "kind": "object",
@@ -348,10 +383,27 @@ class LivingArchiveMixin:
                 "location": "数字作品档案",
                 "provenance": "行动后实际生成的数字笔记",
                 "resource": {"action_id": action_id},
+                "owner": "self",
+                "series_id": series_id,
+                "artifact_version": version,
+                "parent_id": parent_item["id"] if parent_item else "",
+                "improvement": (outcome.get("reflection") or {}).get("summary", ""),
             },
             evidence_id=f"artifact:{action_id}",
             evidence=artifact["content"],
         )
+
+    async def get_artifact_versions(self, entity_id: str, scope: str) -> list[dict]:
+        def read():
+            item = self.context._life_entity_unlocked(entity_id)
+            if not item or item["scope"] not in {scope, "global"} or not item.get("series_id"):
+                return []
+            rows = self.context._conn.execute(
+                "SELECT payload_json FROM continuous_life_entries WHERE kind='object' AND scope=? AND json_extract(payload_json,'$.series_id')=? ORDER BY json_extract(payload_json,'$.artifact_version') DESC LIMIT 40",
+                (item["scope"], item["series_id"]),
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+        return await self.context._run_db(read)
 
     async def correct_life_memory(
         self,
@@ -368,7 +420,7 @@ class LivingArchiveMixin:
             raise ValueError("纠正需要明确内容和原消息证据。")
 
         def write():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM long_term_memories WHERE id=?", (memory_id,)
             ).fetchone()
             if not row or (
@@ -378,29 +430,29 @@ class LivingArchiveMixin:
                 raise ValueError("未找到本会话可修改的记忆。")
             target_scope = row["scope"]
             parent = (
-                self._life_entity_unlocked(row["source_id"])
+                self.context._life_entity_unlocked(row["source_id"])
                 if row["source_table"] == "continuous_life_entries"
                 else None
             )
             entity_id = (
                 parent["id"]
                 if parent and parent.get("kind") == "correction"
-                else self.life_entity_id(
+                else self.context.life_entity_id(
                     "correction",
                     target_scope,
                     f"{row['source_table']}:{row['source_id']}:{memory_id}",
                 )
             )
-            current = self._life_entity_unlocked(entity_id)
+            current = self.context._life_entity_unlocked(entity_id)
             if current and evidence_id in current.get("evidence_ids", []):
                 return current
             if row["status"] != "active" or (
                 expected_content is not None and row["content"] != expected_content
             ):
                 raise ValueError("记忆已有新的版本，请重新检索后再纠正。")
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                result = self._save_life_entity_unlocked(
+                result = self.context._save_life_entity_unlocked(
                     {
                         **(current or {}),
                         "id": entity_id,
@@ -422,21 +474,21 @@ class LivingArchiveMixin:
                     evidence=evidence,
                 )
                 if result["source_table"] and result["source_id"]:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE long_term_memories SET status='invalidated',updated_at=CURRENT_TIMESTAMP WHERE scope=? AND source_table=? AND source_id=?",
                         (target_scope, result["source_table"], result["source_id"]),
                     )
                 else:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE long_term_memories SET status='invalidated',updated_at=CURRENT_TIMESTAMP WHERE id=?",
                         (result["memory_id"],),
                     )
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE long_term_memories SET status='superseded' WHERE source_table='continuous_life_entries' AND source_id=? AND status='active'",
                     (entity_id,),
                 )
                 # 纠正只替换当前事实解释，原始时间线、历史造型及媒体文件保持历史证据。
-                self._upsert_long_term_memory_unlocked(
+                self.context._upsert_long_term_memory_unlocked(
                     LongTermMemoryRecord(
                         scope=target_scope,
                         category="correction",
@@ -450,14 +502,14 @@ class LivingArchiveMixin:
                     ),
                     replacing_correction=True,
                 )
-                self._conn.commit()
+                self.context._conn.commit()
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def record_share_media_object(
         self, task_id: int, *, delivered_at: float = 0
@@ -467,7 +519,7 @@ class LivingArchiveMixin:
         from datetime import datetime
 
         def write():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM durable_tasks WHERE id=? AND status='completed' "
                 "AND kind IN ('share_image_generation','share_video_generation')",
                 (task_id,),
@@ -481,8 +533,8 @@ class LivingArchiveMixin:
             artifact = media_result.get("artifact_path" if kind == "image" else "artifact_url")
             if payload.get("external_owner") != "daily_share" or not scope or not artifact:
                 return None
-            entity_id = self.life_entity_id("object", scope, f"share-media:{task_id}")
-            previous = self._life_entity_unlocked(entity_id)
+            entity_id = self.context.life_entity_id("object", scope, f"share-media:{task_id}")
+            previous = self.context._life_entity_unlocked(entity_id)
             if previous and (not delivered_at or previous.get("delivery") == "sent"):
                 return previous
             item = previous or {
@@ -496,22 +548,22 @@ class LivingArchiveMixin:
                 item = {**item, "delivery": "sent", "delivered_at": datetime.fromtimestamp(delivered_at, TIMEZONE).isoformat(timespec="seconds")}
             if scope == "qzone_broadcast":
                 item = {**item, "visibility": "public"}
-            result = self._save_life_entity_unlocked(
+            result = self.context._save_life_entity_unlocked(
                 item,
                 evidence_id=f"share-media:{task_id}:" + ("sent" if delivered_at else "ready"),
                 evidence="分享媒体已确认发送" if delivered_at else "已取得分享成品，发送尚未确认",
             )
-            self._conn.commit()
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context._conn.commit()
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def record_media_object(self, task_id: int) -> dict[str, Any] | None:
         """只从已登记的真实媒体产物建立物品，计划和用户填写的路径不能入库。"""
 
         def write():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM durable_tasks WHERE id=? AND kind='media_delivery'",
                 (task_id,),
             ).fetchone()
@@ -521,11 +573,11 @@ class LivingArchiveMixin:
             scope, artifacts = payload.get("scope"), payload.get("artifacts")
             if not scope or not isinstance(artifacts, list) or not artifacts:
                 return None
-            entity_id = self.life_entity_id("object", scope, f"media:{task_id}")
-            previous = self._life_entity_unlocked(entity_id)
+            entity_id = self.context.life_entity_id("object", scope, f"media:{task_id}")
+            previous = self.context._life_entity_unlocked(entity_id)
             if previous:
                 return previous
-            result = self._save_life_entity_unlocked(
+            result = self.context._save_life_entity_unlocked(
                 {
                     "id": entity_id,
                     "kind": "object",
@@ -551,8 +603,8 @@ class LivingArchiveMixin:
                 evidence_id=f"media:{task_id}",
                 evidence="已登记可投递的生成成品",
             )
-            self._conn.commit()
-            self.living_revision = getattr(self, "living_revision", 0) + 1
+            self.context._conn.commit()
+            self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
             return result
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import math
 from collections import Counter
@@ -8,6 +10,8 @@ from statistics import median
 from ..models import normalize_timeline_day_offsets, timeline_item_minutes
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
+
+from typing import Any, Protocol
 
 GENERATION_CONTRACT_VERSION = "daily_life_generation"
 FULL_DAY_LATEST_START_MINUTES = 13 * 60 + 30
@@ -38,9 +42,49 @@ class ValidationIssue:
     message: str
 
 
-class DailyContractMixin:
+class DailyContractComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_derived_timeline_audit: Any
+    _build_contract_prompt: Any
+    _contract_json_text: Any
+    _cooking_payload_issue: Any
+    _coverage_contract: Any
+    _day_repeat_profile: Any
+    _daytime_outfit_transition_issue: Any
+    _decision_novelty_text: Any
+    _declared_life_window: Any
+    _derive_timeline_audit: Any
+    _full_day_coverage_ok: Any
+    _full_day_coverage_profile: Any
+    _full_day_coverage_thresholds: Any
+    _is_before_residence_boundary: Any
+    _last_validation_issue_code: Any
+    _minutes_text: Any
+    _repair_strategy_text: Any
+    _repeat_sequence_similarity: Any
+    _repeat_similarity: Any
+    _set_validation_issue: Any
+    _timeline_cadence_issue: Any
+    _timeline_coverage: Any
+    _timeline_covered_end_minutes: Any
+    _timeline_density_issue: Any
+    _timeline_item_duration: Any
+    _timeline_minutes: Any
+    _timeline_raw_minutes: Any
+    _timeline_unwrapped_minutes: Any
+    _validate_generation_contract: Any
+    _validate_outfit_style: Any
+    _validate_timeline_rhythm: Any
+    archive: Any
+
+
+class DailyContractComponent:
+    def __init__(self, context: DailyContractComponentContext) -> None:
+        self.context = context
+
     def _set_validation_issue(self, code: str) -> None:
-        self._last_validation_issue_code = str(code or "unknown")
+        self.context._last_validation_issue_code = str(code or "unknown")
 
     def _validate_daily_payload(
         self,
@@ -49,24 +93,24 @@ class DailyContractMixin:
         expected_coverage: str = "",
         current_minutes: int | None = None,
     ) -> tuple[bool, str]:
-        self._last_validation_issue_code = ""
+        self.context._last_validation_issue_code = ""
         if not payload:
-            self._set_validation_issue("invalid_json")
+            self.context._set_validation_issue("invalid_json")
             return False, "未能解析出 JSON 对象"
         if not str(payload.get("outfit", "")).strip():
-            self._set_validation_issue("outfit_empty")
+            self.context._set_validation_issue("outfit_empty")
             return False, "outfit 不能为空"
-        style_ok, style_reason = self._validate_outfit_style(payload)
+        style_ok, style_reason = self.context._validate_outfit_style(payload)
         if not style_ok:
-            self._set_validation_issue("outfit_style_invalid")
+            self.context._set_validation_issue("outfit_style_invalid")
             return False, style_reason
         timeline = payload.get("timeline")
         if not isinstance(timeline, list) or not timeline:
-            self._set_validation_issue("timeline_empty")
+            self.context._set_validation_issue("timeline_empty")
             return False, "timeline 不能为空"
         for item in timeline:
             if not isinstance(item, dict):
-                self._set_validation_issue("timeline_invalid")
+                self.context._set_validation_issue("timeline_invalid")
                 return False, "timeline 节点必须是对象"
             offset = item.get("day_offset")
             if offset is not None and (
@@ -74,7 +118,7 @@ class DailyContractMixin:
                 or isinstance(offset, bool)
                 or not 0 <= offset <= 7
             ):
-                self._set_validation_issue("timeline_invalid")
+                self.context._set_validation_issue("timeline_invalid")
                 return False, "timeline.day_offset 必须是 0 到 7 的整数"
         normalize_timeline_day_offsets(timeline)
         valid_minutes = [
@@ -83,28 +127,28 @@ class DailyContractMixin:
             if (minutes := timeline_item_minutes(item)) is not None
         ]
         if valid_minutes != sorted(valid_minutes):
-            self._set_validation_issue("timeline_invalid")
+            self.context._set_validation_issue("timeline_invalid")
             return False, "timeline 必须按日期及时间递增排列"
         if expected_coverage:
-            self._apply_derived_timeline_audit(payload, expected_coverage)
-        contract_ok, contract_reason = self._validate_generation_contract(
+            self.context._apply_derived_timeline_audit(payload, expected_coverage)
+        contract_ok, contract_reason = self.context._validate_generation_contract(
             payload,
             expected_coverage=expected_coverage,
         )
         if not contract_ok:
-            self._set_validation_issue("generation_contract_invalid")
+            self.context._set_validation_issue("generation_contract_invalid")
             return False, contract_reason
-        cooking_issue = self._cooking_payload_issue(payload)
+        cooking_issue = self.context._cooking_payload_issue(payload)
         if cooking_issue:
-            self._set_validation_issue("cook_ingredients_required")
+            self.context._set_validation_issue("cook_ingredients_required")
             return False, cooking_issue
-        timeline_ok, timeline_reason = self._validate_timeline_rhythm(
+        timeline_ok, timeline_reason = self.context._validate_timeline_rhythm(
             payload,
             expected_coverage=expected_coverage,
         )
         if not timeline_ok:
-            if not getattr(self, "_last_validation_issue_code", ""):
-                self._set_validation_issue("timeline_invalid")
+            if not getattr(self.context, "_last_validation_issue_code", ""):
+                self.context._set_validation_issue("timeline_invalid")
             return False, timeline_reason
         if current_minutes is not None:
             from .future import future_outfit_timing_issue
@@ -121,15 +165,15 @@ class DailyContractMixin:
                 ),
             )
             if outfit_issue:
-                self._set_validation_issue("future_outfit_timing")
+                self.context._set_validation_issue("future_outfit_timing")
                 return False, outfit_issue
-        daytime_outfit_issue = self._daytime_outfit_transition_issue(
+        daytime_outfit_issue = self.context._daytime_outfit_transition_issue(
             payload,
             manual_extra=manual_extra,
             expected_coverage=expected_coverage,
         )
         if daytime_outfit_issue:
-            self._set_validation_issue("daytime_outfit_transition")
+            self.context._set_validation_issue("daytime_outfit_transition")
             return False, daytime_outfit_issue
         return True, ""
 
@@ -251,7 +295,7 @@ class DailyContractMixin:
 
     @staticmethod
     def _repeat_bigrams(text: str) -> set[str]:
-        text = DailyContractMixin._repeat_text(text)
+        text = DailyContractComponent._repeat_text(text)
         if len(text) < 2:
             return {text} if text else set()
         return {text[index : index + 2] for index in range(len(text) - 1)}
@@ -318,17 +362,17 @@ class DailyContractMixin:
         manual_extra: str = "",
         replaced_day=None,
     ) -> str:
-        novelty = self._decision_novelty_text(payload)
-        current = self._day_repeat_profile(day)
+        novelty = self.context._decision_novelty_text(payload)
+        current = self.context._day_repeat_profile(day)
         if not (current["schedule_type"] or current["outfit"] or current["timeline"]):
             return ""
         if replaced_day is not None:
-            replaced = self._day_repeat_profile(replaced_day)
-            outfit_similarity = self._repeat_similarity(
+            replaced = self.context._day_repeat_profile(replaced_day)
+            outfit_similarity = self.context._repeat_similarity(
                 current["outfit"], replaced["outfit"]
             )
             if outfit_similarity >= 0.86:
-                self._set_validation_issue("outfit_repeat")
+                self.context._set_validation_issue("outfit_repeat")
                 return (
                     "手动重生成仍沿用了待替换日程的穿搭；"
                     "请重新决定服装类别、主色、版型或层次组合，不能继续使用 keep"
@@ -340,12 +384,12 @@ class DailyContractMixin:
             previous_date = (date - datetime.timedelta(days=offset)).strftime(
                 "%Y-%m-%d"
             )
-            if await self._is_before_residence_boundary(previous_date):
+            if await self.context._is_before_residence_boundary(previous_date):
                 continue
-            previous_day = await self.archive.get_day(previous_date)
+            previous_day = await self.context.archive.get_day(previous_date)
             if not previous_day:
                 continue
-            previous = self._day_repeat_profile(previous_day)
+            previous = self.context._day_repeat_profile(previous_day)
             same_schedule = (
                 current["schedule_type"]
                 and current["schedule_type"] == previous["schedule_type"]
@@ -358,7 +402,7 @@ class DailyContractMixin:
                 current["outfit_style_pool"]
                 and current["outfit_style_pool"] == previous["outfit_style_pool"]
             )
-            outfit_similarity = self._repeat_similarity(
+            outfit_similarity = self.context._repeat_similarity(
                 current["outfit"], previous["outfit"]
             )
             both_sleepwear = (
@@ -367,30 +411,30 @@ class DailyContractMixin:
             )
             if (
                 both_sleepwear
-                and self._repeat_sequence_similarity(
+                and self.context._repeat_sequence_similarity(
                     current["outfit"], previous["outfit"]
                 )
                 >= 0.46
             ):
                 similar_sleepwear_dates.append(previous_date)
                 if len(similar_sleepwear_dates) >= 2:
-                    self._set_validation_issue("outfit_repeat")
+                    self.context._set_validation_issue("outfit_repeat")
                     return (
                         "生成的睡衣造型与近期多日记录高度相似（"
                         + "、".join(similar_sleepwear_dates)
                         + "）；保留睡眠场景和舒适需求，但需要更换具体服装类别、"
                         "主色、材质或版型组合"
                     )
-            timeline_similarity = self._repeat_similarity(
+            timeline_similarity = self.context._repeat_similarity(
                 current["timeline"], previous["timeline"]
             )
-            total_similarity = self._repeat_similarity(
+            total_similarity = self.context._repeat_similarity(
                 " ".join(current.values()),
                 " ".join(previous.values()),
             )
             has_clear_novelty = len(novelty) >= 8
             if outfit_similarity >= 0.86 and not both_sleepwear:
-                self._set_validation_issue("outfit_repeat")
+                self.context._set_validation_issue("outfit_repeat")
                 return (
                     f"生成穿搭与 {previous_date} 过于相似；"
                     "保留天气和场景适配，但需要改变服装类别、主色、版型或层次组合"
@@ -401,7 +445,7 @@ class DailyContractMixin:
                 and timeline_similarity >= 0.72
                 and not has_clear_novelty
             ):
-                self._set_validation_issue("daily_repeat")
+                self.context._set_validation_issue("daily_repeat")
                 return f"生成内容与 {previous_date} 的日程、穿搭和活动过于相似，需要主动给出新的生活变化点"
             if (
                 total_similarity >= 0.88
@@ -410,7 +454,7 @@ class DailyContractMixin:
                 )
                 >= 2
             ):
-                self._set_validation_issue("daily_repeat")
+                self.context._set_validation_issue("daily_repeat")
                 return f"生成内容与 {previous_date} 的近期记录重复度过高，需要重写为自然延续但不机械复刻的生活安排"
         return ""
 
@@ -500,9 +544,9 @@ class DailyContractMixin:
         minutes_list = []
         for item in timeline if isinstance(timeline, list) else []:
             if isinstance(item, dict):
-                minutes = self._timeline_minutes(item.get("time"))
+                minutes = self.context._timeline_minutes(item.get("time"))
             else:
-                minutes = self._timeline_minutes(getattr(item, "time", ""))
+                minutes = self.context._timeline_minutes(getattr(item, "time", ""))
             if minutes is not None:
                 minutes_list.append(minutes)
         return minutes_list
@@ -529,16 +573,16 @@ class DailyContractMixin:
 
     def _timeline_covered_end_minutes(self, timeline: object) -> int | None:
         items = timeline if isinstance(timeline, list) else []
-        minutes = self._timeline_unwrapped_minutes(items)
+        minutes = self.context._timeline_unwrapped_minutes(items)
         if not minutes:
             return None
         return max(
-            minute + self._timeline_item_duration(item)
+            minute + self.context._timeline_item_duration(item)
             for minute, item in zip(minutes, items)
         )
 
     def _timeline_cadence_issue(self, timeline: object) -> str:
-        minutes = self._timeline_unwrapped_minutes(timeline)
+        minutes = self.context._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 5:
             return ""
 
@@ -561,7 +605,7 @@ class DailyContractMixin:
 
     def _timeline_density_issue(self, payload: dict) -> str:
         timeline = payload.get("timeline")
-        minutes = self._timeline_unwrapped_minutes(timeline)
+        minutes = self.context._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 2:
             return "完整全天日程缺少足够的生活节点"
         items = timeline if isinstance(timeline, list) else []
@@ -583,13 +627,13 @@ class DailyContractMixin:
         adaptive_gap_limit = max(120, int(median(positive_gaps) * 1.6))
         for gap_index, (left, right) in enumerate(zip(minutes, minutes[1:])):
             item = items[gap_index] if gap_index < len(items) else {}
-            duration = self._timeline_item_duration(item)
+            duration = self.context._timeline_item_duration(item)
             unexplained_gap = max(0, right - left - duration)
             if unexplained_gap <= adaptive_gap_limit:
                 continue
             return (
-                f"timeline 在 {self._minutes_text(minutes[gap_index] % DAY_MINUTES)} "
-                f"至 {self._minutes_text(minutes[gap_index + 1] % DAY_MINUTES)} 之间"
+                f"timeline 在 {self.context._minutes_text(minutes[gap_index] % DAY_MINUTES)} "
+                f"至 {self.context._minutes_text(minutes[gap_index + 1] % DAY_MINUTES)} 之间"
                 f"有约 {math.ceil(unexplained_gap / 60)} 小时没有活动覆盖；"
                 "若前一活动确实持续较久，请填写合理的 duration_minutes，"
                 "否则补充期间真实发生的就餐、移动、休息、场景切换或状态变化"
@@ -597,10 +641,10 @@ class DailyContractMixin:
         return ""
 
     def _timeline_coverage(self, timeline: object) -> dict[str, int]:
-        raw_minutes = self._timeline_raw_minutes(timeline)
+        raw_minutes = self.context._timeline_raw_minutes(timeline)
         if not raw_minutes:
             return {}
-        unwrapped = self._timeline_unwrapped_minutes(timeline)
+        unwrapped = self.context._timeline_unwrapped_minutes(timeline)
 
         return {
             "first": raw_minutes[0],
@@ -611,7 +655,7 @@ class DailyContractMixin:
         }
 
     def _timeline_bounds(self, timeline: object) -> tuple[int | None, int | None]:
-        coverage = self._timeline_coverage(timeline)
+        coverage = self.context._timeline_coverage(timeline)
         if not coverage:
             return None, None
         return coverage["first"], coverage["last"]
@@ -648,8 +692,8 @@ class DailyContractMixin:
             if isinstance(day_plan.get("life_window"), dict)
             else {}
         )
-        start = self._timeline_minutes(window.get("start"))
-        end = self._timeline_minutes(window.get("end"))
+        start = self.context._timeline_minutes(window.get("start"))
+        end = self.context._timeline_minutes(window.get("end"))
         if start is None or end is None:
             return {}
         end_unwrapped = end + (DAY_MINUTES if end < start else 0)
@@ -697,7 +741,7 @@ class DailyContractMixin:
         self, payload: dict, expected_coverage: str = ""
     ) -> dict[str, object]:
         timeline = payload.get("timeline")
-        coverage = self._timeline_coverage(timeline)
+        coverage = self.context._timeline_coverage(timeline)
         if not coverage:
             return {}
         first_minutes = coverage["first"]
@@ -706,8 +750,8 @@ class DailyContractMixin:
         expected_target = expected_coverage == "target_period"
         if expected_target:
             return {
-                "first_timeline_time": self._minutes_text(first_minutes),
-                "last_timeline_time": self._minutes_text(last_minutes),
+                "first_timeline_time": self.context._minutes_text(first_minutes),
+                "last_timeline_time": self.context._minutes_text(last_minutes),
                 "coverage_mode": "target_period",
                 "start_reason": "target_period",
                 "end_reason": "target_period",
@@ -716,9 +760,9 @@ class DailyContractMixin:
                 "summary": "时间轴覆盖目标时段。",
             }
 
-        profile = self._full_day_coverage_profile(payload)
-        covered_end = self._timeline_covered_end_minutes(timeline)
-        life_window = self._declared_life_window(payload)
+        profile = self.context._full_day_coverage_profile(payload)
+        covered_end = self.context._timeline_covered_end_minutes(timeline)
+        life_window = self.context._declared_life_window(payload)
         if life_window:
             effective_end = int(covered_end or coverage["last_unwrapped"])
             covers_full_day = (
@@ -726,7 +770,7 @@ class DailyContractMixin:
                 and effective_end >= int(life_window["end"]) - 30
             )
         else:
-            covers_full_day = self._full_day_coverage_ok(
+            covers_full_day = self.context._full_day_coverage_ok(
                 coverage, profile, covered_end_minutes=covered_end
             )
         if life_window:
@@ -751,9 +795,9 @@ class DailyContractMixin:
             end_reason = "low_activity"
 
         return {
-            "first_timeline_time": self._minutes_text(first_minutes),
-            "last_timeline_time": self._minutes_text(last_minutes),
-            "covered_until": self._minutes_text(last_unwrapped % DAY_MINUTES),
+            "first_timeline_time": self.context._minutes_text(first_minutes),
+            "last_timeline_time": self.context._minutes_text(last_minutes),
+            "covered_until": self.context._minutes_text(last_unwrapped % DAY_MINUTES),
             "coverage_mode": "full_day",
             "start_reason": start_reason,
             "end_reason": end_reason,
@@ -766,7 +810,7 @@ class DailyContractMixin:
         self, payload: dict, expected_coverage: str = ""
     ) -> dict[str, object]:
         payload.pop("timeline_audit", None)
-        audit = self._derive_timeline_audit(payload, expected_coverage)
+        audit = self.context._derive_timeline_audit(payload, expected_coverage)
         if audit:
             payload["timeline_audit"] = audit
         return audit
@@ -775,7 +819,7 @@ class DailyContractMixin:
         self, payload: dict, expected_coverage: str = ""
     ) -> tuple[bool, str]:
         timeline = payload.get("timeline")
-        coverage = self._timeline_coverage(timeline)
+        coverage = self.context._timeline_coverage(timeline)
         if not coverage:
             return True, ""
 
@@ -783,47 +827,47 @@ class DailyContractMixin:
         if not expected_coverage:
             return True, ""
 
-        cadence_issue = self._timeline_cadence_issue(timeline)
+        cadence_issue = self.context._timeline_cadence_issue(timeline)
         if cadence_issue:
-            self._set_validation_issue("timeline_cadence")
+            self.context._set_validation_issue("timeline_cadence")
             return False, cadence_issue
 
         if expected_coverage == "full_day":
-            profile = self._full_day_coverage_profile(payload)
-            life_window = self._declared_life_window(payload)
+            profile = self.context._full_day_coverage_profile(payload)
+            life_window = self.context._declared_life_window(payload)
             first_minutes = coverage["first_unwrapped"]
             last_minutes = max(
                 coverage["last_unwrapped"],
                 int(
-                    self._timeline_covered_end_minutes(timeline)
+                    self.context._timeline_covered_end_minutes(timeline)
                     or coverage["last_unwrapped"]
                 ),
             )
             span = last_minutes - first_minutes
             if life_window:
                 if first_minutes > int(life_window["start"]) + 60:
-                    self._set_validation_issue("timeline_coverage_start")
+                    self.context._set_validation_issue("timeline_coverage_start")
                     return False, "timeline 没有覆盖 life_window 声明的生活起点"
                 if last_minutes < int(life_window["end"]) - 30:
-                    self._set_validation_issue("timeline_coverage_end")
+                    self.context._set_validation_issue("timeline_coverage_end")
                     return False, "timeline 没有覆盖 life_window 声明的自然收束时刻"
             else:
-                latest_start, earliest_end = self._full_day_coverage_thresholds(profile)
+                latest_start, earliest_end = self.context._full_day_coverage_thresholds(profile)
                 if first_minutes > latest_start:
-                    self._set_validation_issue("timeline_coverage_start")
+                    self.context._set_validation_issue("timeline_coverage_start")
                     return False, "完整全天日程的第一条时间过晚，缺少当天较早的生活起点"
                 if profile != "night_life" and last_minutes >= DAY_MINUTES + 4 * 60:
-                    self._set_validation_issue("timeline_coverage_end")
+                    self.context._set_validation_issue("timeline_coverage_end")
                     return False, "普通作息的时间轴跨日过晚，请在次日 04:00 前自然收束"
                 if last_minutes < earliest_end:
-                    self._set_validation_issue("timeline_coverage_end")
+                    self.context._set_validation_issue("timeline_coverage_end")
                     return False, "完整全天日程的最后一条时间过早，缺少晚间或睡前收束"
                 if span < FULL_DAY_MIN_SPAN_MINUTES:
-                    self._set_validation_issue("timeline_coverage_span")
+                    self.context._set_validation_issue("timeline_coverage_span")
                     return False, "完整全天日程覆盖范围不足，timeline 仍像局部片段"
-            density_issue = self._timeline_density_issue(payload)
+            density_issue = self.context._timeline_density_issue(payload)
             if density_issue:
-                self._set_validation_issue("timeline_density")
+                self.context._set_validation_issue("timeline_density")
                 return False, density_issue
         return True, ""
 
@@ -852,11 +896,11 @@ class DailyContractMixin:
         )
 
     def _build_contract_prompt(self, expected_coverage: str) -> str:
-        contract = self._coverage_contract(expected_coverage)
+        contract = self.context._coverage_contract(expected_coverage)
         return (
             "\n【生成契约】\n"
             "本次输出只需忠实填写 generation_contract，不要把契约展开成业务规则。\n"
-            f"{self._contract_json_text(contract)}\n"
+            f"{self.context._contract_json_text(contract)}\n"
         )
 
     def _build_repair_prompt(
@@ -880,9 +924,9 @@ class DailyContractMixin:
             f"\n\n联网灵感参考：\n{web_inspiration}" if web_inspiration else ""
         )
         contract_section = (
-            self._build_contract_prompt(expected_coverage) if expected_coverage else ""
+            self.context._build_contract_prompt(expected_coverage) if expected_coverage else ""
         )
-        repair_strategy = self._repair_strategy_text(
+        repair_strategy = self.context._repair_strategy_text(
             expected_coverage=expected_coverage, issue_code=issue_code
         )
         person_section = (

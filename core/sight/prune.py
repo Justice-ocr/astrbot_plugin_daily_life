@@ -10,11 +10,24 @@ from ..clock import timestamp as life_timestamp
 from ..runtime.markers import LOG_PREFIX
 from .sample import sight_cache_dir
 
+from typing import Any, Protocol
 
-class SightCleanupMixin:
+
+class SightCleanupComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _prune_cache_tree: Any
+    config: Any
+    data_path: Any
+
+
+class SightCleanupComponent:
+    def __init__(self, context: SightCleanupComponentContext) -> None:
+        self.context = context
+
     async def maintain_sight_cache(self) -> dict[str, int]:
-        cache_dir = sight_cache_dir(getattr(self, "data_path", None))
-        settings = getattr(getattr(self, "config", None), "sight", None)
+        cache_dir = sight_cache_dir(getattr(self.context, "data_path", None))
+        settings = getattr(getattr(self.context, "config", None), "sight", None)
         keep_days = max(1, int(getattr(settings, "sight_cache_keep_days", 7) or 7))
         cutoff = life_timestamp() - keep_days * 86400
         targets = [
@@ -32,7 +45,7 @@ class SightCleanupMixin:
             if not target.is_dir():
                 continue
             files, dirs = await asyncio.to_thread(
-                self._prune_cache_tree, target, cutoff
+                self.context._prune_cache_tree, target, cutoff
             )
             deleted_files += files
             deleted_dirs += dirs
@@ -46,8 +59,8 @@ class SightCleanupMixin:
     @staticmethod
     def _prune_cache_tree(root: Path, cutoff: float) -> tuple[int, int]:
         return (
-            SightCleanupMixin._prune_cache_files(root, cutoff),
-            SightCleanupMixin._prune_empty_cache_dirs(root),
+            SightCleanupComponent._prune_cache_files(root, cutoff),
+            SightCleanupComponent._prune_empty_cache_dirs(root),
         )
 
     @staticmethod

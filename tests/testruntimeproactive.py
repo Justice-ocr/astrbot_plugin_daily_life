@@ -15,7 +15,7 @@ from runtimehelpers import (
     ExpressionReviewRecord,
     FocusSlotRecord,
     HostedMemOSService,
-    LifeAutonomyMixin,
+    LifeAutonomyComponent,
     LifeSettings,
     LifeState,
     LifeTermRecord,
@@ -24,8 +24,8 @@ from runtimehelpers import (
     Provider,
     ProviderRequest,
     ReplyEffectRecord,
-    ResponseGateRuntimeMixin,
-    RuntimeAsyncHelperMixin,
+    ResponseGateRuntimeHelpers,
+    RuntimeAsyncHelpers,
     SessionMidSummaryRecord,
     TemporaryExpressionStateRecord,
     TimelineItem,
@@ -41,7 +41,7 @@ from runtimehelpers import (
 from astrbot.core.agent.message import TextPart
 
 
-class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
+class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
     def test_proactive_utility_rejects_missing_scores_instead_of_guessing(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         missing = {}
@@ -891,7 +891,7 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
 
 
 class RuntimeProactiveAsyncTest(
-    RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase
+    RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase
 ):
     async def asyncSetUp(self):
         clock = patch("core.runtime.proactive.send.life_now", return_value=datetime.datetime(2026, 5, 24, 12))
@@ -1172,7 +1172,7 @@ class RuntimeProactiveAsyncTest(
             },
         )()
 
-        class Composer(LifeAutonomyMixin):
+        class Composer(LifeAutonomyComponent):
             def __init__(self, archive, config):
                 self.archive = archive
                 self.config = config
@@ -2750,7 +2750,13 @@ class RuntimeProactiveAsyncTest(
         runtime, _ = self._make_proactive_runtime([])
         embedding = EmbeddingProvider()
         runtime.context.get_all_embedding_providers = lambda: [embedding]
-        runtime._schedule_background_task = None
+        pending = []
+
+        def schedule(coro, **kwargs):
+            pending.append(asyncio.create_task(coro))
+            return True
+
+        runtime._schedule_background_task = schedule
         groups = {
             "memories": [
                 ("memory:far", "不相关内容", "far"),
@@ -2759,6 +2765,7 @@ class RuntimeProactiveAsyncTest(
         }
 
         first = await runtime.rank_embedding_groups("当前语义", groups, {"memories": 2})
+        await asyncio.gather(*pending)
         second = await runtime.rank_embedding_groups(
             "当前语义", groups, {"memories": 2}
         )
@@ -2790,13 +2797,13 @@ class RuntimeProactiveAsyncTest(
         runtime.context.get_all_embedding_providers = lambda: [default, selected]
         runtime.config.memory.embedding_provider = "embedding-selected"
 
-        self.assertIs(runtime._meaning_embedding_provider(), selected)
+        self.assertIs(runtime.meaning._meaning_embedding_provider(), selected)
 
         runtime.config.memory.embedding_provider = "embedding-missing"
-        self.assertIs(runtime._meaning_embedding_provider(), default)
+        self.assertIs(runtime.meaning._meaning_embedding_provider(), default)
 
         runtime.config.memory.embedding_provider = ""
-        self.assertIs(runtime._meaning_embedding_provider(), default)
+        self.assertIs(runtime.meaning._meaning_embedding_provider(), default)
 
     async def test_response_gate_continues_after_proactive_reply_is_accepted(self):
         runtime, _ = self._make_proactive_runtime([])
@@ -3941,7 +3948,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(len(provider.prompts), 1)
 
-    async def test_private_candidate_is_removed_after_normal_reply(self):
+    async def test_private_candidate_restarts_idle_window_after_normal_reply(self):
         runtime, _ = self._make_proactive_runtime([])
         runtime._proactive_idle_candidates = {}
         event = Event(
@@ -3963,7 +3970,13 @@ class RuntimeProactiveAsyncTest(
             event, now=datetime.datetime(2026, 5, 24, 12, 1)
         )
 
-        self.assertEqual(runtime._proactive_idle_candidates, {})
+        candidate = runtime._proactive_idle_candidates[
+            "aiocqhttp:FriendMessage:10001"
+        ]
+        self.assertEqual(candidate["state"], "after_ordinary_reply")
+        self.assertEqual(
+            candidate["next_evaluation_at"], datetime.datetime(2026, 5, 24, 13, 1)
+        )
 
     async def test_private_revisit_sends_message_to_private_target(self):
         runtime, provider = self._make_proactive_runtime(

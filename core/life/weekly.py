@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import uuid
 
@@ -10,11 +12,37 @@ from ..prompts import cache_friendly_prompt, json_output_section
 from .people import WEEK_PERSON_TEXT_PATHS
 from .tools import extract_json_from_text, get_monday_of_week, get_week_id
 
+from typing import Any, Protocol
 
-class WeekMixin:
+
+class WeekComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _audit_person_payload: Any
+    _build_autonomous_life_context: Any
+    _build_life_inertia_context: Any
+    _build_person_fact_context: Any
+    _call_llm_text: Any
+    _cleanup_conversation: Any
+    _current_residence_boundary_date: Any
+    _gen_lock: Any
+    _generate_week_plan_unlocked: Any
+    _generation_provider_id: Any
+    _get_persona: Any
+    _get_provider: Any
+    _get_week_plan: Any
+    _get_week_progress: Any
+    _save_life_decision_record: Any
+    archive: Any
+
+
+class WeekComponent:
+    def __init__(self, context: WeekComponentContext) -> None:
+        self.context = context
+
     async def _get_week_plan(self) -> WeekPlanRecord:
         week_id = get_week_id()
-        plan = await self.archive.get_week_plan(week_id)
+        plan = await self.context.archive.get_week_plan(week_id)
         if plan:
             return plan
         return WeekPlanRecord(
@@ -29,7 +57,7 @@ class WeekMixin:
     async def _get_week_progress(self):
         monday = get_monday_of_week()
         today = life_now()
-        boundary = await self._current_residence_boundary_date()
+        boundary = await self.context._current_residence_boundary_date()
         lines = []
         for i in range(7):
             day = monday + datetime.timedelta(days=i)
@@ -38,7 +66,7 @@ class WeekMixin:
             date_str = day.strftime("%Y-%m-%d")
             if boundary and date_str < boundary:
                 continue
-            data = await self.archive.get_day(date_str)
+            data = await self.context.archive.get_day(date_str)
             if data and data.timeline:
                 first_act = data.timeline[0].activity[:50]
                 lines.append(f"- {WEEKDAY_CN[i]}: {first_act}...")
@@ -47,17 +75,17 @@ class WeekMixin:
     async def _ensure_week_plan(
         self, goals: str = "", web_inspiration: str = ""
     ) -> WeekPlanRecord:
-        plan = await self.archive.get_week_plan(get_week_id())
+        plan = await self.context.archive.get_week_plan(get_week_id())
         if plan and plan.generated:
             return plan
-        generated = await self._generate_week_plan_unlocked(
+        generated = await self.context._generate_week_plan_unlocked(
             goals=goals, web_inspiration=web_inspiration
         )
-        return generated or await self._get_week_plan()
+        return generated or await self.context._get_week_plan()
 
     async def generate_week_plan(self, goals: str = "", web_inspiration: str = ""):
-        async with self._gen_lock:
-            return await self._generate_week_plan_unlocked(
+        async with self.context._gen_lock:
+            return await self.context._generate_week_plan_unlocked(
                 goals=goals, web_inspiration=web_inspiration
             )
 
@@ -67,14 +95,14 @@ class WeekMixin:
         week_id = get_week_id()
         monday = get_monday_of_week()
         sunday = monday + datetime.timedelta(days=6)
-        persona = await self._get_persona()
-        person_facts = await self._build_person_fact_context(
+        persona = await self.context._get_persona()
+        person_facts = await self.context._build_person_fact_context(
             persona=persona,
             explicit_instruction=goals,
         )
-        progress = await self._get_week_progress()
-        inertia = await self._build_life_inertia_context(life_now())
-        autonomy = await self._build_autonomous_life_context(life_now())
+        progress = await self.context._get_week_progress()
+        inertia = await self.context._build_life_inertia_context(life_now())
+        autonomy = await self.context._build_autonomous_life_context(life_now())
         goals = str(goals or "").strip()
         web_inspiration = str(web_inspiration or "").strip()
         inspiration_section = (
@@ -129,11 +157,11 @@ class WeekMixin:
         prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="本周计划资料")
         week_session_id = f"daily_life_week_{uuid.uuid4().hex[:8]}"
         try:
-            provider_id = self._generation_provider_id()
-            provider = await self._get_provider(provider_id)
+            provider_id = self.context._generation_provider_id()
+            provider = await self.context._get_provider(provider_id)
             if not provider:
                 return None
-            completion_text = await self._call_llm_text(
+            completion_text = await self.context._call_llm_text(
                 provider,
                 prompt,
                 week_session_id,
@@ -142,7 +170,7 @@ class WeekMixin:
             result = extract_json_from_text(completion_text)
             if not isinstance(result, dict):
                 return None
-            audit = await self._audit_person_payload(
+            audit = await self.context._audit_person_payload(
                 result,
                 context=person_facts,
                 patterns=WEEK_PERSON_TEXT_PATHS,
@@ -160,8 +188,8 @@ class WeekMixin:
                 plan.theme = "自主生活周"
             if not plan.goals:
                 plan.goals = ["根据近期状态自然安排"]
-            await self.archive.save_week_plan(plan)
-            await self._save_life_decision_record(
+            await self.context.archive.save_week_plan(plan)
+            await self.context._save_life_decision_record(
                 kind="weekly_plan",
                 date=monday.strftime("%Y-%m-%d"),
                 subject=week_id,
@@ -177,5 +205,5 @@ class WeekMixin:
         except Exception as e:
             logger.error(f"[周计划生成] 生成失败：{e}")
         finally:
-            await self._cleanup_conversation(week_session_id)
+            await self.context._cleanup_conversation(week_session_id)
         return None

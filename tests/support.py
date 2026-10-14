@@ -339,7 +339,8 @@ from core.archive.categories import (  # noqa: E402
 from core.archive.promises import _COMMITMENT_SOURCE_PRIORITY  # noqa: E402
 from core.clock import today as life_today  # noqa: E402
 from core.config.options import LifeSettings  # noqa: E402
-from core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin  # noqa: E402
+from core.interface import DailyLifeCommandCenter  # noqa: E402
+from componentfixtures import DailyLifeDashboardComponent  # noqa: E402
 from core.life import LifeBackgroundComposer  # noqa: E402
 from core.life.tools import (  # noqa: E402
     get_current_timeline_status,
@@ -601,6 +602,9 @@ class Context:
 
 
 class DataManager:
+    async def get_living_entities(self, scope, **kwargs):
+        return []
+
     def __init__(self):
         self.days = {}
         self.week_plans = {}
@@ -682,11 +686,56 @@ class DataManager:
         self.memory_decision_links = {}
         self.next_memory_decision_link_id = 1
         self.memory_vectors = {}
+        self.temporal_facts = {}
         self.residence_context_changed_at = ""
 
     @staticmethod
     def _text(value):
         return str(value or "").strip()
+
+    async def get_current_temporal_fact(self, scope, subject, predicate):
+        return self.temporal_facts.get((scope, subject, predicate))
+
+    async def get_temporal_facts(self, *, scope="", subject="", predicate="", limit=100):
+        facts = [
+            fact for (fact_scope, fact_subject, fact_predicate), fact in self.temporal_facts.items()
+            if (not scope or fact_scope in {scope, "global"})
+            and (not subject or fact_subject == subject)
+            and (not predicate or fact_predicate == predicate)
+        ]
+        return facts[:limit] if limit > 0 else facts
+
+    async def get_reflections(self, *, limit=20):
+        return []
+
+    async def get_persona_assertions(self, *, limit=20):
+        return []
+
+    async def get_decision_traces(self, *, limit=30):
+        return []
+
+    async def get_life_action_outcomes(self, *, limit=30):
+        return []
+
+    async def get_life_action_receipts(self, *, limit=30):
+        return []
+
+    async def get_affective_states(self, *, limit=30):
+        return []
+
+    async def get_grounded_diary_entries(self, *, limit=20):
+        return []
+
+    async def get_durable_tasks(self, *, limit=20):
+        return []
+
+    async def write_temporal_fact(self, operation, fact):
+        key = (fact["scope"], fact["subject"], fact["predicate"])
+        if operation == "INVALIDATE":
+            return self.temporal_facts.pop(key, None)
+        record = types.SimpleNamespace(**fact)
+        self.temporal_facts[key] = record
+        return record
 
     async def get_context_snapshot(
         self, *, max_summaries, experience_scope="", session_id=""
@@ -2959,7 +3008,11 @@ class DataManager:
             for scope in (scopes or [])
             if str(scope or "").strip()
         }
-        return not clean or not item.scope or item.scope in clean
+        own_life = (
+            item.scope == "global" and getattr(item, "category", "") == "autobiography"
+            and getattr(item, "source_table", "") == "continuous_life_entries"
+        )
+        return not clean or not item.scope or item.scope in clean or own_life
 
     def _long_term_category_match(self, item, categories):
         clean = {

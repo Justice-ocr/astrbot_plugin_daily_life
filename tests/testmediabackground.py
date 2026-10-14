@@ -18,12 +18,12 @@ from runtimehelpers import (
     Event,
     LifeSettings,
     Provider,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     async_return,
 )
 
 
-class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         self.runtime.context = Context(Provider([]))
@@ -748,8 +748,8 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         result = await self.runtime.life_image_generate(first, "窗边照片")
         await self.runtime.note_tool_reaction_result(first, tool, {}, result)
         await self.runtime.note_tool_reaction_agent_done(first, None)
-        state = self.runtime._tool_reaction_states()[
-            self.runtime._tool_reaction_key(first)
+        state = self.runtime.tool_reactions._tool_reaction_states()[
+            self.runtime.tool_reactions._tool_reaction_key(first)
         ]
         self.assertEqual(state["pending_background"], 1)
         self.assertFalse(state["finalized"])
@@ -765,8 +765,8 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         await self.finish_tasks()
         await self.runtime.note_tool_reaction_result(first, tool, {}, result)
         await self.runtime.note_tool_reaction_agent_done(first, None)
-        state = self.runtime._tool_reaction_states()[
-            self.runtime._tool_reaction_key(first)
+        state = self.runtime.tool_reactions._tool_reaction_states()[
+            self.runtime.tool_reactions._tool_reaction_key(first)
         ]
         self.assertEqual(state["pending_background"], 0)
         self.assertTrue(state["finalized"])
@@ -1080,8 +1080,8 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         self.assertEqual(len(self.runtime._background_scheduler_for_runtime().tasks), 1)
         await self.runtime.note_tool_reaction_result(first, tool, {}, result)
         await self.runtime.note_tool_reaction_agent_done(first, None)
-        state = self.runtime._tool_reaction_states()[
-            self.runtime._tool_reaction_key(first)
+        state = self.runtime.tool_reactions._tool_reaction_states()[
+            self.runtime.tool_reactions._tool_reaction_key(first)
         ]
         self.assertEqual(state["pending_background"], 1)
         self.assertFalse(state["finalized"])
@@ -1100,8 +1100,8 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         await self.finish_tasks()
         await self.runtime.note_tool_reaction_result(first, tool, {}, result)
         await self.runtime.note_tool_reaction_agent_done(first, None)
-        state = self.runtime._tool_reaction_states()[
-            self.runtime._tool_reaction_key(first)
+        state = self.runtime.tool_reactions._tool_reaction_states()[
+            self.runtime.tool_reactions._tool_reaction_key(first)
         ]
         self.assertEqual(state["pending_background"], 0)
         self.assertEqual(state["status"], "success")
@@ -1199,7 +1199,12 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         self.prepare_video_note(first)
         await self.runtime.life_video_note(first)
         await asyncio.wait_for(self.started.wait(), 0.5)
-        self.runtime.can_send_for_source = lambda *args, **kwargs: False
+        notice = Event(unified_msg_origin=first.unified_msg_origin)
+        notice.message_obj.raw_message = {
+            "post_type": "notice", "notice_type": "friend_recall",
+            "message_id": self.runtime._event_message_id(first),
+        }
+        self.runtime.note_recalled_message(notice)
         await self.finish_tasks()
         self.assertEqual(first.sent_messages, [])
         self.assertEqual(

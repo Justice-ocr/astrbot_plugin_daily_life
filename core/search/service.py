@@ -2280,26 +2280,18 @@ class SearchService:
                     "research": self._bounded_research_payload(task.result),
                     "error": task.error,
                 }
-                complete = getattr(
-                    self.task_store, "complete_durable_task_by_key", None
-                )
-                fail = getattr(self.task_store, "fail_durable_task_by_key", None)
-                if task.status == "completed" and callable(complete):
+                if self.task_store is not None:
                     try:
-                        await complete(f"web_research:{task_id}", result)
+                        if task.status == "completed":
+                            await self.task_store.complete_durable_task_by_key(
+                                f"web_research:{task_id}", result
+                            )
+                        else:
+                            await self.task_store.fail_durable_task_by_key(
+                                f"web_research:{task_id}", task.error or task.status, result
+                            )
                     except Exception as exc:
-                        logger.warning(f"{LOG_PREFIX} 研究任务结果持久化失败：{exc}")
-                elif task.status != "completed" and callable(fail):
-                    try:
-                        await fail(f"web_research:{task_id}", task.error or task.status, result)
-                    except Exception as exc:
-                        logger.warning(f"{LOG_PREFIX} 研究任务失败状态持久化失败：{exc}")
-                elif callable(complete):
-                    # 兼容旧版测试存储或外部存储实现；实际归档使用上面的失败接口。
-                    try:
-                        await complete(f"web_research:{task_id}", result)
-                    except Exception as exc:
-                        logger.warning(f"{LOG_PREFIX} 研究任务结果持久化失败：{exc}")
+                        logger.warning(f"{LOG_PREFIX} 研究任务状态持久化失败：{exc}")
             self._research_pollers.pop(task_id, None)
 
     async def research_status(self, task_id: str, *, umo: str = "") -> dict[str, Any]:

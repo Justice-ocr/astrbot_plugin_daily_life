@@ -93,7 +93,3 @@ async def is_http_url_allowed_async(value: object) -> bool:
     return True
 
 
-async def is_public_http_url_async(value: object) -> bool:
-    """兼容旧调用方的公网地址检查。"""
-
-    return await is_http_url_allowed_async(value)

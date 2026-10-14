@@ -137,11 +137,13 @@ class MessageDedupStateTest(unittest.TestCase):
         runtime._init_response_gate_state()
         runtime._MESSAGE_DEDUP_LIMIT = 2
 
-        runtime._remember_recalled_skip_log("one")
-        runtime._remember_recalled_skip_log("two")
-        runtime._remember_recalled_skip_log("three")
+        runtime.recall._remember_recalled_skip_log(("scope", "one"))
+        runtime.recall._remember_recalled_skip_log(("scope", "two"))
+        runtime.recall._remember_recalled_skip_log(("scope", "three"))
 
-        self.assertEqual(runtime._recalled_skip_logged, {"two", "three"})
+        self.assertEqual(set(runtime.recall._skip_logged), {
+            ("scope", "two"), ("scope", "three"),
+        })
 
 
 class OperationLockTest(unittest.IsolatedAsyncioTestCase):

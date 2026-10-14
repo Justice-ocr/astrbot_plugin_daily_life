@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 
@@ -20,8 +22,23 @@ from .lookback import record_appearance_snapshot
 from .signals import physiological_rhythm_log_from_state
 from .surroundings import normalize_place_names
 
+from typing import Any, Protocol
 
-class DailyRecordMixin:
+
+class DailyRecordComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _persist_daily_experience: Any
+    _persist_physiological_rhythm_log: Any
+    archive: Any
+    domains: Any
+    sync_day_world_facts: Any
+
+
+class DailyRecordComponent:
+    def __init__(self, context: DailyRecordComponentContext) -> None:
+        self.context = context
+
     async def _persist_generated_day(
         self,
         date_str: str,
@@ -29,10 +46,10 @@ class DailyRecordMixin:
         due_commitments: list[CommitmentRecord],
     ) -> None:
         if normalize_place_names(day.places):
-            await self.archive.touch_places(date_str, day.places, source="daily")
-        await self.archive.add_events(date_str, day.new_events)
+            await self.context.archive.touch_places(date_str, day.places, source="daily")
+        await self.context.archive.add_events(date_str, day.new_events)
         if due_commitments:
-            await self.archive.add_events(
+            await self.context.archive.add_events(
                 date_str,
                 [
                     EventRecord(
@@ -46,7 +63,7 @@ class DailyRecordMixin:
                     for item in due_commitments
                 ],
             )
-        await self.archive.link_commitments_to_day(
+        await self.context.archive.link_commitments_to_day(
             date_str, [item.id for item in due_commitments]
         )
         try:
@@ -72,7 +89,7 @@ class DailyRecordMixin:
             ]
         if actions:
             day.meta["planned_life_actions"] = json.dumps(actions, ensure_ascii=False)
-        previous = await self.archive.get_day(date_str)
+        previous = await self.context.archive.get_day(date_str)
         if previous is not None:
             for key, value in previous.meta.items():
                 if key.startswith("appearance_snapshot:"):
@@ -84,8 +101,8 @@ class DailyRecordMixin:
             observed_at = None
         if observed_at is not None and observed_at.date().isoformat() == day.date:
             record_appearance_snapshot(day, observed_at)
-        await self.archive.save_day(day, replace=True)
-        sync_world_facts = getattr(self, "sync_day_world_facts", None)
+        await self.context.archive.save_day(day, replace=True)
+        sync_world_facts = getattr(self.context, "sync_day_world_facts", None)
         if callable(sync_world_facts):
             await sync_world_facts(
                 day,
@@ -99,14 +116,14 @@ class DailyRecordMixin:
             planned_actions = json.loads(raw_actions) if raw_actions else []
         except (TypeError, ValueError, json.JSONDecodeError):
             planned_actions = []
-        save_outcome = getattr(self.archive, "save_life_action_outcome", None)
-        save_trace = getattr(self.archive, "save_decision_trace", None)
+        save_outcome = getattr(self.context.archive, "save_life_action_outcome", None)
+        save_trace = getattr(self.context.archive, "save_decision_trace", None)
         for raw_action in planned_actions if isinstance(planned_actions, list) else []:
             action = LifeActionIntent.from_value(raw_action)
             if not action.action_id or action.action_type not in LIFE_ACTION_TYPES:
                 continue
             should_simulate = getattr(
-                getattr(self, "domains", None), "should_simulate", None
+                getattr(self.context, "domains", None), "should_simulate", None
             )
             waits_for_simulation = bool(
                 callable(should_simulate) and should_simulate(action)
@@ -152,19 +169,19 @@ class DailyRecordMixin:
                     }
                 )
         sync_sessions = getattr(
-            getattr(self, "domains", None), "sync_activity_sessions", None
+            getattr(self.context, "domains", None), "sync_activity_sessions", None
         )
         if callable(sync_sessions):
             await sync_sessions(day, now=life_now())
-        await self._persist_physiological_rhythm_log(
+        await self.context._persist_physiological_rhythm_log(
             date_str, day, source="daily_generation"
         )
-        await self._persist_daily_experience(date_str, day, due_commitments)
+        await self.context._persist_daily_experience(date_str, day, due_commitments)
 
     async def _persist_physiological_rhythm_log(
         self, date_str: str, day: DayRecord, *, source: str
     ) -> None:
-        save_log = getattr(self.archive, "save_physiological_rhythm_log", None)
+        save_log = getattr(self.context.archive, "save_physiological_rhythm_log", None)
         if not callable(save_log):
             return
         item = physiological_rhythm_log_from_state(
@@ -191,7 +208,7 @@ class DailyRecordMixin:
                 "承诺：" + "、".join(item.content for item in due_commitments[:3])
             )
         impact = meta.get("outfit_reason") or (day.state.summary if day.state else "")
-        episode = await self.archive.save_life_episode(
+        episode = await self.context.archive.save_life_episode(
             LifeEpisodeRecord(
                 date=date_str,
                 title=title,
@@ -208,7 +225,7 @@ class DailyRecordMixin:
             )
         )
         if episode:
-            await self.archive.save_memory_evidence(
+            await self.context.archive.save_memory_evidence(
                 MemoryEvidenceRecord(
                     target_type="life_episode",
                     target_id=str(episode.id),
@@ -222,4 +239,4 @@ class DailyRecordMixin:
             )
 
 
-__all__ = ["DailyRecordMixin"]
+__all__ = ["DailyRecordComponent"]

@@ -10,7 +10,7 @@ from core.archive.schema import SCHEMA_VERSION
 from core.config.options import LifeDomainSettings
 from core.life.amap import AmapWebServiceClient
 from core.life.domain import LifeDomainService
-from core.life.settlement import LifeActionMixin
+from componentfixtures import LifeActionComponent
 from core.life.transit import transit_route_detail
 from core.models import (
     CommitmentRecord,
@@ -24,7 +24,7 @@ from core.models import (
 from support import LifeArchive
 
 
-class _ActionHarness(LifeActionMixin):
+class _ActionHarness(LifeActionComponent):
     def __init__(self, archive, domains):
         self.archive = archive
         self.domains = domains
@@ -831,7 +831,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second[0].replayed)
         pantry = await self.archive.get_pantry_items()
         self.assertEqual(pantry[0]["quantity"], 1)
-        self.assertEqual(len(await self.archive.get_meal_records()), 1)
+        meals = await self.archive.get_meal_records()
+        self.assertEqual(len(meals), 1)
+        self.assertEqual(meals[0]["status"], "prepared")
         recipes = await self.archive.get_recipes()
         self.assertEqual(len(recipes), 1)
         self.assertTrue(recipes[0]["id"].startswith("recipe:auto:"))

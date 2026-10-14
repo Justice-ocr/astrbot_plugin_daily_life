@@ -1,17 +1,17 @@
-from .asset import PortalReferenceMixin
-from .closet import PortalClosetMixin
-from .entry import PortalBaseMixin
-from .line import PortalLineMixin
-from .memo import PortalMemoryMixin
-from .operation import PortalActionMixin
-from .stickers import PortalEmojiMixin
+from .asset import PortalReferenceComponent
+from .closet import PortalClosetComponent
+from .entry import PortalBaseComponent
+from .line import PortalLineComponent
+from .memo import PortalMemoryComponent
+from .operation import PortalActionComponent
+from .stickers import PortalEmojiComponent
 
 __all__ = [
-    "PortalActionMixin",
-    "PortalBaseMixin",
-    "PortalClosetMixin",
-    "PortalEmojiMixin",
-    "PortalLineMixin",
-    "PortalMemoryMixin",
-    "PortalReferenceMixin",
+    "PortalActionComponent",
+    "PortalBaseComponent",
+    "PortalClosetComponent",
+    "PortalEmojiComponent",
+    "PortalLineComponent",
+    "PortalMemoryComponent",
+    "PortalReferenceComponent",
 ]

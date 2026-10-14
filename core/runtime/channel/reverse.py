@@ -23,6 +23,8 @@ from ...paths import (
 from ...prompts import cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
+
 REVERSE_PROMPT_PROFILES = {
     "通用": "完整但简洁地提取最影响复现效果的主体、场景、构图、镜头、光线、色彩、材质和画面风格。",
     "通用超详细": "逐层拆解全部可见关键细节，以高信息密度组织最终提示词，优先追求画面复现度。",
@@ -152,7 +154,47 @@ REVERSE_ANALYSIS_SECTIONS = (
 )
 
 
-class RuntimeReverseMediaMixin:
+class RuntimeReverseMediaComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _cached_reverse_prompt_for_scope: Any
+    _completion_text: Any
+    _event_session_id: Any
+    _format_reverse_prompt_result: Any
+    _last_reverse_prompt_for_scope: Any
+    _last_reverse_reference_for_scope: Any
+    _life_reverse_prompt_cache: Any
+    _media_error_summary: Any
+    _persist_reverse_reference_image: Any
+    _remember_reverse_prompt_for_scope: Any
+    _resolve_life_image_reference_async: Any
+    _reverse_prompt_analysis_payload: Any
+    _reverse_prompt_analysis_text: Any
+    _reverse_prompt_call_provider: Any
+    _reverse_prompt_call_vision: Any
+    _reverse_prompt_clean: Any
+    _reverse_prompt_contract: Any
+    _reverse_prompt_json_candidates: Any
+    _reverse_prompt_json_source: Any
+    _reverse_prompt_list: Any
+    _reverse_prompt_payload_from_text: Any
+    _reverse_prompt_profile_instruction: Any
+    _reverse_prompt_text_from_payload: Any
+    _reverse_reference_bytes: Any
+    _reverse_reference_cache_dir: Any
+    _save_reverse_prompt_for_scope: Any
+    archive: Any
+    close_text_session: Any
+    config: Any
+    data_path: Any
+    get_text_provider_candidates: Any
+    media: Any
+
+
+class RuntimeReverseMediaComponent:
+    def __init__(self, context: RuntimeReverseMediaComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _reverse_prompt_clean(value: Any, limit: int | None = None) -> str:
         text = " ".join(str(value or "").strip().split())
@@ -246,25 +288,25 @@ class RuntimeReverseMediaMixin:
         self, payload: dict[str, Any], fallback: str = ""
     ) -> str:
         for key in ("prompt", "image_prompt", "text", "result", "zh_prompt"):
-            text = self._reverse_prompt_clean(payload.get(key))
+            text = self.context._reverse_prompt_clean(payload.get(key))
             if text:
                 return text
         analysis = payload.get("analysis")
         if isinstance(analysis, dict):
-            text = self._reverse_prompt_analysis_text(analysis)
+            text = self.context._reverse_prompt_analysis_text(analysis)
             if text:
                 return text
-        return self._reverse_prompt_clean(fallback)
+        return self.context._reverse_prompt_clean(fallback)
 
     def _reverse_prompt_payload_from_text(self, text: str) -> dict[str, Any]:
-        cleaned = self._reverse_prompt_json_source(text)
+        cleaned = self.context._reverse_prompt_json_source(text)
         payload = extract_json_from_text(cleaned)
         if isinstance(payload, dict):
             return payload
         raw = str(cleaned or "").strip()
         if not raw:
             return {}
-        for candidate in self._reverse_prompt_json_candidates(raw):
+        for candidate in self.context._reverse_prompt_json_candidates(raw):
             try:
                 data = json.loads(candidate)
             except json.JSONDecodeError:
@@ -304,7 +346,7 @@ class RuntimeReverseMediaMixin:
         return result
 
     def _reverse_prompt_profile_instruction(self, profile: str) -> tuple[str, str]:
-        name = self._reverse_prompt_clean(profile, 24) or "通用"
+        name = self.context._reverse_prompt_clean(profile, 24) or "通用"
         instruction = REVERSE_PROMPT_PROFILES.get(name)
         if instruction:
             return name, instruction
@@ -313,14 +355,14 @@ class RuntimeReverseMediaMixin:
     def _remember_reverse_prompt_for_scope(
         self, event: Any, prompt: str, image: str = ""
     ) -> None:
-        scope = self._event_session_id(event)
-        text = self._reverse_prompt_clean(prompt)
+        scope = self.context._event_session_id(event)
+        text = self.context._reverse_prompt_clean(prompt)
         if not scope or not text:
             return
-        store = getattr(self, "_life_reverse_prompt_cache", None)
+        store = getattr(self.context, "_life_reverse_prompt_cache", None)
         if not isinstance(store, dict):
             store = {}
-            self._life_reverse_prompt_cache = store
+            self.context._life_reverse_prompt_cache = store
         store[scope] = {
             "prompt": text,
             "image": str(image or "").strip(),
@@ -341,9 +383,9 @@ class RuntimeReverseMediaMixin:
         analysis: dict[str, Any] | None = None,
         source_image_hash: str = "",
     ) -> None:
-        self._remember_reverse_prompt_for_scope(event, prompt, image)
-        scope = self._event_session_id(event)
-        archive = getattr(self, "archive", None)
+        self.context._remember_reverse_prompt_for_scope(event, prompt, image)
+        scope = self.context._event_session_id(event)
+        archive = getattr(self.context, "archive", None)
         saver = getattr(archive, "save_reverse_prompt", None)
         if not scope or not callable(saver):
             return
@@ -367,26 +409,26 @@ class RuntimeReverseMediaMixin:
             logger.debug(f"{LOG_PREFIX} 图片反推提示词缓存写入失败：{exc}")
 
     def _last_reverse_prompt_for_scope(self, event: Any) -> str:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return ""
-        store = getattr(self, "_life_reverse_prompt_cache", None)
+        store = getattr(self.context, "_life_reverse_prompt_cache", None)
         if not isinstance(store, dict):
             return ""
         item = store.get(scope)
         if isinstance(item, dict):
-            return self._reverse_prompt_clean(item.get("prompt"))
-        return self._reverse_prompt_clean(item)
+            return self.context._reverse_prompt_clean(item.get("prompt"))
+        return self.context._reverse_prompt_clean(item)
 
     async def _last_reverse_prompt_record_for_scope(self, event: Any) -> dict[str, str]:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return {}
-        prompt = self._last_reverse_prompt_for_scope(event)
-        image = self._last_reverse_reference_for_scope(event)
+        prompt = self.context._last_reverse_prompt_for_scope(event)
+        image = self.context._last_reverse_reference_for_scope(event)
         if prompt:
             return {"prompt": prompt, "image": image}
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         loader = getattr(archive, "get_latest_reverse_prompt", None)
         if not callable(loader):
             return {}
@@ -397,10 +439,10 @@ class RuntimeReverseMediaMixin:
             return {}
         if not record:
             return {}
-        prompt = self._reverse_prompt_clean(getattr(record, "prompt", ""))
+        prompt = self.context._reverse_prompt_clean(getattr(record, "prompt", ""))
         image = str(getattr(record, "image_path", "") or "").strip()
         if prompt:
-            self._remember_reverse_prompt_for_scope(event, prompt, image)
+            self.context._remember_reverse_prompt_for_scope(event, prompt, image)
             return {"prompt": prompt, "image": image}
         return {}
 
@@ -412,8 +454,8 @@ class RuntimeReverseMediaMixin:
         profile: str,
         source_prompt: str,
     ) -> Any | None:
-        scope = self._event_session_id(event)
-        archive = getattr(self, "archive", None)
+        scope = self.context._event_session_id(event)
+        archive = getattr(self.context, "archive", None)
         loader = getattr(archive, "get_reverse_prompt_by_fingerprint", None)
         if not scope or not source_image_hash or not callable(loader):
             return None
@@ -435,13 +477,13 @@ class RuntimeReverseMediaMixin:
                 "usage": getattr(value, "usage", ""),
                 "analysis": getattr(value, "analysis", {}),
             }
-        title = self._reverse_prompt_clean(payload.get("title"), 24)
-        prompt = self._reverse_prompt_clean(payload.get("prompt"))
-        keywords = self._reverse_prompt_list(payload.get("keywords"), 12)
-        ratio = self._reverse_prompt_clean(payload.get("ratio"), 24)
-        usage = self._reverse_prompt_clean(payload.get("usage"), 24)
-        analysis = self._reverse_prompt_clean(
-            self._reverse_prompt_analysis_text(payload.get("analysis")), 2000
+        title = self.context._reverse_prompt_clean(payload.get("title"), 24)
+        prompt = self.context._reverse_prompt_clean(payload.get("prompt"))
+        keywords = self.context._reverse_prompt_list(payload.get("keywords"), 12)
+        ratio = self.context._reverse_prompt_clean(payload.get("ratio"), 24)
+        usage = self.context._reverse_prompt_clean(payload.get("usage"), 24)
+        analysis = self.context._reverse_prompt_clean(
+            self.context._reverse_prompt_analysis_text(payload.get("analysis")), 2000
         )
 
         lines = []
@@ -462,10 +504,10 @@ class RuntimeReverseMediaMixin:
         return "\n".join(lines)
 
     def _last_reverse_reference_for_scope(self, event: Any) -> str:
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return ""
-        store = getattr(self, "_life_reverse_prompt_cache", None)
+        store = getattr(self.context, "_life_reverse_prompt_cache", None)
         if not isinstance(store, dict):
             return ""
         item = store.get(scope)
@@ -474,14 +516,14 @@ class RuntimeReverseMediaMixin:
         return str(item.get("image") or "").strip()
 
     def _reverse_reference_cache_dir(self) -> Path:
-        return runtime_data_root(getattr(self, "data_path", None)) / "reverse"
+        return runtime_data_root(getattr(self.context, "data_path", None)) / "reverse"
 
     async def _reverse_reference_bytes(
         self, image: str, *, referer: str = ""
     ) -> tuple[bytes, str]:
         image = str(image or "").strip()
         loader = getattr(
-            getattr(getattr(self, "media", None), "image", None),
+            getattr(getattr(self.context, "media", None), "image", None),
             "_load_reference_image",
             None,
         )
@@ -508,7 +550,7 @@ class RuntimeReverseMediaMixin:
         image = str(image or "").strip()
         if not image:
             return "", ""
-        data, _ = await self._reverse_reference_bytes(image)
+        data, _ = await self.context._reverse_reference_bytes(image)
         if not data:
             return image, ""
         if len(data) > REFERENCE_IMAGE_MAX_BYTES:
@@ -518,7 +560,7 @@ class RuntimeReverseMediaMixin:
             lambda: hashlib.sha256(data).hexdigest()
         )
         digest = source_image_hash[:24]
-        target_dir = self._reverse_reference_cache_dir()
+        target_dir = self.context._reverse_reference_cache_dir()
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         target = target_dir / f"reverse_reference_{digest}{suffix}"
         if not await asyncio.to_thread(target.exists):
@@ -527,10 +569,10 @@ class RuntimeReverseMediaMixin:
         return str(target), source_image_hash
 
     def _reverse_prompt_contract(self, source_prompt: str, profile: str) -> str:
-        profile_name, profile_instruction = self._reverse_prompt_profile_instruction(
+        profile_name, profile_instruction = self.context._reverse_prompt_profile_instruction(
             profile
         )
-        source_text = self._reverse_prompt_clean(source_prompt, 500) or "无"
+        source_text = self.context._reverse_prompt_clean(source_prompt, 500) or "无"
         fixed = """角色设定：你是一位视觉导演与图像逆向分析师。
 核心任务：分析上传图片，反推出一条可复制、可直接用于生图的中文完整提示词，并给出结构化画面拆解。
 
@@ -589,12 +631,12 @@ class RuntimeReverseMediaMixin:
         profile: str = "",
     ) -> dict[str, Any]:
         configured_provider_id = str(
-            getattr(getattr(self.config, "vision", None), "provider", "") or ""
+            getattr(getattr(self.context.config, "vision", None), "provider", "") or ""
         ).strip()
-        prompt = self._reverse_prompt_contract(source_prompt, profile)
+        prompt = self.context._reverse_prompt_contract(source_prompt, profile)
         last_error: Exception = RuntimeError("视觉模型不可用。")
         index = 0
-        async for provider in self.get_text_provider_candidates(configured_provider_id):
+        async for provider in self.context.get_text_provider_candidates(configured_provider_id):
             session_id = f"daily_life_reverse_image_{uuid.uuid4().hex[:8]}"
             if index:
                 session_id = f"{session_id}_fallback"
@@ -605,23 +647,23 @@ class RuntimeReverseMediaMixin:
                     for name in ("text_chat", "image_chat", "vision_chat")
                 ):
                     raise RuntimeError("当前视觉模型不支持图片理解。")
-                result = await self._reverse_prompt_call_provider(
+                result = await self.context._reverse_prompt_call_provider(
                     provider, prompt, image, session_id
                 )
                 if result is None:
                     raise RuntimeError("视觉模型未返回结果。")
-                text = self._completion_text(result)
-                payload = self._reverse_prompt_payload_from_text(text)
-                payload["prompt"] = self._reverse_prompt_text_from_payload(
+                text = self.context._completion_text(result)
+                payload = self.context._reverse_prompt_payload_from_text(text)
+                payload["prompt"] = self.context._reverse_prompt_text_from_payload(
                     payload, text
                 )
-                payload["title"] = self._reverse_prompt_clean(payload.get("title"), 24)
-                payload["ratio"] = self._reverse_prompt_clean(payload.get("ratio"), 24)
-                payload["usage"] = self._reverse_prompt_clean(payload.get("usage"), 24)
-                payload["keywords"] = self._reverse_prompt_list(
+                payload["title"] = self.context._reverse_prompt_clean(payload.get("title"), 24)
+                payload["ratio"] = self.context._reverse_prompt_clean(payload.get("ratio"), 24)
+                payload["usage"] = self.context._reverse_prompt_clean(payload.get("usage"), 24)
+                payload["keywords"] = self.context._reverse_prompt_list(
                     payload.get("keywords"), 12
                 )
-                payload["analysis"] = self._reverse_prompt_analysis_payload(
+                payload["analysis"] = self.context._reverse_prompt_analysis_payload(
                     payload.get("analysis")
                 )
                 if not payload["prompt"]:
@@ -630,7 +672,7 @@ class RuntimeReverseMediaMixin:
             except Exception as exc:
                 last_error = exc
             finally:
-                cleanup = getattr(self, "close_text_session", None)
+                cleanup = getattr(self.context, "close_text_session", None)
                 if callable(cleanup):
                     await cleanup(session_id)
             index += 1
@@ -676,7 +718,7 @@ class RuntimeReverseMediaMixin:
         source_prompt: str = "",
         profile: str = "",
     ) -> str:
-        image = await self._resolve_life_image_reference_async(event, reference_image)
+        image = await self.context._resolve_life_image_reference_async(event, reference_image)
         if not image:
             return ToolResultText(
                 "没有找到可反推的图片。",
@@ -693,15 +735,15 @@ class RuntimeReverseMediaMixin:
                 status="failed",
                 media="image_reverse_prompt",
             )
-        profile_name, _ = self._reverse_prompt_profile_instruction(profile)
-        source_text = self._reverse_prompt_clean(source_prompt, 500)
+        profile_name, _ = self.context._reverse_prompt_profile_instruction(profile)
+        source_text = self.context._reverse_prompt_clean(source_prompt, 500)
         try:
             (
                 cached_image,
                 source_image_hash,
-            ) = await self._persist_reverse_reference_image(image)
+            ) = await self.context._persist_reverse_reference_image(image)
         except Exception as exc:
-            error = self._media_error_summary(exc)
+            error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 图片反推参考图缓存失败：{error}")
             return ToolResultText(
                 f"图片反推参考图缓存失败：{error}",
@@ -709,50 +751,50 @@ class RuntimeReverseMediaMixin:
                 media="image_reverse_prompt",
             )
 
-        cached = await self._cached_reverse_prompt_for_scope(
+        cached = await self.context._cached_reverse_prompt_for_scope(
             event,
             source_image_hash=source_image_hash,
             profile=profile_name,
             source_prompt=source_text,
         )
-        if cached and self._reverse_prompt_clean(getattr(cached, "prompt", "")):
-            self._remember_reverse_prompt_for_scope(
+        if cached and self.context._reverse_prompt_clean(getattr(cached, "prompt", "")):
+            self.context._remember_reverse_prompt_for_scope(
                 event,
                 getattr(cached, "prompt", ""),
                 cached_image or image,
             )
             logger.debug(f"{LOG_PREFIX} 图片反推命中缓存：{profile_name}")
             return ToolResultText(
-                self._format_reverse_prompt_result(cached),
+                self.context._format_reverse_prompt_result(cached),
                 status="ok",
                 media="image_reverse_prompt",
             )
 
         try:
-            payload = await self._reverse_prompt_call_vision(
+            payload = await self.context._reverse_prompt_call_vision(
                 image, source_text, profile_name
             )
         except Exception as exc:
-            error = self._media_error_summary(exc)
+            error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 图片反推提示词失败：{error}")
             return ToolResultText(
                 f"图片反推提示词失败：{error}",
                 status="failed",
                 media="image_reverse_prompt",
             )
-        prompt = self._reverse_prompt_clean(payload.get("prompt"))
+        prompt = self.context._reverse_prompt_clean(payload.get("prompt"))
         if not prompt:
             return ToolResultText(
                 "图片反推提示词失败：视觉模型未返回可用提示词",
                 status="failed",
                 media="image_reverse_prompt",
             )
-        title = self._reverse_prompt_clean(payload.get("title"), 24)
-        keywords = self._reverse_prompt_list(payload.get("keywords"), 12)
-        ratio = self._reverse_prompt_clean(payload.get("ratio"), 24)
-        usage = self._reverse_prompt_clean(payload.get("usage"), 24)
-        analysis = self._reverse_prompt_analysis_payload(payload.get("analysis"))
-        await self._save_reverse_prompt_for_scope(
+        title = self.context._reverse_prompt_clean(payload.get("title"), 24)
+        keywords = self.context._reverse_prompt_list(payload.get("keywords"), 12)
+        ratio = self.context._reverse_prompt_clean(payload.get("ratio"), 24)
+        usage = self.context._reverse_prompt_clean(payload.get("usage"), 24)
+        analysis = self.context._reverse_prompt_analysis_payload(payload.get("analysis"))
+        await self.context._save_reverse_prompt_for_scope(
             event,
             prompt=prompt,
             image=cached_image or image,
@@ -766,7 +808,7 @@ class RuntimeReverseMediaMixin:
             source_image_hash=source_image_hash,
         )
         return ToolResultText(
-            self._format_reverse_prompt_result(
+            self.context._format_reverse_prompt_result(
                 {
                     "title": title,
                     "prompt": prompt,

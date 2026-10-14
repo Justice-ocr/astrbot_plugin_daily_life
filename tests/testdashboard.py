@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.interface.portal import entry as portal_entry
-from core.interface.portal.entry import PortalBaseMixin
+from componentfixtures import PortalBaseComponent
 from core.models import (
     ActionDecisionRecord,
     EmojiAssetRecord,
@@ -23,11 +23,11 @@ from core.models import (
 )
 from core.outcome import ToolResultText
 from core.paths import STYLE_CATALOG_DIR_NAME
-from core.runtime.generation import DailyGenerationMixin
+from core.runtime.generation import DailyGenerationService
 from support import (
     BehaviorFeedbackRecord,
     ChatSummaryRecord,
-    DailyLifeDashboardMixin,
+    DailyLifeDashboardComponent,
     DataManager,
     DayRecord,
     EmotionArcRecord,
@@ -123,7 +123,7 @@ class PageComposer:
         )
 
 
-class PageRuntime(DailyGenerationMixin):
+class PageRuntime:
     def __init__(self):
         self.raw_config = {
             "rhythm_config": {"schedule_time": "07:00"},
@@ -133,13 +133,28 @@ class PageRuntime(DailyGenerationMixin):
         self.archive = DataManager()
         self.composer = PageComposer(self.archive)
         self.generation_lock = asyncio.Lock()
-        self._init_daily_generation_state()
+        self.daily_generation = DailyGenerationService(
+            archive=lambda: self.archive,
+            composer=lambda: self.composer,
+            persona=self.get_persona_text,
+            notify_status=self.mark_page_status_changed,
+            failed_dates=lambda: None,
+        )
         self.refresh_calls = []
         self.weather_refresh_calls = []
         self.refresh_order = []
         self.apply_calls = []
         self.data_dir = Path(tempfile.mkdtemp(prefix="daily_life_page_"))
         self.data_path = self.data_dir / "daily_life.db"
+
+    async def mark_page_status_changed(self, reason=""):
+        return None
+
+    async def run_daily_generation(self, **kwargs):
+        return await self.daily_generation.run_daily_generation(**kwargs)
+
+    def daily_generation_status(self, date_str=""):
+        return self.daily_generation.daily_generation_status(date_str)
 
     async def get_persona_text(self, scope=""):
         return await self.composer._get_persona()
@@ -240,7 +255,7 @@ class PageRuntime(DailyGenerationMixin):
         return target
 
 
-class PagePlugin(DailyLifeDashboardMixin):
+class PagePlugin(DailyLifeDashboardComponent):
     def __init__(self):
         self.context = PageContext()
         self.runtime = PageRuntime()
@@ -1251,7 +1266,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
         portal_entry._quart_send_file = installed_send_file
         try:
-            response = await PortalBaseMixin()._page_send_download(
+            response = await PortalBaseComponent()._page_send_download(
                 Path("/tmp/closet-backup.zip"),
                 mime="application/zip",
                 filename="daily_life_closet_backup.zip",
@@ -1812,12 +1827,12 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "title": "昨天已完成的行动项",
                         "status": "completed",
-                        "updated_at": "2026-06-10 18:00:00",
+                        "updated_at": "2026-06-10 10:00:00",
                     },
                     {
                         "title": "今天已完成的行动项",
                         "status": "completed",
-                        "updated_at": "2026-06-11 18:00:00",
+                        "updated_at": "2026-06-11 10:00:00",
                     },
                 ],
                 "timeline": [
@@ -5832,6 +5847,15 @@ if (
 ) {
   throw new Error("visibleExperienceEvidence 不应额外隐藏生活决策证据");
 }
+const repeatedEvidence = mod.visibleExperienceEvidence([
+  { id: 2, target_type: "expression_profile", target_id: "2", evidence_type: "expression_feedback", session_id: "private:1", date: "2026-10-12", source_id: "5396", summary: "对方继续积极回应" },
+  { id: 1, target_type: "expression_profile", target_id: "2", evidence_type: "expression_feedback", session_id: "private:1", date: "2026-10-12", source_id: "5394", summary: "对方继续积极回应" },
+  { id: 3, target_type: "expression_profile", target_id: "3", evidence_type: "expression_feedback", session_id: "private:1", date: "2026-10-12", summary: "对方继续积极回应" },
+  { id: 4, target_type: "expression_profile", target_id: "2", evidence_type: "expression_feedback", session_id: "private:1", date: "2026-10-13", summary: "对方继续积极回应" },
+], []);
+if (repeatedEvidence.map((item) => item.id).join(",") !== "2,3,4") {
+  throw new Error("相同结论应只展示一次，不应隐藏其他对象或日期的证据");
+}
 const healthRows = mod.healthCheckRows([
   { key: "behavior_feedback", label: "行为反馈", count: 2 },
   { key: "memory_evidence", label: "证据链", count: 3 },
@@ -6088,6 +6112,17 @@ const names = mod.relationshipNameIndex({
           },
         ],
       },
+      {
+        id: "bot",
+        name: "李知恬",
+        contacts: [
+          {
+            profile_id: "bot",
+            user_id: "10000000",
+            target_scope: "aiocqhttp:FriendMessage:10000000",
+          },
+        ],
+      },
     ],
     group_environments: [
       {
@@ -6114,6 +6149,9 @@ for (const key of [
 const evidence = mod.relationshipReferenceText("证据：关系:10000000", names);
 if (evidence !== "证据：阿林") {
   throw new Error(`证据正文没有显示昵称：${evidence}`);
+}
+if (mod.relationshipScopeLabel("10000000", names) !== "阿林") {
+  throw new Error("错误关系档案覆盖了真实关系名称");
 }
 const reason = mod.relationshipReferenceText("原因：关系:10000000 有新互动", names);
 if (reason !== "原因：阿林 有新互动") {

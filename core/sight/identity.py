@@ -6,15 +6,34 @@ from typing import Any
 from .clip import SightClip
 from .probe import payload_from_item
 
+from typing import Protocol
+
 
 SIGHT_UPLOAD_ID_TTL_SECONDS = 180
 SIGHT_COMPLETED_KEY_TTL_SECONDS = 2 * 60 * 60
 
 
-class SightIdentityMixin:
+class SightIdentityComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_component_kind: Any
+    _event_group_meta: Any
+    _event_sources: Any
+    _safe_event_call: Any
+    _sight_cache_max_items: Any
+    _sight_cache_ttl_seconds: Any
+    _sight_completed_keys: Any
+    _sight_raw_message: Any
+    _sight_upload_ids: Any
+
+
+class SightIdentityComponent:
+    def __init__(self, context: SightIdentityComponentContext) -> None:
+        self.context = context
+
     def _init_sight_identity(self) -> None:
-        self._sight_upload_ids: dict[tuple[str, str, str, str], tuple[str, float]] = {}
-        self._sight_completed_keys: dict[str, float] = {}
+        self.context._sight_upload_ids: dict[tuple[str, str, str, str], tuple[str, float]] = {}
+        self.context._sight_completed_keys: dict[str, float] = {}
 
     @staticmethod
     def _sight_raw_message(source: Any) -> Any:
@@ -25,16 +44,16 @@ class SightIdentityMixin:
 
     def note_sight_group_upload_event(self, event: Any) -> bool:
         now = time.monotonic()
-        upload_ids = getattr(self, "_sight_upload_ids", None)
+        upload_ids = getattr(self.context, "_sight_upload_ids", None)
         if not isinstance(upload_ids, dict):
             upload_ids = {}
-            self._sight_upload_ids = upload_ids
+            self.context._sight_upload_ids = upload_ids
         for key, (_, timestamp) in list(upload_ids.items()):
             if now - timestamp > SIGHT_UPLOAD_ID_TTL_SECONDS:
                 upload_ids.pop(key, None)
         remembered = False
-        for source in self._event_sources(event):
-            raw = self._sight_raw_message(source)
+        for source in self.context._event_sources(event):
+            raw = self.context._sight_raw_message(source)
             if (
                 not isinstance(raw, dict)
                 or str(raw.get("notice_type") or "").strip().lower() != "group_upload"
@@ -57,11 +76,11 @@ class SightIdentityMixin:
     def _sight_apply_group_upload_id(
         self, event: Any, clips: list[SightClip]
     ) -> list[SightClip]:
-        upload_ids = getattr(self, "_sight_upload_ids", None)
+        upload_ids = getattr(self.context, "_sight_upload_ids", None)
         if not isinstance(upload_ids, dict) or not clips:
             return clips
-        group_id = self._event_group_meta(event)[0]
-        user_id = self._safe_event_call(event, "get_sender_id")
+        group_id = self.context._event_group_meta(event)[0]
+        user_id = self.context._safe_event_call(event, "get_sender_id")
         if not group_id or not user_id:
             return clips
         now = time.monotonic()
@@ -78,15 +97,15 @@ class SightIdentityMixin:
         self, event: Any, clips: list[SightClip]
     ) -> list[SightClip]:
         payloads: list[dict[str, str]] = []
-        for source in self._event_sources(event):
-            raw = self._sight_raw_message(source)
+        for source in self.context._event_sources(event):
+            raw = self.context._sight_raw_message(source)
             if not isinstance(raw, dict):
                 continue
             items = raw.get("message")
             if not isinstance(items, list):
                 continue
             for item in items:
-                if "file" not in self._event_component_kind(item):
+                if "file" not in self.context._event_component_kind(item):
                     continue
                 payload = payload_from_item(item)
                 if payload:
@@ -122,13 +141,13 @@ class SightIdentityMixin:
 
     def _sight_completed_key_is_fresh(self, key: str) -> bool:
         now = time.monotonic()
-        values = getattr(self, "_sight_completed_keys", None)
+        values = getattr(self.context, "_sight_completed_keys", None)
         if not isinstance(values, dict):
             values = {}
-            self._sight_completed_keys = values
+            self.context._sight_completed_keys = values
         ttl = max(
             60.0,
-            float(self._sight_cache_ttl_seconds() or SIGHT_COMPLETED_KEY_TTL_SECONDS),
+            float(self.context._sight_cache_ttl_seconds() or SIGHT_COMPLETED_KEY_TTL_SECONDS),
         )
         for item, marked_at in list(values.items()):
             if now - marked_at >= ttl:
@@ -140,12 +159,12 @@ class SightIdentityMixin:
         normalized = str(key or "").strip()
         if not normalized:
             return
-        values = getattr(self, "_sight_completed_keys", None)
+        values = getattr(self.context, "_sight_completed_keys", None)
         if not isinstance(values, dict):
             values = {}
-            self._sight_completed_keys = values
+            self.context._sight_completed_keys = values
         values[normalized] = time.monotonic()
-        maximum = max(8, self._sight_cache_max_items())
+        maximum = max(8, self.context._sight_cache_max_items())
         if len(values) > maximum:
             stale = sorted(values.items(), key=lambda item: item[1])[
                 : len(values) - maximum

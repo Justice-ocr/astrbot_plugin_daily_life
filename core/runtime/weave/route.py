@@ -5,17 +5,37 @@ from typing import Any
 from ...sources.location import location_parts
 from .grain import StructuredMessage, StructuredTarget
 
+from typing import Protocol
 
-class StructuredRouteMixin:
+
+class StructuredRouteComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_mentions_bot_alias: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_quote_context: Any
+    _event_session_id: Any
+    _structured_component_data: Any
+    _structured_component_kind: Any
+    _structured_find_message: Any
+    _structured_first_text: Any
+    _structured_scope_messages: Any
+
+
+class StructuredRouteComponent:
+    def __init__(self, context: StructuredRouteComponentContext) -> None:
+        self.context = context
+
     def _structured_extract_at_targets(self, event: Any) -> list[StructuredTarget]:
         targets: list[StructuredTarget] = []
         seen: set[str] = set()
-        for item in self._event_message_items(event):
-            kind = self._structured_component_kind(item)
+        for item in self.context._event_message_items(event):
+            kind = self.context._structured_component_kind(item)
             if "at" not in kind and kind not in {"mention"}:
                 continue
-            data = self._structured_component_data(item)
-            user_id = self._structured_first_text(
+            data = self.context._structured_component_data(item)
+            user_id = self.context._structured_first_text(
                 data.get("target_user_id"),
                 data.get("user_id"),
                 data.get("target_id"),
@@ -24,7 +44,7 @@ class StructuredRouteMixin:
             )
             if not user_id or user_id in seen:
                 continue
-            name = self._structured_first_text(
+            name = self.context._structured_first_text(
                 data.get("target_user_cardname"),
                 data.get("target_user_nickname"),
                 data.get("target_name"),
@@ -37,27 +57,27 @@ class StructuredRouteMixin:
 
     def _structured_extract_reply(self, event: Any, scope: str) -> dict[str, str]:
         reply: dict[str, str] = {}
-        for item in self._event_message_items(event):
-            kind = self._structured_component_kind(item)
+        for item in self.context._event_message_items(event):
+            kind = self.context._structured_component_kind(item)
             if "reply" not in kind and "quote" not in kind:
                 continue
-            data = self._structured_component_data(item)
-            reply["message_id"] = self._structured_first_text(
+            data = self.context._structured_component_data(item)
+            reply["message_id"] = self.context._structured_first_text(
                 data.get("target_message_id"),
                 data.get("message_id"),
                 data.get("reply_to"),
                 data.get("id"),
             )
-            reply["sender_id"] = self._structured_first_text(
+            reply["sender_id"] = self.context._structured_first_text(
                 data.get("target_message_sender_id"),
                 data.get("sender_id"),
             )
-            reply["sender_name"] = self._structured_first_text(
+            reply["sender_name"] = self.context._structured_first_text(
                 data.get("target_message_sender_cardname"),
                 data.get("target_message_sender_nickname"),
                 data.get("sender_name"),
             )
-            reply["content"] = self._structured_first_text(
+            reply["content"] = self.context._structured_first_text(
                 data.get("target_message_content"),
                 data.get("message_str"),
                 data.get("text"),
@@ -70,7 +90,7 @@ class StructuredRouteMixin:
 
         reply_id = reply.get("message_id", "")
         if reply_id:
-            target = self._structured_find_message(scope, reply_id)
+            target = self.context._structured_find_message(scope, reply_id)
             if target:
                 if not reply.get("sender_id"):
                     reply["sender_id"] = target.sender_id
@@ -80,7 +100,7 @@ class StructuredRouteMixin:
                     reply["content"] = target.content
 
         if not reply.get("content"):
-            quote_context = self._event_quote_context(event)
+            quote_context = self.context._event_quote_context(event)
             if quote_context:
                 reply["content"] = quote_context
         return reply
@@ -92,18 +112,18 @@ class StructuredRouteMixin:
         message_id = str(message_id or "").strip()
         if not scope or not message_id:
             return None
-        for item in reversed(self._structured_scope_messages(scope)):
+        for item in reversed(self.context._structured_scope_messages(scope)):
             if message_id in {item.message_id, item.fallback_key, item.key}:
                 return item
         return None
 
     def _structured_message_for_event(self, event: Any) -> StructuredMessage | None:
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event)
-        message = self._structured_find_message(scope, message_id)
+        scope = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event)
+        message = self.context._structured_find_message(scope, message_id)
         if message:
             return message
-        messages = list(self._structured_scope_messages(scope)) if scope else []
+        messages = list(self.context._structured_scope_messages(scope)) if scope else []
         return messages[-1] if messages else None
 
     @staticmethod
@@ -127,7 +147,7 @@ class StructuredRouteMixin:
     ) -> None:
         if message.is_bot:
             if message.reply_to_id:
-                target = self._structured_find_message(
+                target = self.context._structured_find_message(
                     message.scope, message.reply_to_id
                 )
                 if target and not target.is_bot:
@@ -148,7 +168,7 @@ class StructuredRouteMixin:
             message.talking_to_name = "我"
             return
 
-        mentions_bot_alias = getattr(self, "_event_mentions_bot_alias", None)
+        mentions_bot_alias = getattr(self.context, "_event_mentions_bot_alias", None)
         if (
             callable(mentions_bot_alias)
             and source_event is not None
@@ -159,7 +179,7 @@ class StructuredRouteMixin:
             return
 
         if message.reply_to_id:
-            target = self._structured_find_message(message.scope, message.reply_to_id)
+            target = self.context._structured_find_message(message.scope, message.reply_to_id)
             if target:
                 message.talking_to_id = "bot" if target.is_bot else target.sender_id
                 message.talking_to_name = (

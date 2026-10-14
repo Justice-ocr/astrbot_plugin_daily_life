@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import math
 import time
+from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
@@ -39,14 +40,28 @@ def format_elapsed(seconds: float) -> str:
     return "".join(parts) or "不到1秒"
 
 
-class ConversationTimingMixin:
+class ConversationTimingService:
     """使用收发回执感知对话间隔，不依赖记忆提炼或模型推测时间。"""
+
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], Any],
+        is_self_message: Callable[[Any], bool],
+        session_id: Callable[[Any], str],
+        is_group: Callable[[Any], bool],
+    ) -> None:
+        self._archive = archive
+        self._is_self_message = is_self_message
+        self._session_id = session_id
+        self._is_group = is_group
+        self._receipts: dict[str, list[float]] = {}
 
     def note_conversation_incoming(self, event: Any) -> None:
         if (
             event is None
             or getattr(event, "is_proactive_synthetic", False)
-            or self._proactive_is_self_message(event)
+            or self._is_self_message(event)
             or event_time(event, RECEIVED_AT)
         ):
             return
@@ -56,16 +71,18 @@ class ConversationTimingMixin:
         setattr(event, RECEIVED_AT, created if 0 < created <= now else now)
 
     def clear_conversation_timing(self) -> None:
-        self._conversation_receipts = {}
+        self._receipts.clear()
+
+    def evict_scopes(self, aliases: set[str]) -> None:
+        for alias in aliases:
+            self._receipts.pop(alias, None)
 
     def note_conversation_sent(
         self, scope: str, sent_at: float, source_event: Any = None
     ) -> None:
         if not scope or not math.isfinite(sent_at) or sent_at <= 0:
             return
-        store = getattr(self, "_conversation_receipts", None)
-        if not isinstance(store, dict):
-            store = self._conversation_receipts = {}
+        store = self._receipts
         # 保留少量回执，使生成期间的新发送不会覆盖本轮到达前的时间锚点。
         store[scope] = sorted(set(store.pop(scope, []) + [sent_at]))[-32:]
         while len(store) > 512:
@@ -77,7 +94,7 @@ class ConversationTimingMixin:
         self, scope: str, sent_at: float, source_event: Any = None
     ) -> None:
         self.note_conversation_sent(scope, sent_at, source_event)
-        writer = getattr(getattr(self, "archive", None), "save_conversation_receipt", None)
+        writer = getattr(self._archive(), "save_conversation_receipt", None)
         if not scope or not callable(writer):
             return
         try:
@@ -95,14 +112,14 @@ class ConversationTimingMixin:
         cached = getattr(event, "_daily_life_conversation_timing_context", None)
         if isinstance(cached, str):
             return cached
-        scope = self._event_session_id(event)
+        scope = self._session_id(event)
         if not scope:
             return ""
         started = event_time(event, TURN_RECEIVED_AT) or received
         started = min(started, received)
-        store = getattr(self, "_conversation_receipts", {})
+        store = self._receipts
         previous = max((t for t in store.get(scope, []) if t <= started), default=0.0)
-        reader = getattr(getattr(self, "archive", None), "get_conversation_receipt_before", None)
+        reader = getattr(self._archive(), "get_conversation_receipt_before", None)
         if not previous and callable(reader):
             try:
                 previous = await reader(scope, started)
@@ -121,7 +138,7 @@ class ConversationTimingMixin:
             ))
         else:
             lines.append("上次成功发送时间：无可核实记录，间隔未知")
-        if self._safe_event_call(event, "get_group_id"):
+        if self._is_group(event):
             lines.append("范围：群聊消息记录，不能把群内发送间隔归因于当前发言者。")
         context = "\n".join(lines)
         setattr(event, "_daily_life_conversation_timing_context", context)

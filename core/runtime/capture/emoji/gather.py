@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import datetime
 import inspect
@@ -12,13 +14,76 @@ from astrbot.core.agent.message import TextPart
 from ....clock import now as life_now
 from ....models import EmojiAssetRecord
 from ...markers import LOG_PREFIX
+from ...foreground import foreground_budget
+
+from typing import Protocol
 
 
-class EmojiGatherMixin:
+class EmojiGatherComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    EMOJI_ASSET_REJECTED_STATUSES: Any
+    _GIF_CONTEXT_FUTURE_ATTR: Any
+    _GIF_VISION_BRIDGE_TIMEOUT_SECONDS: Any
+    _PREPARED_VISUAL_MEDIA_ATTR: Any
+    _VISUAL_CONTEXT_FUTURE_ATTR: Any
+    _VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS: Any
+    _append_gif_visual_summary: Any
+    _apply_visual_context_summary_text: Any
+    _build_prepared_visual_media: Any
+    _cache_and_describe_emoji_asset: Any
+    _cache_emoji_asset_file: Any
+    _cache_emoji_asset_path: Any
+    _collect_one_visual_context: Any
+    _collect_visual_context_background: Any
+    _describe_emoji_asset_with_vision: Any
+    _describe_visual_context_with_vision: Any
+    _emoji_asset_cache_candidates: Any
+    _emoji_asset_cache_dir: Any
+    _emoji_asset_is_image_item: Any
+    _emoji_asset_is_remote: Any
+    _emoji_asset_prepare_vision_source: Any
+    _emoji_asset_source_kind: Any
+    _emoji_asset_type_from_item: Any
+    _emoji_auto_collect_enabled: Any
+    _emoji_can_accept_ready_asset: Any
+    _emoji_review_batch_size: Any
+    _event_context_meta: Any
+    _event_has_command_handler: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _first_existing_visual_media_path: Any
+    _local_path_from_file_uri: Any
+    _media_fingerprint: Any
+    _media_payload_from_item_async: Any
+    _message_media_payload: Any
+    _prepared_visual_media_from_event: Any
+    _prepared_visual_media_is_gif: Any
+    _read_visual_media_header: Any
+    _remove_gif_inputs_from_provider_request: Any
+    _run_visual_context_task: Any
+    _schedule_background_task: Any
+    _visual_context_summary_cache: Any
+    _visual_media_has_durable_source: Any
+    _visual_media_source_is_gif: Any
+    _visual_media_source_looks_like_gif: Any
+    _visual_media_sources: Any
+    _wait_for_gif_visual_context: Any
+    archive: Any
+    contact_resolver: Any
+    event_was_recalled: Any
+
+
+class EmojiGatherComponent:
+    def __init__(self, context: EmojiGatherComponentContext) -> None:
+        self.context = context
+
     _PREPARED_VISUAL_MEDIA_ATTR = "_daily_life_prepared_visual_media"
     _VISUAL_CONTEXT_FUTURE_ATTR = "_daily_life_visual_context_future"
+    _GIF_CONTEXT_FUTURE_ATTR = "_daily_life_gif_context_future"
     _VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS = 5.0
-    _GIF_VISION_BRIDGE_TIMEOUT_SECONDS = 45.0
+    _GIF_VISION_BRIDGE_TIMEOUT_SECONDS = 8.0
 
     @staticmethod
     def _visual_media_sources(payload: dict[str, str]) -> list[str]:
@@ -37,7 +102,7 @@ class EmojiGatherMixin:
             ):
                 continue
             if value.startswith("file://"):
-                value = self._local_path_from_file_uri(value)
+                value = self.context._local_path_from_file_uri(value)
             path = Path(value).expanduser()
             if await asyncio.to_thread(path.is_file):
                 return str(path)
@@ -54,21 +119,21 @@ class EmojiGatherMixin:
 
     async def _build_prepared_visual_media(self, event: Any) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
-        for item in self._event_message_items(event):
+        for item in self.context._event_message_items(event):
             if not (
-                self._emoji_asset_is_image_item(item)
-                or self._emoji_asset_source_kind(item)
+                self.context._emoji_asset_is_image_item(item)
+                or self.context._emoji_asset_source_kind(item)
             ):
                 continue
-            payload = dict(self._message_media_payload(item))
-            sources = self._visual_media_sources(payload)
-            local_source = await self._first_existing_visual_media_path(sources)
-            if not local_source and not self._visual_media_has_durable_source(sources):
-                payload = await self._media_payload_from_item_async(item)
-                sources = self._visual_media_sources(payload)
-                local_source = await self._first_existing_visual_media_path(sources)
+            payload = dict(self.context._message_media_payload(item))
+            sources = self.context._visual_media_sources(payload)
+            local_source = await self.context._first_existing_visual_media_path(sources)
+            if not local_source and not self.context._visual_media_has_durable_source(sources):
+                payload = await self.context._media_payload_from_item_async(item)
+                sources = self.context._visual_media_sources(payload)
+                local_source = await self.context._first_existing_visual_media_path(sources)
 
-            fingerprint = self._media_fingerprint(payload)
+            fingerprint = self.context._media_fingerprint(payload)
             if inspect.isawaitable(fingerprint):
                 fingerprint = await fingerprint
             fingerprint = str(fingerprint or "").strip()
@@ -78,11 +143,11 @@ class EmojiGatherMixin:
             stable_path = ""
             state = (
                 "deferred"
-                if self._visual_media_has_durable_source(sources)
+                if self.context._visual_media_has_durable_source(sources)
                 else "failed"
             )
             if local_source:
-                cached_path = await self._cache_emoji_asset_path(
+                cached_path = await self.context._cache_emoji_asset_path(
                     {"path": local_source},
                     fingerprint,
                     log_failure=False,
@@ -98,7 +163,7 @@ class EmojiGatherMixin:
                 else:
                     state = (
                         "transient"
-                        if self._emoji_asset_cache_dir(create=False) is None
+                        if self.context._emoji_asset_cache_dir(create=False) is None
                         else "failed"
                     )
             entries.append(
@@ -107,7 +172,7 @@ class EmojiGatherMixin:
                     "payload": payload,
                     "fingerprint": fingerprint,
                     "path": stable_path,
-                    "cache_sources": self._emoji_asset_cache_candidates(
+                    "cache_sources": self.context._emoji_asset_cache_candidates(
                         stable_path, sources
                     ),
                     "state": state,
@@ -118,27 +183,27 @@ class EmojiGatherMixin:
     async def prepare_visual_media_from_event(self, event: Any) -> bool:
         """在框架清理事件临时文件前，将本地图片固化到插件缓存。"""
 
-        if event is None or self.event_was_recalled(event, log_skip=True):
+        if event is None or self.context.event_was_recalled(event, log_skip=True):
             return False
         if not any(
-            self._emoji_asset_is_image_item(item) or self._emoji_asset_source_kind(item)
-            for item in self._event_message_items(event)
+            self.context._emoji_asset_is_image_item(item) or self.context._emoji_asset_source_kind(item)
+            for item in self.context._event_message_items(event)
         ):
-            setattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, [])
+            setattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, [])
             return False
         started_at = time.monotonic()
         try:
             entries = await asyncio.wait_for(
-                self._build_prepared_visual_media(event),
-                timeout=self._VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS,
+                self.context._build_prepared_visual_media(event),
+                timeout=self.context._VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             entries = []
             logger.debug(
                 f"{LOG_PREFIX} 图片前置固化超时，已跳过；"
-                f"上限={self._VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS:.0f}秒"
+                f"上限={self.context._VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS:.0f}秒"
             )
-        setattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, entries)
+        setattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, entries)
         elapsed = time.monotonic() - started_at
         if elapsed >= 0.1:
             logger.debug(f"{LOG_PREFIX} 图片前置固化耗时 {elapsed:.2f} 秒")
@@ -147,11 +212,11 @@ class EmojiGatherMixin:
     async def _prepared_visual_media_from_event(
         self, event: Any
     ) -> list[dict[str, Any]]:
-        prepared = getattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, None)
+        prepared = getattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, None)
         if isinstance(prepared, list):
             return prepared
-        prepared = await self._build_prepared_visual_media(event)
-        setattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, prepared)
+        prepared = await self.context._build_prepared_visual_media(event)
+        setattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, prepared)
         return prepared
 
     @staticmethod
@@ -173,21 +238,21 @@ class EmojiGatherMixin:
             *(str(payload.get(key) or "") for key in ("path", "file", "url", "image")),
         ]
         for source in dict.fromkeys(sources):
-            if await self._visual_media_source_is_gif(source):
+            if await self.context._visual_media_source_is_gif(source):
                 return True
         return False
 
     async def _visual_media_source_is_gif(self, source: str) -> bool:
         value = str(source or "").strip()
-        if self._visual_media_source_looks_like_gif(value):
+        if self.context._visual_media_source_looks_like_gif(value):
             return True
         if not value or value.startswith(("http://", "https://", "base64://")):
             return False
         if value.startswith("file://"):
-            value = self._local_path_from_file_uri(value)
+            value = self.context._local_path_from_file_uri(value)
         path = Path(value).expanduser()
         try:
-            header = await asyncio.to_thread(self._read_visual_media_header, path)
+            header = await asyncio.to_thread(self.context._read_visual_media_header, path)
         except (OSError, ValueError):
             return False
         return header.startswith((b"GIF87a", b"GIF89a"))
@@ -203,7 +268,7 @@ class EmojiGatherMixin:
         completion: asyncio.Future,
     ) -> None:
         try:
-            await self._collect_visual_context_background(event)
+            await self.context._collect_visual_context_background(event)
         except asyncio.CancelledError:
             if not completion.done():
                 completion.set_result(False)
@@ -215,6 +280,10 @@ class EmojiGatherMixin:
         else:
             if not completion.done():
                 completion.set_result(True)
+        finally:
+            gif_completion = getattr(event, self.context._GIF_CONTEXT_FUTURE_ATTR, None)
+            if isinstance(gif_completion, asyncio.Future) and not gif_completion.done():
+                gif_completion.set_result(False)
 
     async def _remove_gif_inputs_from_provider_request(
         self,
@@ -226,7 +295,7 @@ class EmojiGatherMixin:
         removed_sources: list[str] = []
         kept_sources: list[str] = []
         for source in image_urls:
-            if remove_all_images or await self._visual_media_source_is_gif(
+            if remove_all_images or await self.context._visual_media_source_is_gif(
                 str(source or "")
             ):
                 removed_sources.append(str(source or ""))
@@ -257,7 +326,7 @@ class EmojiGatherMixin:
                     source = direct_image_url.get("url", "")
                 elif not source:
                     source = direct_image_url
-                if remove_all_images or await self._visual_media_source_is_gif(
+                if remove_all_images or await self.context._visual_media_source_is_gif(
                     str(source or "")
                 ):
                     continue
@@ -302,6 +371,26 @@ class EmojiGatherMixin:
         marker = getattr(part, "mark_as_temp", None)
         parts.append(marker() if callable(marker) else part)
 
+    async def _wait_for_gif_visual_context(self, event: Any) -> None:
+        """只等待本轮 GIF；用完前台增强额度后继续文字对话。"""
+        completion = getattr(event, self.context._GIF_CONTEXT_FUTURE_ATTR, None)
+        if not isinstance(completion, asyncio.Future):
+            completion = getattr(event, self.context._VISUAL_CONTEXT_FUTURE_ATTR, None)
+        try:
+            async with foreground_budget(
+                event, maximum=self.context._GIF_VISION_BRIDGE_TIMEOUT_SECONDS
+            ):
+                if isinstance(completion, asyncio.Future):
+                    await asyncio.shield(completion)
+                else:
+                    await self.context._collect_visual_context_background(
+                        event, gif_only=True
+                    )
+        except TimeoutError:
+            logger.debug(f"{LOG_PREFIX} GIF 视觉转写超过前台预算，继续文字对话")
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} GIF 视觉转写未完成：{type(exc).__name__}")
+
     async def bridge_animated_visual_for_llm_request(
         self,
         event: Any,
@@ -309,41 +398,30 @@ class EmojiGatherMixin:
     ) -> bool:
         """将 GIF 先交给视觉模型识别，再以文字摘要交给主对话模型。"""
 
-        entries = await self._prepared_visual_media_from_event(event)
+        entries = await self.context._prepared_visual_media_from_event(event)
         gif_entries = [
             entry
             for entry in entries
-            if await self._prepared_visual_media_is_gif(entry)
+            if await self.context._prepared_visual_media_is_gif(entry)
         ]
         if not gif_entries:
             return False
 
-        completion = getattr(event, self._VISUAL_CONTEXT_FUTURE_ATTR, None)
-        if isinstance(completion, asyncio.Future):
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(completion),
-                    timeout=self._GIF_VISION_BRIDGE_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                logger.debug(
-                    f"{LOG_PREFIX} GIF 视觉转写等待超时，已移除原始动图并继续文本对话"
-                )
-            except Exception as exc:
-                logger.debug(f"{LOG_PREFIX} GIF 视觉转写未完成：{exc}")
-        else:
-            await self._collect_visual_context_background(event)
-
-        cache = self._visual_context_summary_cache()
+        cache = self.context._visual_context_summary_cache()
+        if not all(
+            str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
+            for entry in gif_entries
+        ):
+            await self.context._wait_for_gif_visual_context(event)
         summaries = [
             str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
             for entry in gif_entries
         ]
-        removed = await self._remove_gif_inputs_from_provider_request(
+        removed = await self.context._remove_gif_inputs_from_provider_request(
             req,
             remove_all_images=len(gif_entries) == len(entries),
         )
-        self._append_gif_visual_summary(req, summaries)
+        self.context._append_gif_visual_summary(req, summaries)
         logger.debug(
             f"{LOG_PREFIX} GIF 已转为视觉文字上下文："
             f"动图={len(gif_entries)}；移除原始输入={removed}；"
@@ -359,9 +437,9 @@ class EmojiGatherMixin:
         context_scope: str = "",
         context_message_key: str = "",
     ) -> None:
-        cached_path = await self._cache_emoji_asset_file(payload, asset.file_hash)
+        cached_path = await self.context._cache_emoji_asset_file(payload, asset.file_hash)
         if cached_path and cached_path != asset.file_path:
-            refreshed = await self.archive.upsert_emoji_asset(
+            refreshed = await self.context.archive.upsert_emoji_asset(
                 EmojiAssetRecord(
                     id=asset.id,
                     file_hash=asset.file_hash,
@@ -386,7 +464,7 @@ class EmojiGatherMixin:
             )
             if refreshed:
                 asset = refreshed
-        await self._describe_emoji_asset_with_vision(
+        await self.context._describe_emoji_asset_with_vision(
             asset,
             context_scope=context_scope,
             context_message_key=context_message_key,
@@ -398,27 +476,27 @@ class EmojiGatherMixin:
         now: datetime.datetime | None = None,
         sender_name: str = "",
     ) -> None:
-        if not self._emoji_auto_collect_enabled():
+        if not self.context._emoji_auto_collect_enabled():
             return
-        if self._event_has_command_handler(event) or self.event_was_recalled(
+        if self.context._event_has_command_handler(event) or self.context.event_was_recalled(
             event, log_skip=True
         ):
             return
         now = now or life_now()
-        sender_name = sender_name or await self.contact_resolver.resolve_event_sender(
+        sender_name = sender_name or await self.context.contact_resolver.resolve_event_sender(
             event
         )
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
-        meta = await self._event_context_meta(event, sender_name, now)
+        meta = await self.context._event_context_meta(event, sender_name, now)
         scope = meta.get("group_id") or meta.get("session_id") or ""
         context_scope = meta.get("session_id") or ""
         context_message_key = meta.get("message_id") or f"event:{id(event)}"
         saved: list[EmojiAssetRecord] = []
         payloads: dict[str, dict[str, str]] = {}
-        for entry in await self._prepared_visual_media_from_event(event):
+        for entry in await self.context._prepared_visual_media_from_event(event):
             item = entry.get("item")
-            source_kind = self._emoji_asset_source_kind(item)
+            source_kind = self.context._emoji_asset_source_kind(item)
             if source_kind not in {"trusted", "review"}:
                 continue
             if entry.get("state") == "failed":
@@ -427,20 +505,20 @@ class EmojiGatherMixin:
             fingerprint = str(entry.get("fingerprint") or "")
             if not fingerprint:
                 continue
-            if self.event_was_recalled(event, log_skip=True):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return
-            existing = await self.archive.get_emoji_asset_by_hash(fingerprint)
+            existing = await self.context.archive.get_emoji_asset_by_hash(fingerprint)
             if (
                 existing
-                and str(existing.status or "") in self.EMOJI_ASSET_REJECTED_STATUSES
+                and str(existing.status or "") in self.context.EMOJI_ASSET_REJECTED_STATUSES
             ):
                 continue
             if existing and str(existing.status or "") == "ready":
-                cached_summary = self._visual_context_summary_cache().get(
+                cached_summary = self.context._visual_context_summary_cache().get(
                     fingerprint, ""
                 )
                 if cached_summary:
-                    self._apply_visual_context_summary_text(
+                    self.context._apply_visual_context_summary_text(
                         context_scope,
                         context_message_key,
                         cached_summary,
@@ -449,7 +527,7 @@ class EmojiGatherMixin:
                 saved.append(existing)
                 payloads[str(existing.id)] = payload
                 continue
-            if not await self._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
+            if not await self.context._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
                 continue
             path_text = (
                 payload.get("path")
@@ -459,31 +537,31 @@ class EmojiGatherMixin:
                 or ""
             )
             status = "pending" if source_kind == "trusted" else "reviewing"
-            asset = await self.archive.upsert_emoji_asset(
+            asset = await self.context.archive.upsert_emoji_asset(
                 EmojiAssetRecord(
                     file_hash=fingerprint,
                     file_path=path_text,
                     source_scope=scope,
                     source_message_id=meta.get("message_id", ""),
                     source_url=path_text
-                    if self._emoji_asset_is_remote(path_text)
+                    if self.context._emoji_asset_is_remote(path_text)
                     else "",
                     source_kind=source_kind,
-                    asset_type=self._emoji_asset_type_from_item(item),
+                    asset_type=self.context._emoji_asset_type_from_item(item),
                     sendable=False,
                     status=status,
                 )
             )
-            if self.event_was_recalled(event, log_skip=True):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return
             if asset:
                 saved.append(asset)
                 payloads[str(asset.id)] = payload
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
-        for asset in saved[: self._emoji_review_batch_size()]:
-            self._schedule_background_task(
-                self._cache_and_describe_emoji_asset(
+        for asset in saved[: self.context._emoji_review_batch_size()]:
+            self.context._schedule_background_task(
+                self.context._cache_and_describe_emoji_asset(
                     asset,
                     payloads.get(str(asset.id), {}),
                     context_scope=context_scope,
@@ -496,71 +574,98 @@ class EmojiGatherMixin:
     def schedule_visual_context_from_event(self, event: Any) -> bool:
         if (
             event is None
-            or self._event_has_command_handler(event)
-            or self.event_was_recalled(event, log_skip=True)
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
         ):
             return False
         if not any(
-            self._emoji_asset_is_image_item(item)
-            for item in self._event_message_items(event)
+            self.context._emoji_asset_is_image_item(item)
+            for item in self.context._event_message_items(event)
         ):
             return False
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event)
+        scope = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event)
         if not scope:
             return False
         key = f"visual_context:{scope}:{message_id or id(event)}"
         completion = asyncio.get_running_loop().create_future()
-        setattr(event, self._VISUAL_CONTEXT_FUTURE_ATTR, completion)
-        scheduled = self._schedule_background_task(
-            self._run_visual_context_task(event, completion),
+        gif_completion = asyncio.get_running_loop().create_future()
+        setattr(event, self.context._VISUAL_CONTEXT_FUTURE_ATTR, completion)
+        setattr(event, self.context._GIF_CONTEXT_FUTURE_ATTR, gif_completion)
+        scheduled = self.context._schedule_background_task(
+            self.context._run_visual_context_task(event, completion),
             label="图片上下文识别",
             key=key,
         )
         if not scheduled and not completion.done():
             completion.set_result(False)
+            gif_completion.set_result(False)
         return scheduled
 
-    async def _collect_visual_context_background(self, event: Any) -> None:
-        if self.event_was_recalled(event, log_skip=True):
+    async def _collect_visual_context_background(
+        self, event: Any, *, gif_only: bool = False
+    ) -> None:
+        if self.context.event_was_recalled(event, log_skip=True):
             return
-        scope = self._event_session_id(event)
-        message_key = self._event_message_id(event) or f"event:{id(event)}"
+        scope = self.context._event_session_id(event)
+        message_key = self.context._event_message_id(event) or f"event:{id(event)}"
         if not scope or not message_key:
             return
 
-        if self.event_was_recalled(event, log_skip=True):
+        if self.context.event_was_recalled(event, log_skip=True):
             return
 
-        for entry in await self._prepared_visual_media_from_event(event):
-            if self.event_was_recalled(event, log_skip=True):
+        entries = await self.context._prepared_visual_media_from_event(event)
+        classified = [
+            (await self.context._prepared_visual_media_is_gif(entry), entry)
+            for entry in entries
+        ]
+        if gif_only:
+            classified = [item for item in classified if item[0]]
+        gif_completion = getattr(event, self.context._GIF_CONTEXT_FUTURE_ATTR, None)
+        gif_remaining = sum(is_gif for is_gif, _ in classified)
+        if (
+            gif_remaining == 0
+            and isinstance(gif_completion, asyncio.Future)
+            and not gif_completion.done()
+        ):
+            gif_completion.set_result(True)
+        for is_gif, entry in sorted(classified, key=lambda item: not item[0]):
+            if self.context.event_was_recalled(event, log_skip=True):
                 return
-            fingerprint = str(entry.get("fingerprint") or "")
-            if not fingerprint:
-                continue
+            try:
+                await self.context._collect_one_visual_context(entry, scope, message_key)
+            finally:
+                if is_gif:
+                    gif_remaining -= 1
+                    if (
+                        gif_remaining == 0
+                        and isinstance(gif_completion, asyncio.Future)
+                        and not gif_completion.done()
+                    ):
+                        gif_completion.set_result(True)
 
-            cached_summary = self._visual_context_summary_cache().get(fingerprint, "")
-            if cached_summary:
-                self._apply_visual_context_summary_text(
-                    scope, message_key, cached_summary
-                )
-                continue
-
-            path = str(entry.get("path") or "")
-            cache_sources = list(entry.get("cache_sources") or [])
-            if not path and entry.get("state") in {"deferred", "transient"}:
-                path, cache_sources = await self._emoji_asset_prepare_vision_source(
-                    cache_sources, fingerprint
-                )
-            if not path:
-                logger.debug(
-                    f"{LOG_PREFIX} 图片上下文识别跳过：图片临时文件已失效，且无可用备用来源"
-                )
-                continue
-            await self._describe_visual_context_with_vision(
-                path,
-                scope,
-                message_key,
-                fingerprint,
-                cache_sources=cache_sources,
+    async def _collect_one_visual_context(
+        self, entry: dict[str, Any], scope: str, message_key: str
+    ) -> None:
+        fingerprint = str(entry.get("fingerprint") or "")
+        if not fingerprint:
+            return
+        cached_summary = self.context._visual_context_summary_cache().get(fingerprint, "")
+        if cached_summary:
+            self.context._apply_visual_context_summary_text(scope, message_key, cached_summary)
+            return
+        path = str(entry.get("path") or "")
+        cache_sources = list(entry.get("cache_sources") or [])
+        if not path and entry.get("state") in {"deferred", "transient"}:
+            path, cache_sources = await self.context._emoji_asset_prepare_vision_source(
+                cache_sources, fingerprint
             )
+        if not path:
+            logger.debug(
+                f"{LOG_PREFIX} 图片上下文识别跳过：图片临时文件已失效，且无可用备用来源"
+            )
+            return
+        await self.context._describe_visual_context_with_vision(
+            path, scope, message_key, fingerprint, cache_sources=cache_sources
+        )

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 from collections.abc import AsyncIterator
@@ -8,8 +10,24 @@ from ..models import CommitmentRecord, EventRecord, PlaceRecord
 from .policy import LifeActionScope
 from .request import CommandRequest
 
+from typing import Protocol
 
-class SocialCommandMixin:
+
+class SocialCommandComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _infer_manual_commitment_date: Any
+    _infer_manual_commitment_time: Any
+    _parse_commitment_id: Any
+    permission_denial: Any
+    policy: Any
+    runtime: Any
+
+
+class SocialCommandComponent:
+    def __init__(self, context: SocialCommandComponentContext) -> None:
+        self.context = context
+
     async def _memo(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         if not req.param_full:
             yield event.plain_result(
@@ -17,17 +35,17 @@ class SocialCommandMixin:
             )
             return
         tomorrow = (req.now + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        await self.runtime.archive.set_memo(tomorrow, req.param_full)
-        await self.runtime.mark_page_status_changed("memo")
-        sender_name = await self.runtime.contact_resolver.resolve_event_sender(event)
-        await self.runtime.remember_interaction(
+        await self.context.runtime.archive.set_memo(tomorrow, req.param_full)
+        await self.context.runtime.mark_page_status_changed("memo")
+        sender_name = await self.context.runtime.contact_resolver.resolve_event_sender(event)
+        await self.context.runtime.remember_interaction(
             event,
             sender_name,
             f"约定明天：{req.param_full}",
             tomorrow,
             source="memo",
         )
-        await self.runtime.archive.add_events(
+        await self.context.runtime.archive.add_events(
             tomorrow,
             [
                 EventRecord(
@@ -44,12 +62,12 @@ class SocialCommandMixin:
     async def _commitments(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         action = req.param1
         if not action or action == "列表":
-            items = await self.runtime.archive.get_commitments(status="", limit=50)
+            items = await self.context.runtime.archive.get_commitments(status="", limit=50)
             items = [
                 item
                 for item in items
                 if item.status in {"active", "scheduled", "pending"}
-                and self.policy.owns(event, item.source_session)
+                and self.context.policy.owns(event, item.source_session)
             ]
             if not items:
                 yield event.plain_result("当前没有未完成承诺。")
@@ -74,16 +92,16 @@ class SocialCommandMixin:
             if not content:
                 yield event.plain_result("请写明承诺内容，例如：周末一起看电影。")
                 return
-            sender_name = await self.runtime.contact_resolver.resolve_event_sender(
+            sender_name = await self.context.runtime.contact_resolver.resolve_event_sender(
                 event
             )
-            commitment = await self.runtime.archive.save_commitment(
+            commitment = await self.context.runtime.archive.save_commitment(
                 CommitmentRecord(
                     content=content,
                     kind="plan",
                     trigger_date=(
                         req.commitment_target_date
-                        or self._infer_manual_commitment_date(content)
+                        or self.context._infer_manual_commitment_date(content)
                     ),
                     time_window="",
                     people=[sender_name] if sender_name else [],
@@ -103,7 +121,7 @@ class SocialCommandMixin:
             )
             applied = False
             apply_to_day = getattr(
-                self.runtime, "apply_commitment_to_current_day", None
+                self.context.runtime, "apply_commitment_to_current_day", None
             )
             if callable(apply_to_day):
                 applied = await apply_to_day(
@@ -111,10 +129,10 @@ class SocialCommandMixin:
                     now=req.now,
                     owner_hint="未定",
                 )
-            photo_scheduler = getattr(self.runtime, "schedule_commitment_photo", None)
+            photo_scheduler = getattr(self.context.runtime, "schedule_commitment_photo", None)
             if callable(photo_scheduler):
                 await photo_scheduler(commitment, owner="", observed_at=req.now)
-            video_scheduler = getattr(self.runtime, "schedule_commitment_video", None)
+            video_scheduler = getattr(self.context.runtime, "schedule_commitment_video", None)
             if callable(video_scheduler):
                 await video_scheduler(commitment, owner="", observed_at=req.now)
             yield event.plain_result(
@@ -124,12 +142,12 @@ class SocialCommandMixin:
             return
 
         if action in {"完成", "取消"}:
-            commitment_id = self._parse_commitment_id(req.param2)
+            commitment_id = self.context._parse_commitment_id(req.param2)
             if not commitment_id:
                 yield event.plain_result("请指定承诺标识，例如：完成 3。")
                 return
-            commitment = await self.runtime.archive.get_commitment(commitment_id)
-            denial = self.permission_denial(
+            commitment = await self.context.runtime.archive.get_commitment(commitment_id)
+            denial = self.context.permission_denial(
                 event,
                 f"commitment:{action}",
                 LifeActionScope.OWNED,
@@ -140,7 +158,7 @@ class SocialCommandMixin:
                 yield event.plain_result(denial)
                 return
             status = "done" if action == "完成" else "cancelled"
-            ok = await self.runtime.archive.set_commitment_status(
+            ok = await self.context.runtime.archive.set_commitment_status(
                 commitment_id,
                 status,
                 req.now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -151,20 +169,20 @@ class SocialCommandMixin:
             return
 
         if action in {"延期", "推迟"}:
-            commitment_id = self._parse_commitment_id(req.param2)
+            commitment_id = self.context._parse_commitment_id(req.param2)
             target = " ".join(req.parts[4:]).strip()
             if not commitment_id or not target:
                 yield event.plain_result(
                     "请说明要延期的承诺和新日期，例如：延期 3 2026-10-03。"
                 )
                 return
-            date_str = self._infer_manual_commitment_date(target)
-            time_str = self._infer_manual_commitment_time(target)
+            date_str = self.context._infer_manual_commitment_date(target)
+            time_str = self.context._infer_manual_commitment_time(target)
             if not date_str:
                 yield event.plain_result("无法识别日期，请使用 YYYY-MM-DD。")
                 return
-            commitment = await self.runtime.archive.get_commitment(commitment_id)
-            denial = self.permission_denial(
+            commitment = await self.context.runtime.archive.get_commitment(commitment_id)
+            denial = self.context.permission_denial(
                 event,
                 f"commitment:{action}",
                 LifeActionScope.OWNED,
@@ -177,22 +195,22 @@ class SocialCommandMixin:
             if denial:
                 yield event.plain_result(denial)
                 return
-            ok = await self.runtime.archive.reschedule_commitment(
+            ok = await self.context.runtime.archive.reschedule_commitment(
                 commitment_id,
                 date_str,
                 "",
                 trigger_time=time_str,
             )
             if ok:
-                refreshed = await self.runtime.archive.get_commitment(commitment_id)
+                refreshed = await self.context.runtime.archive.get_commitment(commitment_id)
                 if refreshed is not None:
                     photo_scheduler = getattr(
-                        self.runtime, "schedule_commitment_photo", None
+                        self.context.runtime, "schedule_commitment_photo", None
                     )
                     if callable(photo_scheduler):
                         await photo_scheduler(refreshed, observed_at=req.now)
                     video_scheduler = getattr(
-                        self.runtime, "schedule_commitment_video", None
+                        self.context.runtime, "schedule_commitment_video", None
                     )
                     if callable(video_scheduler):
                         await video_scheduler(refreshed, observed_at=req.now)
@@ -238,13 +256,13 @@ class SocialCommandMixin:
             yield event.plain_result("邀约做什么呢？例如：下午一起看电影。")
             return
 
-        data = await self.runtime.archive.get_day(req.target_date_str)
+        data = await self.context.runtime.archive.get_day(req.target_date_str)
         if not data or not data.timeline:
             yield event.plain_result("今天还没有计划哦。")
             return
 
-        sender_name = await self.runtime.contact_resolver.resolve_event_sender(event)
-        await self.runtime.remember_interaction(
+        sender_name = await self.context.runtime.contact_resolver.resolve_event_sender(event)
+        await self.context.runtime.remember_interaction(
             event,
             sender_name,
             f"提出邀约：{req.param_full}",
@@ -252,8 +270,8 @@ class SocialCommandMixin:
             source="invite",
         )
         yield event.plain_result("稍等，我看下日程安排...")
-        if self.runtime.config.state.enabled:
-            data = await self.runtime.refresh_state_for_day(
+        if self.context.runtime.config.state.enabled:
+            data = await self.context.runtime.refresh_state_for_day(
                 req.target_date_str,
                 data,
                 req.now,
@@ -267,7 +285,7 @@ class SocialCommandMixin:
         ).strip()
         if pending_alternative:
             invite_text += f"；最近尚待确认的改约方案：{pending_alternative}"
-        reply, new_timeline, decision = await self.runtime.composer.handle_invite(
+        reply, new_timeline, decision = await self.context.runtime.composer.handle_invite(
             req.target_date_str,
             data.timeline,
             invite_text,
@@ -276,12 +294,12 @@ class SocialCommandMixin:
             current_state=data.state,
             current_places=data.places,
         )
-        await self.runtime.composer.learn_preferences_from_payload(
+        await self.context.runtime.composer.learn_preferences_from_payload(
             decision,
             date_str=req.target_date_str,
             source="invite",
         )
-        await self.runtime.composer.persist_life_events_from_payload(
+        await self.context.runtime.composer.persist_life_events_from_payload(
             decision,
             date_str=req.target_date_str,
             source="invite",
@@ -306,7 +324,7 @@ class SocialCommandMixin:
                     if place is not None
                 ]
                 if data.places:
-                    await self.runtime.archive.touch_places(
+                    await self.context.runtime.archive.touch_places(
                         req.target_date_str, data.places, source="invite"
                     )
             location_audit = (
@@ -319,8 +337,8 @@ class SocialCommandMixin:
                 data.meta["location_audit_city"] = str(
                     location_audit.get("home_city") or ""
                 )
-            if self.runtime.config.state.enabled:
-                data = await self.runtime.refresh_state_for_day(
+            if self.context.runtime.config.state.enabled:
+                data = await self.context.runtime.refresh_state_for_day(
                     req.target_date_str,
                     data,
                     req.now,
@@ -333,7 +351,7 @@ class SocialCommandMixin:
                 if callable(getattr(event, "get_message_id", None))
                 else getattr(event, "message_id", "")
             )
-            accepted_commitment = await self.runtime.archive.save_commitment(
+            accepted_commitment = await self.context.runtime.archive.save_commitment(
                 CommitmentRecord(
                     content=req.param_full,
                     trigger_date=req.target_date_str,
@@ -350,18 +368,18 @@ class SocialCommandMixin:
                 )
             )
             if accepted_commitment.id:
-                await self.runtime.archive.link_commitments_to_day(
+                await self.context.runtime.archive.link_commitments_to_day(
                     req.target_date_str, [accepted_commitment.id]
                 )
-            await self.runtime.archive.save_day(data)
-            schedule_contact = getattr(self.runtime, "schedule_invite_contact", None)
+            await self.context.runtime.archive.save_day(data)
+            schedule_contact = getattr(self.context.runtime, "schedule_invite_contact", None)
             if accepted_commitment.id and callable(schedule_contact):
                 await schedule_contact(
                     accepted_commitment,
                     timeline_edits=decision.get("timeline_edits"),
                     observed_at=req.now,
                 )
-            await self.runtime.archive.add_events(
+            await self.context.runtime.archive.add_events(
                 req.target_date_str,
                 [
                     EventRecord(
@@ -373,7 +391,7 @@ class SocialCommandMixin:
                     )
                 ],
             )
-            self.runtime.schedule_invite_outfit_sync(req.target_date_str, req.now)
+            self.context.runtime.schedule_invite_outfit_sync(req.target_date_str, req.now)
         else:
             if (
                 isinstance(decision, dict)
@@ -393,8 +411,8 @@ class SocialCommandMixin:
                 )
             else:
                 data.meta.pop("pending_invite_alternative", None)
-            await self.runtime.archive.save_day(data)
-            await self.runtime.archive.add_events(
+            await self.context.runtime.archive.save_day(data)
+            await self.context.runtime.archive.add_events(
                 req.target_date_str,
                 [
                     EventRecord(
@@ -406,8 +424,8 @@ class SocialCommandMixin:
                     )
                 ],
             )
-            if self.runtime.config.state.enabled:
-                await self.runtime.refresh_state_for_day(
+            if self.context.runtime.config.state.enabled:
+                await self.context.runtime.refresh_state_for_day(
                     req.target_date_str,
                     data,
                     req.now,

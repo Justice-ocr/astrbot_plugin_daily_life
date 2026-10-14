@@ -8,14 +8,14 @@ from pathlib import Path
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.archive import LifeArchive
 from core.life.appearance import format_life_preference_context
-from core.life.inspiration import StyleCatalogMixin
-from core.life.rhythm import LifecycleMixin
+from componentfixtures import StyleCatalogComponent
+from componentfixtures import LifecycleComponent
 from core.models import PreferenceRecord
-from core.runtime.channel.stylist import RuntimeStyleCatalogMixin
+from componentfixtures import RuntimeStyleCatalogComponent
 from PIL import Image
 
 
-class _StyleCatalogRuntime(RuntimeStyleCatalogMixin):
+class _StyleCatalogRuntime(RuntimeStyleCatalogComponent):
     def __init__(self, archive, payload):
         self.archive = archive
         self.data_path = f"{tempfile.gettempdir()}/style-catalog-test.db"
@@ -83,7 +83,7 @@ class _VisionProvider:
         )
 
 
-class _VisionFallbackRuntime(RuntimeStyleCatalogMixin):
+class _VisionFallbackRuntime(RuntimeStyleCatalogComponent):
     def __init__(self, primary, fallback):
         self.config = types.SimpleNamespace(
             vision=types.SimpleNamespace(provider="test-primary")
@@ -149,12 +149,12 @@ class _CreativeStyleRuntime(_StyleCatalogRuntime):
         return self.character_reference
 
 
-class _StyleCatalogComposer(StyleCatalogMixin):
+class _StyleCatalogComposer(StyleCatalogComponent):
     def __init__(self, archive):
         self.archive = archive
 
 
-class _PreferenceRuntime(LifecycleMixin):
+class _PreferenceRuntime(LifecycleComponent):
     def __init__(self, archive):
         self.archive = archive
 
@@ -570,7 +570,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
     def test_webp_style_reference_is_normalized_to_jpeg(self):
         source = BytesIO()
         Image.new("RGBA", (8, 6), (255, 40, 100, 180)).save(source, format="WEBP")
-        rendered = RuntimeStyleCatalogMixin._prepare_style_catalog_image_bytes(
+        rendered = RuntimeStyleCatalogComponent._prepare_style_catalog_image_bytes(
             source.getvalue()
         )
 
@@ -590,10 +590,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image.save(first)
             image.resize((160, 240), Image.Resampling.LANCZOS).save(second)
 
-            first_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(first))
-            second_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(second))
+            first_hash = RuntimeStyleCatalogComponent._style_perceptual_hash(str(first))
+            second_hash = RuntimeStyleCatalogComponent._style_perceptual_hash(str(second))
             self.assertLessEqual(
-                RuntimeStyleCatalogMixin._style_hash_distance(first_hash, second_hash),
+                RuntimeStyleCatalogComponent._style_hash_distance(first_hash, second_hash),
                 5,
             )
 

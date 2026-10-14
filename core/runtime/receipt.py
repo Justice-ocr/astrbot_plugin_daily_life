@@ -16,9 +16,51 @@ from astrbot.api import logger
 from ..clock import now as life_now
 from ..sources.dispatch import send_message_to_scope
 
+from typing import Protocol
 
-class RuntimeActionReceiptMixin:
+
+class RuntimeActionReceiptComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _MEDIA_DELIVERY_LEASE_SECONDS: Any
+    _durable_task_owner: Any
+    _event_message_id: Any
+    _event_session_id: Any
+    _generate_share_asset_task: Any
+    _get_share_asset_task: Any
+    _photo_suite_read_manifest: Any
+    _photo_suite_write_manifest: Any
+    _record_recovered_photo_suite_slot: Any
+    _resume_share_asset_generation: Any
+    _runtime_now: Any
+    _send_delivered_media_followup: Any
+    _settle_direct_media_commitment: Any
+    _share_asset_key: Any
+    archive: Any
+    composer: Any
+    context: Any
+    generate_life_image_asset: Any
+    generate_life_video_asset: Any
+    image_message_chain: Any
+    images_message_chain: Any
+    log_outbound_message: Any
+    log_outbound_message_async: Any
+    mark_page_status_changed: Any
+    media: Any
+    note_conversation_sent: Any
+    record_current_life_action_receipt: Any
+    refresh_state_for_day: Any
+    resolve_injection_target: Any
+    stage_durable_media_delivery: Any
+    video_file_message_chain: Any
+    video_message_chain: Any
+
+
+class RuntimeActionReceiptComponent:
     """将已确认的工具结果提交给当前生活动作。"""
+
+    def __init__(self, context: RuntimeActionReceiptComponentContext) -> None:
+        self.context = context
 
     _MEDIA_DELIVERY_LEASE_SECONDS = 6 * 60 * 60
 
@@ -29,20 +71,20 @@ class RuntimeActionReceiptMixin:
         return f"share_{kind}:" + hashlib.sha256(task_key.encode()).hexdigest()
 
     async def get_share_image_task(self, task_key: str) -> dict:
-        return await self._get_share_asset_task(task_key, "image")
+        return await self.context._get_share_asset_task(task_key, "image")
 
     async def get_share_video_task(self, task_key: str) -> dict:
-        return await self._get_share_asset_task(task_key, "video")
+        return await self.context._get_share_asset_task(task_key, "video")
 
     async def _get_share_asset_task(self, task_key: str, kind: str) -> dict:
-        task = await self.archive.get_durable_task(
-            self._share_asset_key(task_key, kind)
+        task = await self.context.archive.get_durable_task(
+            self.context._share_asset_key(task_key, kind)
         )
         if task is None:
             return {"status": "missing", "task_key": task_key}
         if task.status == "completed":
             try:
-                await self.archive.record_share_media_object(task.id)
+                await self.context.archive.record_share_media_object(task.id)
             except Exception as exc:
                 logger.warning(f"[日常生活] 分享成品归档暂未完成：{type(exc).__name__}")
             return {
@@ -68,7 +110,7 @@ class RuntimeActionReceiptMixin:
         contains_character: bool = False,
         target_umo: str = "",
     ) -> dict:
-        return await self._generate_share_asset_task(
+        return await self.context._generate_share_asset_task(
             event,
             prompt,
             task_key=task_key,
@@ -81,7 +123,7 @@ class RuntimeActionReceiptMixin:
         self, event: Any, prompt: str, *, task_key: str, reference_image: str = "",
         target_umo: str = "",
     ) -> dict:
-        return await self._generate_share_asset_task(
+        return await self.context._generate_share_asset_task(
             event,
             prompt,
             task_key=task_key,
@@ -104,17 +146,17 @@ class RuntimeActionReceiptMixin:
         """外部媒体任务恢复后仍作为媒体素材处理，不发送到聊天会话。"""
         label = "图片" if kind == "image" else "视频"
         owner = f"share_{kind}:" + uuid.uuid4().hex
-        record = await self.archive.enqueue_durable_task(
-            self._share_asset_key(task_key, kind),
+        record = await self.context.archive.enqueue_durable_task(
+            self.context._share_asset_key(task_key, kind),
             f"share_{kind}_generation",
             {"external_owner": "daily_share", "task_key": task_key, "scope": str(target_umo or "")},
             lease_owner=owner,
-            lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
+            lease_seconds=self.context._MEDIA_DELIVERY_LEASE_SECONDS,
             max_attempts=10000,
             priority=85,
         )
         if record.lease_owner != owner:
-            return await self._get_share_asset_task(task_key, kind)
+            return await self.context._get_share_asset_task(task_key, kind)
         progress = {}
 
         async def accepted(task_id, route, metadata=None):
@@ -130,12 +172,12 @@ class RuntimeActionReceiptMixin:
                 else {key: route[key] for key in ("endpoint", "model")}
             )
             progress.update(task_id=task_id, route=reference)
-            if not await self.archive.update_durable_task_progress(
+            if not await self.context.archive.update_durable_task_progress(
                 record.id, owner, progress
             ):
                 raise RuntimeError(f"分享{label}任务已失去租约，不继续提交")
 
-        tracker = getattr(getattr(self.media, kind), "track_async_tasks", None)
+        tracker = getattr(getattr(self.context.media, kind), "track_async_tasks", None)
         from contextlib import nullcontext
 
         from ..media.picture.polling import ImageTaskError, ImageTaskFailed
@@ -144,7 +186,7 @@ class RuntimeActionReceiptMixin:
         try:
             with tracker(accepted) if callable(tracker) else nullcontext():
                 if kind == "image":
-                    result = await self.generate_life_image_asset(
+                    result = await self.context.generate_life_image_asset(
                         event,
                         prompt,
                         "",
@@ -153,7 +195,7 @@ class RuntimeActionReceiptMixin:
                         trusted_identity=contains_character,
                     )
                 else:
-                    result = await self.generate_life_video_asset(
+                    result = await self.context.generate_life_video_asset(
                         event, prompt, reference_image
                     )
             path = str(
@@ -161,26 +203,26 @@ class RuntimeActionReceiptMixin:
             ).strip()
             if not path:
                 raise RuntimeError(f"分享{label}未返回成品")
-            await self.archive.complete_durable_task(
+            await self.context.archive.complete_durable_task(
                 record.id,
                 {"artifact_path" if kind == "image" else "artifact_url": path},
                 owner=owner,
             )
         except (ImageTaskFailed, VideoTaskFailed) as exc:
-            await self.archive.fail_durable_task(
+            await self.context.archive.fail_durable_task(
                 record.id, str(exc), owner=owner, permanent=True
             )
         except BaseException as exc:
             if progress.get("task_id"):
-                await self.archive.defer_durable_task(
+                await self.context.archive.defer_durable_task(
                     record.id,
-                    self.archive._cognition_now(),
+                    self.context.archive._cognition_now(),
                     owner=owner,
                     reason=f"继续查询原分享{label}任务",
                     progress=progress,
                 )
             else:
-                await self.archive.fail_durable_task(
+                await self.context.archive.fail_durable_task(
                     record.id,
                     f"{label}请求未获得可恢复编号，停止自动重提：" + type(exc).__name__,
                     owner=owner,
@@ -190,7 +232,7 @@ class RuntimeActionReceiptMixin:
                 raise
             if not isinstance(exc, (ImageTaskError, VideoTaskError)) and not progress:
                 raise
-        return await self._get_share_asset_task(task_key, kind)
+        return await self.context._get_share_asset_task(task_key, kind)
 
     async def record_share_delivery(self, receipt: dict) -> bool:
         """记录明确的分享发送回执；不补发消息、不将作品生成视为送达。"""
@@ -202,8 +244,8 @@ class RuntimeActionReceiptMixin:
             return False
         if ":FriendMessage:" in scope or ":GroupMessage:" in scope:
             # 持久化失败由分享 outbox 重试，不能吞错后确认回执。
-            await self.archive.save_conversation_receipt(scope, stamp)
-            self.note_conversation_sent(scope, stamp)
+            await self.context.archive.save_conversation_receipt(scope, stamp)
+            self.context.note_conversation_sent(scope, stamp)
         elif scope != "qzone_broadcast":
             return False
         keys = receipt.get("media_tasks") or {}
@@ -211,16 +253,16 @@ class RuntimeActionReceiptMixin:
             task_key = keys.get(kind) if isinstance(keys, dict) else None
             if not isinstance(task_key, str) or not task_key:
                 continue
-            task = await self.archive.get_durable_task(self._share_asset_key(task_key, kind))
+            task = await self.context.archive.get_durable_task(self.context._share_asset_key(task_key, kind))
             if task is not None and task.payload.get("scope") == scope:
-                await self.archive.record_share_media_object(task.id, delivered_at=stamp)
+                await self.context.archive.record_share_media_object(task.id, delivered_at=stamp)
         return True
 
     async def resume_share_image_generation(self, task: Any) -> dict:
-        return await self._resume_share_asset_generation(task, "image")
+        return await self.context._resume_share_asset_generation(task, "image")
 
     async def resume_share_video_generation(self, task: Any) -> dict:
-        return await self._resume_share_asset_generation(task, "video")
+        return await self.context._resume_share_asset_generation(task, "video")
 
     async def _resume_share_asset_generation(self, task: Any, kind: str) -> dict:
         from ..media.picture.polling import ImageTaskError, ImageTaskFailed
@@ -234,9 +276,9 @@ class RuntimeActionReceiptMixin:
             raise failed_error(f"外部{label}任务没有原任务编号，禁止重新提交")
         try:
             resume = (
-                self.media.image.resume_async_image
+                self.context.media.image.resume_async_image
                 if kind == "image"
-                else self.media.video.resume_async_video
+                else self.context.media.video.resume_async_video
             )
             result = await resume(progress["task_id"], progress["route"])
             path = str(
@@ -250,7 +292,7 @@ class RuntimeActionReceiptMixin:
         except (ImageTaskError, VideoTaskError) as exc:
             return {
                 "retry_at": (
-                    datetime.datetime.now() + datetime.timedelta(seconds=60)
+                    life_now() + datetime.timedelta(seconds=60)
                 ).strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": str(exc),
                 "progress": progress,
@@ -258,9 +300,9 @@ class RuntimeActionReceiptMixin:
 
     async def track_image_generation(self, event: Any, work: Any) -> Any:
         """按请求隔离图片任务监听，受理后立即登记查询所需的非敏感信息。"""
-        tracker = getattr(getattr(self.media, "image", None), "track_async_tasks", None)
+        tracker = getattr(getattr(self.context.media, "image", None), "track_async_tasks", None)
         if not callable(tracker) or not callable(
-            getattr(self.archive, "enqueue_durable_task", None)
+            getattr(self.context.archive, "enqueue_durable_task", None)
         ):
             return await work
         pending = []
@@ -278,8 +320,8 @@ class RuntimeActionReceiptMixin:
             owner = f"image:{uuid.uuid4().hex}"
             action_date = str(getattr(event, "_daily_life_action_date", "") or "")
             if getattr(event, "_daily_life_action_id", "") and not action_date:
-                action_date, _ = await self.resolve_injection_target(requested_at)
-            record = await self.archive.enqueue_durable_task(
+                action_date, _ = await self.context.resolve_injection_target(requested_at)
+            record = await self.context.archive.enqueue_durable_task(
                 f"image_generation:{digest}",
                 "image_generation",
                 {
@@ -289,8 +331,8 @@ class RuntimeActionReceiptMixin:
                         "model": route.model,
                         "protocol": route.protocol,
                     },
-                    "scope": self._event_session_id(event),
-                    "source_message_id": self._event_message_id(event),
+                    "scope": self.context._event_session_id(event),
+                    "source_message_id": self.context._event_message_id(event),
                     "commitment_id": int(
                         getattr(event, "_daily_life_commitment_id", 0) or 0
                     ),
@@ -302,7 +344,7 @@ class RuntimeActionReceiptMixin:
                 priority=85,
                 max_attempts=3,
                 lease_owner=owner,
-                lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
+                lease_seconds=self.context._MEDIA_DELIVERY_LEASE_SECONDS,
             )
             pending.append(record)
 
@@ -311,17 +353,17 @@ class RuntimeActionReceiptMixin:
                 return await work
         finally:
             retry_at = (
-                datetime.datetime.now() + datetime.timedelta(seconds=30)
+                life_now() + datetime.timedelta(seconds=30)
             ).strftime("%Y-%m-%d %H:%M:%S")
             for task in pending:
                 try:
                     marker = getattr(event, "_daily_life_image_request", {})
                     if isinstance(marker, dict) and marker.get("status") == "sent":
-                        await self.archive.finalize_durable_task(
+                        await self.context.archive.finalize_durable_task(
                             task.id, {"delivery": "sent"}, owner=task.lease_owner
                         )
                         continue
-                    await self.archive.defer_durable_task(
+                    await self.context.archive.defer_durable_task(
                         task.id,
                         retry_at,
                         owner=task.lease_owner,
@@ -344,7 +386,7 @@ class RuntimeActionReceiptMixin:
             return None
         if isinstance(exc, ImageTaskFailed):
             for task in pending:
-                await self.archive.fail_durable_task(
+                await self.context.archive.fail_durable_task(
                     task.id, str(exc), owner=task.lease_owner, permanent=True
                 )
             pending.clear()
@@ -363,12 +405,12 @@ class RuntimeActionReceiptMixin:
         path = str(progress.get("artifact_path") or "")
         try:
             if not path or not Path(path).is_file():
-                generated = await self.media.image.resume_async_image(
+                generated = await self.context.media.image.resume_async_image(
                     payload["task_id"], payload["route"]
                 )
                 path = str(generated.path)
                 progress = {"artifact_path": path}
-                if not await self.archive.update_durable_task_progress(
+                if not await self.context.archive.update_durable_task_progress(
                     task.id, task.lease_owner, progress
                 ):
                     raise RuntimeError("图片恢复任务已失去租约，暂不投递")
@@ -377,7 +419,7 @@ class RuntimeActionReceiptMixin:
         except ImageTaskError as exc:
             return {
                 "retry_at": (
-                    datetime.datetime.now() + datetime.timedelta(seconds=60)
+                    life_now() + datetime.timedelta(seconds=60)
                 ).strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": str(exc),
                 "progress": progress,
@@ -387,10 +429,10 @@ class RuntimeActionReceiptMixin:
             _daily_life_action_date=payload.get("action_date", ""),
             _daily_life_photo_suite_slot=payload.get("photo_suite", {}),
         )
-        await self._record_recovered_photo_suite_slot(
+        await self.context._record_recovered_photo_suite_slot(
             payload.get("photo_suite", {}), path, sent=False
         )
-        delivery = await self.stage_durable_media_delivery(
+        delivery = await self.context.stage_durable_media_delivery(
             payload["scope"],
             "image",
             [path],
@@ -408,8 +450,8 @@ class RuntimeActionReceiptMixin:
         if delivery is None:
             raise RuntimeError("原图片任务已完成，投递登记失败，保留成品等待恢复")
         if delivery.status == "leased":
-            await self.archive.defer_durable_task(
-                delivery.id, self.archive._cognition_now(), owner=delivery.lease_owner
+            await self.context.archive.defer_durable_task(
+                delivery.id, self.context.archive._cognition_now(), owner=delivery.lease_owner
             )
         return {"delivery_task_id": delivery.id, "artifact_path": path}
 
@@ -419,7 +461,7 @@ class RuntimeActionReceiptMixin:
         if not metadata:
             return
         manifest_path = Path(metadata["manifest_path"])
-        manifest = await self._photo_suite_read_manifest(manifest_path)
+        manifest = await self.context._photo_suite_read_manifest(manifest_path)
         if manifest is None:
             return
         for shot in manifest.get("shots", []):
@@ -433,7 +475,7 @@ class RuntimeActionReceiptMixin:
                 )
                 else "partial"
             )
-        await self._photo_suite_write_manifest(manifest_path, manifest)
+        await self.context._photo_suite_write_manifest(manifest_path, manifest)
 
     async def record_current_life_action_receipt(
         self,
@@ -453,7 +495,7 @@ class RuntimeActionReceiptMixin:
         Args:
             event: 原始消息事件或可提供会话范围的对象。
             action_type: 已确认动作类型。
-            status: confirmed、simulated、failed 或 cancelled。simulated 仅用于兼容旧回执，系统不会自动生成。
+            status: confirmed、simulated、failed 或 cancelled；simulated 表示内部数字生活已执行的回执。
             evidence: 可展示的执行证据。
             source: 回执来源类别。
             source_id: 来源的稳定编号。
@@ -465,11 +507,11 @@ class RuntimeActionReceiptMixin:
             匹配到的结算结果；当前没有对应计划动作时返回空。
         """
 
-        composer = getattr(self, "composer", None)
-        archive = getattr(self, "archive", None)
+        composer = getattr(self.context, "composer", None)
+        archive = getattr(self.context, "archive", None)
         if composer is None or archive is None:
             return None
-        now_getter = getattr(self, "_runtime_now", None)
+        now_getter = getattr(self.context, "_runtime_now", None)
         now = now_getter() if callable(now_getter) else life_now()
         action_id = str(
             action_id or getattr(event, "_daily_life_action_id", "") or ""
@@ -480,7 +522,7 @@ class RuntimeActionReceiptMixin:
         # 临时媒体请求没有计划动作编号，不能认领当天任意同类日程。
         if action_type in {"photo", "video"} and not action_id:
             return None
-        resolver = getattr(self, "resolve_injection_target", None)
+        resolver = getattr(self.context, "resolve_injection_target", None)
         if not callable(resolver):
             return None
         date_str = action_date
@@ -514,11 +556,11 @@ class RuntimeActionReceiptMixin:
             )
         if outcome is None:
             return None
-        notifier = getattr(self, "mark_page_status_changed", None)
+        notifier = getattr(self.context, "mark_page_status_changed", None)
         if callable(notifier):
             await notifier("life_action_receipt")
         if str(status).strip().lower() in {"failed", "cancelled"}:
-            refresher = getattr(self, "refresh_state_for_day", None)
+            refresher = getattr(self.context, "refresh_state_for_day", None)
             if callable(refresher):
                 await refresher(
                     date_str,
@@ -549,7 +591,7 @@ class RuntimeActionReceiptMixin:
         产物保留原请求和计划动作归属，恢复发送不会认领其他日程。
         """
 
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         enqueue = getattr(archive, "enqueue_durable_task", None)
         kind = str(media_kind or "").strip().lower()
         normalized_scope = str(scope or "").strip()
@@ -576,11 +618,11 @@ class RuntimeActionReceiptMixin:
                 requested_at = getattr(
                     source_event, "_daily_life_media_requested_at", None
                 )
-                action_date, _ = await self.resolve_injection_target(
+                action_date, _ = await self.context.resolve_injection_target(
                     requested_at or life_now()
                 )
             owner = str(
-                getattr(self, "_durable_task_owner", f"runtime:{id(self)}") or ""
+                getattr(self.context, "_durable_task_owner", f"runtime:{id(self.context)}") or ""
             ).strip()
             delivery = await enqueue(
                 f"media_delivery:{digest}",
@@ -603,12 +645,12 @@ class RuntimeActionReceiptMixin:
                         for key, value in dict(reply_context or {}).items()
                         if str(key).strip()
                     },
-                    "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": life_now().strftime("%Y-%m-%d %H:%M:%S"),
                 },
                 priority=90,
                 max_attempts=3,
                 lease_owner=owner,
-                lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
+                lease_seconds=self.context._MEDIA_DELIVERY_LEASE_SECONDS,
             )
             pending = getattr(source_event, "_daily_life_async_image_tasks", [])
             object_recorder = getattr(archive, "record_media_object", None)
@@ -639,7 +681,7 @@ class RuntimeActionReceiptMixin:
 
         task_id = int(getattr(task, "id", 0) or 0)
         finalizer = getattr(
-            getattr(self, "archive", None), "finalize_durable_task", None
+            getattr(self.context, "archive", None), "finalize_durable_task", None
         )
         if task_id <= 0 or not callable(finalizer):
             return False
@@ -650,7 +692,7 @@ class RuntimeActionReceiptMixin:
                 {
                     "delivery": str(outcome or "sent").strip(),
                     "detail": str(detail or "").strip()[:500],
-                    "completed_at": datetime.datetime.now().strftime(
+                    "completed_at": life_now().strftime(
                         "%Y-%m-%d %H:%M:%S"
                     ),
                 },
@@ -661,7 +703,7 @@ class RuntimeActionReceiptMixin:
             commitment_id = int(payload.get("commitment_id") or 0)
             if finalized and str(outcome or "").strip() == "sent" and commitment_id > 0:
                 setter = getattr(
-                    getattr(self, "archive", None), "set_commitment_status", None
+                    getattr(self.context, "archive", None), "set_commitment_status", None
                 )
                 if callable(setter):
                     await setter(
@@ -670,7 +712,7 @@ class RuntimeActionReceiptMixin:
                         life_now().isoformat(timespec="seconds"),
                     )
             elif finalized and str(outcome or "").strip() == "sent":
-                await self._settle_direct_media_commitment(payload)
+                await self.context._settle_direct_media_commitment(payload)
             return bool(finalized)
         except Exception as exc:
             logger.warning(f"[日常生活] 媒体投递任务收束失败：{exc}")
@@ -679,7 +721,7 @@ class RuntimeActionReceiptMixin:
     async def direct_media_was_delivered(
         self, scope: str, media_kind: str, message_ids: list[str]
     ) -> bool:
-        getter = getattr(getattr(self, "archive", None), "get_durable_tasks", None)
+        getter = getattr(getattr(self.context, "archive", None), "get_durable_tasks", None)
         if not callable(getter):
             return False
         ids = {
@@ -707,9 +749,9 @@ class RuntimeActionReceiptMixin:
         if not source_id or not scope or media_kind not in {"image", "images", "video"}:
             return
         getter = getattr(
-            getattr(self, "archive", None), "get_open_commitments_for_message", None
+            getattr(self.context, "archive", None), "get_open_commitments_for_message", None
         )
-        setter = getattr(getattr(self, "archive", None), "set_commitment_status", None)
+        setter = getattr(getattr(self.context, "archive", None), "set_commitment_status", None)
         if not callable(getter) or not callable(setter):
             return
         matches = [
@@ -744,9 +786,9 @@ class RuntimeActionReceiptMixin:
             if any(not path.is_file() for path in paths):
                 raise FileNotFoundError("待恢复的图片产物已不存在")
             chain = (
-                self.image_message_chain(paths[0])
+                self.context.image_message_chain(paths[0])
                 if media_kind == "image"
-                else self.images_message_chain(paths)
+                else self.context.images_message_chain(paths)
             )
         else:
             artifact = artifacts[0]
@@ -756,25 +798,25 @@ class RuntimeActionReceiptMixin:
                 if not Path(artifact).is_file():
                     raise FileNotFoundError("待恢复的视频产物已不存在")
             chain = (
-                self.video_file_message_chain(artifact)
+                self.context.video_file_message_chain(artifact)
                 if scope.split(":", 1)[0].lower() == "webchat"
-                else self.video_message_chain(artifact)
+                else self.context.video_message_chain(artifact)
             )
-        sent = await send_message_to_scope(self.context, scope, chain)
+        sent = await send_message_to_scope(self.context.context, scope, chain)
         if sent is False:
             raise RuntimeError("目标平台尚未就绪，媒体将在后续任务中重试")
-        log_outbound = getattr(self, "log_outbound_message_async", None)
+        log_outbound = getattr(self.context, "log_outbound_message_async", None)
         if not callable(log_outbound):
-            log_outbound = getattr(self, "log_outbound_message", None)
+            log_outbound = getattr(self.context, "log_outbound_message", None)
         if callable(log_outbound):
             result = log_outbound(chain, scope=scope, source="media_recovery")
             if inspect.isawaitable(result):
                 await result
         logger.debug("[日常生活] 已恢复投递重启前生成的媒体产物")
-        await self._record_recovered_photo_suite_slot(
+        await self.context._record_recovered_photo_suite_slot(
             payload.get("photo_suite", {}), artifacts[0], sent=True
         )
-        recorder = getattr(self, "record_current_life_action_receipt", None)
+        recorder = getattr(self.context, "record_current_life_action_receipt", None)
         action_type = str(payload.get("action_type") or "").strip()
         if (
             callable(recorder)
@@ -794,7 +836,7 @@ class RuntimeActionReceiptMixin:
         commitment_id = int(payload.get("commitment_id") or 0)
         if commitment_id > 0:
             setter = getattr(
-                getattr(self, "archive", None), "set_commitment_status", None
+                getattr(self.context, "archive", None), "set_commitment_status", None
             )
             if callable(setter):
                 await setter(
@@ -803,10 +845,10 @@ class RuntimeActionReceiptMixin:
                     life_now().isoformat(timespec="seconds"),
                 )
         else:
-            await self._settle_direct_media_commitment(payload)
+            await self.context._settle_direct_media_commitment(payload)
         reply_sent = False
         reply_context = payload.get("reply_context")
-        followup = getattr(self, "_send_delivered_media_followup", None)
+        followup = getattr(self.context, "_send_delivered_media_followup", None)
         if callable(followup) and isinstance(reply_context, dict) and reply_context:
             reply_sent = await followup(
                 scope,
@@ -827,4 +869,4 @@ class RuntimeActionReceiptMixin:
         }
 
 
-__all__ = ["RuntimeActionReceiptMixin"]
+__all__ = ["RuntimeActionReceiptComponent"]

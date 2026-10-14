@@ -16,48 +16,82 @@ from ...prompts import (
 )
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class CapturePersonaMixin:
+
+class CapturePersonaComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _PERSONA_HINT_CACHE_LIMIT: Any
+    _build_persona_hint_extract_prompt: Any
+    _current_persona_text: Any
+    _event_is_group_message: Any
+    _event_profile_id: Any
+    _event_session_id: Any
+    _extract_persona_hint_by_llm: Any
+    _extract_persona_hint_exact: Any
+    _float_payload: Any
+    _get_memory_provider: Any
+    _get_persona_hint_cache: Any
+    _persona_hint_cache: Any
+    _persona_hint_cache_signature: Any
+    _persona_hint_cache_text: Any
+    _persona_match_context: Any
+    _relationship_persona_names: Any
+    _str_payload: Any
+    archive: Any
+    call_text_model: Any
+    close_text_session: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    get_persona_text: Any
+
+
+class CapturePersonaComponent:
+    def __init__(self, context: CapturePersonaComponentContext) -> None:
+        self.context = context
+
     _PERSONA_HINT_CACHE_LIMIT = 256
 
     def _get_persona_hint_cache(self) -> dict[tuple[str, str, str], str]:
-        cache = getattr(self, "_persona_hint_cache", None)
+        cache = getattr(self.context, "_persona_hint_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-            self._persona_hint_cache = cache
+            self.context._persona_hint_cache = cache
         return cache
 
     async def _current_persona_text(self, event: Any = None) -> str:
-        get_persona = getattr(self, "get_persona_text", None)
+        get_persona = getattr(self.context, "get_persona_text", None)
         if not callable(get_persona):
             return ""
         try:
-            scope = self._event_session_id(event) if event is not None else ""
+            scope = self.context._event_session_id(event) if event is not None else ""
             try:
                 persona = get_persona(scope)
             except TypeError:
                 persona = get_persona()
             if hasattr(persona, "__await__"):
                 persona = await persona
-            return self._str_payload(persona)
+            return self.context._str_payload(persona)
         except Exception as e:
             logger.debug(f"{LOG_PREFIX} 读取当前人设失败：{e}")
             return ""
 
     async def _current_role_label(self, event: Any = None) -> str:
-        config = getattr(self, "config", None)
+        config = getattr(self.context, "config", None)
         for alias in getattr(config, "bot_identity_aliases", []) or []:
-            text = self._str_payload(alias).lstrip("@＠").strip()
+            text = self.context._str_payload(alias).lstrip("@＠").strip()
             if text:
                 return text
-        resolver = getattr(self, "contact_resolver", None)
+        resolver = getattr(self.context, "contact_resolver", None)
         getter = getattr(resolver, "get_persona_user_name", None)
         if callable(getter):
             try:
                 name = getter()
                 if hasattr(name, "__await__"):
                     name = await name
-                text = self._str_payload(name)
+                text = self.context._str_payload(name)
                 if text:
                     return text
             except Exception as e:
@@ -70,7 +104,7 @@ class CapturePersonaMixin:
         names: list[str] = []
 
         def add(value: Any) -> None:
-            text = self._str_payload(value)
+            text = self.context._str_payload(value)
             if text and text not in names:
                 names.append(text)
 
@@ -84,13 +118,13 @@ class CapturePersonaMixin:
         return names[:8]
 
     def _extract_persona_hint_exact(self, persona: str, names: list[str]) -> str:
-        composer = getattr(self, "composer", None)
+        composer = getattr(self.context, "composer", None)
         extractor = getattr(composer, "_extract_reference_persona", None)
         if not callable(extractor):
             return ""
         for name in names:
             try:
-                hint = self._str_payload(extractor(persona, name))
+                hint = self.context._str_payload(extractor(persona, name))
             except Exception:
                 hint = ""
             if hint and name and name in hint:
@@ -98,7 +132,7 @@ class CapturePersonaMixin:
         return ""
 
     def _persona_match_context(self, persona: str) -> str:
-        text = self._str_payload(persona)
+        text = self.context._str_payload(persona)
         if len(text) <= 8000:
             return text
         return text[:4000].rstrip() + "\n\n……\n\n" + text[-4000:].lstrip()
@@ -107,16 +141,16 @@ class CapturePersonaMixin:
         self, persona: str, names: list[str], relationship: Any = None
     ) -> str:
         saved_hint = (
-            self._str_payload(getattr(relationship, "persona_hint", ""))
+            self.context._str_payload(getattr(relationship, "persona_hint", ""))
             if relationship is not None
             else ""
         )
         story = (
-            self._str_payload(getattr(relationship, "relationship_story", ""))
+            self.context._str_payload(getattr(relationship, "relationship_story", ""))
             if relationship is not None
             else ""
         )
-        persona_context = self._persona_match_context(persona)
+        persona_context = self.context._persona_match_context(persona)
         fixed = f"""从当前角色人设里找出某个聊天对象的明确人物线索。
 
 人物称谓与性别规则：
@@ -155,14 +189,14 @@ JSON 输出要求：
     ) -> tuple[str, bool]:
         if not persona or not names:
             return "", True
-        provider = await self._get_memory_provider()
+        provider = await self.context._get_memory_provider()
         if not provider:
             return "", False
-        prompt = self._build_persona_hint_extract_prompt(persona, names, relationship)
+        prompt = self.context._build_persona_hint_extract_prompt(persona, names, relationship)
         session_id = f"daily_life_persona_hint_{uuid.uuid4().hex[:8]}"
         try:
-            provider_id = self.config.memory.provider
-            text = await self.call_text_model(
+            provider_id = self.context.config.memory.provider
+            text = await self.context.call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -176,14 +210,14 @@ JSON 输出要求：
                 return "", False
             if payload["matched"] is not True:
                 return "", True
-            hint = self._str_payload(payload.get("persona_hint"))
-            confidence = self._float_payload(payload.get("confidence"))
+            hint = self.context._str_payload(payload.get("persona_hint"))
+            confidence = self.context._float_payload(payload.get("confidence"))
             return (hint if hint and confidence >= 0.6 else ""), True
         except Exception as e:
             logger.debug(f"{LOG_PREFIX} 语义提取人设线索失败：{e}")
             return "", False
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     @staticmethod
     def _persona_hint_cache_text(value: Any) -> str:
@@ -194,14 +228,14 @@ JSON 输出要求：
     def _persona_hint_cache_signature(
         self, persona: str, relationship: Any = None
     ) -> tuple[str, str]:
-        persona_text = self._persona_hint_cache_text(persona)
+        persona_text = self.context._persona_hint_cache_text(persona)
         relationship_payload = {
-            "persona_hint": self._persona_hint_cache_text(
+            "persona_hint": self.context._persona_hint_cache_text(
                 getattr(relationship, "persona_hint", "")
                 if relationship is not None
                 else ""
             ),
-            "relationship_story": self._persona_hint_cache_text(
+            "relationship_story": self.context._persona_hint_cache_text(
                 getattr(relationship, "relationship_story", "")
                 if relationship is not None
                 else ""
@@ -224,41 +258,41 @@ JSON 输出要求：
         event: Any = None,
         relationship: Any = None,
     ) -> str:
-        persona = await self._current_persona_text(event)
+        persona = await self.context._current_persona_text(event)
         if not persona:
             return ""
         if relationship is None and event is not None:
-            profile_id = self._event_profile_id(event, sender_name)
+            profile_id = self.context._event_profile_id(event, sender_name)
             relationship = (
-                await self.archive.get_relationship(profile_id) if profile_id else None
+                await self.context.archive.get_relationship(profile_id) if profile_id else None
             )
-        names = self._relationship_persona_names(relationship, sender_name)
+        names = self.context._relationship_persona_names(relationship, sender_name)
         persona_signature, relationship_signature = (
-            self._persona_hint_cache_signature(persona, relationship)
+            self.context._persona_hint_cache_signature(persona, relationship)
         )
         cache_key = (
             "|".join(names),
             persona_signature,
             relationship_signature,
         )
-        cache = self._get_persona_hint_cache()
+        cache = self.context._get_persona_hint_cache()
         if cache_key in cache:
             return cache[cache_key]
-        hint = self._extract_persona_hint_exact(persona, names)
+        hint = self.context._extract_persona_hint_exact(persona, names)
         cacheable = True
         if not hint:
             is_private_chat = bool(
-                event is not None and not self._event_is_group_message(event)
+                event is not None and not self.context._event_is_group_message(event)
             )
             has_saved_context = bool(
                 relationship is not None
                 and any(
                     [
-                        self._str_payload(getattr(relationship, "persona_hint", "")),
-                        self._str_payload(
+                        self.context._str_payload(getattr(relationship, "persona_hint", "")),
+                        self.context._str_payload(
                             getattr(relationship, "relationship_story", "")
                         ),
-                        self._str_payload(getattr(relationship, "subjective_name", "")),
+                        self.context._str_payload(getattr(relationship, "subjective_name", "")),
                         getattr(relationship, "subjective_tags", []) or [],
                         getattr(relationship, "notes", []) or [],
                         getattr(relationship, "memory_points", []) or [],
@@ -266,12 +300,12 @@ JSON 输出要求：
                 )
             )
             if is_private_chat or has_saved_context:
-                hint, cacheable = await self._extract_persona_hint_by_llm(
+                hint, cacheable = await self.context._extract_persona_hint_by_llm(
                     persona, names, relationship
                 )
         if cacheable:
             cache.pop(cache_key, None)
             cache[cache_key] = hint
-            while len(cache) > self._PERSONA_HINT_CACHE_LIMIT:
+            while len(cache) > self.context._PERSONA_HINT_CACHE_LIMIT:
                 cache.pop(next(iter(cache)))
         return hint

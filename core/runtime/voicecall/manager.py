@@ -25,11 +25,13 @@ from ...life.tools import build_time_context
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
 from ...sources.platforms import is_onebot_event
-from .calltranscript import VoiceCallTranscriptMixin, VoiceCallTranscriptTurn
+from .calltranscript import VoiceCallTranscriptTurn
 from .voicegateway import VoiceCallGateway, voice_gateway_start_error_detail
 from .videocall import (
     RtcVoiceCallManager,
 )
+
+from .calltranscript import VoiceCallTranscriptComponent
 
 
 _REALTIME_OFFICIAL_SEARCH_TYPES = frozenset(
@@ -98,7 +100,7 @@ class _VoiceCallHistoryEvent:
         return self.group_name
 
 
-class VoiceCallManager(VoiceCallTranscriptMixin):
+class VoiceCallManager:
     """管理实时语音邀请和独立的本地网关生命周期。"""
 
     def __init__(self, runtime: Any):
@@ -1429,6 +1431,29 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 ).strip()
             )
         return group_id, group_name
+
+    _begin_transcript_turn = classmethod(VoiceCallTranscriptComponent._begin_transcript_turn.__func__)
+
+    _update_transcript_turn = classmethod(VoiceCallTranscriptComponent._update_transcript_turn.__func__)
+
+    _find_transcript_turn = staticmethod(VoiceCallTranscriptComponent._find_transcript_turn)
+
+    _transcript_upstream_id = staticmethod(VoiceCallTranscriptComponent._transcript_upstream_id)
+
+    _merge_transcript_text = classmethod(VoiceCallTranscriptComponent._merge_transcript_text.__func__)
+
+    _normalized_transcript_text = staticmethod(VoiceCallTranscriptComponent._normalized_transcript_text)
+
+    _shared_prefix_length = staticmethod(VoiceCallTranscriptComponent._shared_prefix_length)
+
+    _deduplicate_transcript_text = classmethod(VoiceCallTranscriptComponent._deduplicate_transcript_text.__func__)
+
+    _normalized_text_positions = staticmethod(VoiceCallTranscriptComponent._normalized_text_positions)
+
+    _replayed_snapshot_start = classmethod(VoiceCallTranscriptComponent._replayed_snapshot_start.__func__)
+
+    _sync_legacy_transcripts = staticmethod(VoiceCallTranscriptComponent._sync_legacy_transcripts)
+
 
 
 __all__ = ["VoiceCallInvite", "VoiceCallManager"]

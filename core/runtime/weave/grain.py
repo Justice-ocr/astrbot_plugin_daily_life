@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from typing import Protocol
+
 
 @dataclass
 class StructuredTarget:
@@ -48,7 +50,18 @@ class StructuredMessage:
         )
 
 
-class StructuredBaseMixin:
+class StructuredBaseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_sources: Any
+    _safe_event_call: Any
+    _structured_first_text: Any
+
+
+class StructuredBaseComponent:
+    def __init__(self, context: StructuredBaseComponentContext) -> None:
+        self.context = context
+
     _STRUCTURED_CONTEXT_LIMIT = 32
     _STRUCTURED_EVENT_SEQUENCE_ATTR = "_daily_life_structured_message_sequence"
 
@@ -115,10 +128,10 @@ class StructuredBaseMixin:
         return data
 
     def _structured_sender_card_from_event(self, event: Any) -> str:
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             message_obj = getattr(source, "message_obj", None)
             sender = getattr(message_obj, "sender", None)
-            card = self._structured_first_text(
+            card = self.context._structured_first_text(
                 getattr(sender, "card", ""),
                 getattr(sender, "cardname", ""),
                 getattr(sender, "user_cardname", ""),
@@ -131,7 +144,7 @@ class StructuredBaseMixin:
             if isinstance(raw, dict):
                 raw_sender = raw.get("sender")
                 if isinstance(raw_sender, dict):
-                    card = self._structured_first_text(
+                    card = self.context._structured_first_text(
                         raw_sender.get("card"),
                         raw_sender.get("cardname"),
                         raw_sender.get("user_cardname"),
@@ -141,13 +154,13 @@ class StructuredBaseMixin:
         return ""
 
     def _structured_self_id(self, event: Any) -> str:
-        self_id = self._safe_event_call(event, "get_self_id")
+        self_id = self.context._safe_event_call(event, "get_self_id")
         if self_id:
             return self_id
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             message_obj = getattr(source, "message_obj", None)
             for current in (source, message_obj):
-                text = self._structured_first_text(
+                text = self.context._structured_first_text(
                     getattr(current, "self_id", ""),
                     getattr(current, "bot_id", ""),
                 )
@@ -159,7 +172,7 @@ class StructuredBaseMixin:
     def _structured_media_outline(items: list[Any]) -> str:
         labels: list[str] = []
         for item in items:
-            kind = StructuredBaseMixin._structured_component_kind(item)
+            kind = StructuredBaseComponent._structured_component_kind(item)
             if "image" in kind:
                 labels.append("[图片]")
             elif "record" in kind or "voice" in kind:

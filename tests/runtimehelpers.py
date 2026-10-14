@@ -48,7 +48,7 @@ from core.models import (
 )
 from core.models import DayRecord, LifeState, TimelineItem, WeatherInfo
 from core.prompts import CORE_INTERNAL_SYSTEM_PROMPT
-from core.life.autonomy import LifeAutonomyMixin
+from componentfixtures import LifeAutonomyComponent
 from core.media import GeminiImageService, VolcengineVoiceService
 from core.memos import HostedMemOSService
 from core.runtime.background import BackgroundTaskScheduler
@@ -81,7 +81,7 @@ def image_generation_config(api_key: str = "image-key", **overrides):
     return config
 
 
-class ResponseGateRuntimeMixin:
+class ResponseGateRuntimeHelpers:
     def _response_gate_runtime(self, config=None, state=None):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(config or {})
@@ -97,7 +97,7 @@ class ResponseGateRuntimeMixin:
         return runtime
 
 
-class RuntimeAsyncHelperMixin:
+class RuntimeAsyncHelpers:
     def _make_proactive_runtime(
         self,
         responses=(),
@@ -142,7 +142,7 @@ class RuntimeAsyncHelperMixin:
         )()
         context = runtime.context
 
-        class Composer(LifeAutonomyMixin):
+        class Composer(LifeAutonomyComponent):
             def __init__(self, archive, config):
                 self.archive = archive
                 self.config = config

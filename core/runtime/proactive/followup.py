@@ -20,11 +20,49 @@ from ...prompts import (
 from ...sources.dispatch import PermanentScopeDeliveryError, ScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
-from .rendezvous import SharedActivityContactMixin
+
+from . import rendezvous as _part_shared_activity_contact_component
+from typing import Protocol
 
 
-class ProactiveFollowupMixin(SharedActivityContactMixin):
+class ProactiveFollowupComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _FOLLOW_UP_ACTIONS: Any
+    _commitment_requests_photo: Any
+    _commitment_requests_video: Any
+    _current_proactive_persona: Any
+    _evaluate_proactive_commitment: Any
+    _follow_up_execute_at: Any
+    _format_recent_context_messages: Any
+    _get_proactive_provider: Any
+    _photo_commitment_execute_at: Any
+    _photo_commitment_owner_allowed: Any
+    _proactive_commitment_life_context: Any
+    _proactive_commitment_relationship: Any
+    _proactive_current_day: Any
+    _proactive_voice_capability: Any
+    _read_recent_context_messages: Any
+    _run_shared_activity_contact: Any
+    _send_delivered_media_followup: Any
+    _send_proactive_message: Any
+    _validate_proactive_commitment_decision: Any
+    archive: Any
+    build_hidden_activity_hint: Any
+    close_text_session: Any
+    config: Any
+    life_image_generate: Any
+    life_video_generate: Any
+    resolve_interaction_context: Any
+    schedule_commitment_photo: Any
+    schedule_commitment_video: Any
+
+
+class ProactiveFollowupComponent:
     """把当前角色明确许下的未来联系承诺接入持久执行队列。"""
+
+    def __init__(self, context: ProactiveFollowupComponentContext) -> None:
+        self.context = context
 
     _FOLLOW_UP_ACTIONS = {"contact_person", "remind_person"}
 
@@ -138,26 +176,26 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         if (
             not commitment.id
             or not scope
-            or not self._commitment_requests_photo(commitment)
-            or not self._photo_commitment_owner_allowed(commitment, owner)
+            or not self.context._commitment_requests_photo(commitment)
+            or not self.context._photo_commitment_owner_allowed(commitment, owner)
         ):
             return False
         observed_at = observed_at or life_now()
-        execute_at = self._photo_commitment_execute_at(commitment, observed_at)
+        execute_at = self.context._photo_commitment_execute_at(commitment, observed_at)
         if execute_at is None:
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "pending", observed_at.isoformat(timespec="seconds")
             )
             return False
         if execute_at < observed_at:
             execute_at = observed_at
         task_key = f"commitment_photo:{commitment.id}"
-        refresh = getattr(self.archive, "reschedule_durable_task", None)
+        refresh = getattr(self.context.archive, "reschedule_durable_task", None)
         if callable(refresh) and await refresh(
             task_key, execute_at.strftime("%Y-%m-%d %H:%M:%S")
         ):
             return True
-        await self.archive.enqueue_durable_task(
+        await self.context.archive.enqueue_durable_task(
             task_key,
             "commitment_photo",
             {
@@ -178,12 +216,12 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
     ) -> int:
         """补建尚未进入生图队列的拍照承诺，按原会话可靠恢复。"""
 
-        getter = getattr(self.archive, "get_commitments", None)
+        getter = getattr(self.context.archive, "get_commitments", None)
         if not callable(getter):
             return 0
         now = now or life_now()
         commitments = await getter(status="", limit=200)
-        existing_tasks = await self.archive.get_durable_tasks(
+        existing_tasks = await self.context.archive.get_durable_tasks(
             kind="commitment_photo", limit=500
         )
         existing_keys = {str(item.task_key or "") for item in existing_tasks}
@@ -197,7 +235,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             key = f"commitment_photo:{getattr(commitment, 'id', 0)}"
             if key in existing_keys:
                 continue
-            if await self.schedule_commitment_photo(commitment, observed_at=now):
+            if await self.context.schedule_commitment_photo(commitment, observed_at=now):
                 existing_keys.add(key)
                 created += 1
         return created
@@ -218,26 +256,26 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         if (
             not commitment.id
             or not scope
-            or not self._commitment_requests_video(commitment)
-            or not self._photo_commitment_owner_allowed(commitment, owner)
+            or not self.context._commitment_requests_video(commitment)
+            or not self.context._photo_commitment_owner_allowed(commitment, owner)
         ):
             return False
         observed_at = observed_at or life_now()
-        execute_at = self._photo_commitment_execute_at(commitment, observed_at)
+        execute_at = self.context._photo_commitment_execute_at(commitment, observed_at)
         if execute_at is None:
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "pending", observed_at.isoformat(timespec="seconds")
             )
             return False
         if execute_at < observed_at:
             execute_at = observed_at
         task_key = f"commitment_video:{commitment.id}"
-        refresh = getattr(self.archive, "reschedule_durable_task", None)
+        refresh = getattr(self.context.archive, "reschedule_durable_task", None)
         if callable(refresh) and await refresh(
             task_key, execute_at.strftime("%Y-%m-%d %H:%M:%S")
         ):
             return True
-        await self.archive.enqueue_durable_task(
+        await self.context.archive.enqueue_durable_task(
             task_key,
             "commitment_video",
             {
@@ -258,12 +296,12 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
     ) -> int:
         """补建尚未进入视频队列的拍视频承诺，按原会话可靠恢复。"""
 
-        getter = getattr(self.archive, "get_commitments", None)
+        getter = getattr(self.context.archive, "get_commitments", None)
         if not callable(getter):
             return 0
         now = now or life_now()
         commitments = await getter(status="", limit=200)
-        existing_tasks = await self.archive.get_durable_tasks(
+        existing_tasks = await self.context.archive.get_durable_tasks(
             kind="commitment_video", limit=500
         )
         existing_keys = {str(item.task_key or "") for item in existing_tasks}
@@ -277,7 +315,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             key = f"commitment_video:{getattr(commitment, 'id', 0)}"
             if key in existing_keys:
                 continue
-            if await self.schedule_commitment_video(commitment, observed_at=now):
+            if await self.context.schedule_commitment_video(commitment, observed_at=now):
                 existing_keys.add(key)
                 created += 1
         return created
@@ -290,12 +328,12 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         commitment_id = int(payload.get("commitment_id") or 0)
         if not scope or not commitment_id:
             return {"outcome": "invalid", "reason": "任务载荷不完整"}
-        commitment = await self.archive.get_commitment(commitment_id)
+        commitment = await self.context.archive.get_commitment(commitment_id)
         if commitment is None:
             return {"outcome": "invalid", "reason": "承诺记录不存在"}
         if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
             return {"outcome": commitment.status, "reason": "承诺已经进入终态"}
-        image_config = getattr(getattr(self, "config", None), "image_generation", None)
+        image_config = getattr(getattr(self.context, "config", None), "image_generation", None)
         if not bool(getattr(image_config, "enabled", False)):
             retry_at = life_now() + datetime.timedelta(minutes=60)
             return {
@@ -303,8 +341,8 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 "reason": "图片生成功能未启用，等待配置开启",
             }
         prompt = str(payload.get("prompt") or commitment.content or "").strip()
-        if not prompt or not self._commitment_requests_photo(commitment):
-            await self.archive.set_commitment_status(
+        if not prompt or not self.context._commitment_requests_photo(commitment):
+            await self.context.archive.set_commitment_status(
                 commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
             )
             return {"outcome": "invalid", "reason": "承诺没有结构化图片执行类型"}
@@ -318,7 +356,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             _daily_life_commitment_id=commitment.id,
             _daily_life_media_reply_name="承诺的生活照片",
         )
-        generator = getattr(self, "life_image_generate", None)
+        generator = getattr(self.context, "life_image_generate", None)
         if not callable(generator):
             raise RuntimeError("当前运行时没有可用的图片生成工具")
 
@@ -326,7 +364,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
-                await self.archive.set_commitment_status(
+                await self.context.archive.set_commitment_status(
                     commitment.id,
                     "delivery_failed",
                     life_now().isoformat(timespec="seconds"),
@@ -353,11 +391,11 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             error = str(result or "图片生成或发送未成功").strip()
             await mark_delivery_failed_on_last_attempt()
             raise RuntimeError(f"承诺拍照执行失败：{error}")
-        await self.archive.set_commitment_status(
+        await self.context.archive.set_commitment_status(
             commitment.id, "done", life_now().isoformat(timespec="seconds")
         )
         reply_sent = bool(getattr(event, "_daily_life_media_reply_sent", False))
-        followup = getattr(self, "_send_delivered_media_followup", None)
+        followup = getattr(self.context, "_send_delivered_media_followup", None)
         if not reply_sent and callable(followup):
             reply_sent = await followup(
                 scope,
@@ -383,12 +421,12 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         commitment_id = int(payload.get("commitment_id") or 0)
         if not scope or not commitment_id:
             return {"outcome": "invalid", "reason": "任务载荷不完整"}
-        commitment = await self.archive.get_commitment(commitment_id)
+        commitment = await self.context.archive.get_commitment(commitment_id)
         if commitment is None:
             return {"outcome": "invalid", "reason": "承诺记录不存在"}
         if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
             return {"outcome": commitment.status, "reason": "承诺已经进入终态"}
-        video_config = getattr(getattr(self, "config", None), "video_generation", None)
+        video_config = getattr(getattr(self.context, "config", None), "video_generation", None)
         if not bool(getattr(video_config, "enabled", False)):
             retry_at = life_now() + datetime.timedelta(minutes=60)
             return {
@@ -396,8 +434,8 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 "reason": "视频生成功能未启用，等待配置开启",
             }
         prompt = str(payload.get("prompt") or commitment.content or "").strip()
-        if not prompt or not self._commitment_requests_video(commitment):
-            await self.archive.set_commitment_status(
+        if not prompt or not self.context._commitment_requests_video(commitment):
+            await self.context.archive.set_commitment_status(
                 commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
             )
             return {"outcome": "invalid", "reason": "承诺不包含明确拍视频动作"}
@@ -413,7 +451,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             _daily_life_commitment_id=commitment.id,
             _daily_life_media_reply_name="承诺的生活视频",
         )
-        generator = getattr(self, "life_video_generate", None)
+        generator = getattr(self.context, "life_video_generate", None)
         if not callable(generator):
             raise RuntimeError("当前运行时没有可用的视频生成工具")
 
@@ -421,7 +459,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
-                await self.archive.set_commitment_status(
+                await self.context.archive.set_commitment_status(
                     commitment.id,
                     "delivery_failed",
                     life_now().isoformat(timespec="seconds"),
@@ -460,14 +498,14 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             await mark_delivery_failed_on_last_attempt()
             raise RuntimeError(f"承诺拍视频执行失败：{error}")
         if outcome == "cancelled":
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
             )
             return {"outcome": "cancelled", "commitment_id": commitment.id}
         if outcome != "sent":
             await mark_delivery_failed_on_last_attempt()
             raise RuntimeError(f"承诺拍视频执行失败：{outcome}")
-        await self.archive.set_commitment_status(
+        await self.context.archive.set_commitment_status(
             commitment.id, "done", life_now().isoformat(timespec="seconds")
         )
         logger.info(f"{LOG_PREFIX} 已履行承诺拍视频：编号={commitment.id}")
@@ -484,14 +522,14 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         """仅为当前角色明确承担的未来联系动作创建持久任务。"""
 
         action = str(follow_up.get("action") or "none").strip()
-        execute_at = self._follow_up_execute_at(follow_up.get("execute_at"))
+        execute_at = self.context._follow_up_execute_at(follow_up.get("execute_at"))
         condition = str(follow_up.get("condition") or "").strip()
         scope = str(commitment.source_session or "").strip()
         if (
             owner != "当前角色"
-            or action not in self._FOLLOW_UP_ACTIONS
-            or self._commitment_requests_photo(commitment)
-            or self._commitment_requests_video(commitment)
+            or action not in self.context._FOLLOW_UP_ACTIONS
+            or self.context._commitment_requests_photo(commitment)
+            or self.context._commitment_requests_video(commitment)
             or ":GroupMessage:" in scope
             or not scope
             or not commitment.id
@@ -510,7 +548,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         expires_at = observed_at + datetime.timedelta(hours=24) if condition else None
         if execute_at < observed_at:
             execute_at = observed_at
-        await self.archive.enqueue_durable_task(
+        await self.context.archive.enqueue_durable_task(
             f"proactive_commitment:{commitment.id}",
             "proactive_commitment",
             {
@@ -532,7 +570,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         return True
 
     async def _proactive_commitment_relationship(self, scope: str) -> Any | None:
-        getter = getattr(self.archive, "get_relationships_for_target", None)
+        getter = getattr(self.context.archive, "get_relationships_for_target", None)
         if not callable(getter):
             return None
         relationships = await getter(scope, limit=1)
@@ -541,7 +579,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
     async def _proactive_commitment_life_context(
         self, now: datetime.datetime
     ) -> dict[str, Any]:
-        date_str, using_extended_night, day = await self._proactive_current_day(now)
+        date_str, using_extended_night, day = await self.context._proactive_current_day(now)
         if day is None:
             return {
                 "date": date_str,
@@ -551,7 +589,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         return {
             "date": date_str,
             "using_extended_night": using_extended_night,
-            "current_activity": self.build_hidden_activity_hint(
+            "current_activity": self.context.build_hidden_activity_hint(
                 day, now, using_extended_night
             )[1],
             "timeline": [item.as_dict() for item in day.timeline],
@@ -567,13 +605,13 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         interaction: Any,
         now: datetime.datetime,
     ) -> dict[str, Any]:
-        provider = await self._get_proactive_provider()
+        provider = await self.context._get_proactive_provider()
         if not provider:
             raise RuntimeError("没有可用的主动承诺裁定模型")
-        persona = await self._current_proactive_persona(scope)
-        recent_messages = await self._read_recent_context_messages(scope, limit=10)
-        recent_context = self._format_recent_context_messages(recent_messages, now=now)
-        life_context = await self._proactive_commitment_life_context(now)
+        persona = await self.context._current_proactive_persona(scope)
+        recent_messages = await self.context._read_recent_context_messages(scope, limit=10)
+        recent_context = self.context._format_recent_context_messages(recent_messages, now=now)
+        life_context = await self.context._proactive_commitment_life_context(now)
         target_name = str(getattr(relationship, "name", "") or "对方").strip()
         interaction_context = {
             "mode": str(getattr(interaction, "mode", "") or "unknown"),
@@ -602,7 +640,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
 当前角色人设：
 {persona or "暂无额外人设。"}
 
-主动语音消息能力：{self._proactive_voice_capability(scope)}
+主动语音消息能力：{self.context._proactive_voice_capability(scope)}
 承诺对象：{target_name}
 已保存承诺：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
 主动动作：{json.dumps(task_payload, ensure_ascii=False)}
@@ -616,17 +654,17 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             dynamic_title="到期承诺复核资料",
         )
         session_id = f"daily_life_proactive_commitment_{uuid.uuid4().hex[:8]}"
-        provider_id = self.config.proactive.provider
+        provider_id = self.context.config.proactive.provider
         try:
             payload = await call_pure_json(
-                self,
+                self.context,
                 provider,
                 prompt,
                 session_id,
                 primary_provider_id=provider_id,
                 propagate_non_retryable=True,
                 strict=True,
-                validator=self._validate_proactive_commitment_decision,
+                validator=self.context._validate_proactive_commitment_decision,
                 fallback={
                     "should_send": False,
                     "reply_text": "",
@@ -640,7 +678,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 raise ValueError("主动承诺裁定未返回有效 JSON")
             return payload
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def run_proactive_commitment_task(self, task: Any) -> dict[str, Any]:
         """复核并履行一条到期的主动联系承诺。"""
@@ -649,9 +687,9 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         scope = str(payload.get("scope") or "").strip()
         commitment_id = int(payload.get("commitment_id") or 0)
         action = str(payload.get("action") or "").strip()
-        if not scope or action not in self._FOLLOW_UP_ACTIONS or not commitment_id:
+        if not scope or action not in self.context._FOLLOW_UP_ACTIONS or not commitment_id:
             return {"outcome": "invalid", "reason": "任务载荷不完整"}
-        commitment = await self.archive.get_commitment(commitment_id)
+        commitment = await self.context.archive.get_commitment(commitment_id)
         if commitment is None:
             return {"outcome": "invalid", "reason": "承诺记录不存在"}
         if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
@@ -660,20 +698,20 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 "reason": "承诺已经进入终态",
             }
         if payload.get("shared_activity_contact") is True:
-            return await self._run_shared_activity_contact(task, commitment)
+            return await self.context._run_shared_activity_contact(task, commitment)
         now = life_now()
-        expires_at = self._follow_up_execute_at(payload.get("expires_at"))
+        expires_at = self.context._follow_up_execute_at(payload.get("expires_at"))
         if expires_at is not None and now > expires_at:
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "expired", now.isoformat(timespec="seconds")
             )
             return {"outcome": "expired", "reason": "条件承诺已超过有效期"}
                 # 已排队的后续任务实际可能需要发送媒体，而非文字消息。
         media_scheduler = None
-        if self._commitment_requests_photo(commitment):
-            media_scheduler = self.schedule_commitment_photo
-        elif self._commitment_requests_video(commitment):
-            media_scheduler = self.schedule_commitment_video
+        if self.context._commitment_requests_photo(commitment):
+            media_scheduler = self.context.schedule_commitment_photo
+        elif self.context._commitment_requests_video(commitment):
+            media_scheduler = self.context.schedule_commitment_video
         if media_scheduler is not None:
             scheduled = await media_scheduler(commitment, observed_at=now)
             return {
@@ -681,12 +719,12 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 "reason": "媒体承诺必须通过实际媒体投递履行",
                 "commitment_id": commitment.id,
             }
-        interaction = await self.resolve_interaction_context(
+        interaction = await self.context.resolve_interaction_context(
             target_scope=scope, now=now
         )
         settle_commitment = payload.get("settle_commitment") is not False
-        relationship = await self._proactive_commitment_relationship(scope)
-        decision = await self._evaluate_proactive_commitment(
+        relationship = await self.context._proactive_commitment_relationship(scope)
+        decision = await self.context._evaluate_proactive_commitment(
             scope=scope,
             commitment=commitment,
             task_payload=payload,
@@ -718,7 +756,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 "cancelled" if settlement in {"cancelled", "superseded"} else "done"
             )
             if settle_commitment:
-                await self.archive.set_commitment_status(
+                await self.context.archive.set_commitment_status(
                     commitment.id, status, now.isoformat(timespec="seconds")
                 )
             return {
@@ -730,7 +768,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             "expression_intent": decision.get("expression_intent") or {},
         }
         try:
-            sent = await self._send_proactive_message(
+            sent = await self.context._send_proactive_message(
                 scope,
                 reply_text,
                 "主动承诺消息发送失败",
@@ -741,7 +779,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 raise_delivery_errors=True,
             )
         except PermanentScopeDeliveryError as exc:
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
             )
             logger.warning(
@@ -752,7 +790,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
-                await self.archive.set_commitment_status(
+                await self.context.archive.set_commitment_status(
                     commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
                 )
                 return {
@@ -764,8 +802,17 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
         if not sent:
             raise RuntimeError("主动承诺消息未成功投递")
         if settle_commitment:
-            await self.archive.set_commitment_status(
+            await self.context.archive.set_commitment_status(
                 commitment.id, "done", now.isoformat(timespec="seconds")
             )
         logger.info(f"{LOG_PREFIX} 已履行主动联系承诺：编号={commitment.id}")
         return {"outcome": "sent", "reply_text": reply_text}
+
+    @staticmethod
+    def _shared_activity_timeline(day: _part_shared_activity_contact_component.Any) -> list[dict]:
+        return _part_shared_activity_contact_component.SharedActivityContactComponent._shared_activity_timeline(day)
+
+    @staticmethod
+    def _shared_activity_candidates(day: _part_shared_activity_contact_component.Any, now: _part_shared_activity_contact_component.datetime.datetime) -> list[dict]:
+        return _part_shared_activity_contact_component.SharedActivityContactComponent._shared_activity_candidates(day, now)
+

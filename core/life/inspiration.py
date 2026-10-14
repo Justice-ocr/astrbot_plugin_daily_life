@@ -11,8 +11,31 @@ from ..models import (
     STYLE_CATALOG_KINDS,
 )
 
+from typing import Protocol
 
-class StyleCatalogMixin:
+
+class StyleCatalogComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _style_catalog_attributes: Any
+    _style_catalog_component_profiles: Any
+    _style_catalog_component_state: Any
+    _style_catalog_description: Any
+    _style_catalog_has_clothing_candidates: Any
+    _style_catalog_item_line: Any
+    _style_catalog_list: Any
+    _style_catalog_reference_appearance: Any
+    _style_catalog_reference_ids: Any
+    _style_catalog_scene_compatible: Any
+    _style_catalog_scene_components: Any
+    _style_catalog_scene_role: Any
+    archive: Any
+
+
+class StyleCatalogComponent:
+    def __init__(self, context: StyleCatalogComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _style_catalog_reference_ids(value: object) -> list[int]:
         if isinstance(value, str):
@@ -253,7 +276,7 @@ class StyleCatalogMixin:
         )
 
     async def _style_catalog_has_clothing_candidates(self) -> bool:
-        getter = getattr(self.archive, "get_style_catalog_items", None)
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return False
         try:
@@ -274,8 +297,8 @@ class StyleCatalogMixin:
         或唯一的上装与下装组合。多套可选时必须由模型重新判断。
         """
 
-        item_ids = self._style_catalog_reference_ids(value)
-        getter = getattr(self.archive, "get_style_catalog_items", None)
+        item_ids = self.context._style_catalog_reference_ids(value)
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return item_ids
         complete_selection_seen = False
@@ -298,7 +321,7 @@ class StyleCatalogMixin:
                 complete_selection_seen
                 and len(selected or []) >= len(item_ids)
                 and all(
-                    self._style_catalog_scene_compatible(item, scene_category)
+                    self.context._style_catalog_scene_compatible(item, scene_category)
                     for item in selected or []
                     if str(getattr(item, "kind", "") or "").strip().lower()
                     in STYLE_CATALOG_CLOTHING_KINDS
@@ -311,7 +334,7 @@ class StyleCatalogMixin:
             outfit_ids = [
                 int(getattr(outfit, "id", 0) or 0)
                 for outfit in outfits or []
-                if self._style_catalog_scene_compatible(outfit, scene_category)
+                if self.context._style_catalog_scene_compatible(outfit, scene_category)
                 and int(getattr(outfit, "id", 0) or 0) > 0
             ]
             if len(outfit_ids) == 1:
@@ -322,11 +345,11 @@ class StyleCatalogMixin:
             bottoms = await getter(kind="bottom", status="active", limit=64)
             tops = [
                 item for item in tops or []
-                if self._style_catalog_scene_compatible(item, scene_category)
+                if self.context._style_catalog_scene_compatible(item, scene_category)
             ]
             bottoms = [
                 item for item in bottoms or []
-                if self._style_catalog_scene_compatible(item, scene_category)
+                if self.context._style_catalog_scene_compatible(item, scene_category)
             ]
             top = tops[0] if len(tops) == 1 else None
             bottom = bottoms[0] if len(bottoms) == 1 else None
@@ -343,8 +366,8 @@ class StyleCatalogMixin:
     ) -> tuple[dict[str, Any], str]:
         """校验新穿搭是否真正采用了启用中的衣橱服装。"""
 
-        item_ids = self._style_catalog_reference_ids(value)
-        getter = getattr(self.archive, "get_style_catalog_items", None)
+        item_ids = self.context._style_catalog_reference_ids(value)
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
         items = []
         if callable(getter) and item_ids:
             try:
@@ -356,13 +379,13 @@ class StyleCatalogMixin:
         kinds = {str(getattr(item, "kind", "") or "") for item in items}
         complete_selection = "outfit" in kinds or {"top", "bottom"}.issubset(kinds)
         appearance = (
-            await self._style_catalog_reference_appearance(
+            await self.context._style_catalog_reference_appearance(
                 item_ids, scene_category=scene_category
             )
             if complete_selection
             else {}
         )
-        snapshot_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
+        snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
         snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
         if complete_selection and snapshot.get("items"):
             for item in items:
@@ -370,10 +393,10 @@ class StyleCatalogMixin:
                     continue
                 state = snapshot.get("items", {}).get(str(item.id), {})
                 if not state.get("available"):
-                    return {}, "所选衣物尚未正式纳入数字衣橱，或处于待洗、清洗、晾晒、收纳状态；请使用可穿衣物，缺口由后台补充"
+                    return {}, "所选衣物尚未正式纳入数字衣橱，或处于待洗、清洗、晾晒状态；请使用可穿衣物，缺口由后台补充"
         if complete_selection and appearance.get("outfit"):
             return appearance, ""
-        if not await self._style_catalog_has_clothing_candidates():
+        if not await self.context._style_catalog_has_clothing_candidates():
             return {}, ""
         return (
             {},
@@ -382,7 +405,7 @@ class StyleCatalogMixin:
         )
 
     async def _style_catalog_context(self, *, limit: int = 10, conditions: dict | None = None) -> str:
-        getter = getattr(self.archive, "get_style_catalog_items", None)
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return ""
         safe_limit = max(1, min(limit, 24))
@@ -390,7 +413,7 @@ class StyleCatalogMixin:
             status="active", limit=500
         )
         from .dressing import reviewed_candidates, suitability_key, wardrobe_fact_text
-        snapshot_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
+        snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
         snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
         for item in candidates:
             state = snapshot.get("items", {}).get(str(item.id))
@@ -436,7 +459,7 @@ class StyleCatalogMixin:
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
         ]
         lines.append(wardrobe_fact_text(snapshot))
-        lines.extend(self._style_catalog_item_line(item) for item in items)
+        lines.extend(self.context._style_catalog_item_line(item) for item in items)
         detailed_ids = {item.id for item in items}
         clothing_index = [
             item for item in candidates
@@ -445,13 +468,13 @@ class StyleCatalogMixin:
         if clothing_index:
             lines.append("其余可选服装简表：可按类别、用途和场景选择编号；采用后系统会读取该候选的完整外观，不能另造衣服。")
             for item in clothing_index:
-                attributes = self._style_catalog_attributes(item)
-                category = "、".join(self._style_catalog_list(attributes.get("category"), 4))
-                scenes = "、".join(self._style_catalog_list(attributes.get("scenes"), 4))
-                material = "、".join(self._style_catalog_list(attributes.get("material_appearance"), 3))
+                attributes = self.context._style_catalog_attributes(item)
+                category = "、".join(self.context._style_catalog_list(attributes.get("category"), 4))
+                scenes = "、".join(self.context._style_catalog_list(attributes.get("scenes"), 4))
+                material = "、".join(self.context._style_catalog_list(attributes.get("material_appearance"), 3))
                 title = " ".join(str(item.title or "").split())[:80]
-                seasons = "、".join(self._style_catalog_list(attributes.get("seasons"), 4))
-                weather = "、".join(self._style_catalog_list(attributes.get("weather_fit"), 4))
+                seasons = "、".join(self.context._style_catalog_list(attributes.get("seasons"), 4))
+                weather = "、".join(self.context._style_catalog_list(attributes.get("weather_fit"), 4))
                 state = attributes.get("wardrobe") or {}
                 lines.append(f"- #{item.id} [{item.kind}] {title}；类别：{category}；场景：{scenes}；材质：{material}；季节：{seasons}；天气适配：{weather}；归属：{state.get('ownership','candidate')}；状态：{state.get('condition','unknown')}")
         return "\n".join(lines)
@@ -461,8 +484,8 @@ class StyleCatalogMixin:
     ) -> dict[str, Any]:
         """读取已明确采用候选中的各个独立外观组成。"""
 
-        getter = getattr(self.archive, "get_style_catalog_items", None)
-        item_ids = self._style_catalog_reference_ids(value)
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
+        item_ids = self.context._style_catalog_reference_ids(value)
         if not callable(getter) or not item_ids:
             return {}
         try:
@@ -488,7 +511,7 @@ class StyleCatalogMixin:
         component_values: dict[str, dict[str, str]] = {}
         for item in items or []:
             kind = str(getattr(item, "kind", "")).strip().lower()
-            description = self._style_catalog_description(item)
+            description = self.context._style_catalog_description(item)
             title = " ".join(
                 str(getattr(item, "title", "") or "").strip().split()
             )[:80]
@@ -501,10 +524,10 @@ class StyleCatalogMixin:
                 reserve_description = ""
                 if home_scene and kind == "outfit":
                     current_description, reserve_description = (
-                        self._style_catalog_scene_components(item, description)
+                        self.context._style_catalog_scene_components(item, description)
                     )
                 elif home_scene and kind in {"footwear", "accessory"} and (
-                    self._style_catalog_scene_role(item) not in {"home", "both"}
+                    self.context._style_catalog_scene_role(item) not in {"home", "both"}
                 ):
                     current_description, reserve_description = "", description
                 if current_description:
@@ -512,10 +535,10 @@ class StyleCatalogMixin:
                 if reserve_description:
                     result["outing_reserve"].append(reserve_description)
                 if kind == "outfit":
-                    profiles = self._style_catalog_component_profiles(item)
+                    profiles = self.context._style_catalog_component_profiles(item)
                     has_structured_home_split = bool(
                         not home_scene
-                        or self._style_catalog_attributes(item).get(
+                        or self.context._style_catalog_attributes(item).get(
                             "home_description"
                         )
                         or profiles
@@ -531,7 +554,7 @@ class StyleCatalogMixin:
                             if profile["kind"] == "footwear"
                             else "carried_accessories"
                         )
-                        state = self._style_catalog_component_state(
+                        state = self.context._style_catalog_component_state(
                             profile["kind"],
                             profile["role"],
                             profile["carry_mode"],
@@ -539,7 +562,7 @@ class StyleCatalogMixin:
                         )
                         component = component_values.setdefault(
                             component_key,
-                            {"state": state, "description": ""},
+                            {"state": state, "description": "", "home_presence": profile["role"]},
                         )
                         component["state"] = state
                         component["description"] = (
@@ -562,11 +585,11 @@ class StyleCatalogMixin:
                     component_key = (
                         "footwear" if kind == "footwear" else "carried_accessories"
                     )
-                    role = self._style_catalog_scene_role(item)
+                    role = self.context._style_catalog_scene_role(item)
                     carry_mode = str(
-                        self._style_catalog_attributes(item).get("carry_mode") or ""
+                        self.context._style_catalog_attributes(item).get("carry_mode") or ""
                     ).strip().lower()
-                    state = self._style_catalog_component_state(
+                    state = self.context._style_catalog_component_state(
                         kind,
                         role,
                         carry_mode,
@@ -575,6 +598,7 @@ class StyleCatalogMixin:
                     component_values[component_key] = {
                         "state": state,
                         "description": description,
+                        "home_presence": role,
                     }
             elif kind == "hair" and description:
                 if title:
@@ -598,11 +622,11 @@ class StyleCatalogMixin:
         return output
 
     async def _mark_style_catalog_references(self, value: object) -> int:
-        marker = getattr(self.archive, "mark_style_catalog_used", None)
+        marker = getattr(self.context.archive, "mark_style_catalog_used", None)
         if not callable(marker):
             return 0
-        item_ids = self._style_catalog_reference_ids(value)
+        item_ids = self.context._style_catalog_reference_ids(value)
         return await marker(item_ids) if item_ids else 0
 
 
-__all__ = ["StyleCatalogMixin"]
+__all__ = ["StyleCatalogComponent"]

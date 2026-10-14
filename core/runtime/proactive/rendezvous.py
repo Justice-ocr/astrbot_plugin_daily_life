@@ -20,22 +20,63 @@ from ...prompts import (
 from ...sources.dispatch import PermanentScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
+from ..continuous import planned_actions
+
+from typing import Protocol
 
 
-class SharedActivityContactMixin:
+def preparation_facts(day: Any) -> dict:
+    """联系生成与发送复核共用的当前事实，不把准备计划当成结果。"""
+    return {
+        "outfit": day.outfit,
+        "outfit_components": day.meta.get("outfit_components", ""),
+        "outfit_confirmed_at": day.meta.get("outfit_fact_confirmed_at", ""),
+        "current_place": day.meta.get("current_place", ""),
+        "planned_actions": [item.as_dict() for item in planned_actions(day).values()],
+        "timeline": [item.as_dict() for item in day.timeline],
+    }
+
+
+class SharedActivityContactComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _current_proactive_persona: Any
+    _audit_proactive_continuity: Any
+    _evaluate_shared_activity_contact: Any
+    _format_recent_context_messages: Any
+    _get_proactive_provider: Any
+    _proactive_commitment_relationship: Any
+    _proactive_send_is_current: Any
+    _proactive_voice_capability: Any
+    _read_recent_context_messages: Any
+    _send_proactive_message: Any
+    _shared_activity_candidates: Any
+    _shared_activity_timeline: Any
+    _snapshot_proactive_send_event: Any
+    archive: Any
+    close_text_session: Any
+    config: Any
+    resolve_interaction_context: Any
+    schedule_invite_contact: Any
+
+
+class SharedActivityContactComponent:
     """共同活动行前协调：依据最新交流和日程决定联系时间与内容。"""
+
+    def __init__(self, context: SharedActivityContactComponentContext) -> None:
+        self.context = context
 
     async def reconcile_scheduled_invite_contacts(
         self, now: datetime.datetime | None = None
     ) -> int:
         now = now or life_now()
-        commitments = await self.archive.get_due_commitments(
+        commitments = await self.context.archive.get_due_commitments(
             now.strftime("%Y-%m-%d"), include_scheduled=True
         )
         days = {}
         created = 0
         for commitment in commitments:
-            current_task = await self.archive.get_durable_task(
+            current_task = await self.context.archive.get_durable_task(
                 f"invite_contact:{commitment.id}"
             )
             if (
@@ -46,7 +87,7 @@ class SharedActivityContactMixin:
                 progress = current_task.result.get("progress", {})
                 if isinstance(progress, dict) and progress.get("timeline") is not None:
                     if commitment.trigger_date not in days:
-                        days[commitment.trigger_date] = await self.archive.get_day(
+                        days[commitment.trigger_date] = await self.context.archive.get_day(
                             commitment.trigger_date
                         )
                     day = days[commitment.trigger_date]
@@ -54,14 +95,14 @@ class SharedActivityContactMixin:
                         progress.get("commitment") != commitment.as_dict()
                         or day is None
                         or progress.get("timeline")
-                        != self._shared_activity_timeline(day)
+                        != self.context._shared_activity_timeline(day)
                         or not any(
                             candidate["index"]
                             == progress.get("activity", {}).get("index")
-                            for candidate in self._shared_activity_candidates(day, now)
+                            for candidate in self.context._shared_activity_candidates(day, now)
                         )
                     ):
-                        await self.archive.reschedule_durable_task(
+                        await self.context.archive.reschedule_durable_task(
                             current_task.task_key,
                             available_at=now.strftime("%Y-%m-%d %H:%M:%S"),
                         )
@@ -71,11 +112,11 @@ class SharedActivityContactMixin:
                 or current_task is not None
             ):
                 continue
-            if await self.archive.get_durable_task(
+            if await self.context.archive.get_durable_task(
                 f"proactive_commitment:{commitment.id}"
             ):
                 continue
-            if await self.schedule_invite_contact(commitment, observed_at=now):
+            if await self.context.schedule_invite_contact(commitment, observed_at=now):
                 created += 1
         return created
 
@@ -115,7 +156,7 @@ class SharedActivityContactMixin:
             or commitment.status not in {"active", "scheduled"}
         ):
             return False
-        registrar = getattr(self.archive, "ensure_shared_activity", None)
+        registrar = getattr(self.context.archive, "ensure_shared_activity", None)
         if callable(registrar):
             await registrar(commitment)
         try:
@@ -126,7 +167,7 @@ class SharedActivityContactMixin:
             return False
         if date < observed_at.date():
             return False
-        await self.archive.enqueue_durable_task(
+        await self.context.archive.enqueue_durable_task(
             f"invite_contact:{commitment.id}",
             "proactive_commitment",
             {
@@ -182,10 +223,17 @@ class SharedActivityContactMixin:
         now: datetime.datetime,
     ) -> dict:
         scope = commitment.source_session
-        provider = await self._get_proactive_provider()
+        provider = await self.context._get_proactive_provider()
         if not provider:
             raise RuntimeError("没有可用的共同活动联系裁定模型")
-        persona = await self._current_proactive_persona(scope)
+        persona = await self.context._current_proactive_persona(scope)
+        facts = preparation_facts(day)
+        facts["committed_actions"] = [
+            item.as_dict() for item in await self.context.archive.get_life_action_outcomes(
+                date=day.date, status="committed", limit=16
+            )
+        ]
+        life_context = json.dumps(facts, ensure_ascii=False)
         fixed = f"""你正在过自己的生活，需要判断已确认的共同活动开始前，是否自然招呼对方一起准备。
 这不是定时提醒模板，也不是对每个日程都发送通知。先判断是否真的有双方已确认的共同安排，再决定联系时机。
 
@@ -210,32 +258,42 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         dynamic = f"""当前时间：{now.strftime("%Y-%m-%d %H:%M:%S")}
 角色人设：{persona}
 联系对象：{getattr(relationship, "name", "") or "对方"}
-主动语音能力：{self._proactive_voice_capability(scope)}
+主动语音能力：{self.context._proactive_voice_capability(scope)}
 已保存约定：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
 安排入口资料：{json.dumps(task.payload, ensure_ascii=False)}
 上次后台判断：{json.dumps(task.result, ensure_ascii=False)}
 互动方式：{getattr(interaction, "mode", "unknown")}；依据：{getattr(interaction, "evidence", "")}
 当前生活状态：{json.dumps(day.state.as_dict() if day.state else {}, ensure_ascii=False)}
-当天完整时间轴：{json.dumps([item.as_dict() for item in day.timeline], ensure_ascii=False)}
+当前执行事实（planned_actions 和 timeline 是计划，committed_actions 才是已结算结果）：{life_context}
 可选的尚未开始节点：{json.dumps(candidates, ensure_ascii=False)}
 最近真实交流：
-{self._format_recent_context_messages(recent, now=now)}"""
+{self.context._format_recent_context_messages(recent, now=now)}"""
         session_id = f"daily_life_activity_contact_{uuid.uuid4().hex[:8]}"
         try:
             decision = await call_pure_json(
-                self,
+                self.context,
                 provider,
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="共同活动行前协调"),
                 session_id,
-                primary_provider_id=self.config.proactive.provider,
+                primary_provider_id=self.context.config.proactive.provider,
                 propagate_non_retryable=True,
                 strict=True,
             )
             if not isinstance(decision, dict):
                 raise ValueError("共同活动裁定未返回有效 JSON")
+            if decision.get("decision") == "send":
+                valid, reason = await self.context._audit_proactive_continuity(
+                    payload=decision,
+                    recent_context=self.context._format_recent_context_messages(recent, now=now),
+                    life_context=life_context,
+                    provider=provider,
+                    provider_id=self.context.config.proactive.provider,
+                )
+                if not valid:
+                    return {"decision": "reconsider", "reason": reason or "准备状态尚未得到执行证据支持"}
             return decision
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def _run_shared_activity_contact(
         self,
@@ -263,7 +321,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 "reason": "等待已确认约定落实到日程",
             }
             # 单独明确作出的联系承诺，优先于推断出的准备提醒。
-        explicit = await self.archive.get_durable_task(
+        explicit = await self.context.archive.get_durable_task(
             f"proactive_commitment:{commitment.id}"
         )
         if explicit is not None and explicit.status in {
@@ -272,7 +330,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             "completed",
         }:
             return {"outcome": "already_covered", "reason": "同一约定已有明确联系任务"}
-        day = await self.archive.get_day(date_str)
+        day = await self.context.archive.get_day(date_str)
         if day is None:
             retry_at = now + datetime.timedelta(minutes=5 if date == now.date() else 60)
             return {
@@ -298,17 +356,17 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                         "outcome": "expired",
                         "reason": "对应共同活动已经开始，不转向无关节点",
                     }
-        candidates = self._shared_activity_candidates(day, now)
+        candidates = self.context._shared_activity_candidates(day, now)
         if not candidates:
             return {"outcome": "expired", "reason": "已无尚未开始的活动"}
-        snapshotter = getattr(self, "_snapshot_proactive_send_event", None)
+        snapshotter = getattr(self.context, "_snapshot_proactive_send_event", None)
         source_event = snapshotter(scope) if callable(snapshotter) else None
-        recent = await self._read_recent_context_messages(scope, limit=20)
-        relationship = await self._proactive_commitment_relationship(scope)
-        interaction = await self.resolve_interaction_context(
+        recent = await self.context._read_recent_context_messages(scope, limit=20)
+        relationship = await self.context._proactive_commitment_relationship(scope)
+        interaction = await self.context.resolve_interaction_context(
             target_scope=scope, now=now
         )
-        decision = await self._evaluate_shared_activity_contact(
+        decision = await self.context._evaluate_shared_activity_contact(
             commitment=commitment,
             task=task,
             day=day,
@@ -319,9 +377,9 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             now=now,
         )
             # 模型处理是异步的，处理期间相关证据可能发生变化。
-        latest = await self.archive.get_commitment(commitment.id)
-        latest_day = await self.archive.get_day(date_str)
-        latest_recent = await self._read_recent_context_messages(scope, limit=20)
+        latest = await self.context.archive.get_commitment(commitment.id)
+        latest_day = await self.context.archive.get_day(date_str)
+        latest_recent = await self.context._read_recent_context_messages(scope, limit=20)
         if latest is None or latest.status in {
             "done",
             "cancelled",
@@ -332,8 +390,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         if (
             latest.as_dict() != commitment.as_dict()
             or latest_day is None
-            or [item.as_dict() for item in latest_day.timeline]
-            != [item.as_dict() for item in day.timeline]
+            or preparation_facts(latest_day) != preparation_facts(day)
             or latest_recent != recent
         ):
             return {
@@ -345,6 +402,12 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             }
         choice = decision.get("decision")
         reason = str(decision.get("reason") or "").strip()
+        if choice == "reconsider":
+            return {
+                "retry_at": (life_now() + datetime.timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": reason,
+                "progress": {**task.result.get("progress", {}), "review_issue": reason},
+            }
         if choice == "skip":
             return {"outcome": "skipped", "reason": reason}
         if choice not in {"wait", "send"}:
@@ -380,7 +443,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             "message_goal": str(decision.get("message_goal") or ""),
             "reason": reason,
             "commitment": commitment.as_dict(),
-            "timeline": self._shared_activity_timeline(day),
+            "timeline": self.context._shared_activity_timeline(day),
         }
         if choice == "wait":
             if contact_at <= now:
@@ -398,7 +461,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         if source_event is not None:
             source_event._daily_life_proactive_expires_at = starts_at
         try:
-            sent = await self._send_proactive_message(
+            sent = await self.context._send_proactive_message(
                 scope,
                 reply_text,
                 "共同活动联系发送失败",
@@ -420,7 +483,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                     "outcome": "expired",
                     "reason": "消息生成期间活动开始，停止投递",
                 }
-            current = getattr(self, "_proactive_send_is_current", None)
+            current = getattr(self.context, "_proactive_send_is_current", None)
             if (
                 callable(current)
                 and source_event is not None

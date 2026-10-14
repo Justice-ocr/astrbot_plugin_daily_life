@@ -129,7 +129,7 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.record_conversation_delivery(self.scope, self.sent + 39)
         rows = self.archive._conn.execute("SELECT sent_at FROM conversation_receipts").fetchall()
         self.assertEqual(len(rows), 32)
-        self.assertEqual(len(self.runtime._conversation_receipts[self.scope]), 32)
+        self.assertEqual(len(self.runtime.conversation_timing._receipts[self.scope]), 32)
         self.assertEqual(await self.archive.get_conversation_receipt_before(self.scope, self.sent + 20), self.sent + 20)
         self.assertEqual(await self.archive.get_conversation_receipt_before(self.scope, self.sent - 1), 0)
         await self.archive.clear_storage_category("conversation")
@@ -147,12 +147,12 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.archive.get_conversation_receipt_before(self.scope, self.arrived + 2), self.arrived + 1)
             return "角色"
 
-        self.runtime.prepare_outbound_bot_name = nickname
+        self.runtime.outbound_log.prepare_outbound_bot_name = nickname
         with patch("core.runtime.outbound.time.time", return_value=self.arrived + 1):
             self.assertTrue(await self.runtime.log_outbound_result_async(event))
         with patch("core.runtime.outbound.time.time", return_value=self.arrived + 99):
             self.assertFalse(await self.runtime.log_outbound_result_async(event))
-        self.assertEqual(self.runtime._conversation_receipts[self.scope], [self.arrived + 1])
+        self.assertEqual(self.runtime.conversation_timing._receipts[self.scope], [self.arrived + 1])
 
     async def test_failed_or_empty_delivery_never_advances_clock(self):
         event = self.incoming()

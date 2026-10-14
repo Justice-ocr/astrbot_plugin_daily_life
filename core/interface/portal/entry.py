@@ -7,6 +7,8 @@ from pathlib import Path
 
 from astrbot.api import logger
 
+from typing import Any, Protocol
+
 try:
     from quart import has_app_context as _quart_has_app_context
     from quart import has_request_context as _quart_has_request_context
@@ -21,7 +23,27 @@ except Exception:
     _quart_send_file = None
 
 
-class PortalBaseMixin:
+class PortalBaseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _PAGE_UPLOAD_CHUNK_SIZE: Any
+    _build_page_config: Any
+    _build_page_status: Any
+    _page_copy_upload: Any
+    _page_copy_upload_sync: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_public_error: Any
+    _page_query_args: Any
+    _page_request_method: Any
+    _page_response: Any
+    runtime: Any
+
+
+class PortalBaseComponent:
+    def __init__(self, context: PortalBaseComponentContext) -> None:
+        self.context = context
+
     _PAGE_UPLOAD_CHUNK_SIZE = 256 * 1024
 
     @staticmethod
@@ -47,14 +69,14 @@ class PortalBaseMixin:
     async def _page_json(self, callback: Callable[[], Awaitable[dict]]):
         try:
             payload = await callback()
-            return await self._page_response({"ok": True, "data": payload})
+            return await self.context._page_response({"ok": True, "data": payload})
         except Exception as exc:
             logger.exception(f"[日常生活] 面板接口处理失败：{exc}")
-            return await self._page_response(
+            return await self.context._page_response(
                 {
                     "ok": False,
                     "error": {
-                        "message": self._page_public_error(exc),
+                        "message": self.context._page_public_error(exc),
                         "public": True,
                     },
                 },
@@ -94,7 +116,7 @@ class PortalBaseMixin:
         if upload is None:
             raise ValueError("没有收到上传文件")
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        size = await self._page_copy_upload(upload, target, max_bytes=max_bytes)
+        size = await self.context._page_copy_upload(upload, target, max_bytes=max_bytes)
         return {
             "path": target,
             "filename": str(getattr(upload, "filename", "") or target.name),
@@ -110,7 +132,7 @@ class PortalBaseMixin:
             raise ValueError("上传文件不可读")
         if not inspect.iscoroutinefunction(read):
             return await asyncio.to_thread(
-                self._page_copy_upload_sync,
+                self.context._page_copy_upload_sync,
                 read,
                 target,
                 max_bytes,
@@ -119,7 +141,7 @@ class PortalBaseMixin:
         try:
             with target.open("wb") as handle:
                 while True:
-                    chunk = await read(self._PAGE_UPLOAD_CHUNK_SIZE)
+                    chunk = await read(self.context._PAGE_UPLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     size += len(chunk)
@@ -142,7 +164,7 @@ class PortalBaseMixin:
         try:
             with target.open("wb") as handle:
                 while True:
-                    chunk = read(self._PAGE_UPLOAD_CHUNK_SIZE)
+                    chunk = read(self.context._PAGE_UPLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     size += len(chunk)
@@ -207,11 +229,11 @@ class PortalBaseMixin:
         return dict(args) if args else {}
 
     async def page_status(self):
-        return await self._page_json(self._build_page_status)
+        return await self.context._page_json(self.context._build_page_status)
 
     async def page_status_wait(self):
         async def handler():
-            args = self._page_query_args()
+            args = self.context._page_query_args()
             try:
                 since = int(str(args.get("since") or "0"))
             except ValueError:
@@ -220,28 +242,28 @@ class PortalBaseMixin:
                 timeout = float(str(args.get("timeout") or "25"))
             except ValueError:
                 timeout = 25.0
-            version = await self.runtime.wait_page_status_changed(since, timeout)
+            version = await self.context.runtime.wait_page_status_changed(since, timeout)
             # 运行时计数器仅在当前进程有效。插件重载后计数器可能减小，
             # 而已打开的页面仍传入原先较大的版本号，此时返回最新快照。
             if version < since:
-                status = await self._build_page_status()
+                status = await self.context._build_page_status()
                 status["changed"] = True
                 return status
             if version <= since:
                 return {"status_version": version, "changed": False}
-            status = await self._build_page_status()
+            status = await self.context._build_page_status()
             status["changed"] = True
             return status
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_config(self):
         async def handler():
-            if self._page_request_method() == "POST":
-                body = await self._page_json_body()
+            if self.context._page_request_method() == "POST":
+                body = await self.context._page_json_body()
                 incoming = body.get("config", body)
-                await self.runtime.apply_config(incoming)
-                return await self._build_page_config(saved=True)
-            return await self._build_page_config(saved=False)
+                await self.context.runtime.apply_config(incoming)
+                return await self.context._build_page_config(saved=True)
+            return await self.context._build_page_config(saved=False)
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)

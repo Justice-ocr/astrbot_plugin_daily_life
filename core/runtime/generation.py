@@ -4,6 +4,8 @@ import asyncio
 import datetime
 import time
 import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,7 +55,11 @@ class DailyGenerationResult:
     reused: bool = False
 
 
-class DailyGenerationMixin:
+class DailyGenerationService:
+    """按日期协调日程生成；跨配置切换的任务持有自己的服务租约。"""
+
+    HISTORY_LIMIT = 64
+
     _DAILY_GENERATION_SOURCE_LABELS = {
         "dashboard_reset": "面板重生",
         "command_reset": "命令重生",
@@ -64,27 +70,36 @@ class DailyGenerationMixin:
         "residence_change": "居住地变化",
     }
 
-    def _init_daily_generation_state(self) -> None:
-        self._daily_generation_guard = asyncio.Lock()
-        self._daily_generation_active: dict[str, DailyGenerationOperation] = {}
-        self._daily_generation_last: dict[str, DailyGenerationOperation] = {}
-
-    def _ensure_daily_generation_state(self) -> None:
-        if not hasattr(self, "_daily_generation_guard"):
-            self._init_daily_generation_state()
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], Any],
+        composer: Callable[[], Any],
+        persona: Callable[[], Awaitable[str]],
+        notify_status: Callable[[str], Awaitable[Any]],
+        failed_dates: Callable[[], dict[str, Any] | None],
+        lease_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    ) -> None:
+        self._archive = archive
+        self._composer = composer
+        self._persona = persona
+        self._notify_status = notify_status
+        self._failed_dates = failed_dates
+        self._lease_factory = lease_factory
+        self._guard = asyncio.Lock()
+        self._closed = False
+        self._active: dict[str, DailyGenerationOperation] = {}
+        self._last: dict[str, DailyGenerationOperation] = {}
 
     def daily_generation_status(self, date_str: str = "") -> dict[str, Any]:
-        self._ensure_daily_generation_state()
         key = str(date_str or "").strip()
-        operation = self._daily_generation_active.get(key)
+        operation = self._active.get(key)
         if operation is None:
-            operation = self._daily_generation_last.get(key)
+            operation = self._last.get(key)
         return operation.as_dict() if operation is not None else {}
 
     async def _notify_daily_generation_status(self, reason: str) -> None:
-        notify = getattr(self, "mark_page_status_changed", None)
-        if callable(notify):
-            await notify(reason)
+        await self._notify_status(reason)
 
     async def _set_daily_generation_phase(
         self,
@@ -112,7 +127,7 @@ class DailyGenerationMixin:
             meta[DAILY_REFRESH_GENERATED_DATE] = operation.date
             return True
 
-        mutate_day = getattr(self.archive, "mutate_day", None)
+        mutate_day = getattr(self._archive(), "mutate_day", None)
         if callable(mutate_day):
             persisted = await mutate_day(operation.date, mark)
             if persisted is not None:
@@ -150,10 +165,11 @@ class DailyGenerationMixin:
         search_category: str = "今日生活背景",
         reject_if_busy: bool = False,
     ) -> DailyGenerationResult:
-        self._ensure_daily_generation_state()
         date_str = date.strftime("%Y-%m-%d")
-        async with self._daily_generation_guard:
-            current = self._daily_generation_active.get(date_str)
+        async with self._guard:
+            if self._closed:
+                raise RuntimeError("日程生成服务已关闭")
+            current = self._active.get(date_str)
             if (
                 current is not None
                 and current.task is not None
@@ -190,7 +206,7 @@ class DailyGenerationMixin:
                     )
                 )
                 operation.task = task
-                self._daily_generation_active[date_str] = operation
+                self._active[date_str] = operation
                 task.add_done_callback(self._consume_daily_generation_task)
                 reused = False
 
@@ -225,59 +241,62 @@ class DailyGenerationMixin:
         )
         web_inspiration = ""
         try:
-            regenerate_existing = bool(
-                force
-                and operation.source in {"dashboard_reset", "command_reset"}
-                and await self.archive.get_day(operation.date) is not None
-            )
-            if use_web:
-                await self._set_daily_generation_phase(operation, "searching")
-                logger.debug(f"{LOG_PREFIX} 日程任务进入联网搜索：任务={task_id}")
-                web_inspiration = await self.composer.search.inspiration(
-                    search_keyword,
-                    search_prompt,
-                    category=search_category,
-                    persona=await self.get_persona_text(),
-                    today=operation.date,
-                    trace_id=task_id,
+            # shield 只保护任务不被前台取消；租约由任务本身持有，直到结束。
+            lease = self._lease_factory() if self._lease_factory else nullcontext()
+            async with lease:
+                regenerate_existing = bool(
+                    force
+                    and operation.source in {"dashboard_reset", "command_reset"}
+                    and await self._archive().get_day(operation.date) is not None
                 )
-                logger.debug(f"{LOG_PREFIX} 日程任务联网搜索结束：任务={task_id}")
+                if use_web:
+                    await self._set_daily_generation_phase(operation, "searching")
+                    logger.debug(f"{LOG_PREFIX} 日程任务进入联网搜索：任务={task_id}")
+                    web_inspiration = await self._composer().search.inspiration(
+                        search_keyword,
+                        search_prompt,
+                        category=search_category,
+                        persona=await self._persona(),
+                        today=operation.date,
+                        trace_id=task_id,
+                    )
+                    logger.debug(f"{LOG_PREFIX} 日程任务联网搜索结束：任务={task_id}")
 
-            await self._set_daily_generation_phase(operation, "waiting")
-            if delete_existing:
-                logger.debug(
-                    f"{LOG_PREFIX} 日程任务采用生成成功后原子替换：任务={task_id}"
-                )
-            if not force:
-                existing = await self.archive.get_day(operation.date)
-                if existing is not None:
-                    day = existing
+                await self._set_daily_generation_phase(operation, "waiting")
+                if delete_existing:
+                    logger.debug(
+                        f"{LOG_PREFIX} 日程任务采用生成成功后原子替换：任务={task_id}"
+                    )
+                if not force:
+                    existing = await self._archive().get_day(operation.date)
+                    if existing is not None:
+                        day = existing
+                    else:
+                        await self._set_daily_generation_phase(operation, "generating")
+                        day = await self._composer().generate_daily(
+                            date=date,
+                            force=False,
+                            target_hour=target_hour,
+                            extra=extra,
+                            web_inspiration=web_inspiration,
+                        )
                 else:
                     await self._set_daily_generation_phase(operation, "generating")
-                    day = await self.composer.generate_daily(
+                    day = await self._composer().generate_daily(
                         date=date,
-                        force=False,
+                        force=True,
                         target_hour=target_hour,
                         extra=extra,
                         web_inspiration=web_inspiration,
+                        regenerate_existing=regenerate_existing,
                     )
-            else:
-                await self._set_daily_generation_phase(operation, "generating")
-                day = await self.composer.generate_daily(
-                    date=date,
-                    force=True,
-                    target_hour=target_hour,
-                    extra=extra,
-                    web_inspiration=web_inspiration,
-                    regenerate_existing=regenerate_existing,
-                )
 
-            if day is None:
-                raise RuntimeError("日程模型未生成有效生活安排")
-            day = await self._mark_daily_refresh_generated(day, operation)
-            failed_dates = getattr(self, "failed_dates", None)
-            if isinstance(failed_dates, dict):
-                failed_dates.pop(operation.date, None)
+                if day is None:
+                    raise RuntimeError("日程模型未生成有效生活安排")
+                day = await self._mark_daily_refresh_generated(day, operation)
+                failed_dates = self._failed_dates()
+                if isinstance(failed_dates, dict):
+                    failed_dates.pop(operation.date, None)
             operation.phase = "completed"
             operation.finished_at = (
                 datetime.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -307,35 +326,51 @@ class DailyGenerationMixin:
             )
             raise
         finally:
-            async with self._daily_generation_guard:
-                current = self._daily_generation_active.get(operation.date)
+            async with self._guard:
+                current = self._active.get(operation.date)
                 if current is operation:
-                    self._daily_generation_active.pop(operation.date, None)
-                self._daily_generation_last[operation.date] = operation
+                    self._active.pop(operation.date, None)
+                self._remember_finished(operation)
             await self._notify_daily_generation_status(
                 "daily_generation_completed"
                 if operation.phase == "completed"
                 else "daily_generation_failed"
             )
 
-    async def _cancel_daily_generation_tasks(self) -> None:
-        self._ensure_daily_generation_state()
-        async with self._daily_generation_guard:
+    def _remember_finished(self, operation: DailyGenerationOperation) -> None:
+        self._last.pop(operation.date, None)
+        self._last[operation.date] = operation
+        while len(self._last) > self.HISTORY_LIMIT:
+            self._last.pop(next(iter(self._last)))
+
+    async def close(self) -> None:
+        async with self._guard:
+            self._closed = True
+            operations = list(self._active.values())
             tasks = [
                 operation.task
-                for operation in self._daily_generation_active.values()
+                for operation in self._active.values()
                 if operation.task is not None and not operation.task.done()
             ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        # 尚未获得执行机会的任务没有进入 try/finally，由关闭方补齐终态。
+        async with self._guard:
+            for operation in operations:
+                if self._active.get(operation.date) is operation:
+                    self._active.pop(operation.date, None)
+                    operation.phase = "failed"
+                    operation.error = "日程生成已取消"
+                    operation.finished_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+                    self._remember_finished(operation)
 
 
 __all__ = [
     "DAILY_REFRESH_GENERATED_DATE",
     "DailyGenerationBusy",
-    "DailyGenerationMixin",
+    "DailyGenerationService",
     "DailyGenerationOperation",
     "DailyGenerationResult",
 ]

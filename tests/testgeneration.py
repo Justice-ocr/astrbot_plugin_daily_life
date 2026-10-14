@@ -4,8 +4,8 @@ import types
 import unittest
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
-from core.runtime.generation import DailyGenerationBusy, DailyGenerationMixin
-from core.runtime.spine.pulse import SpinePulseMixin
+from core.runtime.generation import DailyGenerationBusy, DailyGenerationService
+from componentfixtures import SpinePulseComponent
 
 
 class GenerationArchive:
@@ -66,15 +66,27 @@ class GenerationComposer:
         await self.allow_review.wait()
 
 
-class GenerationRuntime(DailyGenerationMixin, SpinePulseMixin):
+class GenerationRuntime(SpinePulseComponent):
     def __init__(self):
         self.generation_lock = asyncio.Lock()
-        self._init_daily_generation_state()
         self.archive = GenerationArchive()
         self.composer = GenerationComposer(self.archive)
         self.config = types.SimpleNamespace(storage=types.SimpleNamespace())
         self.failed_dates = {}
         self.status_reasons = []
+        self.daily_generation = DailyGenerationService(
+            archive=lambda: self.archive,
+            composer=lambda: self.composer,
+            persona=self.get_persona_text,
+            notify_status=self.mark_page_status_changed,
+            failed_dates=lambda: self.failed_dates,
+        )
+
+    async def run_daily_generation(self, **kwargs):
+        return await self.daily_generation.run_daily_generation(**kwargs)
+
+    def daily_generation_status(self, date_str=""):
+        return self.daily_generation.daily_generation_status(date_str)
 
     async def get_persona_text(self, scope=""):
         return "测试人格"
@@ -207,7 +219,7 @@ class DailyGenerationTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         await asyncio.wait_for(runtime.composer.search_started.wait(), timeout=1)
-        backend_task = runtime._daily_generation_active["2026-07-14"].task
+        backend_task = runtime.daily_generation._active["2026-07-14"].task
         caller.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await caller

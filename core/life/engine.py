@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 import uuid
@@ -21,7 +23,6 @@ from .tools import (
 )
 from .wardrobe import (
     format_outfit_components,
-    merge_outfit_components,
     normalize_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
@@ -30,6 +31,8 @@ from .wardrobe import (
     scene_category_for_place_kind,
     serialize_outfit_components,
 )
+
+from typing import Any, Protocol
 
 _CURRENT_APPEARANCE_META_KEYS = (
     "outfit_decision",
@@ -61,7 +64,176 @@ _PLANNED_APPEARANCE_META_KEYS = {
 }
 
 
-class DailyEngineMixin:
+class DailyEngineComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _action_timeline_index: Any
+    _append_daily_location_context: Any
+    _apply_lifecycle_to_day: Any
+    _audit_person_payload: Any
+    _audit_persona_appearance: Any
+    _build_autonomous_life_context: Any
+    _build_daily_replacement_context: Any
+    _build_history_schedule_summary: Any
+    _build_life_inertia_context: Any
+    _build_lifecycle_context: Any
+    _build_person_fact_context: Any
+    _build_previous_life_context: Any
+    _build_repair_prompt: Any
+    _build_timeline_prompt: Any
+    _build_weather_sections: Any
+    _build_world_context: Any
+    _call_llm_text: Any
+    _classify_weather_condition: Any
+    _cleanup_conversation: Any
+    _collect_recent_chat_context: Any
+    _daily_decision_outcome: Any
+    _daily_decision_text: Any
+    _daily_generation_check_time: Any
+    _daily_generation_context: Any
+    _daily_generation_memo_text: Any
+    _day_from_generation: Any
+    _ensure_week_plan: Any
+    _format_commitment_prompt: Any
+    _gen_lock: Any
+    _generation_provider_id: Any
+    _get_persona: Any
+    _get_provider: Any
+    _ground_generated_current_appearance: Any
+    _last_validation_issue_code: Any
+    _mark_style_catalog_references: Any
+    _meta_from_generation: Any
+    _normalize_extra: Any
+    _persist_daily_generation_success: Any
+    _persist_generated_day: Any
+    _prepare_daily_location_context: Any
+    _repeat_generation_issue: Any
+    _save_life_decision_record: Any
+    _set_validation_issue: Any
+    _style_catalog_context: Any
+    _style_catalog_new_outfit_selection: Any
+    _style_catalog_reference_appearance: Any
+    _style_catalog_reference_ids: Any
+    _style_catalog_resolve_new_outfit_reference_ids: Any
+    _validate_daily_payload: Any
+    archive: Any
+    config: Any
+    domains: Any
+    weather_client: Any
+
+
+async def _resolve_planned_outfit_catalog(
+    host: DailyEngineComponentContext, result: dict, *, manual_extra: bool
+) -> str:
+    """校验并展开计划换装的衣橱引用；不写数据库。"""
+    for raw_action in result.get("planned_actions") or []:
+        if not isinstance(raw_action, dict):
+            continue
+        if str(raw_action.get("action_type") or "").strip() != "change_outfit":
+            continue
+        payload = (
+            raw_action.get("payload")
+            if isinstance(raw_action.get("payload"), dict)
+            else {}
+        )
+        action_reference_ids = host._style_catalog_reference_ids(
+            payload.get("catalog_reference_ids")
+        )
+        timeline_index = host._action_timeline_index(raw_action)
+        timeline = result.get("timeline")
+        timeline_item = (
+            timeline[timeline_index]
+            if isinstance(timeline, list)
+            and timeline_index is not None
+            and 0 <= timeline_index < len(timeline)
+            and isinstance(timeline[timeline_index], dict)
+            else {}
+        )
+        place_kind = str(timeline_item.get("place_kind") or "").strip()
+        action_scene_category = normalize_outfit_scene_category(
+            payload.get("scene_category"),
+            default=scene_category_for_place_kind(place_kind),
+        )
+        action_components = normalize_outfit_components(
+            payload.get("outfit_components")
+        )
+        current_components = normalize_outfit_components(
+            result.get("outfit_components")
+        )
+        action_main = action_components.get("main_clothing") or {}
+        current_main = current_components.get("main_clothing") or {}
+        partial_action = bool(
+            action_components
+            and str(action_main.get("description") or "").strip()
+            and str(current_main.get("description") or "").strip()
+            and str(action_main.get("description") or "").strip()
+            == str(current_main.get("description") or "").strip()
+        )
+        if manual_extra or partial_action:
+            action_appearance = await host._style_catalog_reference_appearance(
+                action_reference_ids,
+                scene_category=(
+                    "" if manual_extra else action_scene_category
+                ),
+            )
+            if partial_action:
+                action_appearance.pop("outfit", None)
+                partial_action_components = normalize_outfit_components(
+                    action_appearance.get("outfit_components")
+                )
+                partial_action_components.pop("main_clothing", None)
+                if partial_action_components:
+                    action_appearance["outfit_components"] = (
+                        serialize_outfit_components(partial_action_components)
+                    )
+                else:
+                    action_appearance.pop("outfit_components", None)
+            action_issue = ""
+        else:
+            (
+                action_appearance,
+                action_issue,
+            ) = await host._style_catalog_new_outfit_selection(
+                action_reference_ids,
+                scene_category=action_scene_category,
+            )
+        if action_issue:
+            host._set_validation_issue("style_catalog_required")
+            return f"计划换装未采用衣橱候选：{action_issue}"
+        component_ledger = serialize_outfit_components(
+            reconcile_outfit_components_for_scene(
+                payload.get("outfit_components"),
+                action_scene_category,
+                catalog_components=action_appearance.get("outfit_components"),
+                catalog_selected=bool(
+                    action_reference_ids and action_appearance.get("outfit")
+                ),
+            )
+        )
+        if component_ledger:
+            payload["outfit_components"] = component_ledger
+        payload["scene_category"] = action_scene_category
+        if action_appearance.get("outfit"):
+            action_visible_outfit = format_outfit_components(
+                json.loads(component_ledger) if component_ledger else {}
+            )
+            raw_action["target"] = (
+                action_visible_outfit
+                if action_visible_outfit
+                else action_appearance["outfit"]
+            )
+            payload["catalog_reference_ids"] = action_reference_ids
+            reserve = str(action_appearance.get("outing_reserve") or "").strip()
+            if reserve:
+                payload["outing_outfit_reserve"] = reserve
+            raw_action["payload"] = payload
+    return ""
+
+
+class DailyEngineComponent:
+    def __init__(self, context: DailyEngineComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _normalize_extra(extra: str | None) -> str:
         return str(extra or "").strip()
@@ -75,7 +247,7 @@ class DailyEngineMixin:
         if target_hour is not None:
             return date.replace(hour=target_hour, minute=0, second=0, microsecond=0)
         hour, minute = parse_schedule_time(
-            getattr(self.config, "schedule_time", "07:00")
+            getattr(self.context.config, "schedule_time", "07:00")
         )
         boundary = date.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if date < boundary:
@@ -92,10 +264,10 @@ class DailyEngineMixin:
         regenerate_existing: bool = False,
     ) -> dict:
         date_str = date.strftime("%Y-%m-%d")
-        check_time = self._daily_generation_check_time(date, target_hour=target_hour)
+        check_time = self.context._daily_generation_check_time(date, target_hour=target_hour)
         time_context = build_time_context(
             check_time,
-            getattr(self.config, "schedule_time", "07:00")
+            getattr(self.context.config, "schedule_time", "07:00")
             if target_hour is None
             else "",
         )
@@ -103,40 +275,40 @@ class DailyEngineMixin:
         period = time_context.period
         period_cn = time_context.period_cn
 
-        persona = await self._get_persona()
-        city_resolver = getattr(self.domains, "resolve_weather_city", None)
+        persona = await self.context._get_persona()
+        city_resolver = getattr(self.context.domains, "resolve_weather_city", None)
         city = await city_resolver() if callable(city_resolver) else ""
         weather_data = (
-            await self.weather_client.get_weather(city)
+            await self.context.weather_client.get_weather(city)
             if city
             else "居住地尚未配置或无法通过高德确认现实城市，天气不可用"
         )
-        weather_info = analyze_weather(await self._classify_weather_condition(weather_data))
-        weather_section, constraint_section = self._build_weather_sections(weather_info)
+        weather_info = analyze_weather(await self.context._classify_weather_condition(weather_data))
+        weather_section, constraint_section = self.context._build_weather_sections(weather_info)
         calendar_context = format_calendar_context(date)
         season_context = format_season_context(date)
-        week_plan = await self._ensure_week_plan()
+        week_plan = await self.context._ensure_week_plan()
         today_hint = resolve_daily_hint(week_plan, date)
         today_suggested = resolve_daily_suggested(week_plan, date)
 
-        history_schedules_str = await self._build_history_schedule_summary(date)
-        previous_context = await self._build_previous_life_context(
+        history_schedules_str = await self.context._build_history_schedule_summary(date)
+        previous_context = await self.context._build_previous_life_context(
             date, include_outfit=False
         )
-        recent_chats = await self._collect_recent_chat_context(persona)
+        recent_chats = await self.context._collect_recent_chat_context(persona)
         replaced_day = (
-            await self.archive.get_day(date_str) if regenerate_existing else None
+            await self.context.archive.get_day(date_str) if regenerate_existing else None
         )
-        replacement_context = self._build_daily_replacement_context(replaced_day)
-        person_facts = await self._build_person_fact_context(
+        replacement_context = self.context._build_daily_replacement_context(replaced_day)
+        person_facts = await self.context._build_person_fact_context(
             persona=persona,
-            explicit_instruction=self._normalize_extra(extra),
+            explicit_instruction=self.context._normalize_extra(extra),
         )
-        memo_str = await self._daily_generation_memo_text(
+        memo_str = await self.context._daily_generation_memo_text(
             date_str, extra=extra, web_inspiration=web_inspiration
         )
-        due_commitments = await self.archive.get_due_commitments(date_str)
-        commitment_text = self._format_commitment_prompt(due_commitments)
+        due_commitments = await self.context.archive.get_due_commitments(date_str)
+        commitment_text = self.context._format_commitment_prompt(due_commitments)
         if commitment_text:
             memo_str += (
                 "\n\n【已答应过的承诺/约定】\n"
@@ -145,31 +317,31 @@ class DailyEngineMixin:
                 f"{commitment_text}"
             )
 
-        world_context = await self._build_world_context(
+        world_context = await self.context._build_world_context(
             date,
             "自主生活决策",
             weather_info,
             [today_hint, today_suggested, memo_str, recent_chats],
         )
         domain_context_builder = getattr(
-            getattr(self, "domains", None), "format_context", None
+            getattr(self.context, "domains", None), "format_context", None
         )
         if callable(domain_context_builder):
             domain_context = await domain_context_builder()
             if domain_context:
                 world_context = f"{world_context}\n\n{domain_context}".strip()
-        wardrobe_day = await self.archive.get_day(date_str) or DayRecord(date=date_str)
+        wardrobe_day = await self.context.archive.get_day(date_str) or DayRecord(date=date_str)
         wardrobe_day.weather_info = WeatherInfo.from_value(weather_info)
-        wardrobe_weather = wardrobe_conditions(wardrobe_day, check_time, residence=str(getattr(getattr(self.config, 'domains', None), 'home_address', '') or ''))
-        style_catalog_context = await self._style_catalog_context(limit=14, conditions=wardrobe_weather)
+        wardrobe_weather = wardrobe_conditions(wardrobe_day, check_time, residence=str(getattr(getattr(self.context.config, 'domains', None), 'home_address', '') or ''))
+        style_catalog_context = await self.context._style_catalog_context(limit=14, conditions=wardrobe_weather)
         if style_catalog_context:
             world_context = f"{world_context}\n\n{style_catalog_context}".strip()
-        prompt = self._build_timeline_prompt(
+        prompt = self.context._build_timeline_prompt(
             date_str,
             period_cn,
             weather_section,
             constraint_section,
-            await self._build_life_inertia_context(date),
+            await self.context._build_life_inertia_context(date),
             previous_context,
             history_schedules_str,
             memo_str,
@@ -182,11 +354,11 @@ class DailyEngineMixin:
             recent_chats=recent_chats,
             schedule_intent="由 LLM 自主决定",
             world_context=world_context,
-            lifecycle_context=await self._build_lifecycle_context(
+            lifecycle_context=await self.context._build_lifecycle_context(
                 date,
                 exclude_daily_plan_date=date_str if regenerate_existing else "",
             ),
-            autonomy_context=await self._build_autonomous_life_context(date),
+            autonomy_context=await self.context._build_autonomous_life_context(date),
             person_fact_context=person_facts.format_for_generation(),
             replacement_context=replacement_context,
             expected_coverage="target_period"
@@ -215,8 +387,8 @@ class DailyEngineMixin:
             "style_catalog_context": style_catalog_context,
             "due_commitments": due_commitments,
             "prompt": prompt,
-            "manual_extra": self._normalize_extra(extra),
-            "web_inspiration": self._normalize_extra(web_inspiration),
+            "manual_extra": self.context._normalize_extra(extra),
+            "web_inspiration": self.context._normalize_extra(web_inspiration),
             "expected_coverage": "target_period"
             if target_hour is not None
             else "full_day",
@@ -248,11 +420,11 @@ class DailyEngineMixin:
         extra: str | None = None,
         web_inspiration: str = "",
     ) -> str:
-        today_data_temp = await self.archive.get_day(date_str)
+        today_data_temp = await self.context.archive.get_day(date_str)
         memo_str = today_data_temp.memo if today_data_temp else ""
         if extra:
             memo_str += f"\n- 用户实时指令：{extra}"
-        web_inspiration = self._normalize_extra(web_inspiration)
+        web_inspiration = self.context._normalize_extra(web_inspiration)
         if web_inspiration:
             memo_str += (
                 "\n\n【联网灵感参考】\n"
@@ -297,13 +469,13 @@ class DailyEngineMixin:
                 current_scene_category = scene_category_for_place_kind(
                     occurred[-1].get("place_kind"), default=current_scene_category
                 )
-        current_reference_ids = self._style_catalog_reference_ids(
+        current_reference_ids = self.context._style_catalog_reference_ids(
             outfit_decision.get("catalog_reference_ids")
         )
         full_outfit_change = outfit_choice in {"change", "sleepwear", "outdoor"}
         if full_outfit_change and not context["manual_extra"]:
             current_reference_ids = (
-                await self._style_catalog_resolve_new_outfit_reference_ids(
+                await self.context._style_catalog_resolve_new_outfit_reference_ids(
                     current_reference_ids,
                     scene_category=current_scene_category,
                 )
@@ -314,15 +486,15 @@ class DailyEngineMixin:
             (
                 catalog_appearance,
                 catalog_issue,
-            ) = await self._style_catalog_new_outfit_selection(
+            ) = await self.context._style_catalog_new_outfit_selection(
                 current_reference_ids,
                 scene_category=current_scene_category,
             )
             if catalog_issue:
-                self._set_validation_issue("style_catalog_required")
+                self.context._set_validation_issue("style_catalog_required")
                 return None, catalog_issue
         else:
-            catalog_appearance = await self._style_catalog_reference_appearance(
+            catalog_appearance = await self.context._style_catalog_reference_appearance(
                 current_reference_ids,
                 scene_category=""
                 if context["manual_extra"]
@@ -343,119 +515,19 @@ class DailyEngineMixin:
                 else:
                     catalog_appearance.pop("outfit_components", None)
 
-        for raw_action in result.get("planned_actions") or []:
-            if not isinstance(raw_action, dict):
-                continue
-            if str(raw_action.get("action_type") or "").strip() != "change_outfit":
-                continue
-            payload = (
-                raw_action.get("payload")
-                if isinstance(raw_action.get("payload"), dict)
-                else {}
-            )
-            action_reference_ids = self._style_catalog_reference_ids(
-                payload.get("catalog_reference_ids")
-            )
-            timeline_index = self._action_timeline_index(raw_action)
-            timeline = result.get("timeline")
-            timeline_item = (
-                timeline[timeline_index]
-                if isinstance(timeline, list)
-                and timeline_index is not None
-                and 0 <= timeline_index < len(timeline)
-                and isinstance(timeline[timeline_index], dict)
-                else {}
-            )
-            place_kind = str(timeline_item.get("place_kind") or "").strip()
-            action_scene_category = normalize_outfit_scene_category(
-                payload.get("scene_category"),
-                default=scene_category_for_place_kind(place_kind),
-            )
-            action_components = normalize_outfit_components(
-                payload.get("outfit_components")
-            )
-            current_components = normalize_outfit_components(
-                result.get("outfit_components")
-            )
-            action_main = action_components.get("main_clothing") or {}
-            current_main = current_components.get("main_clothing") or {}
-            partial_action = bool(
-                action_components
-                and str(action_main.get("description") or "").strip()
-                and str(current_main.get("description") or "").strip()
-                and str(action_main.get("description") or "").strip()
-                == str(current_main.get("description") or "").strip()
-            )
-            if context["manual_extra"] or partial_action:
-                action_appearance = await self._style_catalog_reference_appearance(
-                    action_reference_ids,
-                    scene_category=(
-                        "" if context["manual_extra"] else action_scene_category
-                    ),
-                )
-                if partial_action:
-                    action_appearance.pop("outfit", None)
-                    partial_action_components = normalize_outfit_components(
-                        action_appearance.get("outfit_components")
-                    )
-                    partial_action_components.pop("main_clothing", None)
-                    if partial_action_components:
-                        action_appearance["outfit_components"] = (
-                            serialize_outfit_components(partial_action_components)
-                        )
-                    else:
-                        action_appearance.pop("outfit_components", None)
-                action_issue = ""
-            else:
-                (
-                    action_appearance,
-                    action_issue,
-                ) = await self._style_catalog_new_outfit_selection(
-                    action_reference_ids,
-                    scene_category=action_scene_category,
-                )
-            if action_issue:
-                self._set_validation_issue("style_catalog_required")
-                return None, f"计划换装未采用衣橱候选：{action_issue}"
-            component_ledger = serialize_outfit_components(
-                reconcile_outfit_components_for_scene(
-                    merge_outfit_components(
-                        payload.get("outfit_components"),
-                        action_appearance.get("outfit_components"),
-                    ),
-                    action_scene_category,
-                    catalog_components=action_appearance.get("outfit_components"),
-                    catalog_selected=bool(
-                        action_reference_ids and action_appearance.get("outfit")
-                    ),
-                )
-            )
-            if component_ledger:
-                payload["outfit_components"] = component_ledger
-            payload["scene_category"] = action_scene_category
-            if action_appearance.get("outfit"):
-                action_visible_outfit = format_outfit_components(
-                    json.loads(component_ledger) if component_ledger else {}
-                )
-                raw_action["target"] = (
-                    action_visible_outfit
-                    if action_scene_category in {"home", "sleep"}
-                    and action_visible_outfit
-                    else action_appearance["outfit"]
-                )
-                payload["catalog_reference_ids"] = action_reference_ids
-                reserve = str(action_appearance.get("outing_reserve") or "").strip()
-                if reserve:
-                    payload["outing_outfit_reserve"] = reserve
-                raw_action["payload"] = payload
+        planned_issue = await _resolve_planned_outfit_catalog(
+            self.context, result, manual_extra=context["manual_extra"]
+        )
+        if planned_issue:
+            return None, planned_issue
 
-        day = self._day_from_generation(
+        day = self.context._day_from_generation(
             result,
             date_str=context["date_str"],
             period=context["period"],
             weather_str=context["weather_str_for_prompt"],
             weather_info=context["weather_info"],
-            meta=self._meta_from_generation(result),
+            meta=self.context._meta_from_generation(result),
             memo="",
         )
         if current_scene_category:
@@ -469,12 +541,8 @@ class DailyEngineMixin:
             )
         catalog_outfit = catalog_appearance.pop("outfit", "")
         outing_reserve = catalog_appearance.pop("outing_reserve", "")
-        day_components = merge_outfit_components(
-            day.meta.get("outfit_components"),
-            catalog_appearance.get("outfit_components"),
-        )
         day_components = reconcile_outfit_components_for_scene(
-            day_components,
+            day.meta.get("outfit_components"),
             current_scene_category,
             catalog_components=catalog_appearance.get("outfit_components"),
             catalog_selected=bool(
@@ -483,11 +551,10 @@ class DailyEngineMixin:
         )
         if day_components:
             day.meta["outfit_components"] = serialize_outfit_components(day_components)
-            if current_scene_category in {"home", "sleep"}:
-                visible_outfit = format_outfit_components(day_components)
-                if visible_outfit:
-                    day.outfit = visible_outfit
-        if catalog_outfit and outfit_choice != "keep":
+            visible_outfit = format_outfit_components(day_components)
+            if visible_outfit:
+                day.outfit = visible_outfit
+        if not day_components and catalog_outfit and outfit_choice != "keep":
             day.outfit = catalog_outfit
         if outing_reserve:
             day.meta["outing_outfit_reserve"] = outing_reserve
@@ -499,7 +566,7 @@ class DailyEngineMixin:
                     day.meta[key] = serialize_outfit_components(value)
             elif not str(day.meta.get(key) or "").strip():
                 day.meta[key] = value
-        repeat_issue = await self._repeat_generation_issue(
+        repeat_issue = await self.context._repeat_generation_issue(
             day,
             date,
             result,
@@ -510,7 +577,7 @@ class DailyEngineMixin:
             return None, repeat_issue
 
         logger.debug("[日程生成] 成功解析结构化数据")
-        day = await self._ground_generated_current_appearance(day, context=context)
+        day = await self.context._ground_generated_current_appearance(day, context=context)
         # 只在旧记录被标为用户确认、且本轮会续接它时做二次审计。
         # 普通首轮生成仍由主日程提示词完成，避免为每次生成增加模型调用。
         appearance_audit_required = bool(
@@ -534,7 +601,7 @@ class DailyEngineMixin:
             )
             if any(planned.values()):
                 slots["planned"] = planned
-            audited = await self._audit_persona_appearance(
+            audited = await self.context._audit_persona_appearance(
                 slots,
                 persona=context.get("persona", ""),
                 original_instruction=context.get("manual_extra", ""),
@@ -561,27 +628,27 @@ class DailyEngineMixin:
                     day.meta[plan_key] = value
                 else:
                     day.meta.pop(plan_key, None)
-        day = await self._apply_lifecycle_to_day(day, date, result)
-        await self._persist_generated_day(
+        day = await self.context._apply_lifecycle_to_day(day, date, result)
+        await self.context._persist_generated_day(
             context["date_str"], day, context["due_commitments"]
         )
-        await self._mark_style_catalog_references(current_reference_ids)
+        await self.context._mark_style_catalog_references(current_reference_ids)
         if current_reference_ids:
             logger.debug(
                 "[日程生成] 当前穿搭已采用视觉衣橱候选："
                 + ",".join(str(item) for item in current_reference_ids)
             )
-        decision_text, decision_reason, decision_evidence = self._daily_decision_text(
+        decision_text, decision_reason, decision_evidence = self.context._daily_decision_text(
             result, day
         )
-        await self._save_life_decision_record(
+        await self.context._save_life_decision_record(
             kind="daily_plan",
             date=context["date_str"],
             subject=context["date_str"],
             decision=decision_text,
             reason=decision_reason,
             evidence=decision_evidence,
-            outcome=self._daily_decision_outcome(result),
+            outcome=self.context._daily_decision_outcome(result),
         )
         logger.debug(
             f"[日程生成] 生成成功：{context['date_str']}（{context['period_cn']}），时间轴节点数：{len(day.timeline)}"
@@ -605,7 +672,7 @@ class DailyEngineMixin:
             return day
 
         previous_date = (check_time.date() - datetime.timedelta(days=1)).isoformat()
-        previous_day = await self.archive.get_day(previous_date)
+        previous_day = await self.context.archive.get_day(previous_date)
         previous_outfit = current_appearance_values(previous_day)["outfit"]
         previous_outfit_period = "最终"
         if not previous_outfit:
@@ -654,13 +721,13 @@ class DailyEngineMixin:
         web_inspiration: str = "",
         regenerate_existing: bool = False,
     ):
-        async with self._gen_lock:
+        async with self.context._gen_lock:
             if date is None:
                 date = life_now()
             date_str = date.strftime("%Y-%m-%d")
 
             if not force:
-                existing = await self.archive.get_day(date_str)
+                existing = await self.context.archive.get_day(date_str)
                 if existing:
                     return existing
 
@@ -668,7 +735,7 @@ class DailyEngineMixin:
                 "[日程生成] 开始生成今日生活背景，依据近期记忆和生活惯性自主决策"
             )
 
-            context = await self._daily_generation_context(
+            context = await self.context._daily_generation_context(
                 date,
                 target_hour=target_hour,
                 extra=extra,
@@ -679,12 +746,12 @@ class DailyEngineMixin:
             gen_session_id = f"daily_life_gen_{uuid.uuid4().hex[:8]}"
             location_session_id = f"{gen_session_id}_locations"
             try:
-                provider_id = self._generation_provider_id()
-                provider = await self._get_provider(provider_id)
+                provider_id = self.context._generation_provider_id()
+                provider = await self.context._get_provider(provider_id)
                 if not provider:
                     return None
 
-                domain_service = getattr(self, "domains", None)
+                domain_service = getattr(self.context, "domains", None)
                 location_auditor = getattr(
                     domain_service, "audit_daily_locations", None
                 )
@@ -716,14 +783,14 @@ class DailyEngineMixin:
                     (
                         location_context,
                         preselected_places,
-                    ) = await self._prepare_daily_location_context(
+                    ) = await self.context._prepare_daily_location_context(
                         context=context,
                         provider=provider,
                         provider_id=provider_id,
                         session_id=location_session_id,
                     )
                 logger.debug("[日程生成] 开始调用大语言模型生成最终日程……")
-                current_prompt = self._append_daily_location_context(
+                current_prompt = self.context._append_daily_location_context(
                     context["prompt"], location_context
                 )
                 max_attempts = (
@@ -734,7 +801,7 @@ class DailyEngineMixin:
                     else 2
                 )
                 for attempt in range(max_attempts):
-                    completion_text = await self._call_llm_text(
+                    completion_text = await self.context._call_llm_text(
                         provider,
                         current_prompt,
                         gen_session_id,
@@ -747,14 +814,14 @@ class DailyEngineMixin:
                         continue
 
                     result = extract_json_from_text(completion_text)
-                    ok, reason = self._validate_daily_payload(
+                    ok, reason = self.context._validate_daily_payload(
                         result,
                         context["manual_extra"],
                         expected_coverage=context["expected_coverage"],
                         current_minutes=context["current_minutes"],
                     )
                     if ok:
-                        audit = await self._audit_person_payload(
+                        audit = await self.context._audit_person_payload(
                             result,
                             context=context["person_facts"],
                             patterns=DAILY_PERSON_TEXT_PATHS,
@@ -765,10 +832,10 @@ class DailyEngineMixin:
                         if audit.unresolved:
                             ok = False
                             reason = audit.reason
-                            self._set_validation_issue("person_fact_conflict")
+                            self.context._set_validation_issue("person_fact_conflict")
                         else:
                             result = audit.payload
-                            ok, reason = self._validate_daily_payload(
+                            ok, reason = self.context._validate_daily_payload(
                                 result,
                                 context["manual_extra"],
                                 expected_coverage=context["expected_coverage"],
@@ -788,9 +855,9 @@ class DailyEngineMixin:
                             if location_reason:
                                 ok = False
                                 reason = location_reason
-                                self._set_validation_issue("location_audit_invalid")
+                                self.context._set_validation_issue("location_audit_invalid")
                             else:
-                                ok, reason = self._validate_daily_payload(
+                                ok, reason = self.context._validate_daily_payload(
                                     result,
                                     context["manual_extra"],
                                     expected_coverage=context["expected_coverage"],
@@ -800,7 +867,7 @@ class DailyEngineMixin:
                         (
                             day,
                             repeat_issue,
-                        ) = await self._persist_daily_generation_success(
+                        ) = await self.context._persist_daily_generation_success(
                             result,
                             date=date,
                             context=context,
@@ -817,14 +884,14 @@ class DailyEngineMixin:
                         f"[日程生成] 生成结果未通过校验：{reason}（第 {attempt + 1} 次）"
                     )
                     if attempt < max_attempts - 1:
-                        current_prompt = self._build_repair_prompt(
+                        current_prompt = self.context._build_repair_prompt(
                             completion_text,
                             reason,
                             context["manual_extra"],
                             context["web_inspiration"],
                             expected_coverage=context["expected_coverage"],
                             issue_code=str(
-                                getattr(self, "_last_validation_issue_code", "") or ""
+                                getattr(self.context, "_last_validation_issue_code", "") or ""
                             ),
                             person_fact_context=context[
                                 "person_facts"
@@ -837,9 +904,9 @@ class DailyEngineMixin:
             except Exception as e:
                 logger.error(f"[日程生成] 生成失败：{e}")
             finally:
-                await self._cleanup_conversation(location_session_id)
-                await self._cleanup_conversation(gen_session_id)
+                await self.context._cleanup_conversation(location_session_id)
+                await self.context._cleanup_conversation(gen_session_id)
             return None
 
 
-__all__ = ["DailyEngineMixin"]
+__all__ = ["DailyEngineComponent"]

@@ -1,5 +1,4 @@
 import json
-from difflib import SequenceMatcher
 
 OUTFIT_SCENE_CATEGORY_ENUM = "home | sleep | outdoor | public | mixed"
 OUTFIT_STYLE_POOL_ENUM = "sleep_styles | outfit_styles | mixed"
@@ -139,20 +138,10 @@ def normalize_outfit_components(value: object) -> dict[str, dict[str, str]]:
         else:
             continue
         normalized[key] = {"state": state, "description": description}
-    # 早期记录可能在 main_clothing 中重复包含其他结构化组成部分。
-    main = normalized.get("main_clothing")
-    if main:
-        text = main["description"]
-        for key, item in normalized.items():
-            if key == "main_clothing" or not item["description"]:
-                continue
-            name = item["description"].partition("，")[0].strip(" ，。；、")
-            if not name:
-                continue
-            match = SequenceMatcher(None, text, name, autojunk=False).find_longest_match()
-            if match.size >= 3 and match.size / len(name) >= 0.65:
-                text = text[:match.a] + text[match.a + match.size:]
-        main["description"] = text.strip(" ，,。；;、")
+        if isinstance(item, dict):
+            presence = str(item.get("home_presence") or "").strip().lower()
+            if presence in {"home", "outdoor", "both"}:
+                normalized[key]["home_presence"] = presence
     return normalized
 
 
@@ -184,40 +173,21 @@ def reconcile_outfit_components_for_scene(
 ) -> dict[str, dict[str, str]]:
     """使穿搭组成记录与当前场景保持一致。
 
-    存在衣橱状态时以其为准。组成部分没有明确场景用途时，
+    衣橱提供缺失的外观与场景用途，不覆盖已经确认的穿脱状态。
+    组成部分没有明确场景用途时，
     可选鞋履和随身配饰在居家或睡眠场景默认处于待用状态；
     衣橱状态明确适合居家的组成部分仍可继续使用。
     """
 
     components = normalize_outfit_components(value)
-    category = normalize_outfit_scene_category(scene_category, default="")
-    if category not in {"home", "sleep"}:
-        return components
-
     catalog = normalize_outfit_components(catalog_components)
     for key, item in catalog.items():
-        state = item.get("state")
-        if state in {"worn", "carried", "staged", "removed"}:
-            components[key] = item
-
-    for key in ("footwear", "carried_accessories"):
-        item = components.get(key)
-        if not item:
-            continue
-        catalog_item = catalog.get(key)
-        if catalog_item and catalog_item.get("state") in {
-            "worn",
-            "carried",
-            "staged",
-            "removed",
-        }:
-            continue
-        if item.get("state") in {"worn", "carried", "unknown"}:
-            components[key] = {
-                "state": "staged",
-                "description": item.get("description", ""),
-            }
-    return components
+        current = components.get(key)
+        if current is None or current.get("state") == "unknown":
+            components[key] = dict(item)
+        elif item.get("home_presence"):
+            current["home_presence"] = item["home_presence"]
+    return project_outfit_components_for_scene(components, scene_category)
 
 
 def project_outfit_components_for_scene(
@@ -225,8 +195,8 @@ def project_outfit_components_for_scene(
 ) -> dict[str, dict[str, str]]:
     """根据已保存的穿搭事实，确定当前场景中可见的组成部分。
 
-    此操作只读：组成记录保留鞋履或包曾在外出时穿戴的历史事实，
-    在居家场景中则将其展示为待用状态。
+    此操作只读：外出鞋包在居家场景展示为待用，明确适合居家的
+    鞋饰保留已确认状态；已脱下的物品不会因场景切换重新穿上。
     """
 
     components = normalize_outfit_components(value)
@@ -235,11 +205,15 @@ def project_outfit_components_for_scene(
         return components
     for key in ("footwear", "carried_accessories"):
         item = components.get(key)
-        if not item or item.get("state") not in {"worn", "carried", "unknown"}:
+        if (
+            not item
+            or item.get("state") not in {"worn", "carried", "unknown"}
+            or item.get("home_presence") in {"home", "both"}
+        ):
             continue
         components[key] = {
+            **item,
             "state": "staged",
-            "description": item.get("description", ""),
         }
     return components
 
@@ -263,8 +237,8 @@ def synchronize_outfit_components_for_scene(
             item = components.get(key)
             if item and item.get("state") == "staged":
                 components[key] = {
+                    **item,
                     "state": state,
-                    "description": item.get("description", ""),
                 }
     return components
 
@@ -334,7 +308,8 @@ OUTFIT_CONTINUITY_RULES = (
     "main_clothing 只包含主体上衣、下装或连衣裙，不得重复鞋履、外套或配饰；各 description 只写物品名称和外观，不写已脱下等状态，状态只填 state。"
     "每次更新都要让账本与 scene_category、当前活动和 outfit 同步；没有变化的组成沿用原状态，不要凭空清空或新增。\n"
     "决定 keep 前分别审视主体服装、鞋履、外层和随身配饰是否适合当前活动；不能因为主体衣物仍舒适，就忽略其他组成对居住、家务、休息、睡眠、天气或公共场景的不适配。\n"
-    "回家、进入室内或时段变化不等于已经换衣；衣服仍舒适干净或之后还要出门时可以继续穿。\n"
+    "回家、进入室内或时段变化不等于已经换衣；衣服仍舒适干净且适合当前场合与天气时继续穿，"
+    "需要时只调整不适配的鞋履、外层或配饰。\n"
     "换装采用事件驱动：普通相邻活动、用餐、聊天、阅读、办公或单纯时段推进时，应延续同一套合适衣服；"
     "只有起床后从睡眠穿搭转为日间穿搭、睡前/洗澡、运动或出汗、淋湿弄脏、明显冷热不适、正式程度确实变化等事实，才考虑更换主体服装。"
     "同一天再次更换主体服装必须有上一次换装之后新发生的依据，不能为了丰富生活记录反复换衣。\n"

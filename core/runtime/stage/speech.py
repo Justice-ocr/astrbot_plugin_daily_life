@@ -9,8 +9,24 @@ from ..markers import LOG_PREFIX
 from .error import MediaPromptExtractionError
 from .lens import clean_director_text
 
+from typing import Protocol
 
-class StageVoiceMixin:
+
+class StageVoiceComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _media_director_call: Any
+    _media_director_context_text: Any
+    _media_director_current_day: Any
+    _media_director_emotion_context_text: Any
+    _media_director_recent_context_text: Any
+    _media_video_prompt_from_payload: Any
+
+
+class StageVoiceComponent:
+    def __init__(self, context: StageVoiceComponentContext) -> None:
+        self.context = context
+
     def _media_video_prompt_from_payload(self, payload: dict[str, Any]) -> str:
         image = clean_director_text(payload.get("image"), 260)
         camera = clean_director_text(payload.get("camera"), 220)
@@ -35,14 +51,14 @@ class StageVoiceMixin:
         if not original_prompt:
             return ""
         try:
-            day, now, using_extended_night = await self._media_director_current_day()
-            context = self._media_director_context_text(day, now, using_extended_night)
-            emotion_context = await self._media_director_emotion_context_text(
+            day, now, using_extended_night = await self.context._media_director_current_day()
+            context = self.context._media_director_context_text(day, now, using_extended_night)
+            emotion_context = await self.context._media_director_emotion_context_text(
                 day, event=event
             )
             if emotion_context:
                 context = f"{context}\n{emotion_context}"
-            recent_context = await self._media_director_recent_context_text(event)
+            recent_context = await self.context._media_director_recent_context_text(event)
             fixed = f"""你是生活感短视频导演兼声音设计师。请根据画面要求和当前生活上下文，生成视频提示词的画面、动态和声音设计。
 要求：
 - 只输出 JSON 对象，不要解释。
@@ -61,10 +77,10 @@ JSON 字段：
                 f"最近对话场景锚点（优先级高于生活背景）：\n{recent_context}\n\n"
                 f"原始视频要求（最终视频需求，必须回应）：{original_prompt}"
             )
-            payload = await self._media_director_call(
+            payload = await self.context._media_director_call(
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="视频生成请求")
             )
-            prompt = self._media_video_prompt_from_payload(payload)
+            prompt = self.context._media_video_prompt_from_payload(payload)
             logger.debug(f"{LOG_PREFIX} 视频智能提取：{prompt[:180]}")
             return prompt
         except Exception as exc:

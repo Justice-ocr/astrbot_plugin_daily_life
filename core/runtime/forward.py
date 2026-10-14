@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import inspect
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,23 +21,34 @@ class TextImageSource:
     message_id: str = ""
 
 
-class TextForwardMixin:
+class TextForwardService:
     """暂存成功文本转图像的原文，并按需通过 QQ 合并转发发送。"""
 
     _T2I_SOURCE_ATTR = "_daily_life_t2i_source_text"
     _T2I_DECISION_ATTR = "_daily_life_t2i_default_send"
-    _T2I_FORWARD_MAX_RECORDS = 5
-    _T2I_FORWARD_TTL_SECONDS = 2 * 60 * 60
+    MAX_RECORDS = 5
+    TTL_SECONDS = 2 * 60 * 60
 
-    def _init_t2i_forward_cache(self) -> None:
-        self._t2i_forward_cache: dict[str, list[TextImageSource]] = {}
+    def __init__(
+        self,
+        *,
+        context: Any,
+        keep_default_send: Callable[[Any, str], bool],
+        log_outbound: Callable[..., Awaitable[bool]],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._context = context
+        self._keep_default_send = keep_default_send
+        self._log_outbound = log_outbound
+        self._clock = clock
+        self._records: dict[str, list[TextImageSource]] = {}
 
-    def _t2i_forward_store(self) -> dict[str, list[TextImageSource]]:
-        store = getattr(self, "_t2i_forward_cache", None)
-        if not isinstance(store, dict):
-            self._init_t2i_forward_cache()
-            store = self._t2i_forward_cache
-        return store
+    def evict_scopes(self, scopes: set[str]) -> None:
+        for scope in scopes:
+            self._records.pop(scope, None)
+
+    def clear(self) -> None:
+        self._records.clear()
 
     @staticmethod
     def _t2i_forward_scope(event: Any) -> str:
@@ -54,10 +65,6 @@ class TextForwardMixin:
             except (AttributeError, TypeError, ValueError):
                 pass
         return str(getattr(event, "message_id", "") or "").strip()
-
-    @staticmethod
-    def _t2i_forward_now() -> float:
-        return time.monotonic()
 
     @classmethod
     def _t2i_forward_is_image(cls, item: Any) -> bool:
@@ -89,7 +96,7 @@ class TextForwardMixin:
             return None
         return str(getattr(item, "text", "") or "")
 
-    def capture_t2i_source_before_send(self, event: Any) -> bool:
+    def capture_before_send(self, event: Any) -> bool:
         """在聊天表达处理之前记录可能被框架转图的原始文本。"""
 
         result = getattr(event, "get_result", lambda: None)()
@@ -105,19 +112,18 @@ class TextForwardMixin:
         source = "".join(parts)
         if not source:
             return False
-        checker = getattr(self, "_chat_style_should_keep_default_send", None)
-        return bool(checker(event, source)) if callable(checker) else False
+        return bool(self._keep_default_send(event, source))
 
     def _prune_t2i_forward_scope(
         self, scope: str, *, now: float | None = None
     ) -> list[TextImageSource]:
-        store = self._t2i_forward_store()
+        store = self._records
         records = list(store.get(scope, []))
-        cutoff = (self._t2i_forward_now() if now is None else now) - float(
-            self._T2I_FORWARD_TTL_SECONDS
+        cutoff = (self._clock() if now is None else now) - float(
+            self.TTL_SECONDS
         )
         records = [record for record in records if record.created_at >= cutoff]
-        records = records[-self._T2I_FORWARD_MAX_RECORDS :]
+        records = records[-self.MAX_RECORDS :]
         if records:
             store[scope] = records
         else:
@@ -129,7 +135,7 @@ class TextForwardMixin:
         source = str(text or "")
         if not scope or not source:
             return
-        now = self._t2i_forward_now()
+        now = self._clock()
         records = self._prune_t2i_forward_scope(scope, now=now)
         records.append(
             TextImageSource(
@@ -138,12 +144,12 @@ class TextForwardMixin:
                 message_id=self._t2i_forward_message_id(event),
             )
         )
-        self._t2i_forward_store()[scope] = records[-self._T2I_FORWARD_MAX_RECORDS :]
+        self._records[scope] = records[-self.MAX_RECORDS :]
         logger.debug(
-            f"{LOG_PREFIX} 文本转图像原文已暂存：会话记录={len(records[-self._T2I_FORWARD_MAX_RECORDS :])}；长度={len(source)}"
+            f"{LOG_PREFIX} 文本转图像原文已暂存：会话记录={len(records[-self.MAX_RECORDS :])}；长度={len(source)}"
         )
 
-    def note_t2i_image_sent(self, event: Any) -> bool:
+    def note_image_sent(self, event: Any) -> bool:
         """只在框架已把候选长文本替换为图片并发送后提交缓存。"""
 
         candidate = bool(getattr(event, self._T2I_DECISION_ATTR, False))
@@ -187,7 +193,7 @@ class TextForwardMixin:
             except (AttributeError, TypeError, ValueError):
                 pass
 
-        bot = get_onebot_client(getattr(self, "context", None), event=event)
+        bot = get_onebot_client(self._context, event=event)
         if bot:
             try:
                 result = await call_bot_action(
@@ -225,7 +231,7 @@ class TextForwardMixin:
     def _t2i_forward_result(status: str, **payload: Any) -> str:
         return json.dumps({"status": status, **payload}, ensure_ascii=False)
 
-    async def forward_t2i_text(self, event: Any, *, index: int = 1) -> str:
+    async def forward_text(self, event: Any, *, index: int = 1) -> str:
         """发送指定会话最近一次文本转图像的原始文字。"""
 
         try:
@@ -270,18 +276,12 @@ class TextForwardMixin:
                 reason="合并转发发送失败",
                 response_stance="没有发送成功；自然说明这次文字版没有发出去，不要复述原文",
             )
-        log_outbound = getattr(self, "log_outbound_message_async", None)
-        if not callable(log_outbound):
-            log_outbound = getattr(self, "log_outbound_message", None)
-        if callable(log_outbound):
-            result = log_outbound(
-                message,
-                scope=str(getattr(event, "unified_msg_origin", "") or ""),
-                source_event=event,
-                source="t2i_forward",
-            )
-            if inspect.isawaitable(result):
-                await result
+        await self._log_outbound(
+            message,
+            scope=str(getattr(event, "unified_msg_origin", "") or ""),
+            source_event=event,
+            source="t2i_forward",
+        )
         logger.info(
             f"{LOG_PREFIX} 文本转图像原文已转发：序号={requested_index}；长度={len(record.text)}"
         )

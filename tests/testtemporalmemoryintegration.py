@@ -2,7 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from core.runtime.capture.batch import ChatMemoryBatchMixin
+from componentfixtures import ChatMemoryBatchComponent
 
 
 class Archive:
@@ -12,7 +12,8 @@ class Archive:
 
     async def write_temporal_fact(self, operation, payload):
         self.writes.append((operation, payload))
-        return SimpleNamespace(id=len(self.writes), **payload)
+        status = "uncertain" if payload.get("provenance", {}).get("epistemic_status") in {"inferred", "uncertain"} else "active"
+        return SimpleNamespace(id=len(self.writes), status=status, **payload)
 
     async def add_fact_evidence_signal(self, payload):
         self.signals.append(payload)
@@ -22,7 +23,7 @@ class Archive:
         return None
 
 
-class Runtime(ChatMemoryBatchMixin):
+class Runtime(ChatMemoryBatchComponent):
     def __init__(self):
         self.archive = Archive()
 
@@ -126,6 +127,8 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_temporal_fact_save_locks_scope_and_source_message(self):
         runtime = Runtime()
+        batch = self.batch()
+        batch["messages"][0]["message_text"] = "我最喜欢窝蛋牛肉煲仔饭。"
         saved = await runtime._save_batch_temporal_facts(
             {
                 "temporal_facts": [
@@ -138,6 +141,8 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         "source_message_id": "11",
                         "evidence_signal": "reinforce",
                         "evidence_summary": "对方明确补充了口味。",
+                        "epistemic_status": "reported",
+                        "evidence_quote": "我最喜欢窝蛋牛肉煲仔饭。",
                     },
                     {
                         "operation": "ADD",
@@ -148,7 +153,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ]
             },
-            self.batch(),
+            batch,
         )
         self.assertEqual(len(saved), 1)
         operation, fact = runtime.archive.writes[0]

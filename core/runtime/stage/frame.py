@@ -24,27 +24,48 @@ from ...life.wardrobe import (
 from ...sources.history import SavedHistoryReader
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class StageFrameMixin:
+
+class StageFrameComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_session_id: Any
+    _media_director_current_user_message: Any
+    _media_director_format_emotion_arcs: Any
+    _media_director_format_recent_messages: Any
+    _safe_event_attr: Any
+    archive: Any
+    config: Any
+    context: Any
+    format_structured_message_context: Any
+    living_context_for_scope: Any
+    structured_recent_history_messages: Any
+
+
+class StageFrameComponent:
+    def __init__(self, context: StageFrameComponentContext) -> None:
+        self.context = context
+
     async def _media_director_current_day(
         self,
     ) -> tuple[Any | None, datetime.datetime, bool]:
         now = life_now()
         time_context = build_time_context(
-            now, getattr(self.config, "schedule_time", "07:00")
+            now, getattr(self.context.config, "schedule_time", "07:00")
         )
         target_date = time_context.business_date_text
         using_extended_night = time_context.extended_night
         day = (
-            await self.archive.get_day(target_date)
-            if getattr(self, "archive", None)
+            await self.context.archive.get_day(target_date)
+            if getattr(self.context, "archive", None)
             else None
         )
         if day:
             return day, now, using_extended_night
         today = now.strftime("%Y-%m-%d")
-        if target_date != today and getattr(self, "archive", None):
-            day = await self.archive.get_day(today)
+        if target_date != today and getattr(self.context, "archive", None):
+            day = await self.context.archive.get_day(today)
         return day, now, False
 
     def _media_director_context_text(
@@ -187,11 +208,11 @@ class StageFrameMixin:
         event: Any = None,
         limit: int = 4,
     ) -> str:
-        getter = getattr(getattr(self, "archive", None), "get_emotion_arcs", None)
+        getter = getattr(getattr(self.context, "archive", None), "get_emotion_arcs", None)
         if not callable(getter):
             return ""
         scope = ""
-        resolver = getattr(self, "_event_session_id", None)
+        resolver = getattr(self.context, "_event_session_id", None)
         if callable(resolver) and event is not None:
             try:
                 scope = str(resolver(event) or "").strip()
@@ -204,7 +225,7 @@ class StageFrameMixin:
             )
             if not arcs and date:
                 arcs = await getter(limit=limit, scope=scope, include_global=True)
-            return self._media_director_format_emotion_arcs(arcs, limit=limit)
+            return self.context._media_director_format_emotion_arcs(arcs, limit=limit)
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 读取媒体导演情绪脉络失败：{exc}")
             return ""
@@ -212,7 +233,7 @@ class StageFrameMixin:
     def _media_director_current_user_message(self, event: Any) -> str:
         if not event:
             return ""
-        getter = getattr(self, "_safe_event_attr", None)
+        getter = getattr(self.context, "_safe_event_attr", None)
         if callable(getter):
             return str(getter(event, "message_str") or "").strip()
         return str(getattr(event, "message_str", "") or "").strip()
@@ -221,7 +242,7 @@ class StageFrameMixin:
         self, event: Any, limit: int = 8
     ) -> str:
         limit = max(1, int(limit or 8))
-        resolver = getattr(self, "_event_session_id", None)
+        resolver = getattr(self.context, "_event_session_id", None)
         scope = ""
         if callable(resolver):
             try:
@@ -230,13 +251,13 @@ class StageFrameMixin:
                 scope = ""
         if not scope:
             return "暂无可读取的最近对话片段。"
-        structured_reader = getattr(self, "structured_recent_history_messages", None)
+        structured_reader = getattr(self.context, "structured_recent_history_messages", None)
         messages = (
             structured_reader(scope, limit=limit) if callable(structured_reader) else []
         )
         if not messages:
             try:
-                messages = await SavedHistoryReader(self.context, LOG_PREFIX).fetch(
+                messages = await SavedHistoryReader(self.context.context, LOG_PREFIX).fetch(
                     scope,
                     max_count=limit,
                     hours=12,
@@ -245,18 +266,18 @@ class StageFrameMixin:
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 读取媒体生成最近对话片段失败：{exc}")
                 messages = []
-        current_message = self._media_director_current_user_message(event)
+        current_message = self.context._media_director_current_user_message(event)
         if current_message and not any(
             str(item.get("role") or "").strip() == "user"
             and str(item.get("content") or "").strip() == current_message
             for item in messages[-4:]
         ):
             messages.append({"role": "user", "content": current_message, "name": ""})
-        text_context = self._media_director_format_recent_messages(messages[-limit:])
-        living_reader = getattr(self, "living_context_for_scope", None)
+        text_context = self.context._media_director_format_recent_messages(messages[-limit:])
+        living_reader = getattr(self.context, "living_context_for_scope", None)
         if callable(living_reader):
             text_context += "\n\n" + await living_reader(scope)
-        structured = self.format_structured_message_context(event, limit=8)
+        structured = self.context.format_structured_message_context(event, limit=8)
         if structured:
             return f"{text_context}\n\n结构化消息流（优先判断谁对谁说话、引用和@关系）：\n{structured}"
         return text_context
@@ -292,8 +313,8 @@ class StageFrameMixin:
     def _media_director_format_recent_messages(messages: list[dict[str, str]]) -> str:
         lines: list[str] = []
         for message in messages:
-            label = StageFrameMixin._media_director_message_label(message)
-            content = StageFrameMixin._media_director_message_content(
+            label = StageFrameComponent._media_director_message_label(message)
+            content = StageFrameComponent._media_director_message_content(
                 message, limit=160
             )
             if content:

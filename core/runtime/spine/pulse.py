@@ -11,15 +11,42 @@ from ..generation import DAILY_REFRESH_GENERATED_DATE
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 
+from typing import Any, Protocol
 
-class SpinePulseMixin:
+
+class SpinePulseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _consolidate_proactive_behavior_scenes: Any
+    _proactive_idle_enabled: Any
+    _settle_stale_reply_effects: Any
+    _target_datetime_for_command: Any
+    _virtual_life_metrics: Any
+    archive: Any
+    composer: Any
+    config: Any
+    evaluate_idle_proactive_candidates: Any
+    evaluate_private_revisit_candidates: Any
+    maintain_emoji_assets: Any
+    maintain_plugin_file_cache: Any
+    maintain_sight_cache: Any
+    mark_page_status_changed: Any
+    resolve_injection_target: Any
+    run_daily_generation: Any
+    run_memory_maintenance: Any
+
+
+class SpinePulseComponent:
+    def __init__(self, context: SpinePulseComponentContext) -> None:
+        self.context = context
+
     async def run_daily_refresh(self) -> None:
         logger.info(f"{LOG_PREFIX} 正在执行每日日常生活背景刷新……")
         now = life_now()
-        target_date, _ = await self.resolve_injection_target(now)
-        target_dt = self._target_datetime_for_command(target_date, now)
+        target_date, _ = await self.context.resolve_injection_target(now)
+        target_dt = self.context._target_datetime_for_command(target_date, now)
         yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        existing = await self.archive.get_day(target_date)
+        existing = await self.context.archive.get_day(target_date)
         existing_meta = getattr(existing, "meta", {}) if existing is not None else {}
         already_generated = bool(
             isinstance(existing_meta, dict)
@@ -30,15 +57,15 @@ class SpinePulseMixin:
         if not already_generated:
             # 先登记当日生成任务，避免复盘期间的手动重生再启动第二个写入任务。
             generation_task = asyncio.create_task(
-                self.run_daily_generation(
+                self.context.run_daily_generation(
                     date=target_dt,
                     source="daily_refresh",
                     force=True,
                 )
             )
         try:
-            async with operation_lock(self, f"review:{yesterday}"):
-                await self.composer.compose_daily_review(yesterday)
+            async with operation_lock(self.context, f"review:{yesterday}"):
+                await self.context.composer.compose_daily_review(yesterday)
             if generation_task is not None:
                 await generation_task
         # 复盘流程取消时同步收束配套生成任务，避免后台遗留写入。
@@ -48,26 +75,26 @@ class SpinePulseMixin:
             if generation_task is not None:
                 await asyncio.gather(generation_task, return_exceptions=True)
             raise
-        await self.archive.cleanup_by_storage_policy(self.config.storage)
-        await self.maintain_sight_cache()
-        await self.maintain_emoji_assets()
-        await self.maintain_plugin_file_cache()
+        await self.context.archive.cleanup_by_storage_policy(self.context.config.storage)
+        await self.context.maintain_sight_cache()
+        await self.context.maintain_emoji_assets()
+        await self.context.maintain_plugin_file_cache()
 
     async def run_nightly_review(self) -> None:
         logger.info(f"{LOG_PREFIX} 正在执行夜间复盘与记忆沉淀……")
         today = life_now().strftime("%Y-%m-%d")
-        async with operation_lock(self, f"review:{today}"):
-            await self.composer.compose_daily_review()
-            await self.run_memory_maintenance()
-            await self.mark_page_status_changed("nightly_review")
+        async with operation_lock(self.context, f"review:{today}"):
+            await self.context.composer.compose_daily_review()
+            await self.context.run_memory_maintenance()
+            await self.context.mark_page_status_changed("nightly_review")
 
     async def run_memory_maintenance(self) -> None:
         today_str = life_now().strftime("%Y-%m-%d")
-        await self._settle_stale_reply_effects()
-        corrections = await self.archive.get_memory_corrections(limit=100)
-        reply_effects = await self.archive.get_reply_effects(limit=100)
-        emoji_assets = await self.archive.get_emoji_assets(limit=100)
-        proactive_scene_count = await self._consolidate_proactive_behavior_scenes(
+        await self.context._settle_stale_reply_effects()
+        corrections = await self.context.archive.get_memory_corrections(limit=100)
+        reply_effects = await self.context.archive.get_reply_effects(limit=100)
+        emoji_assets = await self.context.archive.get_emoji_assets(limit=100)
+        proactive_scene_count = await self.context._consolidate_proactive_behavior_scenes(
             today_str
         )
         applied_count = sum(
@@ -92,7 +119,7 @@ class SpinePulseMixin:
             f"待观察回复效果 {pending_reply_count} 条；可用表情素材 {ready_emoji_count} 个；"
             f"行为经验归纳 {proactive_scene_count} 组。"
         )
-        saved = await self.archive.save_memory_maintenance(
+        saved = await self.context.archive.save_memory_maintenance(
             MemoryMaintenanceRecord(
                 date=today_str,
                 summary=summary,
@@ -100,11 +127,11 @@ class SpinePulseMixin:
                 reason="夜间复盘后自动检查长期记忆、回复效果与表达素材。",
             )
         )
-        await self.archive.cleanup_by_storage_policy(self.config.storage)
-        await self.maintain_sight_cache()
-        await self.maintain_emoji_assets()
-        await self.maintain_plugin_file_cache()
-        metrics = getattr(self, "_virtual_life_metrics", None)
+        await self.context.archive.cleanup_by_storage_policy(self.context.config.storage)
+        await self.context.maintain_sight_cache()
+        await self.context.maintain_emoji_assets()
+        await self.context.maintain_plugin_file_cache()
+        metrics = getattr(self.context, "_virtual_life_metrics", None)
         if isinstance(metrics, dict) and metrics:
             metric_order = (
                 "turn_received",
@@ -125,9 +152,9 @@ class SpinePulseMixin:
             logger.info(f"{LOG_PREFIX} 长期记忆维护完成：{summary}")
 
     async def _consolidate_proactive_behavior_scenes(self, date_str: str) -> int:
-        feedback_getter = getattr(self.archive, "get_behavior_feedback", None)
-        scene_getter = getattr(self.archive, "get_behavior_scenes", None)
-        scene_upserter = getattr(self.archive, "upsert_behavior_scene", None)
+        feedback_getter = getattr(self.context.archive, "get_behavior_feedback", None)
+        scene_getter = getattr(self.context.archive, "get_behavior_scenes", None)
+        scene_upserter = getattr(self.context.archive, "upsert_behavior_scene", None)
         if (
             not callable(feedback_getter)
             or not callable(scene_getter)
@@ -202,16 +229,16 @@ class SpinePulseMixin:
     async def run_weekly_refresh(self) -> None:
         logger.info(f"{LOG_PREFIX} 正在执行周计划刷新……")
         week = life_now().strftime("%G-W%V")
-        async with operation_lock(self, f"week:{week}"):
-            await self.composer.generate_week_plan()
-            await self.mark_page_status_changed("weekly_refresh")
+        async with operation_lock(self.context, f"week:{week}"):
+            await self.context.composer.generate_week_plan()
+            await self.context.mark_page_status_changed("weekly_refresh")
 
     async def run_private_revisit_check(self) -> None:
-        if not self.config.proactive.private_revisit_enabled:
+        if not self.context.config.proactive.private_revisit_enabled:
             return
-        await self.evaluate_private_revisit_candidates()
+        await self.context.evaluate_private_revisit_candidates()
 
     async def run_proactive_idle_check(self) -> None:
-        if not self._proactive_idle_enabled():
+        if not self.context._proactive_idle_enabled():
             return
-        await self.evaluate_idle_proactive_candidates()
+        await self.context.evaluate_idle_proactive_candidates()

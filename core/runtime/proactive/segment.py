@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from typing import Any
 
@@ -6,8 +8,24 @@ from astrbot.api import logger
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ProactiveSegmentMixin:
+
+class ProactiveSegmentComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _chat_style_enabled: Any
+    _chat_style_initial_typing_delay_seconds: Any
+    _chat_style_limit_for_scope: Any
+    _proactive_send_delay_seconds: Any
+    config: Any
+    send_background_text: Any
+
+
+class ProactiveSegmentComponent:
+    def __init__(self, context: ProactiveSegmentComponentContext) -> None:
+        self.context = context
+
     async def _send_segmented_proactive_message(
         self,
         target_scope: str,
@@ -17,7 +35,7 @@ class ProactiveSegmentMixin:
         source_message_id: str = "",
         raise_delivery_errors: bool = False,
     ) -> bool:
-        return await self.send_background_text(
+        return await self.context.send_background_text(
             target_scope,
             reply_text,
             mode=BackgroundTextMode.EXPRESSIVE,
@@ -26,12 +44,12 @@ class ProactiveSegmentMixin:
             source="proactive",
             raise_delivery_errors=raise_delivery_errors,
             user_message=str(getattr(source_event, "message_str", "") or "").strip(),
-            length_hint=self._chat_style_limit_for_scope(target_scope),
+            length_hint=self.context._chat_style_limit_for_scope(target_scope),
         )
 
     def _chat_style_limit_for_scope(self, target_scope: str) -> int:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        checker = getattr(self, "_chat_style_enabled", None)
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         if not style or (callable(checker) and not checker()):
             return 0
         if not callable(checker) and not bool(getattr(style, "enabled", False)):
@@ -78,7 +96,7 @@ class ProactiveSegmentMixin:
         if delay <= 0:
             reply_text = str(payload.get("reply_text") or "").strip()
             delay_getter = getattr(
-                self, "_chat_style_initial_typing_delay_seconds", None
+                self.context, "_chat_style_initial_typing_delay_seconds", None
             )
             if reply_text and callable(delay_getter):
                 return max(0.0, min(float(delay_getter(reply_text)), 3.5))
@@ -88,7 +106,7 @@ class ProactiveSegmentMixin:
     async def _apply_proactive_send_timing(
         self, payload: dict[str, Any] | None
     ) -> None:
-        delay = self._proactive_send_delay_seconds(payload)
+        delay = self.context._proactive_send_delay_seconds(payload)
         if delay <= 0:
             return
         reason = "按文本长度模拟自然打字"

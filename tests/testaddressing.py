@@ -68,7 +68,7 @@ class ChatAddressingTest(unittest.TestCase):
     def test_group_reply_target_for_proactive_quotes_source(self):
         runtime = self.make_runtime()
 
-        target = runtime._group_reply_target(
+        target = runtime.addressing.group_reply_target(
             target_scope="aiocqhttp:GroupMessage:10001",
             source_message_id="m-source",
             source="proactive",
@@ -88,7 +88,7 @@ class ChatAddressingTest(unittest.TestCase):
             self.make_group_event(sender_id="u2", message_id="m-new")
         )
 
-        target = runtime._group_reply_target(
+        target = runtime.addressing.group_reply_target(
             target_scope="aiocqhttp:GroupMessage:10001",
             source_event=event,
         )

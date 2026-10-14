@@ -9,10 +9,30 @@ from typing import Any
 from ..models import DayRecord
 from ..models import LifeActionIntent, LongTermMemoryRecord
 
+from typing import Protocol
+
 _WORLD_KEY = "continuous_life_world"
 
 
-class ContinuityArchiveMixin:
+class ContinuityArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _archive_continuous_kernel_unlocked: Any
+    _archive_life_artifact_unlocked: Any
+    _conn: Any
+    _continuous_world_unlocked: Any
+    _get_day_unlocked: Any
+    _record_wardrobe_wear_unlocked: Any
+    _run_db: Any
+    _set_day_unlocked: Any
+    _upsert_long_term_memory_unlocked: Any
+    living_revision: Any
+
+
+class ContinuityArchiveComponent:
+    def __init__(self, context: ContinuityArchiveComponentContext) -> None:
+        self.context = context
+
     def _archive_continuous_kernel_unlocked(
         self, world: dict[str, Any], previous_kernel: dict[str, Any]
     ) -> None:
@@ -58,7 +78,7 @@ class ContinuityArchiveMixin:
                     summary=excluded.summary, payload_json=excluded.payload_json
                     WHERE continuous_life_entries.payload_json <> excluded.payload_json"""
                 )
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     insert_sql + conflict_sql,
                     (
                         entry_id,
@@ -71,7 +91,7 @@ class ContinuityArchiveMixin:
                     ),
                 )
                 if not cursor.rowcount and kind in {"event", "causal"}:
-                    archived = self._conn.execute(
+                    archived = self.context._conn.execute(
                         "SELECT payload_json FROM continuous_life_entries WHERE id=?",
                         (entry_id,),
                     ).fetchone()
@@ -88,7 +108,7 @@ class ContinuityArchiveMixin:
                                     recent.clear()
                                     recent.update(original)
                 if cursor.rowcount and kind == "outcome" and scope == "global":
-                    self._archive_life_artifact_unlocked(item)
+                    self.context._archive_life_artifact_unlocked(item)
                     content = (
                         f"{summary}：{item.get('result') or item.get('status') or ''}"
                     )
@@ -100,7 +120,7 @@ class ContinuityArchiveMixin:
                     artifact = item.get("artifact") or {}
                     if artifact.get("content"):
                         content += f"。本轮生成的数字笔记/草稿：{artifact['content']}"
-                    self._upsert_long_term_memory_unlocked(
+                    self.context._upsert_long_term_memory_unlocked(
                         LongTermMemoryRecord(
                             scope="global",
                             category="autobiography",
@@ -126,13 +146,13 @@ class ContinuityArchiveMixin:
                 clauses.append("kind=?")
                 params.append(kind)
             params.append(max(1, min(int(limit), 200)))
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"SELECT kind,payload_json FROM continuous_life_entries WHERE {' AND '.join(clauses)} ORDER BY occurred_at DESC,id DESC LIMIT ?",
                 params,
             ).fetchall()
             return [{"entry_kind": row[0], **json.loads(row[1])} for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     def consume_continuous_ingredients_unlocked(
         self, action: LifeActionIntent, *, consume: bool = False, occurred_at: str = ""
@@ -142,7 +162,7 @@ class ContinuityArchiveMixin:
 
         if action.action_type != "cook":
             return ""
-        existing = self._conn.execute(
+        existing = self.context._conn.execute(
             "SELECT 1 FROM pantry_movements WHERE action_id=? AND source='continuous_executor' LIMIT 1",
             (action.action_id,),
         ).fetchone()
@@ -164,7 +184,7 @@ class ContinuityArchiveMixin:
             return "烹饪缺少食材明细"
         stock = {}
         for name, quantity in required.items():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT quantity, unit FROM pantry_items WHERE name=?", (name,)
             ).fetchone()
             if row is None or float(row[0]) < quantity:
@@ -179,11 +199,11 @@ class ContinuityArchiveMixin:
             stock[name] = row
         if consume:
             for name, quantity in required.items():
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE pantry_items SET quantity=quantity-?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
                     (quantity, name),
                 )
-                self._conn.execute(
+                self.context._conn.execute(
                     "INSERT INTO pantry_movements(item_name,delta,unit,reason,action_id,occurred_at,source) VALUES(?,?,?,?,?,?,?)",
                     (
                         name,
@@ -198,9 +218,9 @@ class ContinuityArchiveMixin:
         return ""
 
     async def continuous_ingredients_consumed(self, action_id: str) -> bool:
-        return await self._run_db(
+        return await self.context._run_db(
             lambda: (
-                self._conn.execute(
+                self.context._conn.execute(
                     "SELECT 1 FROM pantry_movements WHERE action_id=? AND source='continuous_executor' LIMIT 1",
                     (action_id,),
                 ).fetchone()
@@ -209,18 +229,22 @@ class ContinuityArchiveMixin:
         )
 
     def _continuous_world_unlocked(self) -> dict[str, Any]:
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT value FROM meta WHERE key = ?", (_WORLD_KEY,)
         ).fetchone()
         raw = json.loads(row[0]) if row else {}
         return raw if isinstance(raw, dict) else {}
 
     def clear_continuous_category_unlocked(self, category: str) -> None:
+        from ..life.resources import settle as settle_resources
+
         if category not in {"daily", "experience"}:
             return
-        world = self._continuous_world_unlocked()
+        world = self.context._continuous_world_unlocked()
         if not world:
             return
+        if category == "daily" and world.get("run"):
+            settle_resources(self.context, LifeActionIntent.from_value(world["run"]["action"]), commit=False)
         keys = (
             (
                 "body",
@@ -231,9 +255,11 @@ class ContinuityArchiveMixin:
                 "last_chat_at",
                 "last_chat_scope",
                 "observation_gap_at",
+                "body_observations",
+                "resource_blocked",
             )
             if category == "daily"
-            else ("goals", "skills", "goal_review_at", "goal_source_key")
+            else ("goals", "skills", "action_learning", "goal_review_at", "goal_source_key")
         )
         for key in (*keys, "next_decision_at"):
             world.pop(key, None)
@@ -256,20 +282,20 @@ class ContinuityArchiveMixin:
                     "events",
                 ):
                     kernel.pop(key, None)
-                self._conn.execute(
+                self.context._conn.execute(
                     "DELETE FROM long_term_memories WHERE source_table='continuous_life_entries'"
                 )
                 kernel.get("memory", {}).pop("recent_evidence_ids", None)
         world["revision"] = int(world.get("revision") or 0) + 1
-        self._conn.execute(
+        self.context._conn.execute(
             "UPDATE meta SET value=? WHERE key=?",
             (json.dumps(world, ensure_ascii=False), _WORLD_KEY),
         )
         # 清空后立即撤下聊天投影；下一次巡检再投影仍然保留的事实。
-        self._conn.execute("DELETE FROM day_meta WHERE key='continuous_life_context'")
+        self.context._conn.execute("DELETE FROM day_meta WHERE key='continuous_life_context'")
 
     async def get_continuous_life(self) -> dict[str, Any]:
-        return await self._run_db(self._continuous_world_unlocked)
+        return await self.context._run_db(self.context._continuous_world_unlocked)
 
     async def mutate_continuous_life(
         self,
@@ -280,33 +306,33 @@ class ContinuityArchiveMixin:
         from ..life.continuity import project_world
 
         def write():
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                day = self._get_day_unlocked(date)
-                world = self._continuous_world_unlocked()
+                day = self.context._get_day_unlocked(date)
+                world = self.context._continuous_world_unlocked()
                 previous_kernel = copy.deepcopy(world.get("kernel") or {})
                 if day is None or mutator(day, world) is False:
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return day, world
                 world["revision"] = int(world.get("revision") or 0) + 1
-                self._archive_continuous_kernel_unlocked(world, previous_kernel)
+                self.context._archive_continuous_kernel_unlocked(world, previous_kernel)
                 project_world(day, world)
-                self._conn.execute(
+                self.context._conn.execute(
                     "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (
                         _WORLD_KEY,
                         json.dumps(world, ensure_ascii=False, allow_nan=False),
                     ),
                 )
-                revision = self._set_day_unlocked(day)
+                revision = self.context._set_day_unlocked(day)
                 if day.meta.get('outfit_fact_source') == 'life_action':
-                    self._record_wardrobe_wear_unlocked(day, source='life_action_atomic_receipt')
-                self._conn.commit()
-                self.living_revision = getattr(self, "living_revision", 0) + 1
+                    self.context._record_wardrobe_wear_unlocked(day, source='life_action_atomic_receipt')
+                self.context._conn.commit()
+                self.context.living_revision = getattr(self.context, "living_revision", 0) + 1
                 day.mark_persisted(revision)
                 return day, world
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)

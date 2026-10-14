@@ -2,9 +2,9 @@ import types
 import unittest
 
 from support import Event, LifeSettings
-from core.runtime.capture.event import CaptureEventMixin
-from core.runtime.proactive.procontext import ProactiveContextMixin
-from core.runtime.structured import StructuredContextMixin
+from componentfixtures import CaptureEventComponent
+from componentfixtures import ProactiveContextComponent
+from componentfixtures import StructuredContextComponent
 
 
 class At:
@@ -28,7 +28,7 @@ class Image:
         self.url = url
 
 
-class Runtime(CaptureEventMixin, StructuredContextMixin, ProactiveContextMixin):
+class Runtime(CaptureEventComponent, StructuredContextComponent, ProactiveContextComponent):
     def _proactive_is_self_message(self, event):
         return False
 

@@ -1,14 +1,1 @@
-from .chain import LayerChainMixin
-from .text import LayerTextMixin
-from .prefix import RequestPrefixMixin
-
-
-class LayerMixin(
-    LayerTextMixin,
-    LayerChainMixin,
-    RequestPrefixMixin,
-):
-    pass
-
-
-__all__ = ["LayerMixin"]
+"""职责独立的生活组件。"""

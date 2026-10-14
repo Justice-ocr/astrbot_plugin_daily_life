@@ -58,8 +58,8 @@ class ContactNameResolverTest(unittest.IsolatedAsyncioTestCase):
         release = asyncio.Event()
         wait_calls = []
 
-        async def wait_for_platform():
-            wait_calls.append(True)
+        async def wait_for_platform(**kwargs):
+            wait_calls.append(kwargs)
             await release.wait()
             return True
 
@@ -72,12 +72,65 @@ class ContactNameResolverTest(unittest.IsolatedAsyncioTestCase):
             resolver.get_onebot_nickname("123456", event=Event(bot=bot))
         )
         await asyncio.sleep(0)
-        self.assertEqual(wait_calls, [True])
+        await asyncio.sleep(0)
+        self.assertEqual(wait_calls, [{
+            "adapter_id": "aiocqhttp", "platform_type": "aiocqhttp", "timeout": 3.0,
+        }])
         self.assertEqual(bot.calls, [])
 
         release.set()
         self.assertEqual(await lookup, "QQ备注")
         self.assertEqual(bot.calls[0], ("get_stranger_info", {"user_id": 123456}))
+
+    async def test_cached_sender_uses_event_name_without_platform_wait(self):
+        called = False
+
+        async def wait_for_platform(**kwargs):
+            nonlocal called
+            called = True
+            await asyncio.Event().wait()
+
+        resolver = ContactNameResolver(
+            None, {"relationship_aliases": []},
+            platform_ready_waiter=wait_for_platform,
+        )
+        event = Event(
+            sender_name="消息已有昵称",
+            sender_id="123456",
+            unified_msg_origin="aiocqhttp:FriendMessage:123456",
+        )
+        self.assertEqual(resolver.cached_event_sender(event), "消息已有昵称")
+        self.assertFalse(called)
+        await resolver.close()
+
+    async def test_group_sender_cache_uses_user_id_and_adapter(self):
+        bot = OneBot({"remark": "发送者备注"})
+        resolver = ContactNameResolver(None, {})
+        event = Event(bot=bot, sender_id="123456", group_id="20001",
+                      unified_msg_origin="qq-account:GroupMessage:20001")
+        self.assertEqual(await resolver.resolve_event_sender(event), "发送者备注")
+        self.assertEqual(resolver.cached_event_sender(event), "发送者备注")
+        self.assertEqual(len(bot.calls), 1)
+        await resolver.close()
+
+    async def test_target_platform_is_ready_even_if_other_platform_is_disconnected(self):
+        ready = PlatformInstance(
+            types.SimpleNamespace(_wsr_api_clients={"account": object()}),
+            platform_id="qq-account",
+        )
+        disconnected = PlatformInstance(
+            types.SimpleNamespace(_wsr_api_clients={}), platform_id="other-account",
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = types.SimpleNamespace(platform_manager=types.SimpleNamespace(
+            get_insts=lambda: [disconnected, ready],
+        ))
+        self.assertTrue(await runtime.wait_for_platform_ready(
+            adapter_id="qq-account", platform_type="aiocqhttp", timeout=0,
+        ))
+        self.assertFalse(await runtime.wait_for_platform_ready(
+            adapter_id="other-account", platform_type="aiocqhttp", timeout=0,
+        ))
 
     async def test_onebot_remark_is_cached(self):
         bot = OneBot({"remark": "QQ备注", "nickname": "QQ昵称"})

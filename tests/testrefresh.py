@@ -4,7 +4,7 @@ import unittest
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.models import DayRecord
-from core.runtime.refresh import RefreshMixin
+from componentfixtures import RefreshComponent
 
 
 class RefreshOutfitTest(unittest.TestCase):
@@ -22,10 +22,10 @@ class RefreshOutfitTest(unittest.TestCase):
             },
         )
 
-        early, effective_at = RefreshMixin._pending_commitment_outfit(
+        early, effective_at = RefreshComponent._pending_commitment_outfit(
             day, datetime.datetime(2026, 8, 6, 14, 0)
         )
-        due, _ = RefreshMixin._pending_commitment_outfit(
+        due, _ = RefreshComponent._pending_commitment_outfit(
             day, datetime.datetime(2026, 8, 6, 16, 5)
         )
 

@@ -8,7 +8,7 @@ from unittest.mock import ANY, AsyncMock, patch
 from core.archive import DayRevisionConflict
 from core.facts import PersonFact, PersonFactContext, apply_string_replacements
 from core.life import LifeBackgroundComposer
-from core.life.audit import DailyLocationAuditMixin
+from componentfixtures import DailyLocationAuditComponent
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.life.reliability import NonRetryableProviderError
 from core.life.surroundings import (
@@ -310,7 +310,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"decision":"accept","accept":true,"reason":"愿意和她一起去",'
             '"response_stance":"开心答应她","response_tone":"自然",'
             '"alternative_time":"","impact":"和她见面",'
-            '"timeline_edits":[{"operation":"insert","target_time":"",'
+            '"planned_actions":[],"timeline_edits":[{"operation":"insert","target_time":"",'
             '"item":{"time":"15:20","activity":"和她去看展",'
             '"status":"期待"}}],"preference_points":[],"life_events":[]}'
         )
@@ -544,7 +544,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"should_apply":true,"reason":"双方已经确认傍晚同行",'
-                '"timeline_edits":['
+                '"planned_actions":[],"timeline_edits":['
                 '{"operation":"remove","target_time":"17:30"},'
                 '{"operation":"insert","item":{"time":"17:10","activity":"换好外出衣服并确认随身物品","status":"准备",'
                 '"place":"家","place_kind":"home","place_scope":"local","place_city":"",'
@@ -585,7 +585,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"should_apply":true,"reason":"已确认傍晚同行",'
-                '"timeline_edits":['
+                '"planned_actions":[],"timeline_edits":['
                 '{"operation":"insert","item":{"time":"17:30","activity":"和测试对象去测试书店","status":"期待",'
                 '"place":"测试书店","place_kind":"poi","place_scope":"local",'
                 '"place_city":"","place_hint":"测试路1号","travel_mode":"walking"}},'
@@ -655,7 +655,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, provider, _, _ = make_composer(
             [
                 '{"should_apply":true,"reason":"地点改约已经确认",'
-                '"timeline_edits":['
+                '"planned_actions":[],"timeline_edits":['
                 '{"operation":"replace","target_time":"15:30","item":'
                 '{"time":"15:30","activity":"步行去测试湖滨公园","status":"轻快",'
                 '"place":"去测试湖滨公园的路上","place_kind":"transit",'
@@ -764,12 +764,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("清冷书卷气", provider.prompts[0])
         self.assertIn("独立评估今天是否适合有目的的身体活动", provider.prompts[0])
         self.assertIn("不得为了填充生活实况面板机械增加运动", provider.prompts[0])
-        self.assertIn("meal 表示外食、现成餐食", provider.prompts[0])
-        self.assertIn("由系统自动沉淀食谱", provider.prompts[0])
-        self.assertIn("不要用 meal 代替实际在家烹饪", provider.prompts[0])
+        self.assertIn("meal 表示实际进食", provider.prompts[0])
+        self.assertIn("只有 meal 产生饱腹收益", provider.prompts[0])
+        self.assertIn("同时保存食谱", provider.prompts[0])
+        self.assertIn("做饭、下单和用餐是独立阶段", provider.prompts[0])
         self.assertIn("现有可用食材库存是会变化的生活事实", provider.prompts[0])
         self.assertIn(
-            "cook 表示实际动手烹饪，必须填写至少一项 ingredients", provider.prompts[0]
+            "cook 表示食物准备，必须填写至少一项 ingredients", provider.prompts[0]
         )
         self.assertIn("purchase.payload.pantry_items", provider.prompts[0])
         self.assertIn("普通物品、纪念品、家居用品和杂货", provider.prompts[0])
@@ -2439,7 +2440,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["hair_style"], "松散低马尾")
         self.assertEqual(stored.meta["hair"], "黑色长发在脑后松松扎成低马尾")
         self.assertIn("回家、进入室内或时段变化不等于已经换衣", provider.prompts[0])
-        self.assertIn("之后还要出门", provider.prompts[0])
+        self.assertIn("适合当前场合与天气时继续穿", provider.prompts[0])
 
     async def test_update_outfit_applies_sleepwear_already_confirmed_by_live_state(
         self,
@@ -2508,9 +2509,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(components["main_clothing"]["description"], stored.outfit)
         self.assertNotIn("outer_layer", components)
         self.assertNotIn("carried_accessories", components)
-        from core.runtime.refresh import RefreshMixin
+        from core.runtime.refresh import RefreshComponent
 
-        RefreshMixin._synchronize_outfit_with_schedule(
+        RefreshComponent._synchronize_outfit_with_schedule(
             stored, datetime.datetime(2026, 8, 7, 21, 20)
         )
         self.assertEqual(
@@ -2647,6 +2648,88 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-08-16")
         self.assertEqual(stored.outfit, "米白色缎面蕾丝吊带睡裙")
         self.assertEqual(stored.meta["style_catalog_reference_ids"], str(item.id))
+
+    async def test_sleep_outfit_keep_does_not_restore_catalog_shoes_and_jewelry(self):
+        composer, provider, _, archive = make_composer([])
+        item = await archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "粉色家居套装",
+            "description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
+            "source_image_hash": "sleep-state" * 8,
+            "attributes": {
+                "home_description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
+                "component_roles": [
+                    {"kind": "footwear", "name": "粉色拖鞋", "home_presence": "home", "carry_mode": "worn"},
+                    {"kind": "accessory", "name": "细锁骨链", "home_presence": "both", "carry_mode": "worn"},
+                ],
+            },
+        })
+        components = {
+            "main_clothing": {"state": "worn", "description": "粉色背心与短裤"},
+            "footwear": {"state": "removed", "description": "粉色拖鞋", "home_presence": "home"},
+            "carried_accessories": {"state": "staged", "description": "细锁骨链", "home_presence": "both"},
+        }
+        response = {
+            "outfit_decision": "keep", "current_outfit_basis": "stored",
+            "scene_category": "sleep", "outfit": "粉色背心与短裤",
+            "outfit_components": components,
+            "reason": "已经休息，保持原样",
+        }
+        provider.responses.extend([json.dumps(response, ensure_ascii=False)] * 2)
+        await archive.save_day(DayRecord(
+            date="2026-10-13", outfit="粉色背心与短裤",
+            timeline=[TimelineItem(time="22:40", activity="休息", place_kind="home")],
+            meta={
+                "outfit_components": json.dumps(components, ensure_ascii=False),
+                "style_catalog_reference_ids": str(item.id),
+                "outfit_fact_confirmed_at": "2026-10-13 21:55:00",
+            },
+        ))
+        for minute in (45, 55):
+            updated = await composer.update_outfit(
+                "2026-10-13", "late_night",
+                current_time=datetime.datetime(2026, 10, 13, 22, minute),
+            )
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated.outfit, "粉色背心与短裤")
+            self.assertEqual(json.loads(updated.meta["outfit_components"]), components)
+            self.assertEqual(updated.meta["outfit_decision"], "keep")
+            self.assertEqual(updated.meta["outfit_fact_confirmed_at"], "2026-10-13 21:55:00")
+        self.assertEqual(len(provider.prompts), 2)
+
+    async def test_new_outfit_keeps_model_component_split_and_removed_status(self):
+        composer, provider, _, archive = make_composer([])
+        item = await archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "粉色家居套装",
+            "description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
+            "source_image_hash": "split-state" * 8,
+            "attributes": {
+                "home_description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
+                "component_roles": [
+                    {"kind": "footwear", "name": "粉色拖鞋", "home_presence": "home", "carry_mode": "worn"},
+                    {"kind": "accessory", "name": "细锁骨链", "home_presence": "both", "carry_mode": "worn"},
+                ],
+            },
+        })
+        provider.responses.append(json.dumps({
+            "outfit_decision": "sleepwear", "current_outfit_basis": "stored",
+            "scene_category": "sleep", "component_review": {"main_clothing": "adjust"},
+            "outfit": "粉色背心与短裤", "catalog_reference_ids": [item.id],
+            "outfit_components": {
+                "main_clothing": {"state": "worn", "description": "粉色背心与短裤"},
+                "footwear": {"state": "removed", "description": "粉色拖鞋"},
+                "carried_accessories": {"state": "removed", "description": "细锁骨链"},
+            },
+        }, ensure_ascii=False))
+        await archive.save_day(DayRecord(date="2026-10-13", outfit="白衬衫与长裤"))
+        updated = await composer.update_outfit(
+            "2026-10-13", "late_night", current_time=datetime.datetime(2026, 10, 13, 22, 10),
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.outfit, "粉色背心与短裤")
+        components = json.loads(updated.meta["outfit_components"])
+        self.assertEqual(components["footwear"]["state"], "removed")
+        self.assertEqual(components["carried_accessories"]["state"], "removed")
+        self.assertEqual(updated.outfit_history["late_night"], updated.outfit)
 
     async def test_style_catalog_home_scene_separates_outdoor_reserve(self):
         composer, _, _, archive = make_composer([])
@@ -4217,7 +4300,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_invite_uses_dedicated_invite_provider(self):
         invite_provider = Provider(
             [
-                '{"decision":"accept","accept":true,"reason":"当前状态适合轻松出门","response_stance":"开心答应","response_tone":"自然期待","timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"和阿林一起去书店","status":"期待"}}]}'
+                '{"decision":"accept","accept":true,"reason":"当前状态适合轻松出门","response_stance":"开心答应","response_tone":"自然期待","planned_actions":[],"timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"和阿林一起去书店","status":"期待"}}]}'
             ],
             provider_id="invite-model",
         )
@@ -4246,7 +4329,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"decision":"accept","accept":true,"reason":"愿意一起去",'
-                '"timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"一起去测试书店",'
+                '"planned_actions":[],"timeline_edits":[{"operation":"insert","item":{"time":"16:00","activity":"一起去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"","place_hint":"测试区",'
                 '"travel_mode":"walking"}}]}'
@@ -4324,7 +4407,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"decision":"accept","accept":true,"reason":"愿意一起去",'
-                '"timeline_edits":[{"operation":"replace","target_time":"16:00","item":{"time":"16:00","activity":"一起去测试书店",'
+                '"planned_actions":[],"timeline_edits":[{"operation":"replace","target_time":"16:00","item":{"time":"16:00","activity":"一起去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"","place_hint":"测试区",'
                 '"travel_mode":"walking"}}]}'
@@ -4395,7 +4478,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             [
                 '{"decision":"accept","accept":true,"reason":"愿意一起去",'
                 '"response_stance":"自然答应","response_tone":"轻松",'
-                '"timeline_edits":[{"operation":"replace","target_time":"16:00",'
+                '"planned_actions":[],"timeline_edits":[{"operation":"replace","target_time":"16:00",'
                 '"item":{"time":"16:00","activity":"和测试对象去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"测试市",'
@@ -4452,7 +4535,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, _, _, _ = make_composer(
             [
                 '{"decision":"accept","accept":true,"reason":"愿意同行",'
-                '"timeline_edits":[{"operation":"replace","target_time":"16:00",'
+                '"planned_actions":[],"timeline_edits":[{"operation":"replace","target_time":"16:00",'
                 '"item":{"time":"16:00","activity":"和测试对象去测试书店",'
                 '"status":"期待","place":"测试书店","place_kind":"poi",'
                 '"place_scope":"local","place_city":"测试市",'
@@ -4523,8 +4606,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         }
         substitutions = [{"original": "测试江边", "canonical": "测试滨水公园"}]
 
-        DailyLocationAuditMixin._replace_place_references(payload, substitutions)
-        DailyLocationAuditMixin._replace_place_references(payload, substitutions)
+        DailyLocationAuditComponent._replace_place_references(payload, substitutions)
+        DailyLocationAuditComponent._replace_place_references(payload, substitutions)
 
         item = payload["timeline"][0]
         self.assertEqual(item["place"], "测试滨水公园")
@@ -4536,7 +4619,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(
             [
-                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","timeline_edits":[]}'
+                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","planned_actions":[],"timeline_edits":[]}'
             ]
         )
 
@@ -4655,7 +4738,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         invite_provider = Provider(
             [
-                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","timeline_edits":[]}'
+                '{"decision":"reject","accept":false,"reason":"当前更想保持原计划","planned_actions":[],"timeline_edits":[]}'
             ],
             provider_id="invite-model",
         )

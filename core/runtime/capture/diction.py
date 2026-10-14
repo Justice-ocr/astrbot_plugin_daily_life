@@ -4,9 +4,24 @@ from typing import Any
 
 from ...models import ExpressionProfileRecord, ExpressionReviewRecord
 
+from typing import Protocol
 
-class ExpressionLearningMixin:
+
+class ExpressionLearningComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _batch_expression_scope: Any
+    _dict_payloads: Any
+    _save_experience_evidence: Any
+    _save_expression_profile_payloads: Any
+    archive: Any
+
+
+class ExpressionLearningComponent:
     """在已有后台记忆批次中提炼有消息证据的表达习惯。"""
+
+    def __init__(self, context: ExpressionLearningComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _batch_expression_scope(batch: dict[str, Any]) -> str:
@@ -15,14 +30,14 @@ class ExpressionLearningMixin:
         return str(last.get("group_id") or batch.get("session_id") or "").strip()
 
     async def _batch_expression_context(self, batch: dict[str, Any]) -> dict[str, Any]:
-        scope = self._batch_expression_scope(batch)
+        scope = self.context._batch_expression_scope(batch)
         participants = {
             str(row.get("sender_profile_id") or "")
             for row in batch.get("messages", [])
             if row.get("role", "user") == "user"
         }
-        profiles = await self.archive.get_expression_profiles(limit=12, scope=scope)
-        effects = await self.archive.get_reply_effects(
+        profiles = await self.context.archive.get_expression_profiles(limit=12, scope=scope)
+        effects = await self.context.archive.get_reply_effects(
             limit=12, scope=str(batch.get("session_id") or "")
         )
         return {
@@ -56,7 +71,7 @@ class ExpressionLearningMixin:
             and item.get("outcome") in {"positive", "negative"}
             and item.get("evidence")
         }
-        scope = self._batch_expression_scope(batch)
+        scope = self.context._batch_expression_scope(batch)
 
         def references(raw: dict[str, Any], field: str) -> list[str]:
             value = raw.get(field)
@@ -76,7 +91,7 @@ class ExpressionLearningMixin:
 
         profiles = []
         seen = set()
-        for raw in self._dict_payloads(payload.get("expression_profiles"))[:4]:
+        for raw in self.context._dict_payloads(payload.get("expression_profiles"))[:4]:
             record = ExpressionProfileRecord.from_value(raw)
             if (
                 not record
@@ -152,7 +167,7 @@ class ExpressionLearningMixin:
         payload["expression_profiles"] = profiles
 
         reviews = []
-        for raw in self._dict_payloads(payload.get("expression_reviews"))[:3]:
+        for raw in self.context._dict_payloads(payload.get("expression_reviews"))[:3]:
             reply_id = str(raw.get("reply_message_id") or "")
             user_ids = references(raw, "source_message_ids")
             profile_id = str(raw.get("profile_id") or "")
@@ -183,8 +198,8 @@ class ExpressionLearningMixin:
         self, payload: dict[str, Any], batch: dict[str, Any], meta: dict[str, str]
     ) -> None:
         saved = {"expression_profiles": []}
-        await self._save_expression_profile_payloads(
-            payload, meta, self._batch_expression_scope(batch), saved
+        await self.context._save_expression_profile_payloads(
+            payload, meta, self.context._batch_expression_scope(batch), saved
         )
         by_id = {
             str(row.get("message_id") or row.get("id") or ""): row
@@ -193,7 +208,7 @@ class ExpressionLearningMixin:
         for profile, raw in zip(
             saved["expression_profiles"], payload.get("expression_profiles", [])
         ):
-            existing = await self.archive.get_memory_evidence(
+            existing = await self.context.archive.get_memory_evidence(
                 target_type="expression_profile", target_id=str(profile.id), limit=30
             )
             known = {(item.source_table, item.source_id) for item in existing}
@@ -202,7 +217,7 @@ class ExpressionLearningMixin:
                 source_id = str(row["id"])
                 if ("chat_memory_messages", source_id) in known:
                     continue
-                await self._save_experience_evidence(
+                await self.context._save_experience_evidence(
                     "expression_profile",
                     str(profile.id),
                     profile.evidence,
@@ -213,7 +228,7 @@ class ExpressionLearningMixin:
                     confidence=profile.confidence,
                 )
         for raw in payload.get("expression_reviews", []):
-            await self.archive.save_expression_review(
+            await self.context.archive.save_expression_review(
                 ExpressionReviewRecord.from_value(raw)
             )
         # 表达学习独立于摘要是否值得保存；后续通用记忆入库不重复处理。

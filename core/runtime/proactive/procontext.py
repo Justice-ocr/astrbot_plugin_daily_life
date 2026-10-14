@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import math
 import uuid
@@ -15,6 +17,8 @@ from ...prompts import (
 from ...sources.history import SavedHistoryReader
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
+
+from typing import Protocol
 
 
 class ProactiveSyntheticEvent:
@@ -77,7 +81,31 @@ class ProactiveSyntheticEvent:
         return default if key else {}
 
 
-class ProactiveContextMixin:
+class ProactiveContextComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _chat_style_enabled: Any
+    _chat_style_limit_for_scope: Any
+    _context_message_timestamp: Any
+    _format_context_message_content: Any
+    _format_context_message_label: Any
+    _format_recent_context_messages: Any
+    _merge_recent_context_messages: Any
+    _proactive_expression_limit_for_scope: Any
+    _read_recent_context_messages: Any
+    _relationship_friend_target_scope: Any
+    close_text_session: Any
+    config: Any
+    context: Any
+    get_persona_text: Any
+    living_context_for_scope: Any
+    structured_recent_history_messages: Any
+
+
+class ProactiveContextComponent:
+    def __init__(self, context: ProactiveContextComponentContext) -> None:
+        self.context = context
+
     def _private_revisit_event(
         self, target_scope: str, reply_text: str, relationship: Any
     ) -> Any:
@@ -116,14 +144,14 @@ class ProactiveContextMixin:
         return text
 
     def _proactive_expression_limit_for_scope(self, target_scope: str) -> int:
-        getter = getattr(self, "_chat_style_limit_for_scope", None)
+        getter = getattr(self.context, "_chat_style_limit_for_scope", None)
         if callable(getter):
             try:
                 return max(0, int(getter(target_scope) or 0))
             except (TypeError, ValueError):
                 return 0
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        checker = getattr(self, "_chat_style_enabled", None)
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         if not style or (callable(checker) and not checker()):
             return 0
         if not callable(checker) and not bool(getattr(style, "enabled", False)):
@@ -134,8 +162,8 @@ class ProactiveContextMixin:
             return 0
 
     def _format_proactive_expression_style(self, target_scope: str) -> str:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        checker = getattr(self, "_chat_style_enabled", None)
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         enabled = (
             bool(checker())
             if callable(checker)
@@ -148,7 +176,7 @@ class ProactiveContextMixin:
             if style and enabled
             else ""
         )
-        limit = self._proactive_expression_limit_for_scope(target_scope)
+        limit = self.context._proactive_expression_limit_for_scope(target_scope)
         scope_label = "群聊" if ":GroupMessage:" in str(target_scope or "") else "私聊"
         lines = [f"- 消息传输范围：{scope_label}主动消息；不代表现实距离。"]
         if limit > 0:
@@ -163,7 +191,7 @@ class ProactiveContextMixin:
         return isinstance(review, dict) and review.get("passed") is True
 
     async def _current_proactive_persona(self, target_scope: str = "") -> str:
-        get_persona = getattr(self, "get_persona_text", None)
+        get_persona = getattr(self.context, "get_persona_text", None)
         if not callable(get_persona):
             return ""
         try:
@@ -184,21 +212,21 @@ class ProactiveContextMixin:
         target_scope = str(target_scope or "").strip()
         if not target_scope or limit <= 0:
             return []
-        structured_reader = getattr(self, "structured_recent_history_messages", None)
+        structured_reader = getattr(self.context, "structured_recent_history_messages", None)
         structured = (
             structured_reader(target_scope, limit=limit)
             if callable(structured_reader)
             else []
         )
         try:
-            reader = SavedHistoryReader(self.context, LOG_PREFIX)
+            reader = SavedHistoryReader(self.context.context, LOG_PREFIX)
             saved = await reader.fetch(
                 target_scope, max_count=limit, hours=12, prefer_conversation=True
             )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 读取闲时回复最近对话片段失败：{exc}")
             saved = []
-        return self._merge_recent_context_messages(saved, structured)[-limit:]
+        return self.context._merge_recent_context_messages(saved, structured)[-limit:]
 
     @staticmethod
     def _context_message_timestamp(message: dict[str, str]) -> float:
@@ -339,7 +367,7 @@ JSON 输出要求：
         session_id = f"daily_life_proactive_continuity_{uuid.uuid4().hex[:8]}"
         try:
             audit = await call_pure_json(
-                self,
+                self.context,
                 provider,
                 prompt,
                 session_id,
@@ -365,7 +393,7 @@ JSON 输出要求：
         except Exception as exc:
             return False, f"连续性审计失败：{str(exc)[:180]}"
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     @staticmethod
     def _format_context_message_label(message: dict[str, str]) -> str:
@@ -422,12 +450,12 @@ JSON 输出要求：
         for message in reversed(messages):
             if remaining < 200:
                 break
-            label = self._format_context_message_label(message)
-            content = self._format_context_message_content(
+            label = self.context._format_context_message_label(message)
+            content = self.context._format_context_message_content(
                 message, limit=min(1200, remaining)
             )
             if content:
-                timestamp = self._context_message_timestamp(message)
+                timestamp = self.context._context_message_timestamp(message)
                 time_prefix = ""
                 if timestamp > 0:
                     occurred_at = datetime.datetime.fromtimestamp(timestamp)
@@ -454,9 +482,9 @@ JSON 输出要求：
     async def _build_recent_context_for_proactive(
         self, target_scope: str, limit: int = 6
     ) -> str:
-        messages = await self._read_recent_context_messages(target_scope, limit=limit)
-        text = self._format_recent_context_messages(messages)
-        living_reader = getattr(self, "living_context_for_scope", None)
+        messages = await self.context._read_recent_context_messages(target_scope, limit=limit)
+        text = self.context._format_recent_context_messages(messages)
+        living_reader = getattr(self.context, "living_context_for_scope", None)
         if callable(living_reader):
             text += "\n" + await living_reader(target_scope)
         return text
@@ -637,4 +665,4 @@ JSON 输出要求：
         return ""
 
     def _resolve_private_target_umo(self, relationship: Any) -> str:
-        return self._relationship_friend_target_scope(relationship)
+        return self.context._relationship_friend_target_scope(relationship)

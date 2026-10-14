@@ -16,6 +16,8 @@ from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
+
 
 @dataclass(frozen=True, slots=True)
 class LifeVideoReferenceSource:
@@ -54,24 +56,123 @@ class LifeVideoExecution:
     reference_image: str
 
 
-class RuntimeVideoMediaMixin:
+class RuntimeVideoMediaComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _CONTINUOUS_TURN_IMAGES_ATTR: Any
+    _PREPARED_VISUAL_MEDIA_ATTR: Any
+    _VIDEO_REFERENCE_SOURCE_ATTR: Any
+    _align_current_appearance_scene_prompt: Any
+    _append_assistant_history: Any
+    _apply_current_appearance_snapshot: Any
+    _apply_historical_appearance_snapshot: Any
+    _build_person_fact_injection_context: Any
+    _continuous_turn_batch: Any
+    _continuous_turn_event_identity: Any
+    _current_character_identity_profiles: Any
+    _current_life_appearance_snapshot: Any
+    _deliver_life_video_execution: Any
+    _direct_life_image_payload: Any
+    _direct_life_video_prompt: Any
+    _edit_life_image_with_policy_retry: Any
+    _event_current_image_request_text: Any
+    _event_image_prompt_text: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _event_sources: Any
+    _event_user_history_text: Any
+    _event_video_prompt_text: Any
+    _execute_life_video_request: Any
+    _finish_life_video_request: Any
+    _friend_look_parameters_result: Any
+    _friend_look_prompt: Any
+    _friend_look_required_parameters: Any
+    _friend_look_should_persist: Any
+    _generate_life_group_video_first_frame: Any
+    _generate_life_image_with_policy_retry: Any
+    _generate_life_video_asset_locked: Any
+    _generate_life_video_failure_text: Any
+    _generate_life_video_first_frame: Any
+    _generate_life_video_followup_text: Any
+    _historical_life_appearance_snapshot: Any
+    _image_prompt_aspect_ratio: Any
+    _image_prompt_detail_score: Any
+    _is_llm_result_object: Any
+    _life_character_reference_image: Any
+    _life_video_failure_fallback_text: Any
+    _life_video_generate_background: Any
+    _life_video_pending_requests: Any
+    _life_video_reference_aspect_ratio: Any
+    _life_video_reply_model: Any
+    _life_video_request_from_event: Any
+    _life_video_requests: Any
+    _load_life_video_reference_image: Any
+    _log_friend_daily_look: Any
+    _media_error_summary: Any
+    _media_result_summary: Any
+    _normalize_image_participants: Any
+    _normalize_image_subject_route: Any
+    _parse_life_video_reply_text: Any
+    _prepare_friend_daily_look: Any
+    _register_life_video_request: Any
+    _release_media_chat_turn: Any
+    _remember_friend_daily_look: Any
+    _remember_life_image_for_scope: Any
+    _resolve_life_identity_profiles: Any
+    _resolve_life_image_reference_async: Any
+    _resolve_life_video_commitment_future: Any
+    _resolve_video_prompt: Any
+    _schedule_background_task: Any
+    _send_life_video_failure_notice: Any
+    _send_life_video_followup: Any
+    _send_life_video_text: Any
+    _snapshot_media_event: Any
+    _update_life_video_request: Any
+    _video_prompt_duration_seconds: Any
+    call_text_model: Any
+    cancel_tool_reaction: Any
+    finalize_durable_media_delivery: Any
+    finish_tool_reaction: Any
+    generate_life_video_asset: Any
+    get_persona_text: Any
+    get_text_provider: Any
+    image_message_chain: Any
+    media: Any
+    media_request_is_current_turn: Any
+    note_life_media_sent: Any
+    note_life_video_reference_source: Any
+    note_structured_bot_message: Any
+    record_current_life_action_receipt: Any
+    runtime_service_lease: Any
+    send_background_text: Any
+    send_message_if_not_recalled: Any
+    stage_durable_media_delivery: Any
+    video_file_message_chain: Any
+    video_message_chain: Any
+
+
+class RuntimeVideoMediaComponent:
+    def __init__(self, context: RuntimeVideoMediaComponentContext) -> None:
+        self.context = context
+
     _VIDEO_REFERENCE_SOURCE_ATTR = "_daily_life_video_reference_source"
 
     def note_life_video_reference_source(
         self, event: Any, *, continue_last_result: bool = False, replace: bool = False
     ) -> LifeVideoReferenceSource:
-        events = self._event_sources(event)
+        events = self.context._event_sources(event)
         current_event = events[-1] if events else event
         source = None
         for current in events:
-            value = getattr(current, self._VIDEO_REFERENCE_SOURCE_ATTR, None)
+            value = getattr(current, self.context._VIDEO_REFERENCE_SOURCE_ATTR, None)
             if isinstance(value, LifeVideoReferenceSource):
                 source = value
                 break
         if source is None or (replace and source.event is not current_event):
-            prepared = getattr(current_event, self._PREPARED_VISUAL_MEDIA_ATTR, [])
-            current_items = self._event_message_items(current_event)
-            incoming = getattr(current_event, self._CONTINUOUS_TURN_IMAGES_ATTR, None)
+            prepared = getattr(current_event, self.context._PREPARED_VISUAL_MEDIA_ATTR, [])
+            current_items = self.context._event_message_items(current_event)
+            incoming = getattr(current_event, self.context._CONTINUOUS_TURN_IMAGES_ATTR, None)
             if replace and incoming is not None:
                 current_items = incoming.items
                 prepared = incoming.prepared
@@ -91,11 +192,11 @@ class RuntimeVideoMediaMixin:
                 items=tuple(items),
                 continue_last_result=bool(continue_last_result),
             )
-        setattr(event, self._VIDEO_REFERENCE_SOURCE_ATTR, source)
-        setattr(current_event, self._VIDEO_REFERENCE_SOURCE_ATTR, source)
-        identity = self._continuous_turn_event_identity(current_event)
+        setattr(event, self.context._VIDEO_REFERENCE_SOURCE_ATTR, source)
+        setattr(current_event, self.context._VIDEO_REFERENCE_SOURCE_ATTR, source)
+        identity = self.context._continuous_turn_event_identity(current_event)
         if identity is not None:
-            batch = self._continuous_turn_batch(identity[0], identity[1])
+            batch = self.context._continuous_turn_batch(identity[0], identity[1])
             if batch is not None and batch.revision == identity[2]:
                 batch.video_reference_source = source
         return source
@@ -108,30 +209,30 @@ class RuntimeVideoMediaMixin:
         seconds: list[int] = []
         index = 0
         while index < len(compact):
-            number, end = RuntimeVideoMediaMixin._video_read_number(compact, index)
+            number, end = RuntimeVideoMediaComponent._video_read_number(compact, index)
             if end <= index:
                 index += 1
                 continue
-            cursor = RuntimeVideoMediaMixin._video_skip_spaces(compact, end)
+            cursor = RuntimeVideoMediaComponent._video_skip_spaces(compact, end)
             if cursor < len(compact) and compact[cursor] in "-–—~到至":
-                right_start = RuntimeVideoMediaMixin._video_skip_spaces(
+                right_start = RuntimeVideoMediaComponent._video_skip_spaces(
                     compact, cursor + 1
                 )
-                right, right_end = RuntimeVideoMediaMixin._video_read_number(
+                right, right_end = RuntimeVideoMediaComponent._video_read_number(
                     compact, right_start
                 )
-                unit_at = RuntimeVideoMediaMixin._video_skip_spaces(compact, right_end)
+                unit_at = RuntimeVideoMediaComponent._video_skip_spaces(compact, right_end)
                 if (
                     right_end > right_start
-                    and RuntimeVideoMediaMixin._video_has_duration_unit(
+                    and RuntimeVideoMediaComponent._video_has_duration_unit(
                         compact, unit_at
                     )
                 ):
-                    seconds.append(RuntimeVideoMediaMixin._video_clamp_seconds(right))
+                    seconds.append(RuntimeVideoMediaComponent._video_clamp_seconds(right))
                     index = unit_at + 1
                     continue
-            if RuntimeVideoMediaMixin._video_has_duration_unit(compact, cursor):
-                seconds.append(RuntimeVideoMediaMixin._video_clamp_seconds(number))
+            if RuntimeVideoMediaComponent._video_has_duration_unit(compact, cursor):
+                seconds.append(RuntimeVideoMediaComponent._video_clamp_seconds(number))
                 index = cursor + 1
                 continue
             index = end
@@ -192,10 +293,10 @@ class RuntimeVideoMediaMixin:
         return max(1, min(15, seconds))
 
     def _event_video_prompt_text(self, event: Any) -> str:
-        resolver = getattr(self, "_event_image_prompt_text", None)
+        resolver = getattr(self.context, "_event_image_prompt_text", None)
         text = str(resolver(event) if callable(resolver) else "").strip()
         if not text:
-            reader = getattr(self, "_event_user_history_text", None)
+            reader = getattr(self.context, "_event_user_history_text", None)
             text = str(
                 reader(event)
                 if callable(reader)
@@ -205,11 +306,11 @@ class RuntimeVideoMediaMixin:
 
     def _resolve_video_prompt(self, event: Any, prompt: str) -> tuple[str, bool]:
         tool_prompt = str(prompt or "").strip()
-        event_prompt = self._event_video_prompt_text(event)
+        event_prompt = self.context._event_video_prompt_text(event)
         if not event_prompt:
             return tool_prompt, False
-        event_score = self._image_prompt_detail_score(event_prompt)
-        tool_score = self._image_prompt_detail_score(tool_prompt)
+        event_score = self.context._image_prompt_detail_score(event_prompt)
+        tool_score = self.context._image_prompt_detail_score(tool_prompt)
         line_count = sum(1 for line in event_prompt.splitlines() if line.strip())
         event_length = len("".join(event_prompt.split()))
         if event_length >= 80 and (
@@ -228,8 +329,8 @@ class RuntimeVideoMediaMixin:
         direct_prompt: bool = False,
         group_video: bool = False,
     ) -> Any:
-        async with self.runtime_service_lease():
-            return await self._generate_life_video_asset_locked(
+        async with self.context.runtime_service_lease():
+            return await self.context._generate_life_video_asset_locked(
                 event,
                 prompt,
                 reference_image,
@@ -252,24 +353,24 @@ class RuntimeVideoMediaMixin:
         reference_image = str(reference_image or "").strip()
         if reference_image:
             try:
-                image_bytes = await self._load_life_video_reference_image(
+                image_bytes = await self.context._load_life_video_reference_image(
                     reference_image
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"当前消息图片不可用，无法作为视频首帧：{self._media_error_summary(exc)}"
+                    f"当前消息图片不可用，无法作为视频首帧：{self.context._media_error_summary(exc)}"
                 ) from exc
-            reference_aspect_ratio = self._life_video_reference_aspect_ratio(
+            reference_aspect_ratio = self.context._life_video_reference_aspect_ratio(
                 image_bytes
             )
         else:
             reference_aspect_ratio = ""
-            first_frame = await self._generate_life_video_first_frame("", prompt, event)
-            image_bytes = await self._load_life_video_reference_image(first_frame)
+            first_frame = await self.context._generate_life_video_first_frame("", prompt, event)
+            image_bytes = await self.context._load_life_video_reference_image(first_frame)
         directed_prompt = (
             prompt
             if direct_prompt
-            else await self._direct_life_video_prompt(event, prompt)
+            else await self.context._direct_life_video_prompt(event, prompt)
         )
         if group_video:
             directed_prompt = (
@@ -278,20 +379,20 @@ class RuntimeVideoMediaMixin:
                 "视频中的本轮服装、配饰和发型以首帧已经呈现的双方造型为准，保持前后连续。"
                 "具体站位、距离、互动、遮挡、动作幅度、转身和镜头运动服从当前剧情与镜头设计。"
             )
-        aspect_ratio = self._image_prompt_aspect_ratio(prompt) or reference_aspect_ratio
-        duration = self._video_prompt_duration_seconds(prompt)
+        aspect_ratio = self.context._image_prompt_aspect_ratio(prompt) or reference_aspect_ratio
+        duration = self.context._video_prompt_duration_seconds(prompt)
         if aspect_ratio or duration:
             kwargs: dict[str, Any] = {}
             if aspect_ratio:
                 kwargs["aspect_ratio"] = aspect_ratio
             if duration:
                 kwargs["duration"] = duration
-            return await self.media.video.generate_video(
+            return await self.context.media.video.generate_video(
                 directed_prompt,
                 image_bytes=image_bytes,
                 **kwargs,
             )
-        return await self.media.video.generate_video(
+        return await self.context.media.video.generate_video(
             directed_prompt, image_bytes=image_bytes
         )
 
@@ -313,22 +414,22 @@ class RuntimeVideoMediaMixin:
         historical_period: str = "",
         historical_time: str = "",
     ) -> str:
-        prompt, direct_prompt = self._resolve_video_prompt(event, prompt)
+        prompt, direct_prompt = self.context._resolve_video_prompt(event, prompt)
         if not prompt:
             return "没有收到视频提示词。"
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return "当前会话不可发送视频。"
-        route = self._normalize_image_subject_route(subject_route)
-        participant_ids = self._normalize_image_participants(participants)
+        route = self.context._normalize_image_subject_route(subject_route)
+        participant_ids = self.context._normalize_image_participants(participants)
         if route == "group" and len(participant_ids) > 1:
             return "当前合影视频只能选择一位好友。"
-        reference_source = self.note_life_video_reference_source(
+        reference_source = self.context.note_life_video_reference_source(
             event,
             continue_last_result=continue_last_result,
             replace=bool(replace_reference_image),
         )
-        initial_reference_image = await self._resolve_life_image_reference_async(
+        initial_reference_image = await self.context._resolve_life_image_reference_async(
             reference_source.event,
             current_items=reference_source.items,
             allow_last_generated=reference_source.continue_last_result,
@@ -336,8 +437,8 @@ class RuntimeVideoMediaMixin:
         )
         logger.info(
             f"{LOG_PREFIX} 视频首帧来源已锁定："
-            f"消息={self._event_message_id(reference_source.event)}；"
-            f"续话沿用={'否' if reference_source.event in self._event_sources(event) else '是'}；"
+            f"消息={self.context._event_message_id(reference_source.event)}；"
+            f"续话沿用={'否' if reference_source.event in self.context._event_sources(event) else '是'}；"
             f"参考图={'有' if initial_reference_image else '无，将生成本次首帧'}"
         )
         friend_look: dict[str, str] = {}
@@ -345,7 +446,7 @@ class RuntimeVideoMediaMixin:
         if route == "group" and not initial_reference_image:
             if len(participant_ids) != 1:
                 return "没有现成合影首帧，请选择一位已配置参考图的好友。"
-            friend_look, look_source, missing = await self._prepare_friend_daily_look(
+            friend_look, look_source, missing = await self.context._prepare_friend_daily_look(
                 event,
                 participant_ids[0],
                 outfit=friend_outfit,
@@ -356,33 +457,33 @@ class RuntimeVideoMediaMixin:
                 decision=friend_outfit_decision,
             )
             if missing:
-                required = self._friend_look_required_parameters(look_source, missing)
+                required = self.context._friend_look_required_parameters(look_source, missing)
                 logger.debug(
                     f"{LOG_PREFIX} 好友合影暂未生成：缺少好友当天穿搭或发型；"
                     f"参数={','.join(missing)}"
                 )
-                return self._friend_look_parameters_result(required)
-            self._log_friend_daily_look(participant_ids[0], friend_look, look_source)
-            friend_look_persist = self._friend_look_should_persist(look_source)
-        source_request = self._event_current_image_request_text(reference_source.event)
+                return self.context._friend_look_parameters_result(required)
+            self.context._log_friend_daily_look(participant_ids[0], friend_look, look_source)
+            friend_look_persist = self.context._friend_look_should_persist(look_source)
+        source_request = self.context._event_current_image_request_text(reference_source.event)
         historical_request = route in {"current_character", "group"} and bool(
             historical_target
         )
         current_appearance = ""
         if historical_request:
-            historical_appearance = await self._historical_life_appearance_snapshot(
+            historical_appearance = await self.context._historical_life_appearance_snapshot(
                 historical_target, period=historical_period, time=historical_time
             )
             if not historical_appearance:
                 return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成视频。"
-            prompt = self._apply_historical_appearance_snapshot(
+            prompt = self.context._apply_historical_appearance_snapshot(
                 prompt, historical_appearance
             )
         elif not initial_reference_image:
-            current_appearance = await self._current_life_appearance_snapshot(route)
-        request_id = self._register_life_video_request(scope, prompt, event)
+            current_appearance = await self.context._current_life_appearance_snapshot(route)
+        request_id = self.context._register_life_video_request(scope, prompt, event)
         source_event = event
-        event = self._snapshot_media_event(event)
+        event = self.context._snapshot_media_event(event)
         request = LifeVideoRequest(
             scope=scope,
             prompt=prompt,
@@ -391,9 +492,9 @@ class RuntimeVideoMediaMixin:
             direct_prompt=direct_prompt,
             subject_route=route,
             participants=tuple(participant_ids),
-            identity_profiles=await self._resolve_life_identity_profiles(event, route),
+            identity_profiles=await self.context._resolve_life_identity_profiles(event, route),
             person_fact_context=(
-                await self._build_person_fact_injection_context(event)
+                await self.context._build_person_fact_injection_context(event)
                 if route == "group" and participant_ids
                 else ""
             ),
@@ -404,14 +505,14 @@ class RuntimeVideoMediaMixin:
             continue_last_result=reference_source.continue_last_result,
             initial_reference_image=str(initial_reference_image or "").strip(),
         )
-        scheduled = self._schedule_background_task(
-            self._life_video_generate_background(request),
+        scheduled = self.context._schedule_background_task(
+            self.context._life_video_generate_background(request),
             label="生活视频生成",
             key=f"life_video:{scope}:{prompt[:80]}",
         )
         if not scheduled:
-            self._finish_life_video_request(request_id)
-            self.cancel_tool_reaction(request.event, "life_video_generate")
+            self.context._finish_life_video_request(request_id)
+            self.context.cancel_tool_reaction(request.event, "life_video_generate")
             return json.dumps(
                 {
                     "status": "failed",
@@ -420,7 +521,7 @@ class RuntimeVideoMediaMixin:
                 },
                 ensure_ascii=False,
             )
-        self._release_media_chat_turn(source_event)
+        self.context._release_media_chat_turn(source_event)
         return json.dumps(
             {
                 "status": "pending",
@@ -440,10 +541,10 @@ class RuntimeVideoMediaMixin:
     async def _life_video_generate_background(self, request: LifeVideoRequest) -> None:
         started_at = time.monotonic()
         try:
-            execution = await self._execute_life_video_request(request)
-            await self._deliver_life_video_execution(request, execution, started_at)
+            execution = await self.context._execute_life_video_request(request)
+            await self.context._deliver_life_video_execution(request, execution, started_at)
         except asyncio.CancelledError:
-            self.cancel_tool_reaction(request.event, "life_video_generate")
+            self.context.cancel_tool_reaction(request.event, "life_video_generate")
             raise
         except Exception as exc:
             completion = getattr(
@@ -457,38 +558,38 @@ class RuntimeVideoMediaMixin:
                 if outcome in {"sent", "cancelled"}:
                     logger.warning(f"{LOG_PREFIX} 视频已投递，后处理记录失败：{exc}")
                     if outcome == "sent":
-                        await self.finish_tool_reaction(
+                        await self.context.finish_tool_reaction(
                             request.event, "life_video_generate", success=True
                         )
                     return
             if isinstance(completion, asyncio.Future) and not completion.done():
                 completion.set_exception(exc)
-            error = self._media_error_summary(exc)
+            error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 视频生成或发送失败：{error}")
-            self._update_life_video_request(
+            self.context._update_life_video_request(
                 request.request_id,
                 video_status="failed",
                 failure_reason=error,
             )
-            await self._send_life_video_failure_notice(
+            await self.context._send_life_video_failure_notice(
                 request.scope,
                 request.prompt,
                 error,
                 request.event,
                 request_id=request.request_id,
             )
-            await self.finish_tool_reaction(
+            await self.context.finish_tool_reaction(
                 request.event, "life_video_generate", success=False
             )
         finally:
-            self._finish_life_video_request(request.request_id)
+            self.context._finish_life_video_request(request.request_id)
 
     async def _execute_life_video_request(
         self, request: LifeVideoRequest
     ) -> LifeVideoExecution:
-        route = self._normalize_image_subject_route(request.subject_route)
+        route = self.context._normalize_image_subject_route(request.subject_route)
         participant_ids = tuple(
-            self._normalize_image_participants(request.participants)
+            self.context._normalize_image_participants(request.participants)
         )
         # 首帧引用已在接收请求时锁定。后台任务可能晚于后续聊天消息执行，
         # 这里不能再从可变的 request.event 读取图片，否则会把后续图片或表情包
@@ -497,10 +598,10 @@ class RuntimeVideoMediaMixin:
         first_frame = ""
         prompt = request.prompt
         if request.current_appearance and route in {"current_character", "group"}:
-            prompt = await self._align_current_appearance_scene_prompt(
+            prompt = await self.context._align_current_appearance_scene_prompt(
                 prompt, request.source_request, route
             )
-        generation_prompt = self._apply_current_appearance_snapshot(
+        generation_prompt = self.context._apply_current_appearance_snapshot(
             prompt,
             request.current_appearance,
             route,
@@ -511,7 +612,7 @@ class RuntimeVideoMediaMixin:
             if route == "group":
                 if len(participant_ids) != 1:
                     raise ValueError("没有现成合影首帧，请选择一位已配置参考图的好友。")
-                first_frame = await self._generate_life_group_video_first_frame(
+                first_frame = await self.context._generate_life_group_video_first_frame(
                     generation_prompt,
                     request.event,
                     list(participant_ids),
@@ -519,16 +620,16 @@ class RuntimeVideoMediaMixin:
                     identity_profiles=request.identity_profiles,
                 )
             else:
-                first_frame = await self._generate_life_video_first_frame(
+                first_frame = await self.context._generate_life_video_first_frame(
                     request.scope,
                     generation_prompt,
                     request.event,
                     identity_profiles=request.identity_profiles,
                 )
-            self._update_life_video_request(
+            self.context._update_life_video_request(
                 request.request_id, first_frame_path=first_frame
             )
-        generated = await self.generate_life_video_asset(
+        generated = await self.context.generate_life_video_asset(
             request.event,
             generation_prompt,
             reference_image or first_frame,
@@ -556,7 +657,7 @@ class RuntimeVideoMediaMixin:
         media_name = str(
             getattr(request.event, "_daily_life_media_reply_name", "") or "生活视频"
         ).strip()
-        delivery_task = await self.stage_durable_media_delivery(
+        delivery_task = await self.context.stage_durable_media_delivery(
             request.scope,
             "video",
             [generated_url],
@@ -564,7 +665,7 @@ class RuntimeVideoMediaMixin:
             source_event=request.event,
             evidence="视频已生成，等待投递确认",
             commitment_id=commitment_id,
-            source_message_id=self._event_message_id(request.event),
+            source_message_id=self.context._event_message_id(request.event),
             reply_context={
                 "media_name": media_name,
                 "request_text": request.prompt,
@@ -574,43 +675,43 @@ class RuntimeVideoMediaMixin:
         )
         is_webchat = request.scope.split(":", 1)[0].lower() == "webchat"
         video_chain = (
-            self.video_file_message_chain(generated_url)
+            self.context.video_file_message_chain(generated_url)
             if is_webchat
-            else self.video_message_chain(generated_url)
+            else self.context.video_message_chain(generated_url)
         )
-        if not await self.send_message_if_not_recalled(
+        if not await self.context.send_message_if_not_recalled(
             request.scope,
             video_chain,
             source_event=request.event,
             prefer_scope_send=is_webchat,
         ):
-            await self.finalize_durable_media_delivery(
+            await self.context.finalize_durable_media_delivery(
                 delivery_task,
                 outcome="cancelled",
                 detail="原消息已撤回，取消视频投递",
             )
-            self._update_life_video_request(
+            self.context._update_life_video_request(
                 request.request_id, video_status="cancelled"
             )
-            self.cancel_tool_reaction(request.event, "life_video_generate")
-            self._resolve_life_video_commitment_future(request.event, "cancelled")
+            self.context.cancel_tool_reaction(request.event, "life_video_generate")
+            self.context._resolve_life_video_commitment_future(request.event, "cancelled")
             return False
         # send_message_if_not_recalled 返回成功即代表真实视频已经送出；持久承诺
         # 此时先收到成功信号，后续记录/自然补话失败也不能导致视频重复生成。
-        self._resolve_life_video_commitment_future(request.event, "sent")
-        self._update_life_video_request(request.request_id, video_status="sent")
-        await self.finalize_durable_media_delivery(
+        self.context._resolve_life_video_commitment_future(request.event, "sent")
+        self.context._update_life_video_request(request.request_id, video_status="sent")
+        await self.context.finalize_durable_media_delivery(
             delivery_task, outcome="sent", detail="视频已发送"
         )
-        summary = await self._media_result_summary(generated_url, started_at)
+        summary = await self.context._media_result_summary(generated_url, started_at)
         logger.info(f"{LOG_PREFIX} 视频已发送：{summary}")
-        self.note_structured_bot_message(
+        self.context.note_structured_bot_message(
             request.scope,
             f"[视频已发送：{summary}]",
             source_event=request.event,
             media="视频",
         )
-        self._remember_life_image_for_scope(
+        self.context._remember_life_image_for_scope(
             request.scope, execution.first_frame or execution.reference_image
         )
         if (
@@ -619,13 +720,13 @@ class RuntimeVideoMediaMixin:
             and execution.friend_look
             and execution.friend_look_persist
         ):
-            await self._remember_friend_daily_look(
+            await self.context._remember_friend_daily_look(
                 request.scope,
                 execution.participants[0],
                 execution.friend_look,
             )
-        self.note_life_media_sent(request.event or request.scope, "视频")
-        receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+        self.context.note_life_media_sent(request.event or request.scope, "视频")
+        receipt_recorder = getattr(self.context, "record_current_life_action_receipt", None)
         if callable(receipt_recorder):
             await receipt_recorder(
                 request.event,
@@ -634,20 +735,20 @@ class RuntimeVideoMediaMixin:
                 source="video_delivery",
                 artifact_path=generated_url,
             )
-        await self._send_life_video_followup(
+        await self.context._send_life_video_followup(
             request.scope,
             request.prompt,
             summary,
             request.event,
             request.request_id,
         )
-        await self.finish_tool_reaction(
+        await self.context.finish_tool_reaction(
             request.event, "life_video_generate", success=True
         )
         return True
 
     def _update_life_video_request(self, request_id: str, **values: str) -> None:
-        marker = self._life_video_requests().get(request_id)
+        marker = self.context._life_video_requests().get(request_id)
         if isinstance(marker, dict):
             marker.update(values)
 
@@ -659,18 +760,18 @@ class RuntimeVideoMediaMixin:
         *,
         identity_profiles: dict[str, str] | None = None,
     ) -> str:
-        image_service = getattr(getattr(self, "media", None), "image", None)
+        image_service = getattr(getattr(self.context, "media", None), "image", None)
         if image_service is None:
             raise RuntimeError("未配置图片生成服务，无法自动生成视频首帧。")
-        directed = await self._direct_life_image_payload(event, prompt, reference=False)
+        directed = await self.context._direct_life_image_payload(event, prompt, reference=False)
         image_prompt = str(getattr(directed, "prompt", "") or "").strip()
         if not image_prompt:
             raise RuntimeError("视频首帧图片提示词为空。")
-        aspect_ratio = self._image_prompt_aspect_ratio(
+        aspect_ratio = self.context._image_prompt_aspect_ratio(
             prompt
-        ) or self._image_prompt_aspect_ratio(image_prompt)
+        ) or self.context._image_prompt_aspect_ratio(image_prompt)
         character_reference = (
-            self._life_character_reference_image()
+            self.context._life_character_reference_image()
             if getattr(directed, "needs_character_reference", False) is True
             else ""
         )
@@ -683,7 +784,7 @@ class RuntimeVideoMediaMixin:
             not identity_profile
             and getattr(directed, "contains_character", False) is True
         ):
-            resolved_profiles = await self._resolve_life_identity_profiles(
+            resolved_profiles = await self.context._resolve_life_identity_profiles(
                 event, "current_character"
             )
             identity_profile = resolved_profiles.get("current_character", "")
@@ -691,7 +792,7 @@ class RuntimeVideoMediaMixin:
             logger.debug(
                 f"{LOG_PREFIX} 视频首帧判定需要角色参考图，已自动切换到图生图。"
             )
-            generated = await self._edit_life_image_with_policy_retry(
+            generated = await self.context._edit_life_image_with_policy_retry(
                 event,
                 image_prompt,
                 character_reference,
@@ -703,7 +804,7 @@ class RuntimeVideoMediaMixin:
             generate_image = getattr(image_service, "generate_image", None)
             if not callable(generate_image):
                 raise RuntimeError("未配置图片生成服务，无法自动生成视频首帧。")
-            generated = await self._generate_life_image_with_policy_retry(
+            generated = await self.context._generate_life_image_with_policy_retry(
                 event,
                 image_prompt,
                 aspect_ratio,
@@ -724,24 +825,24 @@ class RuntimeVideoMediaMixin:
         friend_look: dict[str, str] | None = None,
         identity_profiles: dict[str, str] | None = None,
     ) -> str:
-        image_service = getattr(getattr(self, "media", None), "image", None)
+        image_service = getattr(getattr(self.context, "media", None), "image", None)
         generator = getattr(image_service, "generate_group_image", None)
         if not callable(generator):
             raise RuntimeError("当前图片接口不支持好友合影，无法生成合影视频首帧。")
-        directed = await self._direct_life_image_payload(event, prompt, reference=False)
+        directed = await self.context._direct_life_image_payload(event, prompt, reference=False)
         image_prompt = str(getattr(directed, "prompt", "") or "").strip()
         if not image_prompt:
             raise RuntimeError("合影视频首帧图片提示词为空。")
-        image_prompt = self._friend_look_prompt(image_prompt, friend_look or {})
+        image_prompt = self.context._friend_look_prompt(image_prompt, friend_look or {})
         image_prompt = (
             f"{image_prompt}\n双人视频首帧：{GROUP_IDENTITY_CONTINUITY_RULE}"
             "具体站位、距离、互动、遮挡与构图服从当前剧情和镜头设计。"
         )
-        aspect_ratio = self._image_prompt_aspect_ratio(
+        aspect_ratio = self.context._image_prompt_aspect_ratio(
             prompt
-        ) or self._image_prompt_aspect_ratio(image_prompt)
+        ) or self.context._image_prompt_aspect_ratio(image_prompt)
         options = {"reference_context": "合影首帧"}
-        current_profiles = self._current_character_identity_profiles(identity_profiles)
+        current_profiles = self.context._current_character_identity_profiles(identity_profiles)
         if current_profiles:
             options["identity_profiles"] = current_profiles
         generated = await generator(
@@ -754,10 +855,10 @@ class RuntimeVideoMediaMixin:
         return path
 
     def _life_video_requests(self) -> dict[str, dict[str, Any]]:
-        store = getattr(self, "_life_video_pending_requests", None)
+        store = getattr(self.context, "_life_video_pending_requests", None)
         if not isinstance(store, dict):
             store = {}
-            self._life_video_pending_requests = store
+            self.context._life_video_pending_requests = store
         return store
 
     def _register_life_video_request(self, scope: str, prompt: str, event: Any) -> str:
@@ -774,14 +875,14 @@ class RuntimeVideoMediaMixin:
             "fallback_photo_sent": False,
             "failure_reply_sent": False,
         }
-        self._life_video_requests()[request_id] = marker
-        for source in self._event_sources(event):
+        self.context._life_video_requests()[request_id] = marker
+        for source in self.context._event_sources(event):
             setattr(source, "_daily_life_video_request_id", request_id)
         return request_id
 
     def _life_video_request_from_event(self, event: Any) -> dict[str, Any] | None:
-        requests = self._life_video_requests()
-        for source in self._event_sources(event):
+        requests = self.context._life_video_requests()
+        for source in self.context._event_sources(event):
             request_id = str(
                 getattr(source, "_daily_life_video_request_id", "") or ""
             ).strip()
@@ -792,7 +893,7 @@ class RuntimeVideoMediaMixin:
     def _finish_life_video_request(self, request_id: str) -> None:
         request_id = str(request_id or "").strip()
         if request_id:
-            self._life_video_requests().pop(request_id, None)
+            self.context._life_video_requests().pop(request_id, None)
 
     async def _send_life_video_failure_notice(
         self,
@@ -803,7 +904,7 @@ class RuntimeVideoMediaMixin:
         *,
         request_id: str = "",
     ) -> bool:
-        marker = self._life_video_requests().get(str(request_id or "").strip())
+        marker = self.context._life_video_requests().get(str(request_id or "").strip())
         photo_path = ""
         if isinstance(marker, dict):
             candidate = str(marker.get("first_frame_path") or "").strip()
@@ -815,29 +916,29 @@ class RuntimeVideoMediaMixin:
         photo_sent = False
         if photo_path:
             try:
-                photo_sent = await self.send_message_if_not_recalled(
+                photo_sent = await self.context.send_message_if_not_recalled(
                     scope,
-                    self.image_message_chain(photo_path),
+                    self.context.image_message_chain(photo_path),
                     source_event=event,
                 )
                 if photo_sent:
-                    self.note_structured_bot_message(
+                    self.context.note_structured_bot_message(
                         scope,
                         "[视频失败图片已发送]",
                         source_event=event,
                         media="图片",
                     )
-                    self._remember_life_image_for_scope(scope, photo_path)
-                    self.note_life_media_sent(event or scope, "图片")
+                    self.context._remember_life_image_for_scope(scope, photo_path)
+                    self.context.note_life_media_sent(event or scope, "图片")
                     logger.debug(
                         f"{LOG_PREFIX} 视频失败，图片已发送：{Path(photo_path).name}"
                     )
             except Exception as exc:
                 logger.warning(
-                    f"{LOG_PREFIX} 视频失败，图片发送失败：{self._media_error_summary(exc)}"
+                    f"{LOG_PREFIX} 视频失败，图片发送失败：{self.context._media_error_summary(exc)}"
                 )
 
-        current_turn = getattr(self, "media_request_is_current_turn", None)
+        current_turn = getattr(self.context, "media_request_is_current_turn", None)
         stale_turn = callable(current_turn) and not current_turn(event)
         if stale_turn:
             logger.debug(
@@ -847,29 +948,29 @@ class RuntimeVideoMediaMixin:
                 marker["failure_reply_sent"] = False
                 marker["fallback_photo_sent"] = photo_sent
             return photo_sent
-        text = await self._generate_life_video_failure_text(
+        text = await self.context._generate_life_video_failure_text(
             event, prompt, error, photo_sent=photo_sent
         )
         if callable(current_turn) and not current_turn(event):
             return photo_sent
         if not text:
-            text = self._life_video_failure_fallback_text(photo_sent)
+            text = self.context._life_video_failure_fallback_text(photo_sent)
         try:
-            text_sent = await self._send_life_video_text(
+            text_sent = await self.context._send_life_video_text(
                 scope, text, source_event=event, source="video_failure"
             )
         except Exception as exc:
             logger.warning(
-                f"{LOG_PREFIX} 视频失败补话发送失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} 视频失败补话发送失败：{self.context._media_error_summary(exc)}"
             )
             text_sent = False
         if text_sent:
             if not callable(current_turn) or current_turn(event):
                 try:
-                    await self._append_assistant_history(scope, text)
+                    await self.context._append_assistant_history(scope, text)
                 except Exception as exc:
                     logger.debug(
-                        f"{LOG_PREFIX} 视频失败补话历史记录失败：{self._media_error_summary(exc)}"
+                        f"{LOG_PREFIX} 视频失败补话历史记录失败：{self.context._media_error_summary(exc)}"
                     )
             if isinstance(marker, dict):
                 marker["failure_reply_sent"] = True
@@ -890,19 +991,19 @@ class RuntimeVideoMediaMixin:
         return "刚才没发出去，这次视频没有拍成。"
 
     async def _life_video_reply_model(self, event: Any) -> tuple[Any, Any, str] | None:
-        get_provider = getattr(self, "get_text_provider", None)
-        call_llm = getattr(self, "call_text_model", None)
+        get_provider = getattr(self.context, "get_text_provider", None)
+        call_llm = getattr(self.context, "call_text_model", None)
         if not callable(get_provider) or not callable(call_llm):
             return None
         provider = await get_provider("")
         if provider is None:
             return None
-        persona_getter = getattr(self, "get_persona_text", None)
+        persona_getter = getattr(self.context, "get_persona_text", None)
         persona = ""
         if callable(persona_getter):
             try:
                 persona = str(
-                    await persona_getter(self._event_session_id(event)) or ""
+                    await persona_getter(self.context._event_session_id(event)) or ""
                 ).strip()
             except TypeError:
                 try:
@@ -910,22 +1011,22 @@ class RuntimeVideoMediaMixin:
                 except Exception as exc:
                     logger.debug(
                         f"{LOG_PREFIX} 视频补话未取得角色资料："
-                        f"{self._media_error_summary(exc)}"
+                        f"{self.context._media_error_summary(exc)}"
                     )
             except Exception as exc:
                 logger.debug(
                     f"{LOG_PREFIX} 视频补话未取得角色资料："
-                    f"{self._media_error_summary(exc)}"
+                    f"{self.context._media_error_summary(exc)}"
                 )
         return provider, call_llm, persona
 
     def hold_life_video_final_text(self, event: Any) -> bool:
-        marker = self._life_video_request_from_event(event)
+        marker = self.context._life_video_request_from_event(event)
         if not marker:
             return False
         result = getattr(event, "get_result", lambda: None)()
         chain = getattr(result, "chain", None)
-        if not isinstance(chain, list) or not self._is_llm_result_object(result):
+        if not isinstance(chain, list) or not self.context._is_llm_result_object(result):
             return False
         marker["llm_final_seen"] = True
         clearer = getattr(event, "clear_result", None)
@@ -946,30 +1047,30 @@ class RuntimeVideoMediaMixin:
         event: Any,
         request_id: str,
     ) -> bool:
-        current_turn = getattr(self, "media_request_is_current_turn", None)
+        current_turn = getattr(self.context, "media_request_is_current_turn", None)
         if callable(current_turn) and not current_turn(event):
             logger.debug(f"{LOG_PREFIX} 跳过过期视频补话：后续消息已经接管当前话轮。")
             return False
-        text = await self._generate_life_video_followup_text(event, prompt, summary)
+        text = await self.context._generate_life_video_followup_text(event, prompt, summary)
         if not text:
             return False
         if callable(current_turn) and not current_turn(event):
             return False
-        text_sent = await self._send_life_video_text(
+        text_sent = await self.context._send_life_video_text(
             scope, text, source_event=event, source="video_followup"
         )
         if text_sent:
             if event is not None:
                 setattr(event, "_daily_life_media_reply_sent", True)
             if not callable(current_turn) or current_turn(event):
-                await self._append_assistant_history(scope, text)
+                await self.context._append_assistant_history(scope, text)
         return text_sent
 
     async def _generate_life_video_followup_text(
         self, event: Any, prompt: str, summary: str
     ) -> str:
         try:
-            reply_model = await self._life_video_reply_model(event)
+            reply_model = await self.context._life_video_reply_model(event)
             if reply_model is None:
                 return ""
             provider, call_llm, persona = reply_model
@@ -997,13 +1098,13 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
                 empty_retries=0,
                 primary_provider_id="",
             )
-            reply_text = self._parse_life_video_reply_text(text)
+            reply_text = self.context._parse_life_video_reply_text(text)
             if not reply_text:
                 logger.debug(f"{LOG_PREFIX} 视频发送后补话生成失败：返回内容不符合协议")
             return reply_text
         except Exception as exc:
             logger.debug(
-                f"{LOG_PREFIX} 视频发送后补话生成失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} 视频发送后补话生成失败：{self.context._media_error_summary(exc)}"
             )
             return ""
 
@@ -1016,7 +1117,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
         photo_sent: bool = False,
     ) -> str:
         try:
-            reply_model = await self._life_video_reply_model(event)
+            reply_model = await self.context._life_video_reply_model(event)
             if reply_model is None:
                 logger.debug(
                     f"{LOG_PREFIX} 视频失败补话生成失败：没有可用模型；使用本地兜底"
@@ -1051,7 +1152,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
                 empty_retries=0,
                 primary_provider_id="",
             )
-            reply_text = self._parse_life_video_reply_text(text)
+            reply_text = self.context._parse_life_video_reply_text(text)
             if not reply_text:
                 logger.debug(
                     f"{LOG_PREFIX} 视频失败补话生成失败：返回内容不符合协议；使用本地兜底"
@@ -1059,7 +1160,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
             return reply_text
         except Exception as exc:
             logger.debug(
-                f"{LOG_PREFIX} 视频失败补话生成失败：{self._media_error_summary(exc)}；"
+                f"{LOG_PREFIX} 视频失败补话生成失败：{self.context._media_error_summary(exc)}；"
                 "使用本地兜底"
             )
             return ""
@@ -1104,7 +1205,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
         text = str(text or "").strip()
         if not scope or not text:
             return False
-        return await self.send_background_text(
+        return await self.context.send_background_text(
             scope,
             text,
             mode=BackgroundTextMode.EXPRESSIVE,
@@ -1118,7 +1219,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
         if not reference_image:
             raise ValueError("缺少视频首帧参考图")
         load_image = getattr(
-            getattr(self.media, "image", None), "_load_reference_image", None
+            getattr(self.context.media, "image", None), "_load_reference_image", None
         )
         if callable(load_image):
             image_bytes, _ = await load_image(reference_image)
@@ -1130,7 +1231,7 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
 
     def _life_video_reference_aspect_ratio(self, image_bytes: bytes) -> str:
         resolver = getattr(
-            getattr(self.media, "image", None), "_reference_image_aspect_ratio", None
+            getattr(self.context.media, "image", None), "_reference_image_aspect_ratio", None
         )
         if not callable(resolver):
             return ""

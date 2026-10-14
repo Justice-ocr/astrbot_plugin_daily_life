@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from .audio import RuntimeVoiceMediaMixin
-from .image import RuntimeImageMediaMixin
-from .motion import RuntimeVideoMediaMixin
-from .reverse import RuntimeReverseMediaMixin
-from .stylist import RuntimeStyleCatalogMixin
-from .suite import RuntimePhotoSuiteMediaMixin
-from .summary import RuntimeMediaCommonMixin
+from .audio import RuntimeVoiceMediaComponent
+from .image import RuntimeImageMediaComponent
+from .motion import RuntimeVideoMediaComponent
+from .reverse import RuntimeReverseMediaComponent
+from .stylist import RuntimeStyleCatalogComponent
+from .suite import RuntimePhotoSuiteMediaComponent
+from .summary import RuntimeMediaCommonComponent
 
 __all__ = [
-    "RuntimeImageMediaMixin",
-    "RuntimePhotoSuiteMediaMixin",
-    "RuntimeMediaCommonMixin",
-    "RuntimeReverseMediaMixin",
-    "RuntimeStyleCatalogMixin",
-    "RuntimeVideoMediaMixin",
-    "RuntimeVoiceMediaMixin",
+    "RuntimeImageMediaComponent",
+    "RuntimePhotoSuiteMediaComponent",
+    "RuntimeMediaCommonComponent",
+    "RuntimeReverseMediaComponent",
+    "RuntimeStyleCatalogComponent",
+    "RuntimeVideoMediaComponent",
+    "RuntimeVoiceMediaComponent",
 ]

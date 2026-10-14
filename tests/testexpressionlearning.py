@@ -177,6 +177,27 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
         context = self.runtime._hidden_expression_profile_line(profiles[0])
         self.assertIn("每轮结尾都追问", context)
 
+    async def test_multiple_expression_sources_keep_proofs_without_duplicate_memories(self):
+        batch = {
+            **self.batch,
+            "messages": [*self.batch["messages"], self.row(4, "user", "这样接话自然")],
+        }
+        await self.runtime._save_batch_expression_learning(
+            {"expression_profiles": [self.profile(source_message_ids=["m2", "m4"])]},
+            batch,
+            {"session_id": batch["session_id"], "date": "2026-10-08"},
+        )
+        profiles = await self.runtime.archive.get_expression_profiles(scope=batch["session_id"])
+        evidence = await self.runtime.archive.get_memory_evidence(
+            target_type="expression_profile", target_id=str(profiles[0].id)
+        )
+        memories = await self.runtime.archive.list_recent_long_term_memories(limit=10)
+        self.assertEqual({item.source_id for item in evidence}, {"2", "4"})
+        self.assertEqual(
+            [(item.category, item.source_table) for item in memories],
+            [("expression", "expression_profiles")],
+        )
+
     async def test_explicit_correction_clears_old_avoid_and_updates_confidence(self):
         await self.runtime.archive.upsert_expression_profile(
             ExpressionProfileRecord(

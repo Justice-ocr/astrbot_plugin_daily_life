@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import sqlite3
 from typing import Any
@@ -5,20 +7,57 @@ from typing import Any
 from ..clock import TIMEZONE, today as life_today
 from .categories import STORAGE_CATEGORIES, StorageCategory, normalize_storage_category
 
+from typing import Protocol
 
-class StorageArchiveMixin:
+
+class StorageArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _cleanup_category_unlocked: Any
+    _cleanup_cognition_unlocked: Any
+    _cleanup_conversation_unlocked: Any
+    _cleanup_daily_unlocked: Any
+    _cleanup_domains_unlocked: Any
+    _cleanup_experience_unlocked: Any
+    _cleanup_expression_unlocked: Any
+    _cleanup_longterm_unlocked: Any
+    _cleanup_media_unlocked: Any
+    _cleanup_planning_unlocked: Any
+    _cleanup_relationships_unlocked: Any
+    _cleanup_review_unlocked: Any
+    _cleanup_world_unlocked: Any
+    _conn: Any
+    _cutoff_date: Any
+    _cutoff_week_id: Any
+    _delete_all_unlocked: Any
+    _delete_statements_unlocked: Any
+    _invalidate_physiological_rhythm_trend_cache: Any
+    _purge_completed_chat_memory_messages_unlocked: Any
+    _run_db: Any
+    _storage_category_stats_unlocked: Any
+    _storage_keep_days: Any
+    _table_count_unlocked: Any
+    _table_exists_unlocked: Any
+    clear_continuous_category_unlocked: Any
+    get_storage_categories: Any
+
+
+class StorageArchiveComponent:
+    def __init__(self, context: StorageArchiveComponentContext) -> None:
+        self.context = context
+
     def _table_exists_unlocked(self, table: str) -> bool:
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
             (table,),
         ).fetchone()
         return bool(row)
 
     def _table_count_unlocked(self, table: str) -> int:
-        if not self._table_exists_unlocked(table):
+        if not self.context._table_exists_unlocked(table):
             return 0
         try:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 f"SELECT COUNT(*) AS count FROM {table}"
             ).fetchone()
         except sqlite3.Error:
@@ -43,7 +82,7 @@ class StorageArchiveMixin:
         self, category: StorageCategory, policy: Any = None
     ) -> dict:
         tables = [
-            {"name": table, "rows": self._table_count_unlocked(table)}
+            {"name": table, "rows": self.context._table_count_unlocked(table)}
             for table in category.tables
         ]
         rows_by_table = {item["name"]: item["rows"] for item in tables}
@@ -62,7 +101,7 @@ class StorageArchiveMixin:
             for group in category.groups
         ]
         total = sum(item["rows"] for item in tables)
-        keep_days = self._storage_keep_days(category, policy)
+        keep_days = self.context._storage_keep_days(category, policy)
         return {
             "key": category.key,
             "label": category.label,
@@ -77,14 +116,14 @@ class StorageArchiveMixin:
     async def get_storage_categories(self, policy: Any = None) -> list[dict]:
         def read() -> list[dict]:
             return [
-                self._storage_category_stats_unlocked(category, policy)
+                self.context._storage_category_stats_unlocked(category, policy)
                 for category in STORAGE_CATEGORIES.values()
             ]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_storage_overview(self, policy: Any = None) -> dict:
-        categories = await self.get_storage_categories(policy)
+        categories = await self.context.get_storage_categories(policy)
         return {
             "categories": categories,
             "total_rows": sum(item["total_rows"] for item in categories),
@@ -93,14 +132,14 @@ class StorageArchiveMixin:
     def _delete_all_unlocked(self, tables: tuple[str, ...]) -> int:
         deleted = 0
         for table in tables:
-            if not self._table_exists_unlocked(table):
+            if not self.context._table_exists_unlocked(table):
                 continue
-            cursor = self._conn.execute(f"DELETE FROM {table}")
+            cursor = self.context._conn.execute(f"DELETE FROM {table}")
             if cursor.rowcount and cursor.rowcount > 0:
                 deleted += int(cursor.rowcount)
                 if table == "physiological_rhythm_logs":
                     invalidate = getattr(
-                        self, "_invalidate_physiological_rhythm_trend_cache", None
+                        self.context, "_invalidate_physiological_rhythm_trend_cache", None
                     )
                     if callable(invalidate):
                         invalidate()
@@ -112,16 +151,16 @@ class StorageArchiveMixin:
             raise ValueError("存储分类不存在")
 
         def write() -> dict:
-            deleted = self._delete_all_unlocked(category.clear_order)
-            self.clear_continuous_category_unlocked(category.key)
-            self._conn.commit()
+            deleted = self.context._delete_all_unlocked(category.clear_order)
+            self.context.clear_continuous_category_unlocked(category.key)
+            self.context._conn.commit()
             return {
                 "category": category.key,
                 "label": category.label,
                 "deleted_rows": deleted,
             }
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     def _cutoff_date(self, keep_days: int) -> str:
         cutoff = life_today() - datetime.timedelta(days=keep_days)
@@ -133,16 +172,16 @@ class StorageArchiveMixin:
         return f"{year:04d}-W{week:02d}"
 
     def _cleanup_daily_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        cursor = self._conn.execute(
+        cutoff = self.context._cutoff_date(keep_days)
+        cursor = self.context._conn.execute(
             "DELETE FROM days WHERE date <> '' AND date < ?",
             (cutoff,),
         )
         return max(int(cursor.rowcount or 0), 0)
 
     def _cleanup_review_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        cursor = self._conn.execute(
+        cutoff = self.context._cutoff_date(keep_days)
+        cursor = self.context._conn.execute(
             "DELETE FROM daily_reviews WHERE date <> '' AND date < ?",
             (cutoff,),
         )
@@ -150,8 +189,8 @@ class StorageArchiveMixin:
 
     def _cleanup_cognition_unlocked(self, keep_days: int) -> int:
         """清理已结束的认知运行记录，同时保留当前有效事实。"""
-        cutoff = self._cutoff_date(keep_days)
-        return self._delete_statements_unlocked(
+        cutoff = self.context._cutoff_date(keep_days)
+        return self.context._delete_statements_unlocked(
             (
                 (
                     "DELETE FROM fact_evidence_signals WHERE created_at < ? AND fact_id NOT IN (SELECT id FROM temporal_facts WHERE status = 'active')",
@@ -183,12 +222,12 @@ class StorageArchiveMixin:
     ) -> int:
         deleted = 0
         for sql, params in statements:
-            cursor = self._conn.execute(sql, params)
+            cursor = self.context._conn.execute(sql, params)
             if cursor.rowcount and cursor.rowcount > 0:
                 deleted += int(cursor.rowcount)
                 if "physiological_rhythm_logs" in sql:
                     invalidate = getattr(
-                        self, "_invalidate_physiological_rhythm_trend_cache", None
+                        self.context, "_invalidate_physiological_rhythm_trend_cache", None
                     )
                     if callable(invalidate):
                         invalidate()
@@ -198,8 +237,8 @@ class StorageArchiveMixin:
         return 0
 
     def _cleanup_world_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        return self._delete_statements_unlocked(
+        cutoff = self.context._cutoff_date(keep_days)
+        return self.context._delete_statements_unlocked(
             (
                 (
                     "DELETE FROM event_people WHERE event_id IN (SELECT id FROM events WHERE date <> '' AND date < ?)",
@@ -221,8 +260,8 @@ class StorageArchiveMixin:
         )
 
     def _cleanup_conversation_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        deleted = self._delete_statements_unlocked(
+        cutoff = self.context._cutoff_date(keep_days)
+        deleted = self.context._delete_statements_unlocked(
             (
                 (
                     "DELETE FROM conversation_receipts WHERE sent_at < ?",
@@ -257,11 +296,11 @@ class StorageArchiveMixin:
                 ("DELETE FROM session_mid_summaries WHERE updated_at < ?", (cutoff,)),
             )
         )
-        deleted += self._purge_completed_chat_memory_messages_unlocked(
+        deleted += self.context._purge_completed_chat_memory_messages_unlocked(
             cutoff=cutoff,
             keep_recent=200,
         )
-        deleted += self._delete_statements_unlocked(
+        deleted += self.context._delete_statements_unlocked(
             (
                 (
                     """
@@ -301,13 +340,13 @@ class StorageArchiveMixin:
         return deleted
 
     def _cleanup_experience_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
+        cutoff = self.context._cutoff_date(keep_days)
         stale_episode_where = """
             date <> '' AND date < ?
             AND protected = 0
             AND status IN ('done', 'closed', 'cancelled', 'expired', 'resolved', 'corrected')
         """
-        return self._delete_statements_unlocked(
+        return self.context._delete_statements_unlocked(
             (
                 ("DELETE FROM long_term_memories WHERE source_table='continuous_life_entries' AND source_id IN (SELECT id FROM continuous_life_entries WHERE date <> '' AND date < ?)", (cutoff,)),
                 ("DELETE FROM continuous_life_entries WHERE date <> '' AND date < ?", (cutoff,)),
@@ -390,8 +429,8 @@ class StorageArchiveMixin:
         )
 
     def _cleanup_expression_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        return self._delete_statements_unlocked(
+        cutoff = self.context._cutoff_date(keep_days)
+        return self.context._delete_statements_unlocked(
             (
                 ("DELETE FROM expression_profiles WHERE updated_at < ?", (cutoff,)),
                 ("DELETE FROM expression_reviews WHERE created_at < ?", (cutoff,)),
@@ -413,7 +452,7 @@ class StorageArchiveMixin:
             life_today() - datetime.timedelta(days=keep_days),
             datetime.time.min,
         ).timestamp()
-        return self._delete_statements_unlocked(
+        return self.context._delete_statements_unlocked(
             (
                 (
                     "DELETE FROM video_insight_frames WHERE insight_id IN (SELECT id FROM video_insights WHERE updated_at > 0 AND updated_at < ?)",
@@ -431,8 +470,8 @@ class StorageArchiveMixin:
         )
 
     def _cleanup_longterm_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        return self._delete_statements_unlocked(
+        cutoff = self.context._cutoff_date(keep_days)
+        return self.context._delete_statements_unlocked(
             (
                 (
                     """
@@ -489,8 +528,8 @@ class StorageArchiveMixin:
         )
 
     def _cleanup_planning_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
-        cutoff_week = self._cutoff_week_id(keep_days)
+        cutoff = self.context._cutoff_date(keep_days)
+        cutoff_week = self.context._cutoff_week_id(keep_days)
         deleted = 0
         for sql, params in (
             (
@@ -507,13 +546,13 @@ class StorageArchiveMixin:
                 (cutoff,),
             ),
         ):
-            cursor = self._conn.execute(sql, params)
+            cursor = self.context._conn.execute(sql, params)
             if cursor.rowcount and cursor.rowcount > 0:
                 deleted += int(cursor.rowcount)
         return deleted
 
     def _cleanup_domains_unlocked(self, keep_days: int) -> int:
-        cutoff = self._cutoff_date(keep_days)
+        cutoff = self.context._cutoff_date(keep_days)
         deleted = 0
         for sql, params in (
             (
@@ -569,7 +608,7 @@ class StorageArchiveMixin:
                 (cutoff,),
             ),
         ):
-            cursor = self._conn.execute(sql, params)
+            cursor = self.context._conn.execute(sql, params)
             if cursor.rowcount and cursor.rowcount > 0:
                 deleted += int(cursor.rowcount)
         return deleted
@@ -580,29 +619,29 @@ class StorageArchiveMixin:
         if keep_days <= 0:
             return 0
         if category.key == "daily":
-            return self._cleanup_daily_unlocked(keep_days)
+            return self.context._cleanup_daily_unlocked(keep_days)
         if category.key == "domains":
-            return self._cleanup_domains_unlocked(keep_days)
+            return self.context._cleanup_domains_unlocked(keep_days)
         if category.key == "review":
-            return self._cleanup_review_unlocked(keep_days)
+            return self.context._cleanup_review_unlocked(keep_days)
         if category.key == "cognition":
-            return self._cleanup_cognition_unlocked(keep_days)
+            return self.context._cleanup_cognition_unlocked(keep_days)
         if category.key == "relationships":
-            return self._cleanup_relationships_unlocked(keep_days)
+            return self.context._cleanup_relationships_unlocked(keep_days)
         if category.key == "world":
-            return self._cleanup_world_unlocked(keep_days)
+            return self.context._cleanup_world_unlocked(keep_days)
         if category.key == "conversation":
-            return self._cleanup_conversation_unlocked(keep_days)
+            return self.context._cleanup_conversation_unlocked(keep_days)
         if category.key == "experience":
-            return self._cleanup_experience_unlocked(keep_days)
+            return self.context._cleanup_experience_unlocked(keep_days)
         if category.key == "expression":
-            return self._cleanup_expression_unlocked(keep_days)
+            return self.context._cleanup_expression_unlocked(keep_days)
         if category.key == "media":
-            return self._cleanup_media_unlocked(keep_days)
+            return self.context._cleanup_media_unlocked(keep_days)
         if category.key == "longterm":
-            return self._cleanup_longterm_unlocked(keep_days)
+            return self.context._cleanup_longterm_unlocked(keep_days)
         if category.key == "planning":
-            return self._cleanup_planning_unlocked(keep_days)
+            return self.context._cleanup_planning_unlocked(keep_days)
         return 0
 
     async def cleanup_storage_category(
@@ -612,14 +651,14 @@ class StorageArchiveMixin:
         if not category:
             raise ValueError("存储分类不存在")
         retention = (
-            self._storage_keep_days(category)
+            self.context._storage_keep_days(category)
             if keep_days is None
             else max(int(keep_days), 0)
         )
 
         def write() -> dict:
-            deleted = self._cleanup_category_unlocked(category, retention)
-            self._conn.commit()
+            deleted = self.context._cleanup_category_unlocked(category, retention)
+            self.context._conn.commit()
             return {
                 "category": category.key,
                 "label": category.label,
@@ -627,16 +666,16 @@ class StorageArchiveMixin:
                 "deleted_rows": deleted,
             }
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def cleanup_by_storage_policy(self, policy: Any = None) -> dict:
         def write() -> dict:
             results = []
             for category in STORAGE_CATEGORIES.values():
-                keep_days = self._storage_keep_days(category, policy)
+                keep_days = self.context._storage_keep_days(category, policy)
                 if keep_days <= 0 or not category.auto_cleanup:
                     continue
-                deleted = self._cleanup_category_unlocked(category, keep_days)
+                deleted = self.context._cleanup_category_unlocked(category, keep_days)
                 results.append(
                     {
                         "category": category.key,
@@ -645,10 +684,10 @@ class StorageArchiveMixin:
                         "deleted_rows": deleted,
                     }
                 )
-            self._conn.commit()
+            self.context._conn.commit()
             return {
                 "results": results,
                 "deleted_rows": sum(item["deleted_rows"] for item in results),
             }
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)

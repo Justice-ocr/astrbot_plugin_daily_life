@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
 import time
@@ -19,7 +21,6 @@ except (AttributeError, ImportError):  # AstrBot 精简运行时可能没有完�
 
 from .core.interface import (
     DailyLifeCommandCenter,
-    DailyLifeDashboardMixin,
     LifeAccessPolicy,
     LifeActionProposal,
     LifeActionScope,
@@ -29,6 +30,24 @@ from .core.sources.location import enrich_location_message
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.sender import install_expressive_send_message_tool
+from .core.runtime.tooling import (
+    ArgumentCheckedTool,
+    guard_tool_arguments,
+    prepare_tool_argument_checks,
+)
+from .core.telemetry import cache_prefix_version
+
+from .core.interface.panel import DailyLifeDashboardComponent
+from .core.interface.view import PageViewComponent
+from .core.interface.portal.entry import PortalBaseComponent
+from .core.interface.portal.asset import PortalReferenceComponent
+from .core.interface.portal.closet import PortalClosetComponent
+from .core.interface.portal.stickers import PortalEmojiComponent
+from .core.interface.portal.operation import PortalActionComponent
+from .core.interface.portal.line import PortalLineComponent
+from .core.interface.portal.memo import PortalMemoryComponent
+from functools import cached_property
+from .core.composition import ComponentCall
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -39,7 +58,7 @@ MAP_LLM_TOOL_NAMES = (
 )
 
 
-class DailyLifePlugin(DailyLifeDashboardMixin, Star):
+class DailyLifePlugin(Star):
     """日常生活引擎适配器。"""
 
     _LLM_RESPONSE_SEEN_ATTR = "_daily_life_llm_response_seen"
@@ -627,6 +646,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         return self._event_turn_id(event) in self._external_search_turn_store()
 
     @filter.llm_tool(name="accept_user_invite")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_accept_user_invite(
         self,
@@ -652,6 +672,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="add_memo_for_tomorrow")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_add_memo_for_tomorrow(
         self,
@@ -676,6 +697,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_query")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_query(
         self,
@@ -704,6 +726,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_shared_activity")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_shared_activity(
         self,
@@ -743,6 +766,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_object")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_object(
         self,
@@ -756,13 +780,17 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         content: str = "",
         evidence: str = "",
         revision: int = 0,
+        owner: str = "",
+        quantity: float = -1,
+        unit: str = "",
+        available_at: str = "",
     ):
         """记录或查询已经真实出现的生活物品、作品、草稿和未完成事项。
 
         不替代衣橱和食材管理，不把计划中的物品、购买或生成请求当作实际拥有。
 
         Args:
-            action(string): list 查询；record 新增明确物品；update 更新已存在物品。
+            action(string): list 查询；get 读取完整作品；history 查询作品版本；record 新增明确物品；update 更新已存在物品。
             object_id(string): 已有物品或作品编号；新增留空。
             title(string): 明确名称；更新时可留空保留原值。
             state(string): available 可用；in_use 使用中；stored 收纳；unavailable 暂不可用；finished 完成；archived 归档。
@@ -771,11 +799,15 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             content(string): 明确保存的笔记或草稿正文；不能伪造外部文件或媒体。
             evidence(string): 当前用户整条原话；缺少明确证据时仅查询。
             revision(int): 已有记录当前 revision；新增为 0。
+            owner(string): self 属于角色；user 属于用户；shared 共有；unknown 未知。只按明确证据填写。
+            quantity(number): 明确数量；-1 表示未提供，不推测库存。
+            unit(string): 数量单位，与已有记录一致。
+            available_at(string): 明确的可用时间，ISO 日期时间；未知留空。
         """
         denial = self._life_permission_denial(
             event, "life_object:update", LifeActionScope.PRIVATE
         )
-        if denial and action != "list":
+        if denial and action not in {"list", "get", "history"}:
             return denial
         return await self.runtime.manage_life_object(
             event,
@@ -788,9 +820,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             content=str(content or "").strip(),
             evidence=str(evidence or "").strip(),
             revision=self._tool_int(revision, 0),
+            owner=owner, quantity=quantity, unit=unit, available_at=available_at,
         )
 
     @filter.llm_tool(name="life_memory_correct")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_memory_correct(
         self,
@@ -819,6 +853,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_adjust")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_adjust(
         self,
@@ -849,6 +884,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_rest_timing")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_rest_timing(
         self,
@@ -875,6 +911,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_commitment")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_commitment(
         self,
@@ -902,6 +939,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_weather")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_weather(
         self,
@@ -919,6 +957,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         return await self.commands.query_weather(event, str(city or "").strip())
 
     @filter.llm_tool(name="life_place_search")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_place_search(
         self,
@@ -955,6 +994,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_route_plan")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_route_plan(
         self,
@@ -984,6 +1024,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_place_detail")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_place_detail(
         self,
@@ -1008,6 +1049,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_outing_plan")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_outing_plan(
         self,
@@ -1046,6 +1088,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_review")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_review(
         self,
@@ -1067,6 +1110,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_memory_search")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_memory_search(
         self,
@@ -1093,6 +1137,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_web_search")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_search(
         self,
@@ -1172,6 +1217,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_web_fetch")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_fetch(
         self,
@@ -1213,6 +1259,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_web_map")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_map(
         self,
@@ -1258,6 +1305,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_web_crawl")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_crawl(
         self,
@@ -1315,6 +1363,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_web_research")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_research(
         self,
@@ -1352,6 +1401,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_web_research_status")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_web_research_status(
         self, event: AstrMessageEvent, task_id: str = ""
@@ -1368,6 +1418,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
 
     @filter.llm_tool(name="life_image_generate")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_image_generate(
         self,
@@ -1483,6 +1534,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_photo_suite_generate")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_photo_suite_generate(
         self,
@@ -1588,6 +1640,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="edit_life_image")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_edit_life_image(
         self,
@@ -1651,6 +1704,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_image_reverse_prompt")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_image_reverse_prompt(
         self,
@@ -1678,6 +1732,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_style_learn")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_style_learn(
         self,
@@ -1717,6 +1772,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_style_generate")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_style_generate(
         self,
@@ -1749,6 +1805,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_wardrobe_manage")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_wardrobe_manage(
         self, event: AstrMessageEvent, operation: str = "query",
@@ -1773,6 +1830,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             duration_minutes=self._tool_int(duration_minutes,30))
 
     @filter.llm_tool(name="life_style_catalog")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_style_catalog(
         self,
@@ -1802,6 +1860,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_style_feedback")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_style_feedback(
         self,
@@ -1830,6 +1889,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_video_generate")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_video_generate(
         self,
@@ -1912,6 +1972,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_video_understand")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_video_understand(
         self,
@@ -1932,6 +1993,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_video_note")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_video_note(
         self,
@@ -1957,6 +2019,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_text_forward")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_text_forward(
         self,
@@ -1978,6 +2041,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
 
     @filter.llm_tool(name="life_voice_generate")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_voice_generate(
         self,
@@ -2027,6 +2091,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         await self._deliver_call_invite(event, message)
 
     @filter.llm_tool(name="life_voice_call_invite")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_voice_call_invite(
         self,
@@ -2059,6 +2124,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         await self._deliver_call_invite(event, message)
 
     @filter.llm_tool(name="life_video_call_invite")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_video_call_invite(
         self,
@@ -2080,6 +2146,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         await self._deliver_call_invite(event, message)
 
     @filter.llm_tool(name="life_emoji_send")
+    @guard_tool_arguments
     @_runtime_guard
     async def tool_life_emoji_send(
         self,
@@ -2187,16 +2254,32 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 for name in MAP_LLM_TOOL_NAMES:
                     toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
+        setattr(
+            event, "_daily_life_prefix_version",
+            cache_prefix_version(getattr(req, "system_prompt", "")),
+        )
+        await prepare_tool_argument_checks(getattr(req, "func_tool", None))
+        capture_identity = getattr(self.runtime, "capture_chat_model_identity", None)
+        if callable(capture_identity):
+            setattr(event, "_daily_life_model_identity", await capture_identity(event))
+        setattr(event, "_daily_life_model_started", time.perf_counter())
 
     @filter.on_llm_response()
     @_runtime_guard
     async def on_llm_response(self, event: AstrMessageEvent, response):
+        response_failed = self._response_is_agent_error(response)
         note_usage = getattr(self.runtime, "note_chat_model_usage", None)
         if callable(note_usage):
-            note_usage(response)
+            started = getattr(event, "_daily_life_model_started", None)
+            elapsed = (time.perf_counter() - started) * 1000 if started is not None else None
+            note_usage(
+                response, elapsed_ms=elapsed, failed=response_failed,
+                model_identity=getattr(event, "_daily_life_model_identity", ""),
+                prefix_version=getattr(event, "_daily_life_prefix_version", ""),
+            )
         if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
             return
-        if self._response_is_agent_error(response):
+        if response_failed:
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
         else:
             setattr(event, self._LLM_RESPONSE_SEEN_ATTR, True)
@@ -2246,6 +2329,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     async def on_using_llm_tool(
         self, event: AstrMessageEvent, tool, tool_args: dict | None = None
     ):
+        if isinstance(tool, ArgumentCheckedTool) and tool.argument_error(
+            {} if tool_args is None else tool_args
+        ):
+            return
         tool_name = str(getattr(tool, "name", tool) or "").strip()
         if tool_name == "life_video_generate":
             setattr(event, self._VIDEO_TOOL_USED_ATTR, True)
@@ -2287,6 +2374,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         tool_args: dict | None = None,
         tool_result=None,
     ):
+        if isinstance(tool, ArgumentCheckedTool) and tool.argument_error(
+            {} if tool_args is None else tool_args
+        ):
+            return
         handler = getattr(self.runtime, "handle_llm_tool_respond", None)
         if callable(handler):
             await handler(event, tool, tool_args, tool_result)
@@ -2671,3 +2762,344 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             yield event.plain_result(denial)
             return
         yield await self.runtime.bili_status(event)
+
+    _register_page_web_apis = ComponentCall("_part_daily_life_dashboard_component", DailyLifeDashboardComponent, "_register_page_web_apis")
+
+    _page_archive_records = ComponentCall("_part_page_view_component", PageViewComponent, "_page_archive_records")
+
+    _page_records_for_date = staticmethod(PageViewComponent._page_records_for_date)
+
+    _build_page_config = ComponentCall("_part_page_view_component", PageViewComponent, "_build_page_config")
+
+    _page_reference_relationships = ComponentCall("_part_page_view_component", PageViewComponent, "_page_reference_relationships")
+
+    _load_page_config_schema = staticmethod(PageViewComponent._load_page_config_schema)
+
+    @classmethod
+    async def _page_config_schema(cls) -> dict:
+        return await PageViewComponent._page_config_schema.__func__(cls, )
+
+    _page_current_config = ComponentCall("_part_page_view_component", PageViewComponent, "_page_current_config")
+
+    _page_provider_options = ComponentCall("_part_page_view_component", PageViewComponent, "_page_provider_options")
+
+    _build_page_status = ComponentCall("_part_page_view_component", PageViewComponent, "_build_page_status")
+
+    _page_world_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_world_snapshot")
+
+    _page_experience_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_experience_snapshot")
+
+    _page_runtime_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_runtime_snapshot")
+
+    _page_compact = staticmethod(PageViewComponent._page_compact)
+
+    _page_internal_reference_segments = staticmethod(PageViewComponent._page_internal_reference_segments)
+
+    _page_is_evidence_reference = staticmethod(PageViewComponent._page_is_evidence_reference)
+
+    _page_readable_evidence = classmethod(PageViewComponent._page_readable_evidence.__func__)
+
+    _page_readable_evidence_record = classmethod(PageViewComponent._page_readable_evidence_record.__func__)
+
+    _page_strip_same_day_prefix = staticmethod(PageViewComponent._page_strip_same_day_prefix)
+
+    _page_decision_display = classmethod(PageViewComponent._page_decision_display.__func__)
+
+    _page_current_decision = staticmethod(PageViewComponent._page_current_decision)
+
+    _page_daily_decision_candidates = ComponentCall("_part_page_view_component", PageViewComponent, "_page_daily_decision_candidates")
+
+    _page_memo_status = ComponentCall("_part_page_view_component", PageViewComponent, "_page_memo_status")
+
+    _page_memo_lines = staticmethod(PageViewComponent._page_memo_lines)
+
+    _page_memo_items = classmethod(PageViewComponent._page_memo_items.__func__)
+
+    _page_memo_payload = staticmethod(PageViewComponent._page_memo_payload)
+
+    _page_decision_sources = staticmethod(PageViewComponent._page_decision_sources)
+
+    _page_observatory = ComponentCall("_part_page_view_component", PageViewComponent, "_page_observatory")
+
+    _page_unique_records = staticmethod(PageViewComponent._page_unique_records)
+
+    _page_feedback_records = staticmethod(PageViewComponent._page_feedback_records)
+
+    _page_group_environments = ComponentCall("_part_page_view_component", PageViewComponent, "_page_group_environments")
+
+    _page_domain_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_domain_snapshot")
+
+    _page_session_display_name = ComponentCall("_part_page_view_component", PageViewComponent, "_page_session_display_name")
+
+    _page_action_decisions = staticmethod(PageViewComponent._page_action_decisions)
+
+    _page_raw_action_decisions = ComponentCall("_part_page_view_component", PageViewComponent, "_page_raw_action_decisions")
+
+    _page_relationships = ComponentCall("_part_page_view_component", PageViewComponent, "_page_relationships")
+
+    _resolve_relationship_display_name = ComponentCall("_part_page_view_component", PageViewComponent, "_resolve_relationship_display_name")
+
+    _is_generic_page_name = staticmethod(PageViewComponent._is_generic_page_name)
+
+    _page_memory_evidence = ComponentCall("_part_page_view_component", PageViewComponent, "_page_memory_evidence")
+
+    _page_day = ComponentCall("_part_page_view_component", PageViewComponent, "_page_day")
+
+    _page_week_plan = ComponentCall("_part_page_view_component", PageViewComponent, "_page_week_plan")
+
+    _PAGE_UPLOAD_CHUNK_SIZE = PortalBaseComponent._PAGE_UPLOAD_CHUNK_SIZE
+
+    _page_public_error = staticmethod(PortalBaseComponent._page_public_error)
+
+    _page_response = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_response")
+
+    _page_json = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_json")
+
+    _page_json_body = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_json_body")
+
+    _page_receive_upload = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_receive_upload")
+
+    _page_copy_upload = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_copy_upload")
+
+    _page_copy_upload_sync = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_copy_upload_sync")
+
+    _page_send_download = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_send_download")
+
+    _page_request_method = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_request_method")
+
+    _page_bool = staticmethod(PortalBaseComponent._page_bool)
+
+    _page_query_args = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_query_args")
+
+    page_status = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_status")
+
+    page_status_wait = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_status_wait")
+
+    page_config = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_config")
+
+    _page_gallery_spec = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_gallery_spec")
+
+    _page_friend_reference_key = staticmethod(PortalReferenceComponent._page_friend_reference_key)
+
+    _page_gallery_dir = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_gallery_dir")
+
+    _page_reference_dir = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_dir")
+
+    _page_safe_gallery_path = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_safe_gallery_path")
+
+    _page_safe_reference_path = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_safe_reference_path")
+
+    _page_reference_mime = staticmethod(PortalReferenceComponent._page_reference_mime)
+
+    _page_reference_image_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_upload")
+
+    _page_reference_image_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_delete")
+
+    _page_reference_image_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_preview")
+
+    page_character_reference_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_upload")
+
+    page_character_reference_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_delete")
+
+    page_character_reference_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_preview")
+
+    page_friend_reference_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_upload")
+
+    page_friend_reference_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_delete")
+
+    page_friend_reference_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_preview")
+
+    page_closet_list = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_list")
+
+    page_closet_import = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_import")
+
+    page_closet_generate = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_generate")
+
+    page_closet_preview = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_preview")
+
+    page_closet_status = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_status")
+
+    page_closet_feedback = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_feedback")
+
+    page_closet_review = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_review")
+
+    page_closet_delete = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_delete")
+
+    page_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_backup")
+
+    page_closet_restore = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_restore")
+
+    _page_closet_payload = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_payload")
+
+    _page_closet_generation_timeouts = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_generation_timeouts")
+
+    _page_closet_item = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_item")
+
+    _page_closet_record = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_record")
+
+    _page_closet_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_path")
+
+    _page_safe_closet_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_safe_closet_path")
+
+    _page_delete_closet_files = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_delete_closet_files")
+
+    _page_write_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_write_closet_backup")
+
+    _page_read_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_read_closet_backup")
+
+    _page_closet_transfer_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_transfer_path")
+
+    _page_schedule_closet_cleanup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_schedule_closet_cleanup")
+
+    _page_closet_kind = staticmethod(PortalClosetComponent._page_closet_kind)
+
+    _page_closet_text = staticmethod(PortalClosetComponent._page_closet_text)
+
+    _page_closet_ids = staticmethod(PortalClosetComponent._page_closet_ids)
+
+    _page_closet_mime = staticmethod(PortalClosetComponent._page_closet_mime)
+
+    _page_closet_event = staticmethod(PortalClosetComponent._page_closet_event)
+
+    page_emoji_list = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_list")
+
+    page_emoji_import = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_import")
+
+    page_emoji_preview = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_preview")
+
+    page_emoji_delete = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_delete")
+
+    page_emoji_sendable = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_sendable")
+
+    page_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_backup")
+
+    page_emoji_restore = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_restore")
+
+    _page_emoji_payload = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_payload")
+
+    _page_emoji_payload_from_assets = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_payload_from_assets")
+
+    _page_emoji_item = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_item")
+
+    _page_emoji_asset_by_id = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_asset_by_id")
+
+    _page_emoji_assets_by_ids = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_assets_by_ids")
+
+    _page_emoji_ids = staticmethod(PortalEmojiComponent._page_emoji_ids)
+
+    _page_cached_emoji_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_cached_emoji_path")
+
+    _page_emoji_is_animated = staticmethod(PortalEmojiComponent._page_emoji_is_animated)
+
+    _page_safe_emoji_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_emoji_path")
+
+    _page_delete_emoji_files = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_delete_emoji_files")
+
+    _page_build_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup")
+
+    _page_build_emoji_backup_file = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup_file")
+
+    _page_write_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_write_emoji_backup")
+
+    _page_emoji_backup_item = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_backup_item")
+
+    _page_backup_file_allowed = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_file_allowed")
+
+    _page_backup_asset_name = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_asset_name")
+
+    _page_restore_emoji_backup_records = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_restore_emoji_backup_records")
+
+    _page_emoji_transfer_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_transfer_path")
+
+    _page_schedule_emoji_transfer_cleanup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_schedule_emoji_transfer_cleanup")
+
+    _page_merge_restored_emoji_asset = staticmethod(PortalEmojiComponent._page_merge_restored_emoji_asset)
+
+    _page_validate_emoji_backup_zip = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_validate_emoji_backup_zip")
+
+    _page_read_emoji_backup_manifest = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_read_emoji_backup_manifest")
+
+    _page_restore_emoji_backup_file = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_restore_emoji_backup_file")
+
+    _page_safe_backup_member = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_backup_member")
+
+    _page_backup_member_suffix = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_member_suffix")
+
+    _page_emoji_cache_filename = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_cache_filename")
+
+    _page_emoji_max_bytes = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_max_bytes")
+
+    _page_receive_emoji = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_receive_emoji")
+
+    _page_imported_emoji_record = staticmethod(PortalEmojiComponent._page_imported_emoji_record)
+
+    _page_schedule_emoji_import_vision = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_schedule_emoji_import_vision")
+
+    _page_image_mime = staticmethod(PortalEmojiComponent._page_image_mime)
+
+    _page_emoji_preview_data = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_preview_data")
+
+    _page_static_emoji_preview_data = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_static_emoji_preview_data")
+
+    _page_static_emoji_preview_path = staticmethod(PortalEmojiComponent._page_static_emoji_preview_path)
+
+    _page_emoji_placeholder_data_url = classmethod(PortalEmojiComponent._page_emoji_placeholder_data_url.__func__)
+
+    _page_emoji_placeholder_bytes = staticmethod(PortalEmojiComponent._page_emoji_placeholder_bytes)
+
+    page_refresh_state = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_refresh_state")
+
+    page_reset_day = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_reset_day")
+
+    page_generate_week = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_generate_week")
+
+    _page_validate_timeline = staticmethod(PortalLineComponent._page_validate_timeline)
+
+    page_timeline_save = ComponentCall("_part_portal_line_component", PortalLineComponent, "page_timeline_save")
+
+    page_experience_episode_correct = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_episode_correct")
+
+    page_experience_episode_protect = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_episode_protect")
+
+    page_experience_focus = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_focus")
+
+    page_experience_boundary = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_boundary")
+
+    page_experience_feedback = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_feedback")
+
+    @cached_property
+    def _part_daily_life_dashboard_component(self):
+        return DailyLifeDashboardComponent(self)
+
+    @cached_property
+    def _part_page_view_component(self):
+        return PageViewComponent(self)
+
+    @cached_property
+    def _part_portal_base_component(self):
+        return PortalBaseComponent(self)
+
+    @cached_property
+    def _part_portal_reference_component(self):
+        return PortalReferenceComponent(self)
+
+    @cached_property
+    def _part_portal_closet_component(self):
+        return PortalClosetComponent(self)
+
+    @cached_property
+    def _part_portal_emoji_component(self):
+        return PortalEmojiComponent(self)
+
+    @cached_property
+    def _part_portal_action_component(self):
+        return PortalActionComponent(self)
+
+    @cached_property
+    def _part_portal_line_component(self):
+        return PortalLineComponent(self)
+
+    @cached_property
+    def _part_portal_memory_component(self):
+        return PortalMemoryComponent(self)
+

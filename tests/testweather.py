@@ -6,7 +6,7 @@ import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.config.options import WeatherSettings
 from core.life.tools import analyze_weather
 from core.life.weather import WeatherClient
-from core.life.climate import DailyClimateMixin
+from componentfixtures import DailyClimateComponent
 
 
 class _Response:
@@ -63,8 +63,10 @@ class WeatherClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(analyze_weather(failure)["raw"], "天气查询失败")
 
     async def test_condition_semantics_require_structured_model_result(self):
-        class Classifier(DailyClimateMixin):
-            _task_provider_id = lambda self: "test"
+        class Classifier(DailyClimateComponent):
+            def _task_provider_id(self):
+                return "test"
+
             _get_provider = AsyncMock(return_value=object())
             _call_llm_text = AsyncMock()
             _cleanup_conversation = AsyncMock()

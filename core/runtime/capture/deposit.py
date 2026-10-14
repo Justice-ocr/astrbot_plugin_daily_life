@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from typing import Any
 
@@ -22,10 +24,50 @@ from ...models import (
     TemporaryExpressionStateRecord,
 )
 
+from typing import Protocol
 
-class ImprintDepositMixin:
+
+class ImprintDepositComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _apply_memory_correction: Any
+    _dict_payloads: Any
+    _float_payload: Any
+    _int_payload: Any
+    _life_adjustment_default_expiry: Any
+    _life_adjustment_payload_data: Any
+    _life_adjustment_target_id: Any
+    _list_payload: Any
+    _long_term_scope: Any
+    _save_behavior_context_payloads: Any
+    _save_behavior_feedback_payloads: Any
+    _save_evidence_payloads: Any
+    _save_experience_evidence: Any
+    _save_expression_intent_payload: Any
+    _save_expression_profile_payloads: Any
+    _save_focus_payloads: Any
+    _save_life_adjustment_payloads: Any
+    _save_life_episode_payloads: Any
+    _save_life_term_payloads: Any
+    _save_long_term_life_adjustment: Any
+    _save_long_term_memory: Any
+    _save_memory_boundary_payloads: Any
+    _save_memory_correction_life_adjustment: Any
+    _save_memory_correction_payloads: Any
+    _save_session_summary_payload: Any
+    _save_short_term_life_adjustment: Any
+    _save_temporary_expression_payloads: Any
+    _str_payload: Any
+    archive: Any
+    schedule_memos_correction: Any
+
+
+class ImprintDepositComponent:
+    def __init__(self, context: ImprintDepositComponentContext) -> None:
+        self.context = context
+
     def _long_term_scope(self, meta: dict[str, str], scope: str = "") -> str:
-        return self._str_payload(
+        return self.context._str_payload(
             scope or meta.get("group_id") or meta.get("session_id") or ""
         )
 
@@ -43,23 +85,23 @@ class ImprintDepositMixin:
         weight: float = 1.0,
         expires_at: str = "",
     ) -> LongTermMemoryRecord | None:
-        text = self._str_payload(content, "")
+        text = self.context._str_payload(content, "")
         if not text:
             return None
-        return await self.archive.upsert_long_term_memory(
+        return await self.context.archive.upsert_long_term_memory(
             LongTermMemoryRecord(
-                scope=self._long_term_scope(meta, scope),
-                category=self._str_payload(category, "general") or "general",
-                title=self._str_payload(title, 120),
+                scope=self.context._long_term_scope(meta, scope),
+                category=self.context._str_payload(category, "general") or "general",
+                title=self.context._str_payload(title, 120),
                 content=text,
-                source_table=self._str_payload(source_table),
-                source_id=self._str_payload(source_id),
+                source_table=self.context._str_payload(source_table),
+                source_id=self.context._str_payload(source_id),
                 session_id=meta.get("session_id", ""),
                 message_id=meta.get("message_id", ""),
                 date=meta.get("date", ""),
-                confidence=max(0.0, min(self._float_payload(confidence, 1.0), 1.0)),
-                weight=max(0.0, min(self._float_payload(weight, 1.0), 10.0)),
-                expires_at=self._str_payload(expires_at),
+                confidence=max(0.0, min(self.context._float_payload(confidence, 1.0), 1.0)),
+                weight=max(0.0, min(self.context._float_payload(weight, 1.0), 10.0)),
+                expires_at=self.context._str_payload(expires_at),
             )
         )
 
@@ -75,22 +117,25 @@ class ImprintDepositMixin:
         source_id: str = "",
         confidence: float = 1.0,
     ) -> MemoryEvidenceRecord | None:
-        saved = await self.archive.save_memory_evidence(
+        saved = await self.context.archive.save_memory_evidence(
             MemoryEvidenceRecord(
-                target_type=self._str_payload(target_type),
-                target_id=self._str_payload(target_id),
-                evidence_type=self._str_payload(evidence_type, "observation"),
-                source_table=self._str_payload(source_table),
-                source_id=self._str_payload(source_id),
+                target_type=self.context._str_payload(target_type),
+                target_id=self.context._str_payload(target_id),
+                evidence_type=self.context._str_payload(evidence_type, "observation"),
+                source_table=self.context._str_payload(source_table),
+                source_id=self.context._str_payload(source_id),
                 session_id=meta.get("session_id", ""),
                 message_id=meta.get("message_id", ""),
                 date=meta.get("date", ""),
-                summary=self._str_payload(summary),
-                confidence=max(self._float_payload(confidence, 1.0), 0.0),
+                summary=self.context._str_payload(summary),
+                confidence=max(self.context._float_payload(confidence, 1.0), 0.0),
             )
         )
-        if saved:
-            await self._save_long_term_memory(
+        if saved and not (
+            saved.target_type == "expression_profile"
+            and saved.evidence_type == "expression_feedback"
+        ):
+            await self.context._save_long_term_memory(
                 meta=meta,
                 category=f"evidence:{saved.evidence_type}",
                 title=f"{saved.target_type}:{saved.target_id}",
@@ -116,7 +161,7 @@ class ImprintDepositMixin:
             "preferences": [],
         }
         if saved_summary:
-            await self._save_long_term_memory(
+            await self.context._save_long_term_memory(
                 meta=meta,
                 category="chat_summary",
                 title=saved_summary.brief,
@@ -127,21 +172,21 @@ class ImprintDepositMixin:
                 weight=1.0,
             )
         scope = meta.get("group_id") or meta.get("session_id") or ""
-        await self._save_life_episode_payloads(payload, meta, saved_records)
-        await self._save_evidence_payloads(payload, meta, saved_summary)
-        await self._save_behavior_feedback_payloads(payload, meta, saved_records)
-        await self._save_expression_profile_payloads(
+        await self.context._save_life_episode_payloads(payload, meta, saved_records)
+        await self.context._save_evidence_payloads(payload, meta, saved_summary)
+        await self.context._save_behavior_feedback_payloads(payload, meta, saved_records)
+        await self.context._save_expression_profile_payloads(
             payload, meta, scope, saved_records
         )
-        await self._save_behavior_context_payloads(payload, meta, scope)
-        await self._save_session_summary_payload(payload, meta)
-        await self._save_temporary_expression_payloads(payload, scope)
-        await self._save_focus_payloads(payload, meta, scope)
-        await self._save_memory_correction_payloads(payload, meta)
-        await self._save_life_adjustment_payloads(payload, meta, scope, saved_records)
-        await self._save_expression_intent_payload(payload, meta, scope)
-        await self._save_life_term_payloads(payload, meta, scope)
-        await self._save_memory_boundary_payloads(payload)
+        await self.context._save_behavior_context_payloads(payload, meta, scope)
+        await self.context._save_session_summary_payload(payload, meta)
+        await self.context._save_temporary_expression_payloads(payload, scope)
+        await self.context._save_focus_payloads(payload, meta, scope)
+        await self.context._save_memory_correction_payloads(payload, meta)
+        await self.context._save_life_adjustment_payloads(payload, meta, scope, saved_records)
+        await self.context._save_expression_intent_payload(payload, meta, scope)
+        await self.context._save_life_term_payloads(payload, meta, scope)
+        await self.context._save_memory_boundary_payloads(payload)
         return saved_records
 
     def _dict_payloads(self, *values: Any) -> list[dict]:
@@ -151,7 +196,7 @@ class ImprintDepositMixin:
                 items.append(value)
                 continue
             items.extend(
-                item for item in self._list_payload(value) if isinstance(item, dict)
+                item for item in self.context._list_payload(value) if isinstance(item, dict)
             )
         return items
 
@@ -161,7 +206,7 @@ class ImprintDepositMixin:
         meta: dict[str, str],
         saved_records: dict[str, list[Any]],
     ) -> None:
-        for raw_episode in self._dict_payloads(
+        for raw_episode in self.context._dict_payloads(
             payload.get("life_episode"), payload.get("life_episodes")
         )[:4]:
             episode = LifeEpisodeRecord.from_value(
@@ -173,9 +218,9 @@ class ImprintDepositMixin:
             )
             if not episode:
                 continue
-            saved_episode = await self.archive.save_life_episode(episode)
+            saved_episode = await self.context.archive.save_life_episode(episode)
             saved_records["life_episodes"].append(saved_episode)
-            await self._save_long_term_memory(
+            await self.context._save_long_term_memory(
                 meta=meta,
                 category=f"episode:{saved_episode.kind}",
                 title=saved_episode.title,
@@ -187,7 +232,7 @@ class ImprintDepositMixin:
                 confidence=saved_episode.confidence,
                 weight=1.2 if saved_episode.protected else 1.0,
             )
-            await self._save_experience_evidence(
+            await self.context._save_experience_evidence(
                 "life_episode",
                 str(saved_episode.id),
                 saved_episode.summary or saved_episode.title,
@@ -204,27 +249,27 @@ class ImprintDepositMixin:
         meta: dict[str, str],
         saved_summary: ChatSummaryRecord | None,
     ) -> None:
-        for raw_evidence in self._dict_payloads(payload.get("evidence_refs"))[:8]:
-            target_type = self._str_payload(raw_evidence.get("target_type")) or (
+        for raw_evidence in self.context._dict_payloads(payload.get("evidence_refs"))[:8]:
+            target_type = self.context._str_payload(raw_evidence.get("target_type")) or (
                 "chat_summary" if saved_summary else ""
             )
-            target_id = self._str_payload(raw_evidence.get("target_id")) or (
+            target_id = self.context._str_payload(raw_evidence.get("target_id")) or (
                 str(saved_summary.id) if saved_summary else ""
             )
-            summary = self._str_payload(raw_evidence.get("summary"))
+            summary = self.context._str_payload(raw_evidence.get("summary"))
             if not (target_type and target_id and summary):
                 continue
-            await self._save_experience_evidence(
+            await self.context._save_experience_evidence(
                 target_type,
                 target_id,
                 summary,
                 meta,
-                evidence_type=self._str_payload(
+                evidence_type=self.context._str_payload(
                     raw_evidence.get("evidence_type"), "observation"
                 ),
-                source_table=self._str_payload(raw_evidence.get("source_table")),
-                source_id=self._str_payload(raw_evidence.get("source_id")),
-                confidence=self._float_payload(raw_evidence.get("confidence"), 1.0),
+                source_table=self.context._str_payload(raw_evidence.get("source_table")),
+                source_id=self.context._str_payload(raw_evidence.get("source_id")),
+                confidence=self.context._float_payload(raw_evidence.get("confidence"), 1.0),
             )
 
     async def _save_behavior_feedback_payloads(
@@ -233,7 +278,7 @@ class ImprintDepositMixin:
         meta: dict[str, str],
         saved_records: dict[str, list[Any]],
     ) -> None:
-        for raw_feedback in self._dict_payloads(payload.get("behavior_feedback"))[:5]:
+        for raw_feedback in self.context._dict_payloads(payload.get("behavior_feedback"))[:5]:
             record = BehaviorFeedbackRecord.from_value(
                 {
                     **raw_feedback,
@@ -244,10 +289,10 @@ class ImprintDepositMixin:
             )
             if not record:
                 continue
-            saved_feedback = await self.archive.add_behavior_feedback(record)
+            saved_feedback = await self.context.archive.add_behavior_feedback(record)
             if saved_feedback:
                 saved_records["behavior_feedback"].append(saved_feedback)
-                await self._save_long_term_memory(
+                await self.context._save_long_term_memory(
                     meta=meta,
                     category="feedback",
                     title=saved_feedback.scene or saved_feedback.action or "行为反馈",
@@ -267,7 +312,7 @@ class ImprintDepositMixin:
         scope: str,
         saved_records: dict[str, list[Any]],
     ) -> None:
-        for raw_expression in self._dict_payloads(payload.get("expression_profiles"))[
+        for raw_expression in self.context._dict_payloads(payload.get("expression_profiles"))[
             :4
         ]:
             record = ExpressionProfileRecord.from_value(
@@ -283,11 +328,11 @@ class ImprintDepositMixin:
             if not record:
                 continue
             if record.source == "chat_expression":
-                saved_profile = await self.archive.upsert_expression_profile(
+                saved_profile = await self.context.archive.upsert_expression_profile(
                     record, replace=True
                 )
             else:
-                saved_profile = await self.archive.upsert_expression_profile(record)
+                saved_profile = await self.context.archive.upsert_expression_profile(record)
             if saved_profile:
                 saved_records["expression_profiles"].append(saved_profile)
                 content = "；".join(
@@ -302,7 +347,7 @@ class ImprintDepositMixin:
                     )
                     if item
                 )
-                await self._save_long_term_memory(
+                await self.context._save_long_term_memory(
                     meta=meta,
                     category="expression",
                     title=saved_profile.label or "表达偏好",
@@ -320,8 +365,8 @@ class ImprintDepositMixin:
         meta: dict[str, str],
         scope: str,
     ) -> None:
-        for raw_pattern in self._dict_payloads(payload.get("behavior_patterns"))[:5]:
-            await self.archive.upsert_behavior_pattern(
+        for raw_pattern in self.context._dict_payloads(payload.get("behavior_patterns"))[:5]:
+            await self.context.archive.upsert_behavior_pattern(
                 BehaviorPatternRecord.from_value(
                     {
                         **raw_pattern,
@@ -333,8 +378,8 @@ class ImprintDepositMixin:
                 )
             )
 
-        for raw_scene in self._dict_payloads(payload.get("behavior_scenes"))[:5]:
-            await self.archive.upsert_behavior_scene(
+        for raw_scene in self.context._dict_payloads(payload.get("behavior_scenes"))[:5]:
+            await self.context.archive.upsert_behavior_scene(
                 BehaviorSceneRecord.from_value(
                     {
                         **raw_scene,
@@ -351,7 +396,7 @@ class ImprintDepositMixin:
     ) -> None:
         session_summary = payload.get("session_mid_summary")
         if isinstance(session_summary, dict):
-            await self.archive.upsert_session_mid_summary(
+            await self.context.archive.upsert_session_mid_summary(
                 SessionMidSummaryRecord.from_value(
                     {
                         **session_summary,
@@ -370,11 +415,11 @@ class ImprintDepositMixin:
     async def _save_temporary_expression_payloads(
         self, payload: dict, scope: str
     ) -> None:
-        for raw_state in self._dict_payloads(
+        for raw_state in self.context._dict_payloads(
             payload.get("temporary_expression_state"),
             payload.get("temporary_expression_states"),
         )[:3]:
-            await self.archive.upsert_temporary_expression_state(
+            await self.context.archive.upsert_temporary_expression_state(
                 TemporaryExpressionStateRecord.from_value(
                     {
                         **raw_state,
@@ -387,14 +432,14 @@ class ImprintDepositMixin:
     async def _save_focus_payloads(
         self, payload: dict, meta: dict[str, str], scope: str
     ) -> None:
-        for raw_focus in self._dict_payloads(payload.get("focus_updates"))[:6]:
+        for raw_focus in self.context._dict_payloads(payload.get("focus_updates"))[:6]:
             record = FocusTargetRecord.from_value({**raw_focus, "scope": scope})
             if not record:
                 continue
-            await self.archive.upsert_focus_target(record)
+            await self.context.archive.upsert_focus_target(record)
 
-        for raw_slot in self._dict_payloads(payload.get("focus_slots"))[:4]:
-            await self.archive.upsert_focus_slot(
+        for raw_slot in self.context._dict_payloads(payload.get("focus_slots"))[:4]:
+            await self.context.archive.upsert_focus_slot(
                 FocusSlotRecord.from_value(
                     {
                         **raw_slot,
@@ -408,7 +453,7 @@ class ImprintDepositMixin:
     async def _save_memory_correction_payloads(
         self, payload: dict, meta: dict[str, str]
     ) -> None:
-        for raw_correction in self._dict_payloads(
+        for raw_correction in self.context._dict_payloads(
             payload.get("memory_correction"), payload.get("memory_corrections")
         )[:4]:
             correction = MemoryCorrectionRecord.from_value(
@@ -419,10 +464,10 @@ class ImprintDepositMixin:
             )
             if not correction:
                 continue
-            saved_correction = await self.archive.save_memory_correction(correction)
+            saved_correction = await self.context.archive.save_memory_correction(correction)
             if not saved_correction:
                 continue
-            await self._save_long_term_memory(
+            await self.context._save_long_term_memory(
                 meta=meta,
                 category="correction",
                 title=f"{saved_correction.target_type}:{saved_correction.target_id}",
@@ -432,7 +477,7 @@ class ImprintDepositMixin:
                 confidence=saved_correction.confidence,
                 weight=2.0,
             )
-            await self._save_experience_evidence(
+            await self.context._save_experience_evidence(
                 saved_correction.target_type,
                 saved_correction.target_id,
                 saved_correction.evidence or saved_correction.correction,
@@ -442,12 +487,12 @@ class ImprintDepositMixin:
                 source_id=str(saved_correction.id),
                 confidence=saved_correction.confidence,
             )
-            applied = await self._apply_memory_correction(saved_correction, meta)
+            applied = await self.context._apply_memory_correction(saved_correction, meta)
             if applied:
-                await self.archive.mark_memory_correction_applied(
+                await self.context.archive.mark_memory_correction_applied(
                     saved_correction.id, True
                 )
-                self.schedule_memos_correction(saved_correction, meta)
+                self.context.schedule_memos_correction(saved_correction, meta)
 
     @staticmethod
     def _life_adjustment_default_expiry(meta: dict[str, str], days: int = 7) -> str:
@@ -463,10 +508,10 @@ class ImprintDepositMixin:
         self, raw: dict[str, Any], content: str, scope: str
     ) -> str:
         return (
-            self._str_payload(raw.get("target_id"), "")
-            or self._str_payload(raw.get("focus_key"), "")
-            or self._str_payload(raw.get("label"), "")
-            or self._str_payload(content, "")
+            self.context._str_payload(raw.get("target_id"), "")
+            or self.context._str_payload(raw.get("focus_key"), "")
+            or self.context._str_payload(raw.get("label"), "")
+            or self.context._str_payload(content, "")
             or scope
             or "general"
         )[:120]
@@ -476,7 +521,7 @@ class ImprintDepositMixin:
         raw_adjustment: dict[str, Any],
         default_scope: str,
     ) -> dict[str, Any] | None:
-        content = self._str_payload(
+        content = self.context._str_payload(
             raw_adjustment.get("content")
             or raw_adjustment.get("correction")
             or raw_adjustment.get("preference")
@@ -485,18 +530,18 @@ class ImprintDepositMixin:
         )
         if not content:
             return None
-        scope = self._str_payload(raw_adjustment.get("scope"), "current") or "current"
+        scope = self.context._str_payload(raw_adjustment.get("scope"), "current") or "current"
         target_type = (
-            self._str_payload(raw_adjustment.get("target_type"), "other") or "other"
+            self.context._str_payload(raw_adjustment.get("target_type"), "other") or "other"
         )
-        target_id = self._life_adjustment_target_id(
+        target_id = self.context._life_adjustment_target_id(
             raw_adjustment, content, default_scope
         )
-        reason = self._str_payload(
+        reason = self.context._str_payload(
             raw_adjustment.get("reason") or raw_adjustment.get("evidence"), content
         )
         confidence = max(
-            0.0, min(self._float_payload(raw_adjustment.get("confidence"), 0.8), 1.0)
+            0.0, min(self.context._float_payload(raw_adjustment.get("confidence"), 0.8), 1.0)
         )
         evidence_summary = reason if reason and reason != content else content
         return {
@@ -516,17 +561,17 @@ class ImprintDepositMixin:
         item: dict[str, Any],
         saved_records: dict[str, list[Any]],
     ) -> None:
-        expires_at = self._str_payload(
+        expires_at = self.context._str_payload(
             raw_adjustment.get("expires_at")
-        ) or self._life_adjustment_default_expiry(meta)
-        priority = self._int_payload(raw_adjustment.get("priority"), 70)
-        saved_slot = await self.archive.upsert_focus_slot(
+        ) or self.context._life_adjustment_default_expiry(meta)
+        priority = self.context._int_payload(raw_adjustment.get("priority"), 70)
+        saved_slot = await self.context.archive.upsert_focus_slot(
             FocusSlotRecord.from_value(
                 {
-                    "scope": self._str_payload(raw_adjustment.get("session_scope"))
+                    "scope": self.context._str_payload(raw_adjustment.get("session_scope"))
                     or "",
                     "focus_key": f"{item['target_type']}:{item['target_id']}"[:140],
-                    "label": self._str_payload(
+                    "label": self.context._str_payload(
                         raw_adjustment.get("label"), item["content"]
                     ),
                     "priority": priority,
@@ -539,7 +584,7 @@ class ImprintDepositMixin:
         if not saved_slot:
             return
         saved_records.setdefault("life_adjustments", []).append(saved_slot)
-        await self._save_long_term_memory(
+        await self.context._save_long_term_memory(
             meta=meta,
             category="short_term",
             title=saved_slot.label or item["target_type"],
@@ -551,7 +596,7 @@ class ImprintDepositMixin:
             weight=max(1.0, priority / 50),
             expires_at=saved_slot.expires_at,
         )
-        await self._save_experience_evidence(
+        await self.context._save_experience_evidence(
             "focus",
             str(saved_slot.id),
             item["evidence_summary"],
@@ -570,10 +615,10 @@ class ImprintDepositMixin:
         saved_records: dict[str, list[Any]],
     ) -> None:
         category = (
-            self._str_payload(raw_adjustment.get("category"), item["target_type"])
+            self.context._str_payload(raw_adjustment.get("category"), item["target_type"])
             or "other"
         )
-        saved_preferences = await self.archive.upsert_preferences(
+        saved_preferences = await self.context.archive.upsert_preferences(
             [
                 PreferenceRecord(
                     category=category,
@@ -581,7 +626,7 @@ class ImprintDepositMixin:
                     weight=max(
                         0.1,
                         min(
-                            self._float_payload(raw_adjustment.get("weight"), 1.0), 5.0
+                            self.context._float_payload(raw_adjustment.get("weight"), 1.0), 5.0
                         ),
                     ),
                     evidence=item["evidence_summary"],
@@ -593,7 +638,7 @@ class ImprintDepositMixin:
         )
         for preference in saved_preferences:
             saved_records.setdefault("preferences", []).append(preference)
-            await self._save_long_term_memory(
+            await self.context._save_long_term_memory(
                 meta=meta,
                 category=f"preference:{preference.category}",
                 title=preference.category,
@@ -603,7 +648,7 @@ class ImprintDepositMixin:
                 confidence=item["confidence"],
                 weight=preference.weight,
             )
-            await self._save_experience_evidence(
+            await self.context._save_experience_evidence(
                 "preference",
                 str(preference.id),
                 item["evidence_summary"],
@@ -631,14 +676,14 @@ class ImprintDepositMixin:
             }
         )
         saved_correction = (
-            await self.archive.save_memory_correction(correction)
+            await self.context.archive.save_memory_correction(correction)
             if correction
             else None
         )
         if not saved_correction:
             return
         saved_records.setdefault("life_adjustments", []).append(saved_correction)
-        await self._save_long_term_memory(
+        await self.context._save_long_term_memory(
             meta=meta,
             category="correction",
             title=f"{saved_correction.target_type}:{saved_correction.target_id}",
@@ -648,7 +693,7 @@ class ImprintDepositMixin:
             confidence=saved_correction.confidence,
             weight=2.0,
         )
-        await self._save_experience_evidence(
+        await self.context._save_experience_evidence(
             saved_correction.target_type,
             saved_correction.target_id,
             saved_correction.evidence or saved_correction.correction,
@@ -658,10 +703,10 @@ class ImprintDepositMixin:
             source_id=str(saved_correction.id),
             confidence=saved_correction.confidence,
         )
-        applied = await self._apply_memory_correction(saved_correction, meta)
+        applied = await self.context._apply_memory_correction(saved_correction, meta)
         if applied:
-            await self.archive.mark_memory_correction_applied(saved_correction.id, True)
-            self.schedule_memos_correction(saved_correction, meta)
+            await self.context.archive.mark_memory_correction_applied(saved_correction.id, True)
+            self.context.schedule_memos_correction(saved_correction, meta)
 
     async def _save_life_adjustment_payloads(
         self,
@@ -670,31 +715,31 @@ class ImprintDepositMixin:
         default_scope: str,
         saved_records: dict[str, list[Any]],
     ) -> None:
-        for raw_adjustment in self._dict_payloads(
+        for raw_adjustment in self.context._dict_payloads(
             payload.get("life_adjustment"), payload.get("life_adjustments")
         )[:6]:
-            item = self._life_adjustment_payload_data(raw_adjustment, default_scope)
+            item = self.context._life_adjustment_payload_data(raw_adjustment, default_scope)
             if not item:
                 continue
             if item["scope"] == "short_term":
-                await self._save_short_term_life_adjustment(
+                await self.context._save_short_term_life_adjustment(
                     raw_adjustment, meta, item, saved_records
                 )
                 continue
 
             if item["scope"] == "long_term":
-                await self._save_long_term_life_adjustment(
+                await self.context._save_long_term_life_adjustment(
                     raw_adjustment, meta, item, saved_records
                 )
                 continue
 
             if item["scope"] == "correction":
-                await self._save_memory_correction_life_adjustment(
+                await self.context._save_memory_correction_life_adjustment(
                     meta, item, saved_records
                 )
                 continue
 
-            await self._save_experience_evidence(
+            await self.context._save_experience_evidence(
                 "life_adjustment",
                 item["target_id"],
                 item["evidence_summary"],
@@ -709,7 +754,7 @@ class ImprintDepositMixin:
     ) -> None:
         expression_intent = payload.get("expression_intent")
         if isinstance(expression_intent, dict):
-            await self.archive.save_expression_intent(
+            await self.context.archive.save_expression_intent(
                 ExpressionIntentRecord.from_value(
                     {
                         **expression_intent,
@@ -725,8 +770,8 @@ class ImprintDepositMixin:
     async def _save_life_term_payloads(
         self, payload: dict, meta: dict[str, str], scope: str
     ) -> None:
-        for raw_term in self._dict_payloads(payload.get("life_terms"))[:8]:
-            await self.archive.upsert_life_term(
+        for raw_term in self.context._dict_payloads(payload.get("life_terms"))[:8]:
+            await self.context.archive.upsert_life_term(
                 LifeTermRecord.from_value(
                     {
                         **raw_term,
@@ -739,9 +784,9 @@ class ImprintDepositMixin:
 
     async def _save_memory_boundary_payloads(self, payload: dict) -> None:
         boundary = payload.get("memory_boundary_hint")
-        for raw_boundary in self._dict_payloads(
+        for raw_boundary in self.context._dict_payloads(
             boundary, payload.get("memory_boundaries")
         )[:4]:
             record = MemoryBoundaryRecord.from_value(raw_boundary)
             if record:
-                await self.archive.set_memory_boundary(record)
+                await self.context.archive.set_memory_boundary(record)

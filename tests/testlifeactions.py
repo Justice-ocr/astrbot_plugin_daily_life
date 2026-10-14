@@ -6,10 +6,10 @@ import unittest
 
 from support import DayRecord, LifeArchive, LifeState, TimelineItem
 
-from core.life.settlement import LifeActionMixin
-from core.life.assembly import DailyAssemblyMixin
-from core.life.record import DailyRecordMixin
-from core.life.rhythm import LifecycleMixin
+from componentfixtures import LifeActionComponent
+from componentfixtures import DailyAssemblyComponent
+from componentfixtures import DailyRecordComponent
+from componentfixtures import LifecycleComponent
 from core.models import (
     EXTERNAL_RECEIPT_ACTION_TYPES,
     INTERNAL_SIMULATED_ACTION_TYPES,
@@ -22,7 +22,7 @@ from core.models import (
 
 class LifeActionTest(unittest.TestCase):
     def setUp(self):
-        self.engine = LifeActionMixin()
+        self.engine = LifeActionComponent()
 
     def test_action_taxonomy_has_eighteen_complete_non_overlapping_types(self):
         self.assertEqual(len(LIFE_ACTION_TYPES), 18)
@@ -590,12 +590,12 @@ class _ArchiveStub:
         return None
 
 
-class _ComposerStub(LifecycleMixin, LifeActionMixin):
+class _ComposerStub(LifecycleComponent, LifeActionComponent):
     def __init__(self):
         self.archive = _ArchiveStub()
 
 
-class _RecordStub(DailyRecordMixin):
+class _RecordStub(DailyRecordComponent):
     def __init__(self):
         self.archive = _ArchiveStub()
 
@@ -611,7 +611,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
-                composer = LifeActionMixin()
+                composer = LifeActionComponent()
                 composer.archive = archive
                 action_id = "outfit-plan-stale-receipt"
                 day = DayRecord(
@@ -672,7 +672,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
-                composer = LifeActionMixin()
+                composer = LifeActionComponent()
                 composer.archive = archive
                 day = DayRecord(
                     date="2026-08-01",
@@ -723,7 +723,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
-                composer = LifeActionMixin()
+                composer = LifeActionComponent()
                 composer.archive = archive
                 day = DayRecord(
                     date="2026-08-01",
@@ -763,7 +763,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 archive.close()
 
     async def test_daily_generation_keeps_only_explicit_valid_action_proposals(self):
-        assembler = DailyAssemblyMixin()
+        assembler = DailyAssemblyComponent()
         day = assembler._day_from_generation(
             {
                 "outfit": "清爽日常穿搭",
@@ -885,6 +885,82 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(day.meta["schedule_planning_mode"], "hierarchical")
         self.assertEqual(day.meta["schedule_anchor_count"], "6")
         self.assertEqual(len(json.loads(day.meta["schedule_anchors"])), 6)
+
+    async def test_daily_lifecycle_keeps_unresolved_illness_across_days(self):
+        composer = _ComposerStub()
+        previous = DayRecord(
+            date="2026-08-01",
+            state=LifeState.from_value(
+                {
+                    "physiological_rhythm": {
+                        "body_condition": {
+                            "label": "醒来后嗓子疼，身体发沉",
+                            "intensity": 48,
+                            "burden_present": True,
+                            "kind": "illness_like",
+                            "phase": "onset",
+                            "started_at": "2026-08-01 08:00",
+                            "source": "昨日清晨自身的身体感受",
+                            "expires_at": "2026-08-01 21:00",
+                        }
+                    }
+                }
+            ),
+        )
+        composer.archive.days[previous.date] = previous
+        current = DayRecord(
+            date="2026-08-02",
+            state=LifeState.from_value(
+                {
+                    "physiological_rhythm": {
+                        "body_condition": {
+                            "label": "完全健康",
+                            "intensity": 0,
+                            "burden_present": False,
+                            "kind": "ordinary",
+                        }
+                    }
+                }
+            ),
+        )
+
+        await composer._apply_lifecycle_to_day(
+            current, datetime.datetime(2026, 8, 2, 8, 0), {}
+        )
+
+        body = current.state.physiological_rhythm.body_condition
+        self.assertTrue(body.burden_present)
+        self.assertEqual(body.kind, "illness_like")
+        self.assertEqual(body.phase, "ongoing")
+        self.assertEqual(body.started_at, "2026-08-01 08:00")
+        self.assertEqual(body.label, "醒来后嗓子疼，身体发沉")
+
+        composer.archive.days[current.date] = current
+        regenerated = DayRecord(
+            date=current.date,
+            state=LifeState.from_value(
+                {
+                    "physiological_rhythm": {
+                        "body_condition": {
+                            "label": "重新生成后突然健康",
+                            "intensity": 0,
+                            "burden_present": False,
+                            "kind": "ordinary",
+                        }
+                    }
+                }
+            ),
+        )
+        await composer._apply_lifecycle_to_day(
+            regenerated, datetime.datetime(2026, 8, 2, 10, 0), {}
+        )
+        self.assertTrue(
+            regenerated.state.physiological_rhythm.body_condition.burden_present
+        )
+        self.assertEqual(
+            regenerated.state.physiological_rhythm.body_condition.started_at,
+            "2026-08-01 08:00",
+        )
 
     async def test_nightly_review_does_not_overwrite_terminal_timeline_state(self):
         composer = _ComposerStub()

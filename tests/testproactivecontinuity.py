@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from runtimehelpers import (
     Event,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     async_return,
     datetime,
     json,
@@ -12,7 +12,7 @@ from runtimehelpers import (
 
 
 class ProactiveContinuityTest(
-    RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase
+    RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase
 ):
     scope = "aiocqhttp:FriendMessage:10001"
 

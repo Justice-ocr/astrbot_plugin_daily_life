@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 from typing import Any
@@ -6,13 +8,77 @@ from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import ProviderRequest
 
+from ...epistemic import knowledge_label
+
 from ...life.surroundings import (
     format_hidden_group_awareness,
     format_hidden_world_context,
 )
+from ..markers import LOG_PREFIX
+
+from typing import Protocol
 
 
-class LayerChainMixin:
+class LayerChainComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _CHAT_MEMORY_RANK_BUDGET_SECONDS: Any
+    _EXPERIENCE_RELEVANCE_FIELDS: Any
+    _append_video_input_anchor: Any
+    _append_visual_input_anchor: Any
+    _apply_life_request_context: Any
+    _build_available_life_context: Any
+    _build_injection_memos_context: Any
+    _build_person_fact_injection_context: Any
+    _collect_emoji_context_background: Any
+    _event_group_meta: Any
+    _event_message_id: Any
+    _event_message_text: Any
+    _event_session_id: Any
+    _experience_item_text: Any
+    _format_cognition_context: Any
+    _format_hidden_experience_context: Any
+    _format_selected_experience_context: Any
+    _gather_life_context_snapshot: Any
+    _life_injection_now: Any
+    _memos_injection_enabled: Any
+    _memos_service: Any
+    _refresh_state_for_chat_background: Any
+    _request_has_visual_input: Any
+    _schedule_background_task: Any
+    _schedule_chat_state_refresh: Any
+    _scope_snapshot_items: Any
+    _select_life_memory_contexts: Any
+    _semantic_snapshot_group: Any
+    _semantic_snapshot_id: Any
+    _voice_expression_channel_enabled: Any
+    build_chat_style_injection_context: Any
+    build_conversation_timing_context: Any
+    build_heuristic_memory_context: Any
+    build_hidden_life_context: Any
+    build_memos_hidden_context: Any
+    build_missing_life_context: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    domains: Any
+    ensure_injection_day_data: Any
+    format_recent_sight_context: Any
+    format_structured_message_context: Any
+    friend_reference_injection_context: Any
+    get_persona_text: Any
+    is_internal_llm_session: Any
+    mark_voice_switch_available: Any
+    maybe_update_injection_outfit: Any
+    rank_semantic_groups: Any
+    resolve_injection_target: Any
+    resolve_interaction_context: Any
+
+
+class LayerChainComponent:
+    def __init__(self, context: LayerChainComponentContext) -> None:
+        self.context = context
+
     _CHAT_MEMORY_RANK_BUDGET_SECONDS = 1.5
     _EXPERIENCE_RELEVANCE_FIELDS = (
         "title",
@@ -41,13 +107,13 @@ class LayerChainMixin:
         *,
         relationships: list[Any] | None = None,
     ) -> str:
-        composer = getattr(self, "composer", None)
+        composer = getattr(self.context, "composer", None)
         builder = getattr(composer, "_build_person_fact_context", None)
         if not callable(builder):
             return ""
         try:
-            scope = self._event_session_id(event) if event is not None else ""
-            persona = await self.get_persona_text(scope)
+            scope = self.context._event_session_id(event) if event is not None else ""
+            persona = await self.context.get_persona_text(scope)
             context = await builder(
                 persona=persona,
                 relationships=relationships,
@@ -60,7 +126,7 @@ class LayerChainMixin:
 
     def _experience_item_text(self, item: Any) -> str:
         parts: list[str] = []
-        for field in self._EXPERIENCE_RELEVANCE_FIELDS:
+        for field in self.context._EXPERIENCE_RELEVANCE_FIELDS:
             value = getattr(item, field, "")
             if isinstance(value, (list, tuple, set)):
                 parts.extend(str(entry or "") for entry in value)
@@ -85,8 +151,8 @@ class LayerChainMixin:
     ) -> list[tuple[str, str, Any]]:
         return [
             (
-                self._semantic_snapshot_id(kind, item, index),
-                self._experience_item_text(item),
+                self.context._semantic_snapshot_id(kind, item, index),
+                self.context._experience_item_text(item),
                 item,
             )
             for index, item in enumerate(items)
@@ -113,7 +179,7 @@ class LayerChainMixin:
         return False
 
     def _append_visual_input_anchor(self, req: ProviderRequest) -> None:
-        if not self._request_has_visual_input(req):
+        if not self.context._request_has_visual_input(req):
             return
         parts = getattr(req, "extra_user_content_parts", None)
         if not isinstance(parts, list):
@@ -141,7 +207,7 @@ class LayerChainMixin:
         parts.append(part)
 
     def _memos_injection_enabled(self) -> bool:
-        service_getter = getattr(self, "_memos_service", None)
+        service_getter = getattr(self.context, "_memos_service", None)
         if not callable(service_getter):
             return False
         service = service_getter()
@@ -150,12 +216,27 @@ class LayerChainMixin:
     async def _build_injection_memos_context(
         self, event: Any, message: str = ""
     ) -> str:
-        if event is None or not self._memos_injection_enabled():
+        if event is None or not self.context._memos_injection_enabled():
             return ""
-        sender_name = await self.contact_resolver.resolve_event_sender(event)
-        return await self.build_memos_hidden_context(
-            event, message, sender_name=sender_name
+        service = self.context._memos_service()
+        timeout = max(
+            0.2,
+            float(
+                getattr(
+                    getattr(service, "settings", None),
+                    "injection_timeout_seconds", 0.8,
+                ) or 0.8
+            ),
         )
+        try:
+            async with asyncio.timeout(timeout):
+                sender_name = self.context.contact_resolver.cached_event_sender(event)
+                return await self.context.build_memos_hidden_context(
+                    event, message, sender_name=sender_name
+                )
+        except TimeoutError:
+            logger.debug(f"{LOG_PREFIX} MemOS 前台资料准备超时，继续本轮聊天")
+            return ""
 
     def _event_message_text(self, event: Any) -> str:
         return str(getattr(event, "message_str", "") or "") if event is not None else ""
@@ -163,12 +244,12 @@ class LayerChainMixin:
     def schedule_emoji_capture_from_event(self, event: Any, now: Any = None) -> bool:
         if event is None:
             return False
-        now = now or self._life_injection_now()
-        session_id = self._event_session_id(event)
-        message_id = self._event_message_id(event)
-        task_key = f"emoji_capture:{session_id}:{message_id or hash(self._event_message_text(event))}"
-        return self._schedule_background_task(
-            self._collect_emoji_context_background(event, now),
+        now = now or self.context._life_injection_now()
+        session_id = self.context._event_session_id(event)
+        message_id = self.context._event_message_id(event)
+        task_key = f"emoji_capture:{session_id}:{message_id or hash(self.context._event_message_text(event))}"
+        return self.context._schedule_background_task(
+            self.context._collect_emoji_context_background(event, now),
             label="表情素材采集",
             key=task_key,
         )
@@ -176,13 +257,13 @@ class LayerChainMixin:
     def _schedule_chat_state_refresh(
         self, target_date_str: str, now: Any, event: Any = None
     ) -> None:
-        if not self.config.state.enabled:
+        if not self.context.config.state.enabled:
             return
         if event is not None:
             event._daily_life_pending_chat_state_refresh = (target_date_str, now)
             return
-        self._schedule_background_task(
-            self._refresh_state_for_chat_background(
+        self.context._schedule_background_task(
+            self.context._refresh_state_for_chat_background(
                 target_date_str, now, source_event=event
             ),
             label="聊天状态刷新",
@@ -195,8 +276,8 @@ class LayerChainMixin:
             return False
         event._daily_life_pending_chat_state_refresh = None
         target_date_str, now = pending
-        return self._schedule_background_task(
-            self._refresh_state_for_chat_background(
+        return self.context._schedule_background_task(
+            self.context._refresh_state_for_chat_background(
                 str(target_date_str), now, source_event=event
             ),
             label="聊天状态刷新",
@@ -208,7 +289,7 @@ class LayerChainMixin:
     ) -> tuple[str, str]:
         meta = data.meta or {}
         boundary_getter = getattr(
-            getattr(self, "domains", None),
+            getattr(self.context, "domains", None),
             "residence_boundary_date",
             None,
         )
@@ -242,7 +323,7 @@ class LayerChainMixin:
             "relationships": 5,
             "places": 8,
             "events": 8,
-            "summaries": self.config.memory.max_injection_items,
+            "summaries": self.context.config.memory.max_injection_items,
         }
         experience_limits = {
             "episodes": 2,
@@ -255,18 +336,18 @@ class LayerChainMixin:
             "terms": 3,
         }
         groups = {
-            "relationships": self._semantic_snapshot_group(
+            "relationships": self.context._semantic_snapshot_group(
                 "relationships", list(snapshot.get("relationships") or [])
             ),
-            "places": self._semantic_snapshot_group("places", place_items),
-            "events": self._semantic_snapshot_group("events", event_items),
-            "summaries": self._semantic_snapshot_group(
+            "places": self.context._semantic_snapshot_group("places", place_items),
+            "events": self.context._semantic_snapshot_group("events", event_items),
+            "summaries": self.context._semantic_snapshot_group(
                 "summaries", list(snapshot.get("summaries") or [])
             ),
         }
         groups.update(
             {
-                key: self._semantic_snapshot_group(key, list(snapshot.get(key) or []))
+                key: self.context._semantic_snapshot_group(key, list(snapshot.get(key) or []))
                 for key in experience_limits
             }
         )
@@ -285,8 +366,8 @@ class LayerChainMixin:
         limits = {**world_limits, **experience_limits}
         try:
             selected = await asyncio.wait_for(
-                self.rank_semantic_groups(query, groups, limits),
-                timeout=self._CHAT_MEMORY_RANK_BUDGET_SECONDS,
+                self.context.rank_semantic_groups(query, groups, limits),
+                timeout=self.context._CHAT_MEMORY_RANK_BUDGET_SECONDS,
             )
         except TimeoutError:
             # 普通聊天不等远端向量/排序模型；保留原有顺序与独立的长期记忆召回。
@@ -301,7 +382,7 @@ class LayerChainMixin:
             selected["events"],
             selected["summaries"],
         )
-        experience_context = self._format_selected_experience_context(
+        experience_context = self.context._format_selected_experience_context(
             snapshot, selected
         )
         return world_context, experience_context
@@ -315,8 +396,8 @@ class LayerChainMixin:
         if event is None:
             return environments, decisions, visibility
 
-        session_id = self._event_session_id(event)
-        group_id, _ = self._event_group_meta(event)
+        session_id = self.context._event_session_id(event)
+        group_id, _ = self.context._event_group_meta(event)
 
         def in_current_scope(item: Any) -> bool:
             item_session = str(getattr(item, "session_id", "") or "").strip()
@@ -336,7 +417,7 @@ class LayerChainMixin:
         snapshot: dict[str, Any],
         selected: dict[str, list[Any]],
     ) -> str:
-        return self._format_hidden_experience_context(
+        return self.context._format_hidden_experience_context(
             episodes=selected["episodes"],
             focus_targets=list(snapshot.get("focus_targets") or [])[:2],
             feedback=selected["feedback"],
@@ -395,10 +476,10 @@ class LayerChainMixin:
             fact_lines.append(
                 f"- {getattr(item, 'subject', '')}.{getattr(item, 'predicate', '')}="
                 f"{value}；有效期 {valid_from} 至 {valid_to}；"
-                f"置信度 {float(getattr(item, 'confidence', 0.0) or 0.0):.2f}"
+                + knowledge_label(item)
             )
         if fact_lines:
-            sections.append("当前时间事实：\n" + "\n".join(fact_lines))
+            sections.append("当前事实与待确认认识（推测不能代替事实或授权）：\n" + "\n".join(fact_lines))
 
         assertion_lines = []
         persona_assertions = list(snapshot.get("persona_assertions") or []) + list(
@@ -460,25 +541,25 @@ class LayerChainMixin:
         using_extended_night: bool,
         event: Any = None,
     ) -> str:
-        event_message = self._event_message_text(event)
-        snapshot_task = self._gather_life_context_snapshot(event)
+        event_message = self.context._event_message_text(event)
+        snapshot_task = self.context._gather_life_context_snapshot(event)
         recent_video_task = (
-            self.format_recent_sight_context(event, limit=2)
+            self.context.format_recent_sight_context(event, limit=2)
             if event is not None
             else asyncio.sleep(0, result="")
         )
         heuristic_task = (
-            self.build_heuristic_memory_context(event, event_message)
+            self.context.build_heuristic_memory_context(event, event_message)
             if event is not None
             else asyncio.sleep(0, result="")
         )
         memos_task = (
-            self._build_injection_memos_context(event, event_message)
+            self.context._build_injection_memos_context(event, event_message)
             if event is not None
             else asyncio.sleep(0, result="")
         )
         domain_context_builder = getattr(
-            getattr(self, "domains", None), "format_context", None
+            getattr(self.context, "domains", None), "format_context", None
         )
         domain_task = (
             domain_context_builder()
@@ -498,25 +579,25 @@ class LayerChainMixin:
             memos_task,
             domain_task,
         )
-        environments, decisions, visibility = self._scope_snapshot_items(
+        environments, decisions, visibility = self.context._scope_snapshot_items(
             snapshot, event
         )
         person_facts, memory_contexts = await asyncio.gather(
-            self._build_person_fact_injection_context(
+            self.context._build_person_fact_injection_context(
                 event,
                 relationships=list(snapshot.get("relationships") or []),
             ),
-            self._select_life_memory_contexts(snapshot, data, event_message),
+            self.context._select_life_memory_contexts(snapshot, data, event_message),
         )
         world_context, experience_context = memory_contexts
-        cognition_context = self._format_cognition_context(snapshot)
-        interaction_context = await self.resolve_interaction_context(
+        cognition_context = self.context._format_cognition_context(snapshot)
+        interaction_context = await self.context.resolve_interaction_context(
             event=event,
             snapshot=snapshot,
             now=now,
         )
         return (
-            self.build_hidden_life_context(
+            self.context.build_hidden_life_context(
                 data,
                 now,
                 using_extended_night,
@@ -527,7 +608,7 @@ class LayerChainMixin:
                 commitments=list(snapshot.get("commitments") or []),
                 experience_context=experience_context,
                 memos_context=memos_context,
-                structured=self.format_structured_message_context(event, limit=8)
+                structured=self.context.format_structured_message_context(event, limit=8)
                 if event is not None
                 else "",
                 recent_video=recent_video,
@@ -544,44 +625,44 @@ class LayerChainMixin:
     async def inject_life_context(
         self, req: ProviderRequest, event: Any = None
     ) -> None:
-        if self.is_internal_llm_session(req):
+        if self.context.is_internal_llm_session(req):
             return
 
-        now = self._life_injection_now()
-        timing_context = await self.build_conversation_timing_context(event)
+        now = self.context._life_injection_now()
+        timing_context = await self.context.build_conversation_timing_context(event)
         today_str = now.strftime("%Y-%m-%d")
-        target_date_str, using_extended_night = await self.resolve_injection_target(now)
-        data = await self.ensure_injection_day_data(target_date_str, now)
-        data = await self.maybe_update_injection_outfit(
+        target_date_str, using_extended_night = await self.context.resolve_injection_target(now)
+        data = await self.context.ensure_injection_day_data(target_date_str, now)
+        data = await self.context.maybe_update_injection_outfit(
             today_str, data, using_extended_night
         )
 
         if not data:
-            memos_context = await self._build_injection_memos_context(
-                event, self._event_message_text(event)
+            memos_context = await self.context._build_injection_memos_context(
+                event, self.context._event_message_text(event)
             )
             recent_video = (
-                await self.format_recent_sight_context(event, limit=2)
+                await self.context.format_recent_sight_context(event, limit=2)
                 if event is not None
                 else ""
             )
             heuristic_memory = (
-                await self.build_heuristic_memory_context(
-                    event, self._event_message_text(event)
+                await self.context.build_heuristic_memory_context(
+                    event, self.context._event_message_text(event)
                 )
                 if event is not None
                 else ""
             )
-            style_context = await self.build_chat_style_injection_context(
-                event, self._event_message_text(event)
+            style_context = await self.context.build_chat_style_injection_context(
+                event, self.context._event_message_text(event)
             )
-            person_facts = await self._build_person_fact_injection_context(event)
-            interaction_context = await self.resolve_interaction_context(
+            person_facts = await self.context._build_person_fact_injection_context(event)
+            interaction_context = await self.context.resolve_interaction_context(
                 event=event,
                 now=now,
             )
             missing_context = (
-                self.build_missing_life_context(
+                self.context.build_missing_life_context(
                     now,
                     target_date_str,
                     using_extended_night,
@@ -594,27 +675,27 @@ class LayerChainMixin:
                 + style_context
                 + person_facts
                 + interaction_context.format_for_generation()
-                + self.friend_reference_injection_context(event)
+                + self.context.friend_reference_injection_context(event)
             )
-            if self._voice_expression_channel_enabled(event):
-                self.mark_voice_switch_available(event)
-            self._apply_life_request_context(req, missing_context + timing_context)
-            self._append_visual_input_anchor(req)
-            self._append_video_input_anchor(req, event)
+            if self.context._voice_expression_channel_enabled(event):
+                self.context.mark_voice_switch_available(event)
+            self.context._apply_life_request_context(req, missing_context + timing_context)
+            self.context._append_visual_input_anchor(req)
+            self.context._append_video_input_anchor(req, event)
             logger.debug("[上下文注入] 当前暂无日常生活记录，已注入防编造约束")
             return
 
-        self._schedule_chat_state_refresh(target_date_str, now, event)
-        hidden_context = await self._build_available_life_context(
+        self.context._schedule_chat_state_refresh(target_date_str, now, event)
+        hidden_context = await self.context._build_available_life_context(
             data, now, using_extended_night, event
         )
-        hidden_context += await self.build_chat_style_injection_context(
-            event, self._event_message_text(event)
+        hidden_context += await self.context.build_chat_style_injection_context(
+            event, self.context._event_message_text(event)
         )
-        hidden_context += self.friend_reference_injection_context(event)
-        if self._voice_expression_channel_enabled(event):
-            self.mark_voice_switch_available(event)
-        self._apply_life_request_context(req, hidden_context + timing_context)
-        self._append_visual_input_anchor(req)
-        self._append_video_input_anchor(req, event)
+        hidden_context += self.context.friend_reference_injection_context(event)
+        if self.context._voice_expression_channel_enabled(event):
+            self.context.mark_voice_switch_available(event)
+        self.context._apply_life_request_context(req, hidden_context + timing_context)
+        self.context._append_visual_input_anchor(req)
+        self.context._append_video_input_anchor(req, event)
         logger.debug("[上下文注入] 已注入日常生活背景上下文")

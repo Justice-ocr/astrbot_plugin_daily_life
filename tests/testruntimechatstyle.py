@@ -370,8 +370,8 @@ class RuntimeChatStyleTest(unittest.TestCase):
             runtime.build_chat_style_injection_context(event, event.message_str)
         )
 
-        self.assertIn("[HiddenChatStyle]", text)
-        self.assertIn("普通聊天使用纯文本，不使用 Markdown", text)
+        self.assertIn("[HiddenChatScene]", text)
+        self.assertIn("当前私聊轻闲聊整轮参考长度", text)
         self.assertNotIn("[HiddenFactCheckSearch]", text)
         self.assertFalse(hasattr(event, "_daily_life_fact_check_used"))
 
@@ -1242,7 +1242,12 @@ class RuntimeChatStyleTest(unittest.TestCase):
             },
         )
         runtime.config = LifeSettings.from_dict(
-            {"chat_style_config": {"private_casual_max_chars": 20}}
+            {
+                "chat_style_config": {
+                    "private_casual_max_chars": 20,
+                    "punctuation_cleanup_enabled": False,
+                }
+            }
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "详细说说"

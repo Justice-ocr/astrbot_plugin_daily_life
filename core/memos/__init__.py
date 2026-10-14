@@ -1,5 +1,5 @@
 from .connector import HostedMemOSClient, MemOSClientResult
-from .mixin import MemosMixin
+from .conduit import MemosComponent
 from .hosted import HostedMemOSService, MemOSMemoryItem
 
 __all__ = [
@@ -7,5 +7,5 @@ __all__ = [
     "HostedMemOSService",
     "MemOSClientResult",
     "MemOSMemoryItem",
-    "MemosMixin",
+    "MemosComponent",
 ]

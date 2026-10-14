@@ -605,13 +605,13 @@
       "semantic_timeout_seconds": {
         "description": "语义分段超时（秒）",
         "type": "float",
-        "default": 8,
+        "default": 3,
         "slider": {
           "min": 1,
           "max": 20,
           "step": 1
         },
-        "hint": "模型语义分段请求的单次等待上限，从发起分段模型调用开始计时，超时后改用自然分段。"
+        "hint": "模型语义分段请求的单次等待上限；正常聊天的发送前等待统一不超过 3 秒，超时后改用自然分段。"
       },
       "segment_delay_range": {
         "description": "分段随机间隔",
@@ -2167,7 +2167,7 @@
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "Gemini 模型自动用原生接口理解完整视频及声音，复用该模型的地址与 Key，无需另填。附件或直链支持 MP4/MOV/WebM；本插件内联文件限制为 12 MiB，并非 Gemini 能力上限。接口分组需支持原生视频。其他模型和 B 站长视频使用关键画面与转写。留空使用当前默认模型。"
+        "hint": "指定视频识别使用的模型，Gemini 自动理解完整视频及声音，留空则使用当前默认模型。"
       },
       "bili_auto_summary": {
         "description": "B站自动总结",
@@ -2223,7 +2223,7 @@
           "max": 1024,
           "step": 1
         },
-        "hint": "关键画面与 B 站总结流程的临时视频下载上限；填 0 表示不限制大小。Gemini 完整视频内联另有 12 MiB 原文件限制，下载时同步限流。"
+        "hint": "关键画面与 B 站总结流程的临时视频下载上限；填 0 表示不限制大小。Gemini 完整视频内联另有 15 MiB 原文件限制，下载时同步限流。"
       },
       "video_download_timeout_seconds": {
         "description": "视频文件下载超时（秒）",

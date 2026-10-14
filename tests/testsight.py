@@ -48,7 +48,7 @@ from support import async_return
 
 class SightPipelineTest(unittest.TestCase):
     def test_professional_metrics_log_uses_chinese_labels(self):
-        from core.sight.bridge import SightMixin
+        from core.sight.bridge import SightComponent
 
         insight = SightInsight(
             clip=SightClip(source="D:/tmp/video.mp4"),
@@ -66,7 +66,7 @@ class SightPipelineTest(unittest.TestCase):
         )
 
         with patch("core.sight.bridge.logger.info") as log_info:
-            SightMixin._log_sight_professional_metrics(insight)
+            SightComponent._log_sight_professional_metrics(insight)
 
         message = str(log_info.call_args.args[0])
         self.assertIn("文字=本地语音识别", message)
@@ -75,9 +75,9 @@ class SightPipelineTest(unittest.TestCase):
         self.assertNotIn("multi_image", message)
 
     def test_bili_summary_log_subject_prefers_title_and_author(self):
-        from core.sight.bridge import SightMixin
+        from core.sight.bridge import SightComponent
 
-        subject = SightMixin._bili_summary_log_subject(
+        subject = SightComponent._bili_summary_log_subject(
             {"title": "妈妈一推门，天塌了", "author": "花世界满天飞"},
             BiliTarget(
                 bvid="BV13sTF6rE1N", url="https://www.bilibili.com/video/BV13sTF6rE1N"
@@ -87,9 +87,9 @@ class SightPipelineTest(unittest.TestCase):
         self.assertEqual(subject, "标题=妈妈一推门，天塌了；作者=花世界满天飞")
 
     def test_bili_summary_log_subject_uses_bvid_without_metadata(self):
-        from core.sight.bridge import SightMixin
+        from core.sight.bridge import SightComponent
 
-        subject = SightMixin._bili_summary_log_subject(
+        subject = SightComponent._bili_summary_log_subject(
             {"platform": "bilibili", "bvid": "BV13sTF6rE1N"},
             BiliTarget(
                 bvid="BV13sTF6rE1N", url="https://www.bilibili.com/video/BV13sTF6rE1N"
@@ -99,7 +99,7 @@ class SightPipelineTest(unittest.TestCase):
         self.assertEqual(subject, "BV13sTF6rE1N")
 
     def test_professional_note_outdated_cache_schema_is_invalidated(self):
-        from core.sight.bridge import SightMixin
+        from core.sight.bridge import SightComponent
 
         insight = SightInsight(
             clip=SightClip(source="D:/tmp/video.mp4"),
@@ -109,13 +109,13 @@ class SightPipelineTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(SightMixin._cached_sight_note_markdown(insight), "")
+        self.assertEqual(SightComponent._cached_sight_note_markdown(insight), "")
         insight.metadata["professional_note_schema"] = PROFESSIONAL_NOTE_CACHE_SCHEMA
         insight.metadata["professional_note_prompt_key"] = (
             professional_note_prompt_key()
         )
         self.assertEqual(
-            SightMixin._cached_sight_note_markdown(insight), "# 过期缓存摘要"
+            SightComponent._cached_sight_note_markdown(insight), "# 过期缓存摘要"
         )
 
     def test_professional_note_adds_fixed_closing_when_model_omits_it(self):

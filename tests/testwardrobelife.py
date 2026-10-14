@@ -2,11 +2,12 @@ import asyncio
 import datetime
 import tempfile
 import unittest
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from support import LifeArchive, LifeSettings, DayRecord
+from support import DailyLifeRuntime, LifeArchive, LifeSettings, DayRecord, LifeState
 from core.models import WeatherInfo
 from core.life.dressing import (
     digest,
@@ -15,14 +16,13 @@ from core.life.dressing import (
     validate_aesthetics,
     wardrobe_conditions,
 )
-from core.life.inspiration import StyleCatalogMixin
-from core.runtime.clothier import ClothierMixin
-from core.runtime.channel.stylist import RuntimeStyleCatalogMixin
-from core.runtime.background import BackgroundTaskMixin
+from componentfixtures import StyleCatalogComponent
+from core.runtime.background import BackgroundTaskScheduler
 
 
-class Runtime(ClothierMixin, RuntimeStyleCatalogMixin, BackgroundTaskMixin):
+class Runtime(DailyLifeRuntime):
     def __init__(self, archive):
+        self.background = BackgroundTaskScheduler()
         self.archive = archive
         self.now = datetime.datetime(2026, 10, 8, 12)
         self.config = LifeSettings.from_dict(
@@ -41,12 +41,16 @@ class Runtime(ClothierMixin, RuntimeStyleCatalogMixin, BackgroundTaskMixin):
                 first_configured_character_reference_image=lambda: "/tmp/character.png",
                 can_edit_image=lambda: True,
                 resume_async_image=AsyncMock(),
+                track_async_tasks=lambda accepted: nullcontext(),
             )
         )
         self._edit_life_image_with_policy_retry = AsyncMock()
         self._generate_life_image_with_policy_retry = AsyncMock()
         self._learn_style_catalog_image = AsyncMock()
-        self._validate_wardrobe_acquisition = AsyncMock(return_value=True)
+        self.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value=True)
+
+    def _schedule_background_task(self, coro, **kwargs):
+        return self.background.schedule(coro, **kwargs)
 
     def _runtime_now(self):
         return self.now
@@ -69,7 +73,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.now = self.runtime.now
 
     async def asyncTearDown(self):
-        await self.runtime._cancel_background_tasks()
+        await self.runtime.background.cancel_all()
         self.archive.close()
         self.tmp.cleanup()
 
@@ -121,6 +125,69 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(state["items"][str(top.id)]["ownership"], "owned")
+
+    async def test_one_piece_catalog_alias_cannot_wash_the_dress_being_worn(self):
+        outfit = await self.item()
+        dress = await self.item(kind="top")
+        day = await self.day([dress.id])
+        await self.archive.record_wardrobe_wear(day, event_id="wear-dress")
+        state = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertEqual(state[str(outfit.id)], state[str(dress.id)])
+        self.assertTrue(state[str(outfit.id)]["currently_worn"])
+        self.assertTrue(await self.archive.start_wardrobe_care(
+            [outfit.id], decision="dirty", event_id="dirty-alias", at=str(self.now),
+            observer="test", duration_minutes=30, reason="实际穿着后待洗",
+        ))
+        self.assertFalse(await self.archive.start_wardrobe_care(
+            [outfit.id], decision="washing", event_id="wash-alias", at=str(self.now),
+            observer="test", duration_minutes=30, reason="尝试使用套装编号送洗",
+        ))
+
+    async def test_switching_one_piece_catalog_alias_does_not_count_as_changing(self):
+        outfit = await self.item()
+        dress = await self.item(kind="top")
+        day = await self.day([outfit.id])
+        self.assertTrue(await self.archive.record_wardrobe_wear(day, event_id="wear"))
+        day = await self.day([dress.id], self.now + datetime.timedelta(minutes=10))
+        self.assertFalse(await self.archive.record_wardrobe_wear(day, event_id="alias"))
+
+    async def test_stored_outfit_can_be_selected_and_worn_without_separate_retrieval(self):
+        outfit = await self.item(used=True)
+        self.assertTrue(await self.archive.start_wardrobe_care(
+            [outfit.id], decision="stored", event_id="store", at=str(self.now),
+            observer="test", duration_minutes=0, reason="干净衣物归位",
+        ))
+        composer = StyleCatalogComponent()
+        composer.archive = self.archive
+        appearance, reason = await composer._style_catalog_new_outfit_selection([outfit.id])
+        self.assertTrue(appearance.get("outfit"))
+        self.assertEqual(reason, "")
+        issue = await self.archive._run_db(self.archive._wardrobe_action_issue_unlocked, [outfit.id])
+        self.assertEqual(issue, "")
+        day = await self.day([outfit.id])
+        self.assertTrue(await self.archive.record_wardrobe_wear(day, event_id="wear-stored"))
+        state = (await self.archive.get_wardrobe_snapshot())["items"][str(outfit.id)]
+        self.assertEqual(state["condition"], "worn")
+        self.assertTrue(state["currently_worn"])
+
+    async def test_later_single_piece_recognition_preserves_active_laundry(self):
+        outfit = await self.item(used=True)
+        for decision in ("dirty", "washing"):
+            await self.archive.start_wardrobe_care(
+                [outfit.id], decision=decision, event_id=decision, at=str(self.now),
+                observer="test", duration_minutes=5, reason="已换下的衣物需要清洗",
+            )
+        dress = await self.item(kind="top")
+        state = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertEqual(state[str(outfit.id)], state[str(dress.id)])
+        self.assertEqual(state[str(dress.id)]["condition"], "washing")
+        for minute in range(1, 6):
+            await self.archive.advance_wardrobe_care(
+                now=self.now + datetime.timedelta(minutes=minute), observer="test",
+            )
+        state = (await self.archive.get_wardrobe_snapshot())["items"][str(dress.id)]
+        self.assertEqual(state["condition"], "drying")
+        self.assertFalse(state["available"])
 
     async def test_reanalysis_cannot_erase_laundry_or_ownership(self):
         item = await self.item(used=True)
@@ -229,7 +296,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         composer = SimpleNamespace(archive=self.archive)
 
-        class Composer(StyleCatalogMixin):
+        class Composer(StyleCatalogComponent):
             pass
 
         composer = Composer()
@@ -258,6 +325,58 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("继续聊天", str(result))
         gate.set()
 
+    async def test_background_cancel_preserves_accepted_job_and_releases_lease(self):
+        accepted = []
+        started = asyncio.Event()
+
+        @contextmanager
+        def track(listener):
+            accepted.append(listener)
+            try:
+                yield
+            finally:
+                accepted.pop()
+
+        async def generate(*args, **kwargs):
+            await accepted[-1](
+                "accepted-job",
+                SimpleNamespace(
+                    api_url="https://example.invalid/v1", model="test", protocol="openai"
+                ),
+            )
+            started.set()
+            await asyncio.Event().wait()
+
+        self.runtime.media.image.track_async_tasks = track
+        self.runtime._edit_life_image_with_policy_retry.side_effect = generate
+        event = SimpleNamespace(message_id="queued", unified_msg_origin="private:x")
+        result = await self.runtime.queue_wardrobe_generation(
+            event, requirement="秋季衣服", generation_mode="image_to_image", count=1
+        )
+        self.assertEqual(result.status, "submitted")
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(self.runtime.background.cancel_all(), 1)
+        job = (await self.archive.get_wardrobe_snapshot())["jobs"][0]
+        self.assertEqual(job["status"], "pending")
+        self.assertEqual(job["progress"]["current"]["task_id"], "accepted-job")
+        self.assertEqual(job["lease_owner"], "")
+        self.assertEqual(accepted, [])
+
+    async def test_service_state_is_isolated_and_reads_current_configuration(self):
+        first = self.runtime.wardrobe_life
+        other = Runtime(self.archive)
+        second = other.wardrobe_life
+        self.assertNotEqual(first._wardrobe_owner(), second._wardrobe_owner())
+        first._review_retry_after = self.now
+        first._recovered = True
+        self.assertIsNone(second._review_retry_after)
+        self.assertFalse(second._recovered)
+        self.runtime.config = LifeSettings.from_dict(
+            {"life_domain_config": {"home_address": "新的居住地"}}
+        )
+        conditions = first._wardrobe_conditions(DayRecord(date="2026-10-08"), self.now)
+        self.assertEqual(conditions["residence"], "新的居住地")
+
     async def test_automatic_generation_uses_character_image_only(self):
         item = await self.item()
         path = Path(self.tmp.name) / "output.png"
@@ -277,7 +396,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             },
             at=str(self.now),
         )
-        await self.runtime._run_wardrobe_job("auto")
+        await self.runtime.wardrobe_life._run_wardrobe_job("auto")
         self.runtime._generate_life_image_with_policy_retry.assert_not_called()
         args = self.runtime._edit_life_image_with_policy_retry.call_args.args
         self.assertEqual(args[2], "/tmp/character.png")
@@ -294,7 +413,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             {"automatic": True, "count": 1, "requirement": "秋季衣物"},
             at=str(self.now),
         )
-        await self.runtime._run_wardrobe_job("auto")
+        await self.runtime.wardrobe_life._run_wardrobe_job("auto")
         state = await self.archive.get_wardrobe_snapshot()
         self.assertEqual(state["jobs"][0]["status"], "pending")
         self.runtime._generate_life_image_with_policy_retry.assert_not_called()
@@ -327,7 +446,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime.media.image.resume_async_image.return_value = SimpleNamespace(
             path=str(path)
         )
-        await self.runtime._run_wardrobe_job("resume")
+        await self.runtime.wardrobe_life._run_wardrobe_job("resume")
         self.runtime.media.image.resume_async_image.assert_awaited_once_with(
             "original", {"model": "test"}
         )
@@ -346,7 +465,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             at=str(self.now),
         )
         await self.archive.recover_wardrobe_jobs("new")
-        await self.runtime._run_wardrobe_job("uncertain")
+        await self.runtime.wardrobe_life._run_wardrobe_job("uncertain")
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
         self.assertEqual(
             (await self.archive.get_wardrobe_snapshot())["jobs"][0]["status"],
@@ -361,13 +480,13 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             path=str(path)
         )
         self.runtime._learn_style_catalog_image.return_value = [item]
-        self.runtime._validate_wardrobe_acquisition.return_value = False
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition.return_value = False
         await self.archive.enqueue_wardrobe_job(
             "wrong",
             {"automatic": True, "count": 1, "requirement": "暖外套", "reason": "降温"},
             at=str(self.now),
         )
-        await self.runtime._run_wardrobe_job("wrong")
+        await self.runtime.wardrobe_life._run_wardrobe_job("wrong")
         state = await self.archive.get_wardrobe_snapshot()
         self.assertEqual(state["items"][str(item.id)]["ownership"], "candidate")
         self.assertEqual(state["jobs"][0]["status"], "failed")
@@ -525,7 +644,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             path=str(path)
         )
         self.runtime._learn_style_catalog_image.return_value = [item]
-        await self.runtime._run_wardrobe_job("reference-removed")
+        await self.runtime.wardrobe_life._run_wardrobe_job("reference-removed")
         self.runtime.media.image.resume_async_image.assert_awaited_once()
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
         self.assertEqual(
@@ -540,7 +659,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime.call_text_model.return_value = "invalid"
         await self.runtime.check_wardrobe_life()
         await asyncio.gather(
-            *list(self.runtime._background_scheduler_for_runtime().tasks)
+            *list(self.runtime.background.tasks)
         )
         self.runtime.call_text_model.assert_awaited_once()
         await self.runtime.check_wardrobe_life()
@@ -558,12 +677,12 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             },
             at=str(self.now),
         )
-        self.runtime._run_wardrobe_job = AsyncMock()
+        self.runtime.wardrobe_life._run_wardrobe_job = AsyncMock()
         await self.runtime.check_wardrobe_life()
         await asyncio.gather(
-            *list(self.runtime._background_scheduler_for_runtime().tasks)
+            *list(self.runtime.background.tasks)
         )
-        self.runtime._run_wardrobe_job.assert_awaited_once_with("manual")
+        self.runtime.wardrobe_life._run_wardrobe_job.assert_awaited_once_with("manual")
 
     def test_feedback_cannot_replace_own_aesthetic(self):
         previous = [
@@ -638,7 +757,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             {"automatic": True, "count": 1, "requirement": "完整衣物"},
             at=str(self.now),
         )
-        await self.runtime._run_wardrobe_job("new")
+        await self.runtime.wardrobe_life._run_wardrobe_job("new")
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
         self.assertEqual(
             (await self.archive.get_wardrobe_snapshot())["jobs"][0]["status"], "pending"
@@ -672,7 +791,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
     async def test_weather_change_discards_background_review(self):
         day = await self.day([])
         snapshot = await self.archive.get_wardrobe_snapshot()
-        conditions = self.runtime._wardrobe_conditions(day, self.now)
+        conditions = self.runtime.wardrobe_life._wardrobe_conditions(day, self.now)
         inventory_key = digest(
             {
                 k: {field: v.get(field) for field in ("ownership", "condition")}
@@ -689,7 +808,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
 
         self.runtime.call_text_model = slow
         task = asyncio.create_task(
-            self.runtime._review_wardrobe(
+            self.runtime.wardrobe_life._review_wardrobe(
                 day, conditions, snapshot, inventory_key, digest([])
             )
         )
@@ -698,6 +817,51 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             day.date, lambda latest: setattr(latest.weather_info, "temp", 28)
         )
         gate.set()
+        await task
+        self.assertEqual(
+            (await self.archive.get_wardrobe_snapshot())["profile_revision"], 0
+        )
+
+    async def test_body_condition_change_discards_background_review(self):
+        from core.models.vitals import BodyCondition
+
+        day = await self.day([])
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        conditions = self.runtime.wardrobe_life._wardrobe_conditions(day, self.now)
+        inventory_key = digest(
+            {
+                key: {
+                    field: value.get(field)
+                    for field in ("ownership", "condition")
+                }
+                for key, value in snapshot["items"].items()
+            }
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return "{}"
+
+        self.runtime.call_text_model = slow
+        task = asyncio.create_task(
+            self.runtime.wardrobe_life._review_wardrobe(
+                day, conditions, snapshot, inventory_key, digest([])
+            )
+        )
+        await started.wait()
+
+        def change_body(latest):
+            latest.state = latest.state or LifeState()
+            latest.state.physiological_rhythm.body_condition = BodyCondition(
+                label="身体不适", intensity=75,
+                burden_present=True, phase="active",
+            )
+
+        await self.archive.mutate_day(day.date, change_body)
+        release.set()
         await task
         self.assertEqual(
             (await self.archive.get_wardrobe_snapshot())["profile_revision"], 0
@@ -712,3 +876,18 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             suitability_key(conditions),
             suitability_key({**conditions, "weather": {"temp": 10}}),
         )
+
+    def test_body_burden_invalidates_suitability_without_clock_churn(self):
+        from core.models.vitals import BodyCondition
+
+        day = DayRecord(date="2026-10-08", state=LifeState())
+        first = wardrobe_conditions(day, self.now, residence="现实居住地")
+        day.state.physiological_rhythm.body_condition = BodyCondition(
+            label="身体不适", intensity=75,
+            burden_present=True, phase="active",
+        )
+        changed = wardrobe_conditions(day, self.now, residence="现实居住地")
+        self.assertNotEqual(suitability_key(first), suitability_key(changed))
+        day.state.physiological_rhythm.body_condition.started_at = "2026-10-08 12:01"
+        timed = wardrobe_conditions(day, self.now, residence="现实居住地")
+        self.assertEqual(suitability_key(changed), suitability_key(timed))

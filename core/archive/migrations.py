@@ -12,7 +12,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -793,6 +793,128 @@ def _migrate_clock_only_active_timelines(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE days SET revision = revision + 1 WHERE date = ?", (date,))
 
 
+def _migrate_food_preparation_status(conn: sqlite3.Connection) -> None:
+    """把可核实的旧做饭、点餐记录还原为准备阶段，不猜测实际进食。"""
+    conn.execute(
+        """
+        UPDATE meal_records
+        SET status = (
+            SELECT CASE action_type
+                WHEN 'cook' THEN 'prepared'
+                WHEN 'order_food' THEN 'ordered'
+            END
+            FROM life_action_outcomes
+            WHERE life_action_outcomes.action_id = meal_records.action_id
+              AND life_action_outcomes.status = 'committed'
+        )
+        WHERE status = 'completed'
+          AND EXISTS (
+            SELECT 1 FROM life_action_outcomes
+            WHERE life_action_outcomes.action_id = meal_records.action_id
+              AND life_action_outcomes.status = 'committed'
+              AND life_action_outcomes.action_type IN ('cook', 'order_food')
+          )
+        """
+    )
+
+
+def _migrate_expression_feedback_mirrors(conn: sqlite3.Connection) -> None:
+    """表达画像已有同一结论时，移除按每条来源消息重复生成的长期记忆。"""
+    rows = conn.execute(
+        """
+        SELECT mirror.id, MAX(profile.id)
+        FROM long_term_memories AS mirror
+        JOIN memory_evidence AS evidence
+          ON mirror.source_id = CAST(evidence.id AS TEXT)
+         AND evidence.target_type = 'expression_profile'
+         AND evidence.evidence_type = 'expression_feedback'
+         AND mirror.content = evidence.summary
+        JOIN long_term_memories AS profile
+          ON profile.scope = mirror.scope
+         AND profile.source_table = 'expression_profiles'
+         AND profile.source_id = evidence.target_id
+         AND profile.status = 'active'
+         AND instr(profile.content, evidence.summary) > 0
+        WHERE mirror.source_table = 'memory_evidence'
+          AND mirror.category = 'evidence:expression_feedback'
+          AND mirror.status = 'active'
+          AND NOT EXISTS (
+              SELECT 1 FROM memory_conflicts AS conflict
+              WHERE conflict.memory_id = mirror.id
+                 OR conflict.related_memory_id = mirror.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM memory_corrections AS correction
+              WHERE correction.target_id = CAST(mirror.id AS TEXT)
+                AND correction.target_type IN ('long_term_memory', 'long_term_memories')
+          )
+        GROUP BY mirror.id
+        """
+    ).fetchall()
+    if not rows:
+        return
+    cluster_ids = set()
+    entity_ids = set()
+    for mirror_id, profile_id in rows:
+        memory_id = int(mirror_id)
+        cluster_ids.update(
+            int(row[0])
+            for row in conn.execute(
+                "SELECT cluster_id FROM memory_episode_cluster_items WHERE memory_id = ?",
+                (memory_id,),
+            )
+        )
+        entity_ids.update(
+            int(row[0])
+            for row in conn.execute(
+                "SELECT entity_id FROM memory_entity_links WHERE memory_id = ?",
+                (memory_id,),
+            )
+        )
+        for decision_id, influence, weight, created_at in conn.execute(
+            "SELECT decision_id, influence, weight, created_at "
+            "FROM memory_decision_links WHERE memory_id = ?",
+            (memory_id,),
+        ):
+            conn.execute(
+                """
+                INSERT INTO memory_decision_links(
+                    decision_id, memory_id, influence, weight, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(decision_id, memory_id) DO UPDATE SET
+                    weight = MAX(memory_decision_links.weight, excluded.weight)
+                """,
+                (decision_id, int(profile_id), influence, weight, created_at),
+            )
+        conn.execute(
+            "DELETE FROM memory_vectors "
+            "WHERE target_type IN ('long_term_memory', 'long_term_memories') "
+            "AND target_id = ?",
+            (str(memory_id),),
+        )
+        conn.execute("DELETE FROM long_term_memories WHERE id = ?", (memory_id,))
+    for entity_id in entity_ids:
+        conn.execute(
+            "DELETE FROM memory_entities WHERE id = ? AND NOT EXISTS "
+            "(SELECT 1 FROM memory_entity_links WHERE entity_id = ?)",
+            (entity_id, entity_id),
+        )
+    for cluster_id in cluster_ids:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM memory_episode_cluster_items WHERE cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()[0]
+        if count:
+            conn.execute(
+                "UPDATE memory_episode_clusters SET memory_count = ? WHERE id = ?",
+                (count, cluster_id),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM memory_episode_clusters WHERE id = ?", (cluster_id,)
+            )
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -818,6 +940,8 @@ MIGRATIONS: dict[int, MigrationStep] = {
     22: _migrate_conversation_receipts,
     23: _migrate_living_memory_index,
     24: _migrate_clock_only_active_timelines,
+    25: _migrate_food_preparation_status,
+    26: _migrate_expression_feedback_mirrors,
 }
 
 

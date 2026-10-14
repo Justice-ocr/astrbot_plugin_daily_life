@@ -21,7 +21,7 @@ from runtimehelpers import (
     Path,
     PersonaManager,
     Provider,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     SegmentPart,
     SemanticSegmentPlan,
     SightBrief,
@@ -43,7 +43,7 @@ from runtimehelpers import (
 )
 
 
-class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _set_voice_expression_plan(
         runtime,
@@ -2884,7 +2884,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._semantic_segment_init_state()
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
         event = Event(
             sender_name="阿林",
             sender_id="10001",
@@ -2953,7 +2952,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
 
         class Composer:
             async def _get_provider(self, provider_id=""):
@@ -3552,7 +3550,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.config = LifeSettings.from_dict(
             {"sight_config": {"bili_auto_summary": True}}
         )
-        runtime._recalled_messages = {}
         scheduled = []
         runtime._schedule_background_task = lambda coro, label="", key="": (
             scheduled.append((label, key, coro)) or True
@@ -3576,7 +3573,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.config = LifeSettings.from_dict(
             {"sight_config": {"bili_auto_summary": False}}
         )
-        runtime._recalled_messages = {}
         runtime._schedule_background_task = lambda coro, label="", key="": True
         event = Event(
             sender_name="阿林",
@@ -3595,7 +3591,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
 
         async def prepare(event, clip):
             return {
@@ -3710,7 +3705,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.config = LifeSettings.from_dict({})
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
 
         class Brief:
             async def summarize(self, *args, **kwargs):
@@ -3742,7 +3736,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.config = LifeSettings.from_dict({})
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
         clip = SightClip(source="D:/tmp/video.mp4")
         source_path = runtime.data_path.parent / "prepared.mp4"
         source_path.write_bytes(b"video")
@@ -3780,7 +3773,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
         runtime._sight_total_timeout_seconds = lambda: 0.01
         clip = SightClip(source="D:/tmp/video.mp4")
         event = Event()
@@ -3836,7 +3828,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._recalled_messages = {}
         runtime._sight_total_timeout_seconds = lambda: 0.01
         clip = SightClip(source="D:/tmp/video.mp4")
         event = Event()

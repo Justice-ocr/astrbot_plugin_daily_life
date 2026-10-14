@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from typing import Any
 
@@ -10,8 +12,53 @@ from ....life.condition import (
 )
 from ...markers import LOG_PREFIX
 
+from typing import Protocol
 
-class AirMeterMixin:
+
+class AirMeterComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _AIR_BACKOFF_BASE_SECONDS: Any
+    _AIR_BACKOFF_CAP_SECONDS: Any
+    _AIR_BACKOFF_START_COUNT: Any
+    _AIR_BYPASS_PENDING_COUNT: Any
+    _AIR_MAX_RECENT_MESSAGES: Any
+    _AIR_WAIT_SECONDS: Any
+    _air_backoff_seconds: Any
+    _air_label: Any
+    _event_has_quote: Any
+    _event_is_directed: Any
+    _event_is_group_message: Any
+    _event_message_id: Any
+    _event_session_id: Any
+    _get_proactive_air_state: Any
+    _proactive_air_delta: Any
+    _proactive_air_state: Any
+    _proactive_air_states: Any
+    _proactive_context_score: Any
+    _proactive_idle_seconds: Any
+    _proactive_message_score: Any
+    _proactive_observe_result: Any
+    _proactive_scope_key: Any
+    _proactive_state_score: Any
+    _proactive_target_payload: Any
+    _proactive_timing_delta: Any
+    _reset_proactive_air_state: Any
+    _response_gate_current_state: Any
+    _response_gate_experience_delta: Any
+    _response_gate_feedback_delta: Any
+    _response_gate_has_media: Any
+    _response_gate_relationship_delta: Any
+    _response_gate_state_delta: Any
+    _safe_event_call: Any
+    _select_proactive_reply_target: Any
+    config: Any
+
+
+class AirMeterComponent:
+    def __init__(self, context: AirMeterComponentContext) -> None:
+        self.context = context
+
     _AIR_BACKOFF_BASE_SECONDS = 15 * 60
     _AIR_BACKOFF_CAP_SECONDS = 120 * 60
     _AIR_BACKOFF_START_COUNT = 2
@@ -20,14 +67,14 @@ class AirMeterMixin:
     _AIR_MAX_RECENT_MESSAGES = 8
 
     def _proactive_air_states(self) -> dict[str, dict[str, Any]]:
-        states = getattr(self, "_proactive_air_state", None)
+        states = getattr(self.context, "_proactive_air_state", None)
         if states is None:
-            self._proactive_air_state = {}
-            states = self._proactive_air_state
+            self.context._proactive_air_state = {}
+            states = self.context._proactive_air_state
         return states
 
     def _get_proactive_air_state(self, key: str) -> dict[str, Any]:
-        return self._proactive_air_states().setdefault(
+        return self.context._proactive_air_states().setdefault(
             key,
             {
                 "quiet_count": 0,
@@ -43,7 +90,7 @@ class AirMeterMixin:
 
     def _reset_proactive_air_state(self, key: str) -> None:
         if key:
-            self._proactive_air_states().pop(key, None)
+            self.context._proactive_air_states().pop(key, None)
 
     def _air_label(self, state: dict[str, Any] | None = None) -> str:
         state = state or {}
@@ -65,8 +112,8 @@ class AirMeterMixin:
         return "空气正常，仍以自然和不打扰为准"
 
     def _format_proactive_air_state(self, key: str, now: datetime.datetime) -> str:
-        state = self._get_proactive_air_state(key)
-        parts = [self._air_label(state)]
+        state = self.context._get_proactive_air_state(key)
+        parts = [self.context._air_label(state)]
         quiet_count = int(state.get("quiet_count") or 0)
         if quiet_count:
             parts.append(f"连续克制 {quiet_count} 次")
@@ -93,12 +140,12 @@ class AirMeterMixin:
         return "；".join(parts)
 
     def _air_backoff_seconds(self, quiet_count: int) -> int:
-        if quiet_count < self._AIR_BACKOFF_START_COUNT:
+        if quiet_count < self.context._AIR_BACKOFF_START_COUNT:
             return 0
-        exponent = max(0, quiet_count - self._AIR_BACKOFF_START_COUNT)
+        exponent = max(0, quiet_count - self.context._AIR_BACKOFF_START_COUNT)
         return min(
-            self._AIR_BACKOFF_CAP_SECONDS,
-            self._AIR_BACKOFF_BASE_SECONDS * (2**exponent),
+            self.context._AIR_BACKOFF_CAP_SECONDS,
+            self.context._AIR_BACKOFF_BASE_SECONDS * (2**exponent),
         )
 
     def _candidate_pending_count(self, candidate: dict[str, Any]) -> int:
@@ -114,7 +161,7 @@ class AirMeterMixin:
         *,
         pending_count: int = 1,
     ) -> int:
-        state = self._get_proactive_air_state(key)
+        state = self.context._get_proactive_air_state(key)
         wait_until = state.get("wait_until")
         if isinstance(wait_until, datetime.datetime) and wait_until > now:
             return max(1, int((wait_until - now).total_seconds()))
@@ -123,7 +170,7 @@ class AirMeterMixin:
 
         backoff_until = state.get("backoff_until")
         if isinstance(backoff_until, datetime.datetime) and backoff_until > now:
-            if pending_count >= self._AIR_BYPASS_PENDING_COUNT:
+            if pending_count >= self.context._AIR_BYPASS_PENDING_COUNT:
                 state["backoff_until"] = None
                 logger.debug(
                     f"{LOG_PREFIX} 闲时回复退避被新消息打破：待看消息 {pending_count} 条"
@@ -142,14 +189,14 @@ class AirMeterMixin:
         is_group: bool,
         reasons: list[str],
     ) -> tuple[float, dict[str, Any]]:
-        config = self.config.proactive
+        config = self.context.config.proactive
         score = config.talk_frequency if is_group else config.private_talk_frequency
         text = str(getattr(event, "message_str", "") or "").strip()
         compact_length = len("".join(text.split()))
-        has_media_checker = getattr(self, "_response_gate_has_media", None)
+        has_media_checker = getattr(self.context, "_response_gate_has_media", None)
         has_media = bool(has_media_checker(event)) if callable(has_media_checker) else False
-        directed = bool(getattr(self, "_event_is_directed", lambda *_: False)(event))
-        quoted = bool(getattr(self, "_event_has_quote", lambda *_: False)(event))
+        directed = bool(getattr(self.context, "_event_is_directed", lambda *_: False)(event))
+        quoted = bool(getattr(self.context, "_event_has_quote", lambda *_: False)(event))
         interrupt = classify_message_interrupt(text, directed=directed, quoted=quoted)
         if pending_count >= 4:
             score += 0.18
@@ -169,7 +216,7 @@ class AirMeterMixin:
         last_activity_at = getattr(event, "proactive_last_activity_at", None)
         if isinstance(last_activity_at, datetime.datetime):
             idle_seconds = max(0, int((now - last_activity_at).total_seconds()))
-            idle_threshold = self._proactive_idle_seconds(event)
+            idle_threshold = self.context._proactive_idle_seconds(event)
             if idle_seconds >= idle_threshold * 2:
                 delta -= 0.04
                 reasons.append("已经安静太久，先别突兀续话")
@@ -193,8 +240,8 @@ class AirMeterMixin:
         interrupt: dict[str, Any],
         reasons: list[str],
     ) -> tuple[float, bool]:
-        state_getter = getattr(self, "_response_gate_current_state", None)
-        state_delta = getattr(self, "_response_gate_state_delta", None)
+        state_getter = getattr(self.context, "_response_gate_current_state", None)
+        state_delta = getattr(self.context, "_response_gate_state_delta", None)
         if not (callable(state_getter) and callable(state_delta)):
             return 0.0, False
         state = await state_getter(now)
@@ -205,7 +252,7 @@ class AirMeterMixin:
         )
         if (
             not message_can_interrupt(normalized, interrupt)
-            and pending_count < self._AIR_BYPASS_PENDING_COUNT
+            and pending_count < self.context._AIR_BYPASS_PENDING_COUNT
         ):
             reasons.append("当前生活状态不适合被这类闲时消息打断")
             return 0.0, True
@@ -219,15 +266,15 @@ class AirMeterMixin:
         reasons: list[str],
     ) -> float:
         score = 0.0
-        relationship_delta = getattr(self, "_response_gate_relationship_delta", None)
+        relationship_delta = getattr(self.context, "_response_gate_relationship_delta", None)
         if callable(relationship_delta):
             score += await relationship_delta(event, now, reasons)
-        feedback_delta = getattr(self, "_response_gate_feedback_delta", None)
+        feedback_delta = getattr(self.context, "_response_gate_feedback_delta", None)
         if callable(feedback_delta):
-            scope = self._event_session_id(event) or key
+            scope = self.context._event_session_id(event) or key
             if scope:
                 score += await feedback_delta(scope, reasons)
-        experience_delta = getattr(self, "_response_gate_experience_delta", None)
+        experience_delta = getattr(self.context, "_response_gate_experience_delta", None)
         if callable(experience_delta) and key:
             score += await experience_delta(key, event, reasons)
         return score
@@ -270,7 +317,7 @@ class AirMeterMixin:
             "local_reasons": reasons,
             "can_interrupt": can_interrupt,
         }
-        result.update(self._proactive_target_payload(interrupt, target))
+        result.update(self.context._proactive_target_payload(interrupt, target))
         return result
 
     async def _proactive_readiness_check(
@@ -280,21 +327,21 @@ class AirMeterMixin:
         *,
         pending_count: int = 1,
     ) -> dict[str, Any]:
-        key = self._proactive_scope_key(event)
-        is_group = self._event_is_group_message(event)
+        key = self.context._proactive_scope_key(event)
+        is_group = self.context._event_is_group_message(event)
         reasons: list[str] = []
-        local_target = self._select_proactive_reply_target(event)
-        score, interrupt = self._proactive_message_score(
+        local_target = self.context._select_proactive_reply_target(event)
+        score, interrupt = self.context._proactive_message_score(
             event,
             pending_count=pending_count,
             is_group=is_group,
             reasons=reasons,
         )
-        score += self._proactive_timing_delta(event, now, reasons)
+        score += self.context._proactive_timing_delta(event, now, reasons)
 
         if key:
-            score += self._proactive_air_delta(key, reasons)
-        state_score, blocked = await self._proactive_state_score(
+            score += self.context._proactive_air_delta(key, reasons)
+        state_score, blocked = await self.context._proactive_state_score(
             now,
             is_group=is_group,
             pending_count=pending_count,
@@ -303,7 +350,7 @@ class AirMeterMixin:
         )
         score += state_score
         if blocked:
-            return self._proactive_observe_result(
+            return self.context._proactive_observe_result(
                 score,
                 reasons,
                 interrupt,
@@ -311,14 +358,14 @@ class AirMeterMixin:
                 can_interrupt=False,
                 confidence=1.0,
             )
-        score += await self._proactive_context_score(event, now, key, reasons)
+        score += await self.context._proactive_context_score(event, now, key, reasons)
 
         score = max(0.0, min(score, 1.0))
         threshold = 0.16 if not is_group else 0.2
-        if pending_count >= self._AIR_BYPASS_PENDING_COUNT:
+        if pending_count >= self.context._AIR_BYPASS_PENDING_COUNT:
             threshold = min(threshold, 0.1)
         if score < threshold:
-            return self._proactive_observe_result(
+            return self.context._proactive_observe_result(
                 score, reasons, interrupt, local_target, can_interrupt=True
             )
         result = {
@@ -327,11 +374,11 @@ class AirMeterMixin:
             "local_reasons": reasons,
             "can_interrupt": True,
         }
-        result.update(self._proactive_target_payload(interrupt, local_target))
+        result.update(self.context._proactive_target_payload(interrupt, local_target))
         return result
 
     def _proactive_air_delta(self, key: str, reasons: list[str]) -> float:
-        state = self._get_proactive_air_state(key)
+        state = self.context._get_proactive_air_state(key)
         delta = 0.0
         last_effect = str(state.get("last_effect") or "").strip()
         if last_effect == "positive":
@@ -366,7 +413,7 @@ class AirMeterMixin:
     ) -> None:
         if not key:
             return
-        state = self._get_proactive_air_state(key)
+        state = self.context._get_proactive_air_state(key)
         decision = (
             str(payload.get("decision") or ("reply" if sent else "observe")).strip()
             or "observe"
@@ -376,7 +423,7 @@ class AirMeterMixin:
         state["silence_reason"] = state["last_reason"]
 
         if sent:
-            self._reset_proactive_air_state(key)
+            self.context._reset_proactive_air_state(key)
             return
 
         state["quiet_count"] = int(state.get("quiet_count") or 0) + 1
@@ -386,13 +433,13 @@ class AirMeterMixin:
         )
         if decision == "wait":
             state["wait_until"] = now + datetime.timedelta(
-                seconds=self._AIR_WAIT_SECONDS
+                seconds=self.context._AIR_WAIT_SECONDS
             )
             state["backoff_until"] = None
             return
 
         state["wait_until"] = None
-        seconds = self._air_backoff_seconds(int(state.get("quiet_count") or 0))
+        seconds = self.context._air_backoff_seconds(int(state.get("quiet_count") or 0))
         state["backoff_until"] = (
             now + datetime.timedelta(seconds=seconds) if seconds > 0 else None
         )
@@ -405,7 +452,7 @@ class AirMeterMixin:
         messages = candidate.get("recent_messages")
         if isinstance(messages, list):
             return [item for item in messages if isinstance(item, dict)][
-                -self._AIR_MAX_RECENT_MESSAGES :
+                -self.context._AIR_MAX_RECENT_MESSAGES :
             ]
         message = str(candidate.get("message") or "").strip()
         if not message:
@@ -425,8 +472,8 @@ class AirMeterMixin:
         if not isinstance(raw_messages, list) or not raw_messages:
             raw_messages = [
                 {
-                    "message_id": self._event_message_id(event),
-                    "sender_name": self._safe_event_call(event, "get_sender_name"),
+                    "message_id": self.context._event_message_id(event),
+                    "sender_name": self.context._safe_event_call(event, "get_sender_name"),
                     "content": str(getattr(event, "message_str", "") or "").strip(),
                 }
             ]
@@ -451,7 +498,7 @@ class AirMeterMixin:
         if not isinstance(raw_messages, list) or not raw_messages:
             raw_messages = [
                 {
-                    "message_id": self._event_message_id(event),
+                    "message_id": self.context._event_message_id(event),
                     "sender_name": fallback_sender_name,
                     "content": str(getattr(event, "message_str", "") or "").strip(),
                     "seen_at": getattr(event, "proactive_last_activity_at", None),
@@ -459,7 +506,7 @@ class AirMeterMixin:
             ]
         lines: list[str] = []
         for index, item in enumerate(
-            raw_messages[-self._AIR_MAX_RECENT_MESSAGES :], start=1
+            raw_messages[-self.context._AIR_MAX_RECENT_MESSAGES :], start=1
         ):
             content = "；".join(
                 part.strip()

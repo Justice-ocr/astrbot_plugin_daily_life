@@ -42,6 +42,27 @@ class SlowMemOSClient(FakeMemOSClient):
 
 
 class MemOSTest(unittest.IsolatedAsyncioTestCase):
+    async def test_injection_budget_includes_sender_and_group_metadata(self):
+        settings = LifeSettings.from_dict(
+            {"memos_config": {"enabled": True, "api_key": "key",
+                              "injection_timeout_seconds": 0.2}}
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = settings
+        runtime.memos = HostedMemOSService(settings.memos)
+        runtime.contact_resolver = type(
+            "SlowResolver", (),
+            {"cached_event_sender": staticmethod(lambda event: event.get_sender_name())},
+        )()
+        runtime._event_context_meta = lambda *args, **kwargs: asyncio.Event().wait()
+        event = Event(sender_name="消息已有昵称")
+        self.assertEqual(
+            await asyncio.wait_for(
+                runtime._build_injection_memos_context(event), 0.4
+            ),
+            "",
+        )
+
     def test_format_hidden_context_limits_and_labels_items(self):
         settings = LifeSettings.from_dict(
             {
@@ -132,9 +153,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "Resolver",
             (),
             {
-                "resolve_event_sender": staticmethod(
-                    lambda event: async_return(event.get_sender_name())
-                )
+                "cached_event_sender": staticmethod(lambda event: event.get_sender_name())
             },
         )()
         event = Event(
@@ -173,9 +192,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "Resolver",
             (),
             {
-                "resolve_event_sender": staticmethod(
-                    lambda event: async_return(event.get_sender_name())
-                )
+                "cached_event_sender": staticmethod(lambda event: event.get_sender_name())
             },
         )()
         event = Event(
@@ -209,9 +226,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "Resolver",
             (),
             {
-                "resolve_event_sender": staticmethod(
-                    lambda event: async_return(event.get_sender_name())
-                )
+                "cached_event_sender": staticmethod(lambda event: event.get_sender_name())
             },
         )()
         event = Event(
@@ -260,9 +275,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "Resolver",
             (),
             {
-                "resolve_event_sender": staticmethod(
-                    lambda event: async_return(event.get_sender_name())
-                )
+                "cached_event_sender": staticmethod(lambda event: event.get_sender_name())
             },
         )()
         event = Event(
@@ -331,9 +344,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "Resolver",
             (),
             {
-                "resolve_event_sender": staticmethod(
-                    lambda event: async_return(event.get_sender_name())
-                ),
+                "cached_event_sender": staticmethod(lambda event: event.get_sender_name()),
                 "resolve_group_name": staticmethod(
                     lambda *args, **kwargs: async_return("看展小群")
                 ),

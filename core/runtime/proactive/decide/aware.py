@@ -1,13 +1,28 @@
+from __future__ import annotations
+
 from typing import Any
 
+from typing import Protocol
 
-class ProactiveAwareMixin:
+
+class ProactiveAwareComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_group_meta: Any
+    _event_session_id: Any
+    archive: Any
+
+
+class ProactiveAwareComponent:
+    def __init__(self, context: ProactiveAwareComponentContext) -> None:
+        self.context = context
+
     async def _build_recent_group_awareness_for_proactive(self, event: Any) -> str:
-        environments = await self.archive.get_recent_group_environments(5)
-        decisions = await self.archive.get_recent_action_decisions(5)
-        visibility = await self.archive.get_recent_message_visibility(5)
-        session_id = self._event_session_id(event)
-        group_id, _ = self._event_group_meta(event)
+        environments = await self.context.archive.get_recent_group_environments(5)
+        decisions = await self.context.archive.get_recent_action_decisions(5)
+        visibility = await self.context.archive.get_recent_message_visibility(5)
+        session_id = self.context._event_session_id(event)
+        group_id, _ = self.context._event_group_meta(event)
 
         def in_scope(item: Any) -> bool:
             item_group = str(getattr(item, "group_id", "") or "").strip()

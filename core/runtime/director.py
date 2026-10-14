@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from .stage.error import MediaPromptExtractionError
-from .stage import RuntimeMediaDirectorMixin
 
 
 def _clean_director_text(value: Any, limit: int = 180) -> str:
@@ -14,6 +13,5 @@ def _clean_director_text(value: Any, limit: int = 180) -> str:
 
 __all__ = [
     "MediaPromptExtractionError",
-    "RuntimeMediaDirectorMixin",
     "_clean_director_text",
 ]

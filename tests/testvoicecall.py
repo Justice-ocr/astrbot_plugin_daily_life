@@ -1510,15 +1510,19 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        class Tool:
+        from astrbot.core.agent.tool import FunctionTool
+
+        class Tool(FunctionTool):
             def __init__(self, name, active=True):
-                self.name = name
-                self.description = f"说明 {name}"
-                self.parameters = {
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                }
-                self.active = active
+                super().__init__(
+                    name=name,
+                    description=f"说明 {name}",
+                    parameters={
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    },
+                    active=active,
+                )
 
         class Manager:
             def get_full_tool_set(self):

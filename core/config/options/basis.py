@@ -218,7 +218,7 @@ class ChatStyleSettings:
     punctuation_cleanup_chars: str = DEFAULT_PUNCTUATION_CLEANUP_CHARS
     semantic_provider: str = ""
     semantic_max_segments: int = 10
-    semantic_timeout_seconds: float = 8.0
+    semantic_timeout_seconds: float = 3.0
     segment_delay_range: str = "1.5,3.5"
     segment_min_delay_seconds: float = 1.5
     segment_max_delay_seconds: float = 3.5
@@ -290,8 +290,8 @@ class ChatStyleSettings:
                 data.get("semantic_max_segments", 10), 10, 1, 10
             ),
             semantic_timeout_seconds=as_float(
-                data.get("semantic_timeout_seconds", 8.0),
-                8.0,
+                data.get("semantic_timeout_seconds", 3.0),
+                3.0,
                 1.0,
                 20.0,
             ),

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from collections.abc import AsyncIterator
 from typing import Any
@@ -6,12 +8,15 @@ from ..clock import now as life_now
 from ..life.tools import build_time_context
 from ..runtime import DailyLifeRuntime
 from ..runtime.generation import DailyGenerationBusy
-from .display import DisplayCommandMixin
-from .operate import OperateCommandMixin
 from .policy import LifeAccessPolicy, LifeActionProposal, LifeActionScope
-from .preferences import SettingsCommandMixin
 from .request import CommandHandler, CommandRequest
-from .social import SocialCommandMixin
+
+from .display import DisplayCommandComponent
+from .social import SocialCommandComponent
+from .preferences import SettingsCommandComponent
+from .operate import OperateCommandComponent
+from functools import cached_property
+from ..composition import ComponentCall
 
 
 class _PlainTextEventProxy:
@@ -25,12 +30,7 @@ class _PlainTextEventProxy:
         return getattr(self._event, name)
 
 
-class DailyLifeCommandCenter(
-    DisplayCommandMixin,
-    SocialCommandMixin,
-    SettingsCommandMixin,
-    OperateCommandMixin,
-):
+class DailyLifeCommandCenter:
     """日常生活背景指令路由器。"""
 
     _SENSITIVE_QUERY_TARGETS = {
@@ -363,3 +363,78 @@ class DailyLifeCommandCenter(
             parts.append(str(date).strip()[:10])
         req = await self._make_request(parts, target_date=date)
         return await self._run_text_handler(event, self._review, req)
+
+    _help = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_help")
+
+    _status = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_status")
+
+    _refresh_state = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_refresh_state")
+
+    _show = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_show")
+
+    _spoiler = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_spoiler")
+
+    _timeline_minutes = staticmethod(DisplayCommandComponent._timeline_minutes)
+
+    _history = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_history")
+
+    _world = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_world")
+
+    _timeline = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_timeline")
+
+    _review = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_review")
+
+    _preferences = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_preferences")
+
+    _life_events = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_life_events")
+
+    _storage = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_storage")
+
+    _cleanup_emoji_cache = ComponentCall("_part_display_command_component", DisplayCommandComponent, "_cleanup_emoji_cache")
+
+    _memo = ComponentCall("_part_social_command_component", SocialCommandComponent, "_memo")
+
+    _commitments = ComponentCall("_part_social_command_component", SocialCommandComponent, "_commitments")
+
+    _parse_commitment_id = staticmethod(SocialCommandComponent._parse_commitment_id)
+
+    _infer_manual_commitment_date = staticmethod(SocialCommandComponent._infer_manual_commitment_date)
+
+    _infer_manual_commitment_time = staticmethod(SocialCommandComponent._infer_manual_commitment_time)
+
+    _invite = ComponentCall("_part_social_command_component", SocialCommandComponent, "_invite")
+
+    _time = ComponentCall("_part_settings_command_component", SettingsCommandComponent, "_time")
+
+    _config = ComponentCall("_part_settings_command_component", SettingsCommandComponent, "_config")
+
+    _execute_outfit_update = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_execute_outfit_update")
+
+    _clear = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_clear")
+
+    _reset = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_reset")
+
+    _build_reset_daily_plan = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_build_reset_daily_plan")
+
+    _execute_reset_daily = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_execute_reset_daily")
+
+    _weather = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_weather")
+
+    _sync_weather_to_day = ComponentCall("_part_operate_command_component", OperateCommandComponent, "_sync_weather_to_day")
+
+    @cached_property
+    def _part_display_command_component(self):
+        return DisplayCommandComponent(self)
+
+    @cached_property
+    def _part_social_command_component(self):
+        return SocialCommandComponent(self)
+
+    @cached_property
+    def _part_settings_command_component(self):
+        return SettingsCommandComponent(self)
+
+    @cached_property
+    def _part_operate_command_component(self):
+        return OperateCommandComponent(self)
+

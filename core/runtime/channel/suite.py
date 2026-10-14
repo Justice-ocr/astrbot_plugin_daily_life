@@ -22,6 +22,8 @@ from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
+
 PHOTO_SUITE_DEFAULT_COUNT = 3
 PHOTO_SUITE_MIN_COUNT = 2
 PHOTO_SUITE_MAX_COUNT = 6
@@ -49,8 +51,112 @@ _GENERIC_FALLBACK_SHOTS = (
 )
 
 
-class RuntimePhotoSuiteMediaMixin:
+class RuntimePhotoSuiteMediaComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _align_current_appearance_scene_prompt: Any
+    _append_assistant_history: Any
+    _apply_current_appearance_snapshot: Any
+    _apply_historical_appearance_snapshot: Any
+    _current_character_identity_profiles: Any
+    _current_life_appearance_snapshot: Any
+    _disable_photo_suite_tool_for_active_turn: Any
+    _edit_life_image_with_policy_retry: Any
+    _event_current_image_request_text: Any
+    _event_image_prompt_text: Any
+    _event_message_id: Any
+    _event_session_id: Any
+    _event_sources: Any
+    _friend_look_parameters_result: Any
+    _friend_look_prompt: Any
+    _friend_look_required_parameters: Any
+    _friend_look_should_persist: Any
+    _historical_life_appearance_snapshot: Any
+    _image_prompt_resolution: Any
+    _is_llm_result_object: Any
+    _life_photo_suite_generation_semaphore: Any
+    _life_photo_suite_last_tasks: Any
+    _life_photo_suite_pending_requests: Any
+    _log_friend_daily_look: Any
+    _media_director_call: Any
+    _media_error_summary: Any
+    _media_image_director_provider_id: Any
+    _normalize_friend_look: Any
+    _normalize_image_participants: Any
+    _normalize_image_subject_route: Any
+    _parse_life_video_reply_text: Any
+    _photo_suite_available_shots: Any
+    _photo_suite_copy_generated: Any
+    _photo_suite_count: Any
+    _photo_suite_fallback_plan: Any
+    _photo_suite_finalize_manifest: Any
+    _photo_suite_finish_request: Any
+    _photo_suite_followup_text: Any
+    _photo_suite_generate_asset: Any
+    _photo_suite_generate_background: Any
+    _photo_suite_generate_background_tracked: Any
+    _photo_suite_generate_slot: Any
+    _photo_suite_generation_gate: Any
+    _photo_suite_handle_generation_failure: Any
+    _photo_suite_last_tasks: Any
+    _photo_suite_latest_manifest: Any
+    _photo_suite_new_request_decision: Any
+    _photo_suite_now: Any
+    _photo_suite_parse_plan: Any
+    _photo_suite_plan: Any
+    _photo_suite_planning_timeout_seconds: Any
+    _photo_suite_prepare_generation: Any
+    _photo_suite_provider_label: Any
+    _photo_suite_read_manifest: Any
+    _photo_suite_register_request: Any
+    _photo_suite_report_delivery: Any
+    _photo_suite_request_from_event: Any
+    _photo_suite_requests: Any
+    _photo_suite_retry_indexes: Any
+    _photo_suite_root: Any
+    _photo_suite_run_generation_slots: Any
+    _photo_suite_send_followup: Any
+    _photo_suite_send_images: Any
+    _photo_suite_skip_unrequested_generation: Any
+    _photo_suite_stabilize_reference: Any
+    _photo_suite_write_manifest: Any
+    _prepare_friend_daily_look: Any
+    _release_media_chat_turn: Any
+    _remember_friend_daily_look: Any
+    _remember_life_image_for_scope: Any
+    _resolve_image_prompt: Any
+    _resolve_life_identity_profiles: Any
+    _resolve_life_image_reference_async: Any
+    _schedule_background_task: Any
+    _snapshot_media_event: Any
+    call_text_model: Any
+    cancel_tool_reaction: Any
+    composer: Any
+    config: Any
+    data_path: Any
+    finalize_durable_media_delivery: Any
+    finish_tool_reaction: Any
+    format_structured_message_context: Any
+    generate_life_image_asset: Any
+    get_persona_text: Any
+    get_text_provider: Any
+    image_message_chain: Any
+    media: Any
+    media_request_is_current_turn: Any
+    note_life_media_sent: Any
+    note_structured_bot_message: Any
+    record_current_life_action_receipt: Any
+    send_background_text: Any
+    send_message_if_not_recalled: Any
+    stage_durable_media_delivery: Any
+    track_image_generation: Any
+
+
+class RuntimePhotoSuiteMediaComponent:
     """规划、生成并交付画面连续的独立生活套图。"""
+
+    def __init__(self, context: RuntimePhotoSuiteMediaComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _photo_suite_single_shot_prompt(
@@ -109,7 +215,7 @@ class RuntimePhotoSuiteMediaMixin:
         return max(PHOTO_SUITE_MIN_COUNT, min(count, PHOTO_SUITE_MAX_COUNT))
 
     def _photo_suite_planning_timeout_seconds(self) -> int:
-        settings = getattr(getattr(self, "config", None), "image_generation", None)
+        settings = getattr(getattr(self.context, "config", None), "image_generation", None)
         try:
             timeout = int(
                 getattr(settings, "photo_suite_planning_timeout_seconds", 45) or 45
@@ -161,24 +267,24 @@ class RuntimePhotoSuiteMediaMixin:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def _photo_suite_requests(self) -> dict[str, dict[str, Any]]:
-        store = getattr(self, "_life_photo_suite_pending_requests", None)
+        store = getattr(self.context, "_life_photo_suite_pending_requests", None)
         if not isinstance(store, dict):
             store = {}
-            self._life_photo_suite_pending_requests = store
+            self.context._life_photo_suite_pending_requests = store
         return store
 
     def _photo_suite_last_tasks(self) -> dict[str, str]:
-        store = getattr(self, "_life_photo_suite_last_tasks", None)
+        store = getattr(self.context, "_life_photo_suite_last_tasks", None)
         if not isinstance(store, dict):
             store = {}
-            self._life_photo_suite_last_tasks = store
+            self.context._life_photo_suite_last_tasks = store
         return store
 
     def _photo_suite_generation_gate(self) -> asyncio.Semaphore:
-        gate = getattr(self, "_life_photo_suite_generation_semaphore", None)
+        gate = getattr(self.context, "_life_photo_suite_generation_semaphore", None)
         if not isinstance(gate, asyncio.Semaphore):
             gate = asyncio.Semaphore(PHOTO_SUITE_GENERATION_LIMIT)
-            self._life_photo_suite_generation_semaphore = gate
+            self.context._life_photo_suite_generation_semaphore = gate
         return gate
 
     def _photo_suite_register_request(
@@ -194,14 +300,14 @@ class RuntimePhotoSuiteMediaMixin:
             "llm_final_seen": False,
             "status": "pending",
         }
-        self._photo_suite_requests()[request_id] = marker
-        for source in self._event_sources(event):
+        self.context._photo_suite_requests()[request_id] = marker
+        for source in self.context._event_sources(event):
             setattr(source, "_daily_life_photo_suite_request_id", request_id)
         return request_id
 
     def _photo_suite_request_from_event(self, event: Any) -> dict[str, Any] | None:
-        requests = self._photo_suite_requests()
-        for source in self._event_sources(event):
+        requests = self.context._photo_suite_requests()
+        for source in self.context._event_sources(event):
             request_id = str(
                 getattr(source, "_daily_life_photo_suite_request_id", "") or ""
             ).strip()
@@ -212,7 +318,7 @@ class RuntimePhotoSuiteMediaMixin:
     def _photo_suite_finish_request(self, request_id: str) -> None:
         request_id = str(request_id or "").strip()
         if request_id:
-            self._photo_suite_requests().pop(request_id, None)
+            self.context._photo_suite_requests().pop(request_id, None)
 
     async def _photo_suite_new_request_decision(
         self, event: Any, manifest: dict[str, Any]
@@ -234,7 +340,7 @@ class RuntimePhotoSuiteMediaMixin:
 create_new=true 时 evidence_message_id 必须填写当前请求消息编号，reply_text 留空。
 不另拍时可按角色口吻自然回应当前用户表达；不要声称照片已发送、拍摄失败或将再拍，也不要提工具、模型或内部判断。"""
         try:
-            persona = await self.get_persona_text(self._event_session_id(event))
+            persona = await self.context.get_persona_text(self.context._event_session_id(event))
             dynamic = json.dumps(
                 {
                     "current_message_id": manifest.get("source_message_id", ""),
@@ -249,16 +355,16 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 ensure_ascii=False,
             )
             decision = await asyncio.wait_for(
-                self._media_director_call(
+                self.context._media_director_call(
                     cache_friendly_prompt(fixed, dynamic, dynamic_title="套图请求归属"),
-                    provider_id=self._media_image_director_provider_id(),
+                    provider_id=self.context._media_image_director_provider_id(),
                 ),
-                timeout=self._photo_suite_planning_timeout_seconds(),
+                timeout=self.context._photo_suite_planning_timeout_seconds(),
             )
         except Exception as exc:
             logger.warning(
                 f"{LOG_PREFIX} 新套图请求未能确认，保留原套图："
-                f"{self._media_error_summary(exc)}"
+                f"{self.context._media_error_summary(exc)}"
             )
             return {"create_new": False}
         if not isinstance(decision, dict):
@@ -288,20 +394,20 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         decision: dict[str, Any],
     ) -> None:
         manifest["status"] = "not_requested"
-        await self._photo_suite_write_manifest(manifest_path, manifest)
-        if self._photo_suite_last_tasks().get(scope) == str(manifest_path):
-            self._photo_suite_last_tasks().pop(scope, None)
+        await self.context._photo_suite_write_manifest(manifest_path, manifest)
+        if self.context._photo_suite_last_tasks().get(scope) == str(manifest_path):
+            self.context._photo_suite_last_tasks().pop(scope, None)
         if isinstance(marker, dict):
             marker["status"] = "not_requested"
-        self.cancel_tool_reaction(event, "life_photo_suite_generate")
+        self.context.cancel_tool_reaction(event, "life_photo_suite_generate")
         logger.info(
             f"{LOG_PREFIX} 未确认新的套图要求，停止额外生成："
             f"来源消息={manifest.get('source_message_id') or '无'}"
         )
         text = str(decision.get("reply_text") or "").strip()
-        if text and self.media_request_is_current_turn(event):
+        if text and self.context.media_request_is_current_turn(event):
             try:
-                sent = await self.send_background_text(
+                sent = await self.context.send_background_text(
                     scope,
                     text,
                     mode=BackgroundTextMode.EXPRESSIVE,
@@ -311,19 +417,19 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             except Exception as exc:
                 logger.warning(
                     f"{LOG_PREFIX} 套图请求接话发送失败："
-                    f"{self._media_error_summary(exc)}"
+                    f"{self.context._media_error_summary(exc)}"
                 )
                 return
-            if sent and self.media_request_is_current_turn(event):
-                await self._append_assistant_history(scope, text)
+            if sent and self.context.media_request_is_current_turn(event):
+                await self.context._append_assistant_history(scope, text)
 
     def hold_life_photo_suite_final_text(self, event: Any) -> bool:
-        marker = self._photo_suite_request_from_event(event)
+        marker = self.context._photo_suite_request_from_event(event)
         if not marker:
             return False
         result = getattr(event, "get_result", lambda: None)()
         chain = getattr(result, "chain", None)
-        if not isinstance(chain, list) or not self._is_llm_result_object(result):
+        if not isinstance(chain, list) or not self.context._is_llm_result_object(result):
             return False
         marker["llm_final_seen"] = True
         clearer = getattr(event, "clear_result", None)
@@ -339,7 +445,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
     ) -> bool:
         """套图已进入后台后，吞掉核心对最终确认语的空响应错误。"""
 
-        marker = self._photo_suite_request_from_event(event)
+        marker = self.context._photo_suite_request_from_event(event)
         if not marker:
             return False
         result = getattr(event, "get_result", lambda: None)()
@@ -370,7 +476,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
 
     def _photo_suite_root(self) -> Path:
         return (
-            runtime_data_root(getattr(self, "data_path", None))
+            runtime_data_root(getattr(self.context, "data_path", None))
             / "generated"
             / "images"
             / "suites"
@@ -403,30 +509,30 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             logger.debug(
                 f"{LOG_PREFIX} 图片协议指定：{image_provider_label(provider)}；模式=套图"
             )
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return "当前会话不可发送套图。"
         retry_values = list(retry_indexes or [])
-        active_request = self._photo_suite_request_from_event(event)
+        active_request = self.context._photo_suite_request_from_event(event)
         if (
             active_request
             and str(active_request.get("status") or "") in {"pending", "generating"}
             and not retry_values
         ):
-            self._disable_photo_suite_tool_for_active_turn(event)
+            self.context._disable_photo_suite_tool_for_active_turn(event)
             logger.debug(f"{LOG_PREFIX} 套图工具跳过同轮重复调用：任务仍在准备中。")
             return ToolResultText(
                 "这组照片已经在准备了。",
                 status="pending",
                 media="photo_suite",
             )
-        participant_ids = self._normalize_image_participants(participants)
-        route = self._normalize_image_subject_route(subject_route)
+        participant_ids = self.context._normalize_image_participants(participants)
+        route = self.context._normalize_image_subject_route(subject_route)
         resolution = str(resolution or "").strip().upper()
         if not resolution:
-            resolution = self._image_prompt_resolution(
-                self._event_image_prompt_text(event)
-            ) or self._image_prompt_resolution(prompt)
+            resolution = self.context._image_prompt_resolution(
+                self.context._event_image_prompt_text(event)
+            ) or self.context._image_prompt_resolution(prompt)
 
         manifest: dict[str, Any] | None = None
         manifest_path: Path | None = None
@@ -434,16 +540,16 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         initial_continue_last_result = False
         is_retry = bool(retry_values)
         if is_retry:
-            manifest_path, manifest = await self._photo_suite_latest_manifest(scope)
+            manifest_path, manifest = await self.context._photo_suite_latest_manifest(scope)
             if manifest is None or manifest_path is None:
                 return "当前会话没有可重试的上一组照片。"
-            count = self._photo_suite_count(manifest.get("count"))
-            retry_values = self._photo_suite_retry_indexes(retry_values, count)
+            count = self.context._photo_suite_count(manifest.get("count"))
+            retry_values = self.context._photo_suite_retry_indexes(retry_values, count)
             if not retry_values:
                 return f"重试序号应在 1 到 {count} 之间。"
             task_dir = manifest_path.parent
             prompt = str(manifest.get("prompt") or "").strip()
-            route = self._normalize_image_subject_route(
+            route = self.context._normalize_image_subject_route(
                 str(manifest.get("subject_route") or "free")
             )
             if (
@@ -453,13 +559,13 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 and not manifest.get("historical_appearance")
             ):
                 return "上一组照片误用了当前造型，无法直接重拍；请重新请求这组照片。"
-            participant_ids = self._normalize_image_participants(
+            participant_ids = self.context._normalize_image_participants(
                 manifest.get("participants")
             )
             provider = requested_image_provider(manifest.get("protocol")) or provider
         else:
-            count = self._photo_suite_count(count)
-            prompt, _, aspect_ratio = self._resolve_image_prompt(event, prompt)
+            count = self.context._photo_suite_count(count)
+            prompt, _, aspect_ratio = self.context._resolve_image_prompt(event, prompt)
             if not prompt:
                 return "没有收到套图画面要求。"
             if route == "group" and len(participant_ids) != 1:
@@ -471,7 +577,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                     friend_look,
                     look_source,
                     missing,
-                ) = await self._prepare_friend_daily_look(
+                ) = await self.context._prepare_friend_daily_look(
                     event,
                     participant_ids[0],
                     outfit=friend_outfit,
@@ -482,32 +588,32 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                     decision=friend_outfit_decision,
                 )
                 if missing:
-                    required = self._friend_look_required_parameters(
+                    required = self.context._friend_look_required_parameters(
                         look_source, missing
                     )
                     logger.debug(
                         f"{LOG_PREFIX} 好友合影暂未生成：缺少好友当天穿搭或发型；"
                         f"参数={','.join(missing)}"
                     )
-                    return self._friend_look_parameters_result(required)
-                self._log_friend_daily_look(
+                    return self.context._friend_look_parameters_result(required)
+                self.context._log_friend_daily_look(
                     participant_ids[0], friend_look, look_source
                 )
-                friend_look_persist = self._friend_look_should_persist(look_source)
-            source_request = self._event_current_image_request_text(event)
-            _, previous_suite = await self._photo_suite_latest_manifest(scope)
+                friend_look_persist = self.context._friend_look_should_persist(look_source)
+            source_request = self.context._event_current_image_request_text(event)
+            _, previous_suite = await self.context._photo_suite_latest_manifest(scope)
             historical_request = route in {"current_character", "group"} and bool(
                 historical_target
             )
             current_appearance = ""
             historical_appearance = ""
             if historical_request:
-                historical_appearance = await self._historical_life_appearance_snapshot(
+                historical_appearance = await self.context._historical_life_appearance_snapshot(
                     historical_target, period=historical_period, time=historical_time
                 )
                 if not historical_appearance:
                     return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成组图。"
-                prompt = self._apply_historical_appearance_snapshot(
+                prompt = self.context._apply_historical_appearance_snapshot(
                     prompt, historical_appearance
                 )
             if (
@@ -515,14 +621,14 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 and not reference_image
                 and not continue_last_result
             ):
-                current_appearance = await self._current_life_appearance_snapshot(route)
+                current_appearance = await self.context._current_life_appearance_snapshot(route)
             task_id = uuid.uuid4().hex
-            task_dir = self._photo_suite_root() / task_id
+            task_dir = self.context._photo_suite_root() / task_id
             manifest_path = task_dir / "manifest.json"
             await asyncio.to_thread(task_dir.mkdir, parents=True, exist_ok=True)
             initial_reference_image = str(reference_image or "").strip()
             initial_continue_last_result = bool(continue_last_result)
-            created_at = self._photo_suite_now()
+            created_at = self.context._photo_suite_now()
             manifest = {
                 "id": task_id,
                 "scope": scope,
@@ -535,7 +641,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 "subject_route": route,
                 "protocol": provider,
                 "participants": participant_ids,
-                "identity_profiles": await self._resolve_life_identity_profiles(
+                "identity_profiles": await self.context._resolve_life_identity_profiles(
                     event, route
                 ),
                 "current_appearance": current_appearance,
@@ -544,8 +650,8 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 "historical_period": historical_period,
                 "historical_time": historical_time,
                 "source_request": source_request,
-                "source_message_id": self._event_message_id(event),
-                "request_context": self.format_structured_message_context(
+                "source_message_id": self.context._event_message_id(event),
+                "request_context": self.context.format_structured_message_context(
                     event, limit=8
                 ),
                 "previous_suite": (
@@ -569,23 +675,23 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 "status": "pending",
                 "shots": [],
             }
-            await self._photo_suite_write_manifest(manifest_path, manifest)
-            self._photo_suite_last_tasks()[scope] = str(manifest_path)
+            await self.context._photo_suite_write_manifest(manifest_path, manifest)
+            self.context._photo_suite_last_tasks()[scope] = str(manifest_path)
 
         assert manifest is not None and manifest_path is not None
-        media_event = self._snapshot_media_event(event)
+        media_event = self.context._snapshot_media_event(event)
         if not manifest.get("shots"):
             media_event._daily_life_locked_suite_reference = (
-                await self._resolve_life_image_reference_async(
+                await self.context._resolve_life_image_reference_async(
                     media_event,
                     initial_reference_image,
                     allow_last_generated=initial_continue_last_result,
                     prefer_last_generated=initial_continue_last_result,
                 )
             )
-        request_id = self._photo_suite_register_request(scope, prompt, event, task_dir)
-        scheduled = self._schedule_background_task(
-            self._photo_suite_generate_background(
+        request_id = self.context._photo_suite_register_request(scope, prompt, event, task_dir)
+        scheduled = self.context._schedule_background_task(
+            self.context._photo_suite_generate_background(
                 scope,
                 media_event,
                 request_id,
@@ -598,14 +704,14 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             key=f"photo_suite:{scope}:{manifest.get('id') or task_dir.name}",
         )
         if not scheduled:
-            self._photo_suite_finish_request(request_id)
+            self.context._photo_suite_finish_request(request_id)
             return ToolResultText(
                 "这组照片已经在准备了。",
                 status="pending",
                 media="photo_suite",
             )
-        self._disable_photo_suite_tool_for_active_turn(event)
-        self._release_media_chat_turn(event)
+        self.context._disable_photo_suite_tool_for_active_turn(event)
+        self.context._release_media_chat_turn(event)
         return json.dumps(
             {
                 "status": "pending",
@@ -625,50 +731,50 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         initial_reference_image: str,
         continue_last_result: bool,
     ) -> tuple[dict[str, Any], int, list[int]]:
-        manifest = await self._photo_suite_read_manifest(manifest_path)
+        manifest = await self.context._photo_suite_read_manifest(manifest_path)
         if manifest is None:
             raise RuntimeError("套图任务记录不可用")
-        count = self._photo_suite_count(manifest.get("count"))
+        count = self.context._photo_suite_count(manifest.get("count"))
         if not manifest.get("shots"):
             locked = getattr(event, "_daily_life_locked_suite_reference", None)
             reference = (
                 str(locked)
                 if locked is not None
-                else await self._resolve_life_image_reference_async(
+                else await self.context._resolve_life_image_reference_async(
                     event,
                     initial_reference_image,
                     allow_last_generated=bool(continue_last_result),
                     prefer_last_generated=bool(continue_last_result),
                 )
             )
-            manifest["reference_path"] = await self._photo_suite_stabilize_reference(
+            manifest["reference_path"] = await self.context._photo_suite_stabilize_reference(
                 reference, manifest_path.parent
             )
             planning_prompt = str(manifest.get("prompt") or "")
-            route = self._normalize_image_subject_route(manifest.get("subject_route"))
+            route = self.context._normalize_image_subject_route(manifest.get("subject_route"))
             if manifest.get("current_appearance") and route in {
                 "current_character",
                 "group",
             }:
-                planning_prompt = await self._align_current_appearance_scene_prompt(
+                planning_prompt = await self.context._align_current_appearance_scene_prompt(
                     planning_prompt, str(manifest.get("source_request") or ""), route
                 )
                 manifest["prompt"] = planning_prompt
-            planning_prompt = self._apply_current_appearance_snapshot(
+            planning_prompt = self.context._apply_current_appearance_snapshot(
                 planning_prompt,
                 str(manifest.get("current_appearance") or ""),
                 str(manifest.get("subject_route") or "free"),
                 source_request=str(manifest.get("source_request") or ""),
             )
             if (
-                self._normalize_image_subject_route(manifest.get("subject_route"))
+                self.context._normalize_image_subject_route(manifest.get("subject_route"))
                 == "group"
             ):
-                planning_prompt = self._friend_look_prompt(
+                planning_prompt = self.context._friend_look_prompt(
                     planning_prompt,
-                    self._normalize_friend_look(manifest.get("friend_look")),
+                    self.context._normalize_friend_look(manifest.get("friend_look")),
                 )
-            shots = await self._photo_suite_plan(
+            shots = await self.context._photo_suite_plan(
                 event,
                 planning_prompt,
                 count,
@@ -680,7 +786,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 {
                     "index": index,
                     "title": shot["title"],
-                    "prompt": self._apply_historical_appearance_snapshot(
+                    "prompt": self.context._apply_historical_appearance_snapshot(
                         shot["prompt"], historical_appearance
                     ),
                     "status": "pending",
@@ -690,7 +796,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 }
                 for index, shot in enumerate(shots, start=1)
             ]
-        indexes = self._photo_suite_retry_indexes(retry_indexes, count) or list(
+        indexes = self.context._photo_suite_retry_indexes(retry_indexes, count) or list(
             range(1, count + 1)
         )
         if isinstance(marker, dict):
@@ -700,7 +806,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             if int(shot.get("index") or 0) in indexes:
                 shot["status"] = "generating"
                 shot["error"] = ""
-        await self._photo_suite_write_manifest(manifest_path, manifest)
+        await self.context._photo_suite_write_manifest(manifest_path, manifest)
         return manifest, count, indexes
 
     async def _photo_suite_run_generation_slots(
@@ -711,11 +817,11 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         indexes: list[int],
     ) -> None:
         lock = asyncio.Lock()
-        gate = self._photo_suite_generation_gate()
+        gate = self.context._photo_suite_generation_gate()
 
         async def run(index: int) -> None:
             async with gate:
-                await self._photo_suite_generate_slot(
+                await self.context._photo_suite_generate_slot(
                     event, manifest_path, manifest, index, lock
                 )
 
@@ -758,7 +864,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 and shot.get("status") != "pending"
             ):
                 shot["status"] = "failed"
-        total_available = len(await self._photo_suite_available_shots(manifest))
+        total_available = len(await self.context._photo_suite_available_shots(manifest))
         failed_indexes = [
             int(shot.get("index") or 0)
             for shot in manifest.get("shots") or []
@@ -781,7 +887,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             )
             else "failed"
         )
-        await self._photo_suite_write_manifest(manifest_path, manifest)
+        await self.context._photo_suite_write_manifest(manifest_path, manifest)
         return total_available, failed_indexes, sent_total
 
     async def _photo_suite_report_delivery(
@@ -805,25 +911,25 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             ),
             key=lambda item: int(item.get("index") or 0),
         )
-        self.note_structured_bot_message(
+        self.context.note_structured_bot_message(
             scope,
             f"[套图已发送：成功 {len(sent_indexes)}/{len(indexes)}]",
             source_event=event,
             media="图片",
         )
-        self._remember_life_image_for_scope(scope, last_shot.get("path"))
-        participants = self._normalize_image_participants(manifest.get("participants"))
-        friend_look = self._normalize_friend_look(manifest.get("friend_look"))
+        self.context._remember_life_image_for_scope(scope, last_shot.get("path"))
+        participants = self.context._normalize_image_participants(manifest.get("participants"))
+        friend_look = self.context._normalize_friend_look(manifest.get("friend_look"))
         if (
-            self._normalize_image_subject_route(manifest.get("subject_route"))
+            self.context._normalize_image_subject_route(manifest.get("subject_route"))
             == "group"
             and len(participants) == 1
             and (friend_look["outfit"] or friend_look["hair"])
             and bool(manifest.get("friend_look_persist", True))
         ):
-            await self._remember_friend_daily_look(scope, participants[0], friend_look)
-        self.note_life_media_sent(event or scope, "图片")
-        receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+            await self.context._remember_friend_daily_look(scope, participants[0], friend_look)
+        self.context.note_life_media_sent(event or scope, "图片")
+        receipt_recorder = getattr(self.context, "record_current_life_action_receipt", None)
         if callable(receipt_recorder):
             await receipt_recorder(
                 event,
@@ -850,13 +956,13 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         logger.warning(f"{LOG_PREFIX} 套图生成或发送失败：{error}")
         if isinstance(marker, dict):
             marker["status"] = "failed"
-        failed_manifest = await self._photo_suite_read_manifest(manifest_path)
+        failed_manifest = await self.context._photo_suite_read_manifest(manifest_path)
         if failed_manifest is not None:
-            available = len(await self._photo_suite_available_shots(failed_manifest))
+            available = len(await self.context._photo_suite_available_shots(failed_manifest))
             failed_manifest["status"] = "partial" if available else "failed"
             failed_manifest["failure_reason"] = error
-            await self._photo_suite_write_manifest(manifest_path, failed_manifest)
-        await self._photo_suite_send_followup(
+            await self.context._photo_suite_write_manifest(manifest_path, failed_manifest)
+        await self.context._photo_suite_send_followup(
             scope,
             event,
             prompt="",
@@ -867,7 +973,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             is_retry=bool(retry_indexes),
             error=error,
         )
-        await self.finish_tool_reaction(
+        await self.context.finish_tool_reaction(
             event, "life_photo_suite_generate", success=False
         )
 
@@ -882,9 +988,9 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         initial_reference_image: str = "",
         continue_last_result: bool = False,
     ) -> None:
-        await self.track_image_generation(
+        await self.context.track_image_generation(
             event,
-            self._photo_suite_generate_background_tracked(
+            self.context._photo_suite_generate_background_tracked(
                 scope,
                 event,
                 request_id,
@@ -906,21 +1012,21 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         initial_reference_image: str = "",
         continue_last_result: bool = False,
     ) -> None:
-        marker = self._photo_suite_requests().get(request_id)
+        marker = self.context._photo_suite_requests().get(request_id)
         try:
             if not retry_indexes:
-                pending_manifest = await self._photo_suite_read_manifest(manifest_path)
+                pending_manifest = await self.context._photo_suite_read_manifest(manifest_path)
                 if pending_manifest is None:
                     raise RuntimeError("套图任务记录不可用")
-                decision = await self._photo_suite_new_request_decision(
+                decision = await self.context._photo_suite_new_request_decision(
                     event, pending_manifest
                 )
                 if decision.get("create_new") is not True:
-                    await self._photo_suite_skip_unrequested_generation(
+                    await self.context._photo_suite_skip_unrequested_generation(
                         scope, event, manifest_path, pending_manifest, marker, decision
                     )
                     return
-            manifest, count, indexes = await self._photo_suite_prepare_generation(
+            manifest, count, indexes = await self.context._photo_suite_prepare_generation(
                 event,
                 manifest_path,
                 marker,
@@ -928,23 +1034,23 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 initial_reference_image,
                 continue_last_result,
             )
-            await self._photo_suite_run_generation_slots(
+            await self.context._photo_suite_run_generation_slots(
                 event, manifest_path, manifest, indexes
             )
-            successful = await self._photo_suite_available_shots(
+            successful = await self.context._photo_suite_available_shots(
                 manifest, indexes=indexes, generated_only=True
             )
             event._daily_life_photo_suite_ready_indexes = {
                 int(shot["index"]) for shot in successful
             }
-            delivery_task = await self.stage_durable_media_delivery(
+            delivery_task = await self.context.stage_durable_media_delivery(
                 scope,
                 "images",
                 [str(shot.get("path") or "") for shot in successful],
                 action_type="photo",
                 evidence=f"套图已生成 {len(successful)} 张，等待投递确认",
                 source_event=event,
-                source_message_id=self._event_message_id(event),
+                source_message_id=self.context._event_message_id(event),
                 reply_context={
                     "media_name": "一组生活照片",
                     "request_text": str(manifest.get("prompt") or ""),
@@ -952,19 +1058,19 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                     "guidance": "自然回应这组照片已经送达。",
                 },
             )
-            sent_indexes = await self._photo_suite_send_images(scope, event, successful)
+            sent_indexes = await self.context._photo_suite_send_images(scope, event, successful)
             (
                 total_available,
                 failed_indexes,
                 _sent_total,
-            ) = await self._photo_suite_finalize_manifest(
+            ) = await self.context._photo_suite_finalize_manifest(
                 manifest_path,
                 manifest,
                 indexes,
                 count,
                 sent_indexes,
             )
-            delivery_success = await self._photo_suite_report_delivery(
+            delivery_success = await self.context._photo_suite_report_delivery(
                 scope,
                 event,
                 manifest,
@@ -973,7 +1079,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 total_available,
                 count,
             )
-            await self.finalize_durable_media_delivery(
+            await self.context.finalize_durable_media_delivery(
                 delivery_task,
                 outcome="sent" if delivery_success else "cancelled",
                 detail=(
@@ -986,9 +1092,9 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             if isinstance(marker, dict):
                 marker["status"] = manifest["status"]
             if not sent_indexes and manifest["status"] == "pending":
-                self.cancel_tool_reaction(event, "life_photo_suite_generate")
+                self.context.cancel_tool_reaction(event, "life_photo_suite_generate")
                 return
-            await self._photo_suite_send_followup(
+            await self.context._photo_suite_send_followup(
                 scope,
                 event,
                 prompt=str(manifest.get("prompt") or ""),
@@ -998,21 +1104,21 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 failed_indexes=failed_indexes,
                 is_retry=bool(retry_indexes),
             )
-            await self.finish_tool_reaction(
+            await self.context.finish_tool_reaction(
                 event,
                 "life_photo_suite_generate",
                 success=delivery_success,
             )
         except asyncio.CancelledError:
-            self.cancel_tool_reaction(event, "life_photo_suite_generate")
-            manifest = await self._photo_suite_read_manifest(manifest_path)
+            self.context.cancel_tool_reaction(event, "life_photo_suite_generate")
+            manifest = await self.context._photo_suite_read_manifest(manifest_path)
             if manifest is not None:
                 manifest["status"] = "cancelled"
-                await self._photo_suite_write_manifest(manifest_path, manifest)
+                await self.context._photo_suite_write_manifest(manifest_path, manifest)
             raise
         except Exception as exc:
-            error = self._media_error_summary(exc)
-            await self._photo_suite_handle_generation_failure(
+            error = self.context._media_error_summary(exc)
+            await self.context._photo_suite_handle_generation_failure(
                 scope,
                 event,
                 marker,
@@ -1021,7 +1127,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 error,
             )
         finally:
-            self._photo_suite_finish_request(request_id)
+            self.context._photo_suite_finish_request(request_id)
 
     async def _photo_suite_generate_slot(
         self,
@@ -1043,19 +1149,19 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         for _ in range(PHOTO_SUITE_SLOT_ATTEMPTS):
             shot["attempts"] = int(shot.get("attempts") or 0) + 1
             try:
-                metadata = getattr(self.media.image, "async_task_metadata", None)
+                metadata = getattr(self.context.media.image, "async_task_metadata", None)
                 with (
                     metadata({"manifest_path": str(manifest_path), "slot_index": index})
                     if callable(metadata)
                     else nullcontext()
                 ):
-                    generated = await self._photo_suite_generate_asset(
+                    generated = await self.context._photo_suite_generate_asset(
                         event, manifest, str(shot.get("prompt") or "")
                     )
                 source_path = Path(str(getattr(generated, "path", "") or ""))
                 if not await asyncio.to_thread(path_is_file, source_path):
                     raise RuntimeError("图片服务没有返回可用文件")
-                target = await self._photo_suite_copy_generated(
+                target = await self.context._photo_suite_copy_generated(
                     source_path, manifest_path.parent, index
                 )
                 shot["path"] = str(target)
@@ -1063,7 +1169,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 shot["error"] = ""
                 break
             except Exception as exc:
-                error = self._media_error_summary(exc)
+                error = self.context._media_error_summary(exc)
                 if isinstance(exc, ImageTaskError):
                     shot["status"] = (
                         "failed" if isinstance(exc, ImageTaskFailed) else "pending"
@@ -1082,24 +1188,24 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 shot["error"] = error
             logger.warning(f"{LOG_PREFIX} 套图第 {index} 张生成失败：{error}")
         async with manifest_lock:
-            await self._photo_suite_write_manifest(manifest_path, manifest)
+            await self.context._photo_suite_write_manifest(manifest_path, manifest)
 
     async def _photo_suite_generate_asset(
         self, event: Any, manifest: dict[str, Any], prompt: str
     ) -> Any:
-        route = self._normalize_image_subject_route(manifest.get("subject_route"))
-        prompt = self._apply_current_appearance_snapshot(
+        route = self.context._normalize_image_subject_route(manifest.get("subject_route"))
+        prompt = self.context._apply_current_appearance_snapshot(
             prompt,
             str(manifest.get("current_appearance") or ""),
             route,
             source_request=str(manifest.get("source_request") or ""),
         )
-        participants = self._normalize_image_participants(manifest.get("participants"))
+        participants = self.context._normalize_image_participants(manifest.get("participants"))
         aspect_ratio = str(manifest.get("aspect_ratio") or "").strip()
         resolution = str(manifest.get("resolution") or "").strip().upper()
         protocol = requested_image_provider(manifest.get("protocol"))
         reference = str(manifest.get("reference_path") or "").strip()
-        identity_profiles = self._current_character_identity_profiles(
+        identity_profiles = self.context._current_character_identity_profiles(
             manifest.get("identity_profiles")
         )
         current_identity_profile = (
@@ -1108,11 +1214,11 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
             else None
         )
         if route == "group":
-            friend_look = self._normalize_friend_look(manifest.get("friend_look"))
+            friend_look = self.context._normalize_friend_look(manifest.get("friend_look"))
             if friend_look["outfit"] or friend_look["hair"]:
-                prompt = self._friend_look_prompt(prompt, friend_look)
+                prompt = self.context._friend_look_prompt(prompt, friend_look)
             generator = getattr(
-                getattr(getattr(self, "media", None), "image", None),
+                getattr(getattr(self.context, "media", None), "image", None),
                 "generate_group_image",
                 None,
             )
@@ -1133,7 +1239,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 **group_options,
             )
         if reference:
-            return await self._edit_life_image_with_policy_retry(
+            return await self.context._edit_life_image_with_policy_retry(
                 event,
                 prompt,
                 reference,
@@ -1143,7 +1249,7 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
                 protocol=protocol,
                 identity_profile=current_identity_profile or "",
             )
-        return await self.generate_life_image_asset(
+        return await self.context.generate_life_image_asset(
             event,
             prompt,
             aspect_ratio,
@@ -1163,21 +1269,21 @@ create_new=true 时 evidence_message_id 必须填写当前请求消息编号，r
         subject_route: str = "free",
         participants: list[str] | None = None,
     ) -> list[dict[str, str]]:
-        route = self._normalize_image_subject_route(subject_route)
-        fallback = self._photo_suite_fallback_plan(prompt, count, route)
-        get_provider = getattr(self, "get_text_provider", None)
-        call_llm = getattr(self, "call_text_model", None)
+        route = self.context._normalize_image_subject_route(subject_route)
+        fallback = self.context._photo_suite_fallback_plan(prompt, count, route)
+        get_provider = getattr(self.context, "get_text_provider", None)
+        call_llm = getattr(self.context, "call_text_model", None)
         if not callable(get_provider) or not callable(call_llm):
             return fallback
-        timeout_seconds = self._photo_suite_planning_timeout_seconds()
-        provider_id = self._media_image_director_provider_id()
+        timeout_seconds = self.context._photo_suite_planning_timeout_seconds()
+        provider_id = self.context._media_image_director_provider_id()
         provider_label = "当前默认模型"
         started_at = time.monotonic()
         try:
             provider = await get_provider(provider_id)
             if provider is None:
                 return fallback
-            provider_label = self._photo_suite_provider_label(provider)
+            provider_label = self.context._photo_suite_provider_label(provider)
             logger.debug(
                 f"{LOG_PREFIX} 套图镜头规划开始：模型={provider_label}；"
                 f"上限={timeout_seconds}秒；数量={count}"
@@ -1194,12 +1300,12 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
                 if route == "group"
                 else ""
             )
-            composer = getattr(self, "composer", None)
+            composer = getattr(self.context, "composer", None)
             fact_builder = getattr(composer, "_build_person_fact_context", None)
             auditor = getattr(composer, "_audit_person_payload", None)
             person_facts = (
                 await fact_builder(
-                    persona=await self.get_persona_text(self._event_session_id(event))
+                    persona=await self.context.get_persona_text(self.context._event_session_id(event))
                 )
                 if callable(fact_builder) and route == "group" and participants
                 else None
@@ -1225,7 +1331,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
                 ),
                 timeout=timeout_seconds,
             )
-            planned = self._photo_suite_parse_plan(raw, count)
+            planned = self.context._photo_suite_parse_plan(raw, count)
             if planned:
                 if person_facts is not None and callable(auditor):
                     audit = await auditor(
@@ -1265,7 +1371,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             logger.debug(
                 f"{LOG_PREFIX} 套图镜头规划失败：模型={provider_label}；"
                 f"耗时={time.monotonic() - started_at:.2f} 秒；"
-                f"原因={self._media_error_summary(exc)}；使用本地镜头方案"
+                f"原因={self.context._media_error_summary(exc)}；使用本地镜头方案"
             )
         return fallback
 
@@ -1323,7 +1429,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             result.append(
                 {
                     "title": title[:40],
-                    "prompt": RuntimePhotoSuiteMediaMixin._photo_suite_single_shot_prompt(
+                    "prompt": RuntimePhotoSuiteMediaComponent._photo_suite_single_shot_prompt(
                         shared_text,
                         index=index,
                         title=title,
@@ -1352,7 +1458,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         return [
             {
                 "title": title,
-                "prompt": RuntimePhotoSuiteMediaMixin._photo_suite_single_shot_prompt(
+                "prompt": RuntimePhotoSuiteMediaComponent._photo_suite_single_shot_prompt(
                     f"{prompt}。{continuity}",
                     index=index,
                     title=title,
@@ -1372,7 +1478,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         if not reference:
             return ""
         loader = getattr(
-            getattr(getattr(self, "media", None), "image", None),
+            getattr(getattr(self.context, "media", None), "image", None),
             "_load_reference_image",
             None,
         )
@@ -1409,15 +1515,15 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             index = int(shot.get("index") or 0)
             path = Path(str(shot.get("path") or ""))
             try:
-                if not await self.send_message_if_not_recalled(
-                    scope, self.image_message_chain(path), source_event=event
+                if not await self.context.send_message_if_not_recalled(
+                    scope, self.context.image_message_chain(path), source_event=event
                 ):
                     break
                 sent_indexes.add(index)
             except Exception as exc:
                 logger.warning(
                     f"{LOG_PREFIX} 套图第 {index} 张发送失败："
-                    f"{self._media_error_summary(exc)}"
+                    f"{self.context._media_error_summary(exc)}"
                 )
         return sent_indexes
 
@@ -1434,9 +1540,9 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         is_retry: bool,
         error: str = "",
     ) -> bool:
-        if not self.media_request_is_current_turn(event):
+        if not self.context.media_request_is_current_turn(event):
             return False
-        text = await self._photo_suite_followup_text(
+        text = await self.context._photo_suite_followup_text(
             event,
             prompt=prompt,
             sent_count=sent_count,
@@ -1446,7 +1552,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             is_retry=is_retry,
             error=error,
         )
-        if not self.media_request_is_current_turn(event):
+        if not self.context.media_request_is_current_turn(event):
             return False
         if not text:
             if sent_count and is_retry:
@@ -1458,7 +1564,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             else:
                 text = "这次没拍出来，整组都没有生成成功。"
         try:
-            sent = await self.send_background_text(
+            sent = await self.context.send_background_text(
                 scope,
                 text,
                 mode=BackgroundTextMode.EXPRESSIVE,
@@ -1467,11 +1573,11 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             )
         except Exception as exc:
             logger.warning(
-                f"{LOG_PREFIX} 套图补话发送失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} 套图补话发送失败：{self.context._media_error_summary(exc)}"
             )
             return False
-        if sent and self.media_request_is_current_turn(event):
-            await self._append_assistant_history(scope, text)
+        if sent and self.context.media_request_is_current_turn(event):
+            await self.context._append_assistant_history(scope, text)
         return sent
 
     async def _photo_suite_followup_text(
@@ -1486,19 +1592,19 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         is_retry: bool,
         error: str,
     ) -> str:
-        get_provider = getattr(self, "get_text_provider", None)
-        call_llm = getattr(self, "call_text_model", None)
+        get_provider = getattr(self.context, "get_text_provider", None)
+        call_llm = getattr(self.context, "call_text_model", None)
         if not callable(get_provider) or not callable(call_llm):
             return ""
         try:
             provider = await get_provider("")
             if provider is None:
                 return ""
-            persona_getter = getattr(self, "get_persona_text", None)
+            persona_getter = getattr(self.context, "get_persona_text", None)
             persona = ""
             if callable(persona_getter):
                 persona = str(
-                    await persona_getter(self._event_session_id(event)) or ""
+                    await persona_getter(self.context._event_session_id(event)) or ""
                 ).strip()
             fixed = """你正在给刚刚交付的一组生活照片补一句自然回复。严格只输出一个 JSON 对象，不要使用 Markdown 代码块：
 {"reply_text":"角色真正说出口的一句中文短回复"}
@@ -1520,11 +1626,11 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
                 empty_retries=0,
                 primary_provider_id="",
             )
-            parser = getattr(self, "_parse_life_video_reply_text", None)
+            parser = getattr(self.context, "_parse_life_video_reply_text", None)
             return str(parser(raw) if callable(parser) else "").strip()
         except Exception as exc:
             logger.warning(
-                f"{LOG_PREFIX} 套图补话生成失败：{self._media_error_summary(exc)}；"
+                f"{LOG_PREFIX} 套图补话生成失败：{self.context._media_error_summary(exc)}；"
                 "使用本地兜底"
             )
             return ""
@@ -1532,10 +1638,10 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
     async def _photo_suite_latest_manifest(
         self, scope: str
     ) -> tuple[Path | None, dict[str, Any] | None]:
-        cached = str(self._photo_suite_last_tasks().get(scope) or "").strip()
+        cached = str(self.context._photo_suite_last_tasks().get(scope) or "").strip()
         if cached:
             path = Path(cached)
-            payload = await self._photo_suite_read_manifest(path)
+            payload = await self.context._photo_suite_read_manifest(path)
             if (
                 payload is not None
                 and str(payload.get("scope") or "") == scope
@@ -1543,7 +1649,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
             ):
                 return path, payload
 
-        root = self._photo_suite_root()
+        root = self.context._photo_suite_root()
 
         def candidates() -> list[Path]:
             if not root.is_dir():
@@ -1552,7 +1658,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
 
         latest: tuple[str, Path, dict[str, Any]] | None = None
         for path in await asyncio.to_thread(candidates):
-            payload = await self._photo_suite_read_manifest(path)
+            payload = await self.context._photo_suite_read_manifest(path)
             if (
                 payload is not None
                 and str(payload.get("scope") or "") == scope
@@ -1564,7 +1670,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
                     latest = candidate
         if latest is not None:
             _, path, payload = latest
-            self._photo_suite_last_tasks()[scope] = str(path)
+            self.context._photo_suite_last_tasks()[scope] = str(path)
             return path, payload
         return None, None
 
@@ -1580,7 +1686,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
     async def _photo_suite_write_manifest(
         self, path: Path, manifest: dict[str, Any]
     ) -> None:
-        manifest["updated_at"] = self._photo_suite_now()
+        manifest["updated_at"] = self.context._photo_suite_now()
         text = json.dumps(manifest, ensure_ascii=False, indent=2)
 
         def write() -> None:

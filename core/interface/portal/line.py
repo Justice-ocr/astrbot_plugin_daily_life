@@ -7,6 +7,8 @@ from ...models import (
     timeline_item_minutes,
 )
 
+from typing import Any, Protocol
+
 _TIMELINE_CONTEXT_DEFAULTS = {
     "place": "",
     "place_kind": "none",
@@ -26,7 +28,20 @@ _TIMELINE_CONTEXT_DEFAULTS = {
 }
 
 
-class PortalLineMixin:
+class PortalLineComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _page_day: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_validate_timeline: Any
+    runtime: Any
+
+
+class PortalLineComponent:
+    def __init__(self, context: PortalLineComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _page_validate_timeline(raw_timeline) -> list[TimelineItem]:
         if not isinstance(raw_timeline, list):
@@ -58,13 +73,13 @@ class PortalLineMixin:
 
     async def page_timeline_save(self):
         async def handler():
-            body = await self._page_json_body()
+            body = await self.context._page_json_body()
             now = life_now()
             date_str = str(body.get("date") or "").strip()
             if not date_str:
-                date_str, _ = await self.runtime.resolve_injection_target(now)
-            timeline = self._page_validate_timeline(body.get("timeline"))
-            existing = await self.runtime.archive.get_day(date_str)
+                date_str, _ = await self.context.runtime.resolve_injection_target(now)
+            timeline = self.context._page_validate_timeline(body.get("timeline"))
+            existing = await self.context.runtime.archive.get_day(date_str)
             if existing:
                 for index, item in enumerate(timeline):
                     if index >= len(existing.timeline):
@@ -83,9 +98,9 @@ class PortalLineMixin:
                     item.execution_reason = previous.execution_reason
                     item.execution_evidence = previous.execution_evidence
                     item.execution_updated_at = previous.execution_updated_at
-            day = await self.runtime.archive.replace_day_timeline(date_str, timeline)
+            day = await self.context.runtime.archive.replace_day_timeline(date_str, timeline)
             if not day:
                 raise ValueError(f"未找到日期：{date_str}")
-            return {"day": self._page_day(day, now, False)}
+            return {"day": self.context._page_day(day, now, False)}
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)

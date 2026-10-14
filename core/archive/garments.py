@@ -1,14 +1,16 @@
 """独立保存数字衣物，视觉资料复核不会覆盖拥有、穿着或洗护事实。"""
-
 from __future__ import annotations
 
 import datetime
+import copy
 import json
 import hashlib
 from typing import Any
 
 from ..clock import TIMEZONE
 from ..models import STYLE_CATALOG_CLOTHING_KINDS
+
+from typing import Protocol
 
 
 def instant(value):
@@ -35,9 +37,23 @@ def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-class GarmentArchiveMixin:
+class GarmentArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _conn: Any
+    _record_wardrobe_wear_unlocked: Any
+    _run_db: Any
+    _wardrobe_bootstrap_unlocked: Any
+    _wardrobe_event_unlocked: Any
+    _wardrobe_item_state_unlocked: Any
+
+
+class GarmentArchiveComponent:
+    def __init__(self, context: GarmentArchiveComponentContext) -> None:
+        self.context = context
+
     def _wardrobe_bootstrap_unlocked(self) -> None:
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             "SELECT id,kind,source_image_hash,last_used_at FROM style_catalog_items"
         ).fetchall()
         groups: dict[str, set[str]] = {}
@@ -45,11 +61,11 @@ class GarmentArchiveMixin:
             groups.setdefault(row["source_image_hash"], set()).add(row["kind"])
         units = {
             row["unit_id"]: dict(row)
-            for row in self._conn.execute("SELECT * FROM wardrobe_units")
+            for row in self.context._conn.execute("SELECT * FROM wardrobe_units")
         }
         links = {
             (row[0], row[1])
-            for row in self._conn.execute(
+            for row in self.context._conn.execute(
                 "SELECT catalog_id,unit_id FROM wardrobe_links"
             )
         }
@@ -57,21 +73,34 @@ class GarmentArchiveMixin:
             if row["kind"] not in STYLE_CATALOG_CLOTHING_KINDS:
                 continue
             roles = (
-                ["top", "bottom"]
+                [
+                    role
+                    for role in ("top", "bottom")
+                    if role in groups[row["source_image_hash"]]
+                ]
                 if row["kind"] == "outfit"
-                and {"top", "bottom"} <= groups[row["source_image_hash"]]
+                and {"top", "bottom"} & groups[row["source_image_hash"]]
                 else [row["kind"]]
             )
             old_key = row["source_image_hash"] + ":outfit"
-            parent = (
-                units.get(old_key)
-                if roles == ["top", "bottom"] and (row["id"], old_key) in links
-                else None
+            # 套装与同图单品共用实物；连身衣只有一个主体单品也不能另算一件。
+            # 分批识别出组成时，新单品继承已有记录，已有单品保留自己的洗护事实。
+            parents = (
+                [
+                    units[key]
+                    for catalog_id, key in links
+                    if catalog_id == row["id"] and key in units
+                ]
+                if row["kind"] == "outfit" and roles != ["outfit"]
+                else []
+            )
+            parent = max(
+                parents, key=lambda unit: unit.get("changed_at", ""), default=None
             )
             for role in roles:
                 key = row["source_image_hash"] + ":" + role
                 if key not in units:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "INSERT INTO wardrobe_units(unit_id,ownership,acquired_at,changed_at) VALUES(?,?,?,?)",
                         (
                             key,
@@ -85,7 +114,7 @@ class GarmentArchiveMixin:
                         "revision": 0,
                     }
                 if parent and units[key]["revision"] == 0:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE wardrobe_units SET ownership=?,condition=?,acquired_at=?,changed_at=?,revision=?,payload_json=? WHERE unit_id=?",
                         (
                             parent["ownership"],
@@ -99,30 +128,31 @@ class GarmentArchiveMixin:
                     )
                     units[key] = dict(parent)
                 if (row["id"], key) not in links:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "INSERT OR IGNORE INTO wardrobe_links VALUES(?,?)",
                         (row["id"], key),
                     )
                     links.add((row["id"], key))
                 # 历史采用记录仅用于首次建立拥有事实，不覆盖洗护状态。
                 if row["last_used_at"] and units[key]["ownership"] == "candidate":
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE wardrobe_units SET ownership='owned', acquired_at=CASE WHEN acquired_at='' THEN ? ELSE acquired_at END WHERE unit_id=?",
                         (row["last_used_at"], key),
                     )
                     units[key]["ownership"] = "owned"
-            if parent:
-                self._conn.execute(
+            if roles != ["outfit"] and (row["id"], old_key) in links:
+                self.context._conn.execute(
                     "DELETE FROM wardrobe_links WHERE catalog_id=? AND unit_id=?",
                     (row["id"], old_key),
                 )
-                self._conn.execute(
+                self.context._conn.execute(
                     "DELETE FROM wardrobe_units WHERE unit_id=? AND NOT EXISTS(SELECT 1 FROM wardrobe_links WHERE unit_id=?)",
                     (old_key, old_key),
                 )
+                links.discard((row["id"], old_key))
 
     def _wardrobe_item_state_unlocked(self, item_id: int) -> dict:
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             "SELECT u.* FROM wardrobe_units u JOIN wardrobe_links l ON l.unit_id=u.unit_id WHERE l.catalog_id=?",
             (item_id,),
         ).fetchall()
@@ -141,7 +171,7 @@ class GarmentArchiveMixin:
         return {
             "ownership": "owned" if owned else "candidate",
             "condition": condition,
-            "available": owned and conditions <= {"clean", "worn"},
+            "available": owned and conditions <= {"clean", "worn", "stored"},
             "unit_ids": [row["unit_id"] for row in rows],
             "currently_worn": any(
                 unpack(row["payload_json"]).get("wearing") for row in rows
@@ -151,15 +181,15 @@ class GarmentArchiveMixin:
 
     def _wardrobe_action_issue_unlocked(self, raw_ids) -> str:
         """在世界结算事务内复核衣物，防止判断后被送洗。"""
-        self._wardrobe_bootstrap_unlocked()
-        if not self._conn.execute("SELECT 1 FROM wardrobe_links LIMIT 1").fetchone():
+        self.context._wardrobe_bootstrap_unlocked()
+        if not self.context._conn.execute("SELECT 1 FROM wardrobe_links LIMIT 1").fetchone():
             return ""
         ids = (
             [int(v) for v in raw_ids if str(v).isdigit()]
             if isinstance(raw_ids, (list, tuple))
             else []
         )
-        states = [self._wardrobe_item_state_unlocked(i) for i in ids]
+        states = [self.context._wardrobe_item_state_unlocked(i) for i in ids]
         clothes = [state for state in states if state]
         if not clothes or any(not state.get("available") for state in clothes):
             return "所选衣物尚未拥有或正在洗护，换装回执未生效"
@@ -167,24 +197,27 @@ class GarmentArchiveMixin:
 
     async def get_wardrobe_snapshot(self) -> dict:
         def read():
-            self._wardrobe_bootstrap_unlocked()
+            self.context._wardrobe_bootstrap_unlocked()
             ids = [
                 row[0]
-                for row in self._conn.execute(
+                for row in self.context._conn.execute(
                     "SELECT DISTINCT catalog_id FROM wardrobe_links"
                 )
             ]
-            profile = self._conn.execute(
+            profile = self.context._conn.execute(
                 "SELECT * FROM wardrobe_profile WHERE name='self'"
             ).fetchone()
-            events = self._conn.execute(
+            events = self.context._conn.execute(
                 "SELECT * FROM wardrobe_events ORDER BY occurred_at DESC,event_id DESC LIMIT 80"
             ).fetchall()
-            jobs = self._conn.execute(
+            jobs = self.context._conn.execute(
                 "SELECT * FROM wardrobe_jobs WHERE status NOT IN ('completed','cancelled') ORDER BY CASE WHEN status IN ('failed','uncertain') THEN 1 ELSE 0 END,updated_at DESC LIMIT 50"
             ).fetchall()
+            recent = self.context._conn.execute(
+                "SELECT job_id,status,updated_at,payload_json,error FROM wardrobe_jobs ORDER BY updated_at DESC LIMIT 16"
+            ).fetchall()
             return {
-                "items": {str(i): self._wardrobe_item_state_unlocked(i) for i in ids},
+                "items": {str(i): self.context._wardrobe_item_state_unlocked(i) for i in ids},
                 "profile": unpack(profile["payload_json"]) if profile else {},
                 "profile_revision": profile["revision"] if profile else 0,
                 "events": [
@@ -198,13 +231,22 @@ class GarmentArchiveMixin:
                     }
                     for r in jobs
                 ],
+                "recent_jobs": [
+                    {"job_id": r["job_id"], "status": r["status"],
+                     "updated_at": r["updated_at"], "payload": {
+                         k: v for k, v in unpack(r["payload_json"]).items()
+                         if k in {"requirement", "motive", "idea_key", "reason", "automatic", "requested_at"}
+                     },
+                     "error": r["error"]}
+                    for r in recent
+                ],
             }
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     def _wardrobe_event_unlocked(self, event_id, kind, at, source, payload) -> bool:
         return bool(
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT OR IGNORE INTO wardrobe_events VALUES(?,?,?,?,?)",
                 (event_id, kind, at, source, encode(payload)),
             ).rowcount
@@ -217,11 +259,11 @@ class GarmentArchiveMixin:
             return False
 
         def write():
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._wardrobe_bootstrap_unlocked()
+                self.context._wardrobe_bootstrap_unlocked()
                 records = [
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "SELECT status,kind,confidence FROM style_catalog_items WHERE id=?",
                         (i,),
                     ).fetchone()
@@ -234,29 +276,29 @@ class GarmentArchiveMixin:
                     or r["kind"] not in STYLE_CATALOG_CLOTHING_KINDS
                     for r in records
                 ):
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return False
-                if not self._wardrobe_event_unlocked(
+                if not self.context._wardrobe_event_unlocked(
                     event_id,
                     "adopt",
                     at,
                     "digital_wardrobe",
                     {"item_ids": ids, "reason": reason},
                 ):
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return False
                 for i in ids:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE wardrobe_units SET ownership='owned', acquired_at=?, changed_at=?, revision=revision+1 WHERE ownership='candidate' AND unit_id IN (SELECT unit_id FROM wardrobe_links WHERE catalog_id=?)",
                         (at, at, i),
                     )
-                self._conn.commit()
+                self.context._conn.commit()
                 return True
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     def _record_wardrobe_wear_unlocked(
         self, day, *, event_id: str = "archive", source: str = "outfit_receipt"
@@ -274,10 +316,10 @@ class GarmentArchiveMixin:
             ]
         )
 
-        self._wardrobe_bootstrap_unlocked()
+        self.context._wardrobe_bootstrap_unlocked()
         # 后到的旧回执不能把当前穿着退回去。
         latest = dict(
-            self._conn.execute(
+            self.context._conn.execute(
                 "SELECT key,value FROM day_meta WHERE date=? AND key IN ('style_catalog_reference_ids','outfit_fact_confirmed_at')",
                 (day.date,),
             )
@@ -290,13 +332,13 @@ class GarmentArchiveMixin:
         units = {
             r[0]
             for i in ids
-            for r in self._conn.execute(
+            for r in self.context._conn.execute(
                 "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?", (i,)
             )
         }
         if not units:
             return False
-        prior = self._conn.execute(
+        prior = self.context._conn.execute(
             "SELECT payload_json FROM wardrobe_events WHERE kind='wear' ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
         if prior:
@@ -304,14 +346,14 @@ class GarmentArchiveMixin:
             previous_units = {
                 r[0]
                 for i in previous.get("item_ids", [])
-                for r in self._conn.execute(
+                for r in self.context._conn.execute(
                     "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?",
                     (i,),
                 )
             }
             if previous.get("day") == day.date and units == previous_units:
                 return False
-        if not self._wardrobe_event_unlocked(
+        if not self.context._wardrobe_event_unlocked(
             receipt_id,
             "wear",
             at,
@@ -319,7 +361,7 @@ class GarmentArchiveMixin:
             {"item_ids": ids, "outfit": day.outfit, "day": day.date},
         ):
             return False
-        newest = self._conn.execute(
+        newest = self.context._conn.execute(
             "SELECT MAX(occurred_at) FROM wardrobe_events WHERE kind='wear'"
         ).fetchone()[0]
         if newest and newest > at:
@@ -327,28 +369,28 @@ class GarmentArchiveMixin:
         units = {
             r[0]
             for i in ids
-            for r in self._conn.execute(
+            for r in self.context._conn.execute(
                 "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?", (i,)
             )
         }
-        for row in self._conn.execute(
+        for row in self.context._conn.execute(
             "SELECT unit_id,payload_json FROM wardrobe_units"
         ).fetchall():
             data = unpack(row["payload_json"])
             wearing = row["unit_id"] in units
             if bool(data.get("wearing")) != wearing:
                 data["wearing"] = wearing
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE wardrobe_units SET payload_json=?,revision=revision+1 WHERE unit_id=?",
                     (encode(data), row["unit_id"]),
                 )
-        self._conn.execute(
+        self.context._conn.execute(
             "UPDATE wardrobe_units SET condition='clean',changed_at=?,revision=revision+1 WHERE condition='worn'",
             (at,),
         )
         for key in units:
-            self._conn.execute(
-                "UPDATE wardrobe_units SET ownership='owned',condition='worn',acquired_at=CASE WHEN acquired_at='' THEN ? ELSE acquired_at END,changed_at=?,revision=revision+1 WHERE unit_id=? AND condition IN ('clean','worn')",
+            self.context._conn.execute(
+                "UPDATE wardrobe_units SET ownership='owned',condition='worn',acquired_at=CASE WHEN acquired_at='' THEN ? ELSE acquired_at END,changed_at=?,revision=revision+1 WHERE unit_id=? AND condition IN ('clean','worn','stored')",
                 (at, at, key),
             )
         return True
@@ -357,24 +399,24 @@ class GarmentArchiveMixin:
         self, day, *, event_id: str, source: str = "outfit_receipt"
     ) -> bool:
         def write():
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                changed = self._record_wardrobe_wear_unlocked(
+                changed = self.context._record_wardrobe_wear_unlocked(
                     day, event_id=event_id, source=source
                 )
-                self._conn.commit()
+                self.context._conn.commit()
                 return changed
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def record_wardrobe_feedback(
         self, *, event_id: str, item_ids: list[int], text: str, at: str, scope: str
     ) -> bool:
         def write():
-            return self._wardrobe_event_unlocked(
+            return self.context._wardrobe_event_unlocked(
                 event_id,
                 "feedback",
                 at,
@@ -382,25 +424,76 @@ class GarmentArchiveMixin:
                 {"item_ids": item_ids, "text": text[:1000], "origin": "user_feedback"},
             )
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def save_wardrobe_review(
-        self, payload: dict, *, expected_revision: int, at: str
+        self, payload: dict, *, expected_revision: int, at: str,
+        generation: dict | None = None,
     ) -> bool:
         def write():
-            row = self._conn.execute(
-                "SELECT revision FROM wardrobe_profile WHERE name='self'"
-            ).fetchone()
-            if (row["revision"] if row else 0) != expected_revision:
-                return False
-            return bool(
-                self._conn.execute(
+            self.context._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.context._conn.execute(
+                    "SELECT revision FROM wardrobe_profile WHERE name='self'"
+                ).fetchone()
+                if (row["revision"] if row else 0) != expected_revision:
+                    self.context._conn.rollback()
+                    return False
+                profile = copy.deepcopy(payload)
+                choice = profile.get("acquisition")
+                if generation and isinstance(choice, dict):
+                    jobs = self.context._conn.execute(
+                        "SELECT job_id,status,payload_json,progress_json FROM wardrobe_jobs"
+                    ).fetchall()
+                    existing = next((r for r in jobs if r["job_id"] == generation["job_id"]), None)
+                    waiting = any(
+                        unpack(r["payload_json"]).get("automatic")
+                        and r["status"] not in {"completed", "failed", "cancelled"}
+                        for r in jobs
+                    )
+                    since = (instant(at) - datetime.timedelta(hours=24)).isoformat(sep=" ")
+                    recent = any(
+                        unpack(r["payload_json"]).get("automatic")
+                        and (unpack(r["progress_json"]).get("submitted_at")
+                             or unpack(r["payload_json"]).get("requested_at", "")) >= since
+                        for r in jobs
+                    )
+                    if existing:
+                        choice["status"] = (
+                            "already_prepared" if existing["status"] == "completed"
+                            else "needs_attention" if existing["status"] in {"failed", "uncertain", "cancelled"}
+                            else "queued"
+                        )
+                        choice["job_id"] = existing["job_id"]
+                    elif waiting:
+                        choice["status"] = "waiting"
+                    elif recent:
+                        choice["status"] = "cooldown"
+                    else:
+                        self.context._conn.execute(
+                            "INSERT INTO wardrobe_jobs(job_id,updated_at,payload_json) VALUES(?,?,?)",
+                            (generation["job_id"], at, encode(generation["payload"])),
+                        )
+                        choice.update(status="queued", job_id=generation["job_id"])
+                if isinstance(choice, dict):
+                    choice["reviewed_at"] = at
+                    history = profile.get("acquisition_history") or []
+                    def comparable(item):
+                        return {k: v for k, v in item.items() if k != "reviewed_at"}
+                    if not history or comparable(history[-1]) != comparable(choice):
+                        history = [*history, copy.deepcopy(choice)]
+                    profile["acquisition_history"] = history[-12:]
+                self.context._conn.execute(
                     "INSERT INTO wardrobe_profile VALUES('self',?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,updated_at=excluded.updated_at,payload_json=excluded.payload_json WHERE wardrobe_profile.revision=?",
-                    (expected_revision + 1, at, encode(payload), expected_revision),
-                ).rowcount
-            )
+                    (expected_revision + 1, at, encode(profile), expected_revision),
+                )
+                self.context._conn.commit()
+                return True
+            except BaseException:
+                self.context._conn.rollback()
+                raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def start_wardrobe_care(
         self,
@@ -424,18 +517,18 @@ class GarmentArchiveMixin:
             return False
 
         def write():
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._wardrobe_bootstrap_unlocked()
+                self.context._wardrobe_bootstrap_unlocked()
                 keys = {
                     r[0]
                     for i in ids
-                    for r in self._conn.execute(
+                    for r in self.context._conn.execute(
                         "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?", (i,)
                     )
                 }
                 rows = [
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "SELECT * FROM wardrobe_units WHERE unit_id=?", (k,)
                     ).fetchone()
                     for k in keys
@@ -449,16 +542,16 @@ class GarmentArchiveMixin:
                     )
                     for r in rows
                 ):
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return False
-                if not self._wardrobe_event_unlocked(
+                if not self.context._wardrobe_event_unlocked(
                     event_id,
                     "care_start",
                     at,
                     "digital_care",
                     {"item_ids": ids, "decision": decision, "reason": reason},
                 ):
-                    self._conn.rollback()
+                    self.context._conn.rollback()
                     return False
                 for row in rows:
                     data = unpack(row["payload_json"])
@@ -471,17 +564,17 @@ class GarmentArchiveMixin:
                             "dry_seconds": max(30, min(1440, drying_minutes)) * 60,
                             "id": event_id,
                         }
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE wardrobe_units SET condition=?,changed_at=?,payload_json=?,revision=revision+1 WHERE unit_id=?",
                         (decision, at, encode(data), row["unit_id"]),
                     )
-                self._conn.commit()
+                self.context._conn.commit()
                 return True
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def advance_wardrobe_care(
         self, *, now: datetime.datetime, observer: str
@@ -490,9 +583,9 @@ class GarmentArchiveMixin:
 
         def write():
             changed = 0
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                for row in self._conn.execute(
+                for row in self.context._conn.execute(
                     "SELECT * FROM wardrobe_units WHERE condition IN ('washing','drying')"
                 ).fetchall():
                     data = unpack(row["payload_json"])
@@ -511,7 +604,7 @@ class GarmentArchiveMixin:
                         condition = "drying" if condition == "washing" else "clean"
                         care["seconds"] = 0
                         changed += 1
-                        self._wardrobe_event_unlocked(
+                        self.context._wardrobe_event_unlocked(
                             f"care:{care.get('id')}:{row['unit_id']}:{condition}",
                             "care_receipt",
                             at,
@@ -519,33 +612,33 @@ class GarmentArchiveMixin:
                             {"unit_id": row["unit_id"], "condition": condition},
                         )
                     data["care"] = care
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE wardrobe_units SET condition=?,changed_at=?,payload_json=?,revision=revision+1 WHERE unit_id=?",
                         (condition, at, encode(data), row["unit_id"]),
                     )
-                self._conn.commit()
+                self.context._conn.commit()
                 return changed
             except BaseException:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def enqueue_wardrobe_job(
         self, job_id: str, payload: dict, *, at: str
     ) -> dict:
         def write():
-            self._conn.execute(
+            self.context._conn.execute(
                 "INSERT OR IGNORE INTO wardrobe_jobs(job_id,updated_at,payload_json) VALUES(?,?,?)",
                 (job_id, at, encode(payload)),
             )
             return dict(
-                self._conn.execute(
+                self.context._conn.execute(
                     "SELECT * FROM wardrobe_jobs WHERE job_id=?", (job_id,)
                 ).fetchone()
             )
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def wardrobe_auto_requested_since(
         self, since: str, *, exclude: str = ""
@@ -559,12 +652,12 @@ class GarmentArchiveMixin:
                     or unpack(row[1]).get("requested_at", "")
                 )
                 >= since
-                for row in self._conn.execute(
+                for row in self.context._conn.execute(
                     "SELECT job_id,payload_json,progress_json FROM wardrobe_jobs"
                 )
             )
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def claim_wardrobe_job(
         self, job_id: str, owner: str, *, now: datetime.datetime
@@ -573,14 +666,14 @@ class GarmentArchiveMixin:
         until = (now + datetime.timedelta(hours=6)).isoformat(sep=" ")
 
         def write():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 "UPDATE wardrobe_jobs SET lease_owner=?,lease_until=?,updated_at=? WHERE job_id=? AND status NOT IN ('completed','failed','cancelled','uncertain') AND (lease_owner='' OR lease_until<?) AND (next_at='' OR next_at<=?)",
                 (owner, until, at, job_id, at, at),
             )
             if not cursor.rowcount:
                 return None
             row = dict(
-                self._conn.execute(
+                self.context._conn.execute(
                     "SELECT * FROM wardrobe_jobs WHERE job_id=?", (job_id,)
                 ).fetchone()
             )
@@ -588,7 +681,7 @@ class GarmentArchiveMixin:
             row["progress"] = unpack(row["progress_json"])
             return row
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def update_wardrobe_job(
         self,
@@ -620,7 +713,7 @@ class GarmentArchiveMixin:
                 else ""
             )
             return bool(
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE wardrobe_jobs SET status=?,progress_json=?,updated_at=?,error=?,next_at=?,lease_owner=?,lease_until=? WHERE job_id=? AND lease_owner=?",
                     (
                         status,
@@ -640,11 +733,11 @@ class GarmentArchiveMixin:
                 ).rowcount
             )
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def recover_wardrobe_jobs(self, owner: str) -> None:
         def write():
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 "SELECT * FROM wardrobe_jobs WHERE lease_owner!='' AND lease_owner!=?",
                 (owner,),
             ).fetchall()
@@ -658,18 +751,18 @@ class GarmentArchiveMixin:
                     if current.get("submitting")
                     else row["status"]
                 )
-                self._conn.execute(
+                self.context._conn.execute(
                     "UPDATE wardrobe_jobs SET status=?,lease_owner='',lease_until='' WHERE job_id=? AND lease_owner=?",
                     (status, row["job_id"], row["lease_owner"]),
                 )
 
-        await self._run_db(write)
+        await self.context._run_db(write)
 
     async def release_wardrobe_jobs(self, owner: str) -> None:
         def write():
-            self._conn.execute(
+            self.context._conn.execute(
                 "UPDATE wardrobe_jobs SET lease_owner='',lease_until='' WHERE lease_owner=?",
                 (owner,),
             )
 
-        await self._run_db(write)
+        await self.context._run_db(write)

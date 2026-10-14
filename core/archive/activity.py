@@ -6,9 +6,34 @@ from typing import Any
 
 from ..clock import today as life_today
 
+from typing import Protocol
 
-class DomainArchiveMixin:
+
+class DomainArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _conn: Any
+    _dedupe_chore_definitions: Any
+    _domain_json: Any
+    _domain_row: Any
+    _domain_unified_timeline: Any
+    _domain_value: Any
+    _flag: Any
+    _get_domain_rows: Any
+    _int: Any
+    _pantry_quantity: Any
+    _pantry_row: Any
+    _run_db: Any
+    _save_domain_action_record: Any
+    _text: Any
+    get_domain_snapshot: Any
+
+
+class DomainArchiveComponent:
     """持久化活动、饮食、家务、运动和出行记录。"""
+
+    def __init__(self, context: DomainArchiveComponentContext) -> None:
+        self.context = context
 
     _PANTRY_QUANTITY_DECIMALS = 6
     _PANTRY_ZERO_EPSILON = 1e-9
@@ -60,12 +85,12 @@ class DomainArchiveMixin:
         return result
 
     async def upsert_activity_session(self, payload: dict[str, Any]) -> dict[str, Any]:
-        action_id = self._text(payload.get("action_id"))
+        action_id = self.context._text(payload.get("action_id"))
         if not action_id:
             raise ValueError("活动会话缺少动作编号")
 
         def dbwork() -> dict[str, Any]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO activity_sessions(
                     action_id, date, scope, activity_type, title, status,
@@ -89,27 +114,27 @@ class DomainArchiveMixin:
                 """,
                 (
                     action_id,
-                    self._text(payload.get("date")),
-                    self._text(payload.get("scope")) or "global",
-                    self._text(payload.get("activity_type")),
-                    self._text(payload.get("title")),
-                    self._text(payload.get("status")) or "active",
-                    self._text(payload.get("started_at")),
-                    self._text(payload.get("ended_at")),
-                    self._text(payload.get("last_heartbeat_at")),
-                    max(0, self._int(payload.get("duration_seconds"))),
-                    self._text(payload.get("source")) or "daily_plan",
-                    self._domain_json(payload.get("evidence"), []),
-                    self._domain_json(payload.get("metadata"), {}),
+                    self.context._text(payload.get("date")),
+                    self.context._text(payload.get("scope")) or "global",
+                    self.context._text(payload.get("activity_type")),
+                    self.context._text(payload.get("title")),
+                    self.context._text(payload.get("status")) or "active",
+                    self.context._text(payload.get("started_at")),
+                    self.context._text(payload.get("ended_at")),
+                    self.context._text(payload.get("last_heartbeat_at")),
+                    max(0, self.context._int(payload.get("duration_seconds"))),
+                    self.context._text(payload.get("source")) or "daily_plan",
+                    self.context._domain_json(payload.get("evidence"), []),
+                    self.context._domain_json(payload.get("metadata"), {}),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM activity_sessions WHERE action_id = ?", (action_id,)
             ).fetchone()
-            return self._domain_row(row)
+            return self.context._domain_row(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_activity_sessions(
         self, *, limit: int = 20, status: str = ""
@@ -119,17 +144,17 @@ class DomainArchiveMixin:
             sql = "SELECT * FROM activity_sessions"
             if status:
                 sql += " WHERE status = ?"
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             sql += " ORDER BY COALESCE(NULLIF(ended_at, ''), started_at) DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(int(limit))
             return [
-                self._domain_row(row)
-                for row in self._conn.execute(sql, tuple(params)).fetchall()
+                self.context._domain_row(row)
+                for row in self.context._conn.execute(sql, tuple(params)).fetchall()
             ]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def reconcile_activity_sessions(
         self,
@@ -138,12 +163,12 @@ class DomainArchiveMixin:
     ) -> int:
         """移除同日日程替换后不再有效的未完成活动会话。"""
 
-        date_text = self._text(date)
+        date_text = self.context._text(date)
         keep_ids = sorted(
             {
-                self._text(action_id)
+                self.context._text(action_id)
                 for action_id in active_action_ids
-                if self._text(action_id)
+                if self.context._text(action_id)
             }
         )
         if not date_text:
@@ -169,21 +194,21 @@ class DomainArchiveMixin:
                         AND receipt.status IN ('confirmed', 'failed', 'cancelled')
                   )
             """
-            cursor = self._conn.execute(sql, tuple(params))
-            self._conn.commit()
+            cursor = self.context._conn.execute(sql, tuple(params))
+            self.context._conn.commit()
             return max(0, int(cursor.rowcount or 0))
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def upsert_route(self, payload: dict[str, Any]) -> dict[str, Any]:
-        origin = self._text(payload.get("origin_name"))
-        destination = self._text(payload.get("destination_name"))
-        mode = self._text(payload.get("travel_mode")) or "walking"
+        origin = self.context._text(payload.get("origin_name"))
+        destination = self.context._text(payload.get("destination_name"))
+        mode = self.context._text(payload.get("travel_mode")) or "walking"
         if not origin or not destination:
             raise ValueError("路线缓存缺少起点或终点")
 
         def dbwork() -> dict[str, Any]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO route_cache(
                     origin_name, destination_name, travel_mode, distance_meters,
@@ -204,16 +229,16 @@ class DomainArchiveMixin:
                     destination,
                     mode,
                     float(payload.get("distance_meters") or 0),
-                    max(0, self._int(payload.get("duration_seconds"))),
-                    self._text(payload.get("provider")) or "fallback",
-                    self._text(payload.get("travel_detail")),
+                    max(0, self.context._int(payload.get("duration_seconds"))),
+                    self.context._text(payload.get("provider")) or "fallback",
+                    self.context._text(payload.get("travel_detail")),
                     max(0.0, min(1.0, float(payload.get("confidence") or 0))),
-                    self._text(payload.get("fetched_at")),
-                    self._text(payload.get("expires_at")),
+                    self.context._text(payload.get("fetched_at")),
+                    self.context._text(payload.get("expires_at")),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 """
                 SELECT * FROM route_cache
                 WHERE origin_name = ? AND destination_name = ? AND travel_mode = ?
@@ -222,42 +247,42 @@ class DomainArchiveMixin:
             ).fetchone()
             return dict(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_route(
         self, origin: str, destination: str, mode: str = "walking"
     ) -> dict[str, Any] | None:
         def dbwork() -> dict[str, Any] | None:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 """
                 SELECT * FROM route_cache
                 WHERE origin_name = ? AND destination_name = ? AND travel_mode = ?
                 """,
-                (self._text(origin), self._text(destination), self._text(mode)),
+                (self.context._text(origin), self.context._text(destination), self.context._text(mode)),
             ).fetchone()
             return dict(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def delete_routes_for_place(self, name: str) -> int:
         """删除起点或终点包含指定地点的路线缓存。"""
 
-        place_name = self._text(name)
+        place_name = self.context._text(name)
         if not place_name:
             return 0
 
         def dbwork() -> int:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 DELETE FROM route_cache
                 WHERE origin_name = ? OR destination_name = ?
                 """,
                 (place_name, place_name),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(0, int(cursor.rowcount or 0))
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def reset_residence_context(
         self,
@@ -267,42 +292,42 @@ class DomainArchiveMixin:
     ) -> None:
         """重置只对当前居住地有效的索引，同时保留历史每日记录。"""
 
-        boundary = self._text(changed_at)
-        current_week = self._text(week_id)
+        boundary = self.context._text(changed_at)
+        current_week = self.context._text(week_id)
 
         def dbwork() -> None:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._conn.execute("DELETE FROM route_cache")
-                self._conn.execute("DELETE FROM places")
+                self.context._conn.execute("DELETE FROM route_cache")
+                self.context._conn.execute("DELETE FROM places")
                 if current_week:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "DELETE FROM week_plans WHERE week_id = ?",
                         (current_week,),
                     )
-                self._conn.execute(
+                self.context._conn.execute(
                     "INSERT INTO meta(key, value) VALUES(?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     ("residence_context_changed_at", boundary),
                 )
-                self._conn.commit()
+                self.context._conn.commit()
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        await self._run_db(dbwork)
+        await self.context._run_db(dbwork)
 
     async def get_residence_context_boundary(self) -> str:
         """返回最近一次居住地变化时间。"""
 
         def dbwork() -> str:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT value FROM meta WHERE key = ?",
                 ("residence_context_changed_at",),
             ).fetchone()
-            return self._text(row["value"] if row else "")
+            return self.context._text(row["value"] if row else "")
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def update_place_coordinates(
         self,
@@ -314,7 +339,7 @@ class DomainArchiveMixin:
         updated_at: str = "",
     ) -> bool:
         def dbwork() -> bool:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO places(
                     name, latitude, longitude, coordinate_source,
@@ -327,27 +352,27 @@ class DomainArchiveMixin:
                     coordinate_updated_at = excluded.coordinate_updated_at
                 """,
                 (
-                    self._text(name),
+                    self.context._text(name),
                     float(latitude),
                     float(longitude),
-                    self._text(source),
-                    self._text(updated_at),
-                    self._text(source) or "manual",
+                    self.context._text(source),
+                    self.context._text(updated_at),
+                    self.context._text(source) or "manual",
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return True
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def upsert_recipe(self, payload: dict[str, Any]) -> dict[str, Any]:
-        recipe_id = self._text(payload.get("id"))
-        name = self._text(payload.get("name"))
+        recipe_id = self.context._text(payload.get("id"))
+        name = self.context._text(payload.get("name"))
         if not recipe_id or not name:
             raise ValueError("食谱缺少编号或名称")
 
         def dbwork() -> dict[str, Any]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO recipes(id, name, meal_type, ingredients_json, tags_json, source)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -362,19 +387,19 @@ class DomainArchiveMixin:
                 (
                     recipe_id,
                     name,
-                    self._text(payload.get("meal_type")),
-                    self._domain_json(payload.get("ingredients"), []),
-                    self._domain_json(payload.get("tags"), []),
-                    self._text(payload.get("source")) or "manual",
+                    self.context._text(payload.get("meal_type")),
+                    self.context._domain_json(payload.get("ingredients"), []),
+                    self.context._domain_json(payload.get("tags"), []),
+                    self.context._text(payload.get("source")) or "manual",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM recipes WHERE id = ?", (recipe_id,)
             ).fetchone()
-            return self._domain_row(row)
+            return self.context._domain_row(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_recipes(self, limit: int = 20) -> list[dict[str, Any]]:
         def dbwork() -> list[dict[str, Any]]:
@@ -384,11 +409,11 @@ class DomainArchiveMixin:
                 sql += " LIMIT ?"
                 params = (int(limit),)
             return [
-                self._domain_row(row)
-                for row in self._conn.execute(sql, params).fetchall()
+                self.context._domain_row(row)
+                for row in self.context._conn.execute(sql, params).fetchall()
             ]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def adjust_pantry_item(
         self,
@@ -403,30 +428,30 @@ class DomainArchiveMixin:
         occurred_at: str = "",
         source: str = "life_action",
     ) -> dict[str, Any]:
-        item_name = self._text(name)
+        item_name = self.context._text(name)
         if not item_name:
             raise ValueError("库存物品名称不能为空")
 
         def dbwork() -> dict[str, Any]:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM pantry_items WHERE name = ?", (item_name,)
             ).fetchone()
-            current = self._pantry_quantity(row["quantity"] if row else 0)
-            movement = self._pantry_quantity(delta)
-            updated = max(0.0, self._pantry_quantity(current + movement))
-            stored_unit = self._text(unit) or (self._text(row["unit"]) if row else "")
-            stored_minimum = max(0.0, self._pantry_quantity(minimum_quantity))
+            current = self.context._pantry_quantity(row["quantity"] if row else 0)
+            movement = self.context._pantry_quantity(delta)
+            updated = max(0.0, self.context._pantry_quantity(current + movement))
+            stored_unit = self.context._text(unit) or (self.context._text(row["unit"]) if row else "")
+            stored_minimum = max(0.0, self.context._pantry_quantity(minimum_quantity))
             if row and stored_minimum == 0:
                 stored_minimum = max(
                     0.0,
-                    self._pantry_quantity(row["minimum_quantity"]),
+                    self.context._pantry_quantity(row["minimum_quantity"]),
                 )
-            stored_expiry = self._text(expires_at) or (
-                self._text(row["expires_at"]) if row else ""
+            stored_expiry = self.context._text(expires_at) or (
+                self.context._text(row["expires_at"]) if row else ""
             )
-            stored_source = self._text(source) or "life_action"
+            stored_source = self.context._text(source) or "life_action"
             if updated > 0:
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     INSERT INTO pantry_items(
                         name, quantity, unit, minimum_quantity, expires_at, source, updated_at
@@ -449,11 +474,11 @@ class DomainArchiveMixin:
                     ),
                 )
             else:
-                self._conn.execute(
+                self.context._conn.execute(
                     "DELETE FROM pantry_items WHERE name = ?",
                     (item_name,),
                 )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO pantry_movements(
                     item_name, delta, unit, reason, action_id, occurred_at, source
@@ -463,18 +488,18 @@ class DomainArchiveMixin:
                     item_name,
                     movement,
                     stored_unit,
-                    self._text(reason),
-                    self._text(action_id),
-                    self._text(occurred_at),
+                    self.context._text(reason),
+                    self.context._text(action_id),
+                    self.context._text(occurred_at),
                     stored_source,
                 ),
             )
-            self._conn.commit()
-            saved = self._conn.execute(
+            self.context._conn.commit()
+            saved = self.context._conn.execute(
                 "SELECT * FROM pantry_items WHERE name = ?", (item_name,)
             ).fetchone()
             if saved:
-                return self._pantry_row(saved)
+                return self.context._pantry_row(saved)
             return {
                 "name": item_name,
                 "quantity": 0.0,
@@ -484,13 +509,13 @@ class DomainArchiveMixin:
                 "source": stored_source,
             }
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_pantry_items(self, limit: int = 50) -> list[dict[str, Any]]:
         def dbwork() -> list[dict[str, Any]]:
             rows = [
-                self._pantry_row(row)
-                for row in self._conn.execute(
+                self.context._pantry_row(row)
+                for row in self.context._conn.execute(
                     "SELECT * FROM pantry_items "
                     "ORDER BY expires_at, updated_at DESC, name"
                 ).fetchall()
@@ -498,10 +523,10 @@ class DomainArchiveMixin:
             visible = [row for row in rows if row["quantity"] > 0]
             return visible[: int(limit)] if limit > 0 else visible
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def save_meal_record(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._save_domain_action_record(
+        return await self.context._save_domain_action_record(
             "meal_records",
             payload,
             fields=(
@@ -523,13 +548,13 @@ class DomainArchiveMixin:
         )
 
     async def upsert_chore(self, payload: dict[str, Any]) -> dict[str, Any]:
-        chore_id = self._text(payload.get("id"))
-        name = self._text(payload.get("name"))
+        chore_id = self.context._text(payload.get("id"))
+        name = self.context._text(payload.get("name"))
         if not chore_id or not name:
             raise ValueError("家务事项缺少编号或名称")
 
         def dbwork() -> dict[str, Any]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO chores(
                     id, name, cadence_days, effort, last_completed_at,
@@ -548,24 +573,24 @@ class DomainArchiveMixin:
                 (
                     chore_id,
                     name,
-                    max(0, self._int(payload.get("cadence_days"))),
-                    max(1, min(5, self._int(payload.get("effort"), 1))),
-                    self._text(payload.get("last_completed_at")),
-                    self._text(payload.get("next_due_at")),
-                    self._flag(payload.get("enabled", True)),
-                    self._text(payload.get("source")) or "daily_plan",
+                    max(0, self.context._int(payload.get("cadence_days"))),
+                    max(1, min(5, self.context._int(payload.get("effort"), 1))),
+                    self.context._text(payload.get("last_completed_at")),
+                    self.context._text(payload.get("next_due_at")),
+                    self.context._flag(payload.get("enabled", True)),
+                    self.context._text(payload.get("source")) or "daily_plan",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM chores WHERE id = ?", (chore_id,)
             ).fetchone()
             return dict(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def save_chore_record(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._save_domain_action_record(
+        return await self.context._save_domain_action_record(
             "chore_records",
             payload,
             fields=(
@@ -581,7 +606,7 @@ class DomainArchiveMixin:
         )
 
     async def save_fitness_record(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._save_domain_action_record(
+        return await self.context._save_domain_action_record(
             "fitness_records",
             payload,
             fields=(
@@ -601,7 +626,7 @@ class DomainArchiveMixin:
     async def has_domain_action_record(self, action_type: str, action_id: str) -> bool:
         """检查可派生领域副作用是否已经完成持久化。"""
 
-        normalized_type = self._text(action_type).lower()
+        normalized_type = self.context._text(action_type).lower()
         table = {
             "meal": "meal_records",
             "cook": "meal_records",
@@ -610,18 +635,18 @@ class DomainArchiveMixin:
             "chore": "chore_records",
             "exercise": "fitness_records",
         }.get(normalized_type)
-        normalized_id = self._text(action_id)
+        normalized_id = self.context._text(action_id)
         if not table or not normalized_id:
             return False
 
         def dbwork() -> bool:
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 f"SELECT 1 FROM {table} WHERE action_id = ? LIMIT 1",
                 (normalized_id,),
             ).fetchone()
             return row is not None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def _save_domain_action_record(
         self,
@@ -631,7 +656,7 @@ class DomainArchiveMixin:
         fields: tuple[str, ...],
         json_fields: dict[str, str],
     ) -> dict[str, Any]:
-        action_id = self._text(payload.get("action_id"))
+        action_id = self.context._text(payload.get("action_id"))
         if not action_id:
             raise ValueError("领域记录缺少动作编号")
 
@@ -640,45 +665,45 @@ class DomainArchiveMixin:
             for field in fields:
                 if field in json_fields:
                     values.append(
-                        self._domain_json(payload.get(json_fields[field]), [])
+                        self.context._domain_json(payload.get(json_fields[field]), [])
                     )
                 else:
                     values.append(payload.get(field, ""))
             columns = ", ".join(("action_id", *fields))
             placeholders = ", ".join("?" for _ in range(len(fields) + 1))
             assignments = ", ".join(f"{field} = excluded.{field}" for field in fields)
-            self._conn.execute(
+            self.context._conn.execute(
                 f"""
                 INSERT INTO {table}({columns}) VALUES ({placeholders})
                 ON CONFLICT(action_id) DO UPDATE SET {assignments}
                 """,
                 (action_id, *values),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 f"SELECT * FROM {table} WHERE action_id = ?", (action_id,)
             ).fetchone()
-            return self._domain_row(row)
+            return self.context._domain_row(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_chores(self, limit: int = 20) -> list[dict[str, Any]]:
-        return await self._get_domain_rows(
+        return await self.context._get_domain_rows(
             "chores", "enabled DESC, next_due_at, updated_at DESC", limit
         )
 
     async def get_chore_records(self, limit: int = 20) -> list[dict[str, Any]]:
-        return await self._get_domain_rows(
+        return await self.context._get_domain_rows(
             "chore_records", "occurred_at DESC, id DESC", limit
         )
 
     async def get_meal_records(self, limit: int = 20) -> list[dict[str, Any]]:
-        return await self._get_domain_rows(
+        return await self.context._get_domain_rows(
             "meal_records", "date DESC, occurred_at DESC, id DESC", limit
         )
 
     async def get_fitness_records(self, limit: int = 20) -> list[dict[str, Any]]:
-        return await self._get_domain_rows(
+        return await self.context._get_domain_rows(
             "fitness_records", "date DESC, occurred_at DESC, id DESC", limit
         )
 
@@ -692,22 +717,22 @@ class DomainArchiveMixin:
                 sql += " LIMIT ?"
                 params = (int(limit),)
             return [
-                self._domain_row(row)
-                for row in self._conn.execute(sql, params).fetchall()
+                self.context._domain_row(row)
+                for row in self.context._conn.execute(sql, params).fetchall()
             ]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def save_conversation_action_item(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        commitment_id = max(0, self._int(payload.get("commitment_id")))
-        title = self._text(payload.get("title"))
+        commitment_id = max(0, self.context._int(payload.get("commitment_id")))
+        title = self.context._text(payload.get("title"))
         if not commitment_id or not title:
             raise ValueError("会话行动项缺少承诺编号或标题")
 
         def dbwork() -> dict[str, Any]:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO conversation_action_items(
                     commitment_id, title, owner, due_at, status, source_session,
@@ -726,32 +751,32 @@ class DomainArchiveMixin:
                 (
                     commitment_id,
                     title,
-                    self._text(payload.get("owner")),
-                    self._text(payload.get("due_at")),
-                    self._text(payload.get("status")) or "open",
-                    self._text(payload.get("source_session")),
-                    self._text(payload.get("source_message")),
-                    self._domain_json(payload.get("evidence"), []),
+                    self.context._text(payload.get("owner")),
+                    self.context._text(payload.get("due_at")),
+                    self.context._text(payload.get("status")) or "open",
+                    self.context._text(payload.get("source_session")),
+                    self.context._text(payload.get("source_message")),
+                    self.context._domain_json(payload.get("evidence"), []),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM conversation_action_items WHERE commitment_id = ?",
                 (commitment_id,),
             ).fetchone()
-            return self._domain_row(row)
+            return self.context._domain_row(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_conversation_action_items(
         self, limit: int = 20
     ) -> list[dict[str, Any]]:
-        return await self._get_domain_rows(
+        return await self.context._get_domain_rows(
             "conversation_action_items", "status, due_at, id DESC", limit
         )
 
     async def get_unified_life_timeline(self, limit: int = 60) -> list[dict[str, Any]]:
-        snapshot = await self.get_domain_snapshot(limit=max(0, int(limit)))
+        snapshot = await self.context.get_domain_snapshot(limit=max(0, int(limit)))
         return list(snapshot.get("timeline", []))[: max(0, int(limit))]
 
     async def get_domain_snapshot(self, limit: int = 20) -> dict[str, Any]:
@@ -765,52 +790,52 @@ class DomainArchiveMixin:
                     sql += " LIMIT ?"
                     params = (int(row_limit),)
                 return [
-                    self._domain_row(row)
-                    for row in self._conn.execute(sql, params).fetchall()
+                    self.context._domain_row(row)
+                    for row in self.context._conn.execute(sql, params).fetchall()
                 ]
 
             planned_action_ids: dict[str, set[str]] = {
-                self._text(row["date"]): set()
-                for row in self._conn.execute("SELECT date FROM days").fetchall()
-                if self._text(row["date"])
+                self.context._text(row["date"]): set()
+                for row in self.context._conn.execute("SELECT date FROM days").fetchall()
+                if self.context._text(row["date"])
             }
-            for row in self._conn.execute(
+            for row in self.context._conn.execute(
                 "SELECT date, value FROM day_meta WHERE key = 'planned_life_actions'"
             ).fetchall():
-                date_text = self._text(row["date"])
-                values = self._domain_value(row["value"], [])
+                date_text = self.context._text(row["date"])
+                values = self.context._domain_value(row["value"], [])
                 if not date_text or not isinstance(values, list):
                     continue
                 planned_action_ids[date_text] = {
-                    self._text(item.get("action_id"))
+                    self.context._text(item.get("action_id"))
                     for item in values
-                    if isinstance(item, dict) and self._text(item.get("action_id"))
+                    if isinstance(item, dict) and self.context._text(item.get("action_id"))
                 }
             trusted_action_ids = {
-                self._text(row["action_id"])
-                for row in self._conn.execute(
+                self.context._text(row["action_id"])
+                for row in self.context._conn.execute(
                     """
                     SELECT DISTINCT action_id
                     FROM life_action_receipts
                     WHERE status IN ('confirmed', 'failed', 'cancelled')
                     """
                 ).fetchall()
-                if self._text(row["action_id"])
+                if self.context._text(row["action_id"])
             }
             current_date = life_today().isoformat()
             superseded_action_ids = {
-                self._text(row["action_id"])
-                for row in self._conn.execute(
+                self.context._text(row["action_id"])
+                for row in self.context._conn.execute(
                     """
                     SELECT action_id, date
                     FROM activity_sessions
                     WHERE source = 'daily_plan'
                     """
                 ).fetchall()
-                if self._text(row["date"]) in planned_action_ids
-                and self._text(row["action_id"])
-                not in planned_action_ids[self._text(row["date"])]
-                and self._text(row["action_id"]) not in trusted_action_ids
+                if self.context._text(row["date"]) in planned_action_ids
+                and self.context._text(row["action_id"])
+                not in planned_action_ids[self.context._text(row["date"])]
+                and self.context._text(row["action_id"]) not in trusted_action_ids
             }
             candidate_limit = max(int(limit) * 4, 80) if limit > 0 else 0
 
@@ -823,8 +848,8 @@ class DomainArchiveMixin:
                 date_value: str,
                 action_key: str = "action_id",
             ) -> bool:
-                action_id = self._text(item.get(action_key))
-                date_text = self._text(date_value)[:10]
+                action_id = self.context._text(item.get(action_key))
+                date_text = self.context._text(date_value)[:10]
                 if (
                     not action_id
                     or not date_text
@@ -838,10 +863,10 @@ class DomainArchiveMixin:
                     return not (
                         date_text < current_date
                         and action_id not in trusted_action_ids
-                        and self._text(item.get("status"))
+                        and self.context._text(item.get("status"))
                         in {"expired", "skipped", "failed"}
                     )
-                return self._text(item.get("source")) not in {
+                return self.context._text(item.get("source")) not in {
                     "daily_plan",
                     "life_action_simulation",
                     "timeline_simulation",
@@ -878,7 +903,7 @@ class DomainArchiveMixin:
                         candidate_limit,
                     )
                     if is_visible_plan_record(
-                        item, date_value=self._text(item.get("occurred_at"))[:10]
+                        item, date_value=self.context._text(item.get("occurred_at"))[:10]
                     )
                 ]
             )
@@ -893,7 +918,7 @@ class DomainArchiveMixin:
                     if is_visible_plan_record(item, date_value=item.get("date", ""))
                 ]
             )
-            chores = self._dedupe_chore_definitions(
+            chores = self.context._dedupe_chore_definitions(
                 [
                     item
                     for item in rows(
@@ -902,15 +927,15 @@ class DomainArchiveMixin:
                         candidate_limit,
                     )
                     if not (
-                        self._text(item.get("source")) == "life_action_simulation"
-                        and self._text(item.get("id")) in superseded_action_ids
+                        self.context._text(item.get("source")) == "life_action_simulation"
+                        and self.context._text(item.get("id")) in superseded_action_ids
                     )
                 ]
             )
             chores = visible_limit(chores)
 
             pantry = [
-                self._pantry_row(item)
+                self.context._pantry_row(item)
                 for item in rows(
                     "pantry_items", "expires_at, updated_at DESC, name", 0
                 )
@@ -932,8 +957,8 @@ class DomainArchiveMixin:
                 ),
             }
 
-        snapshot = await self._run_db(dbwork)
-        snapshot["timeline"] = self._domain_unified_timeline(snapshot, max(limit, 40))
+        snapshot = await self.context._run_db(dbwork)
+        snapshot["timeline"] = self.context._domain_unified_timeline(snapshot, max(limit, 40))
         return snapshot
 
     @staticmethod
@@ -1022,4 +1047,4 @@ class DomainArchiveMixin:
         return values[: max(0, int(limit))]
 
 
-__all__ = ["DomainArchiveMixin"]
+__all__ = ["DomainArchiveComponent"]

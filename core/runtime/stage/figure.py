@@ -11,9 +11,31 @@ from astrbot.api import logger
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class StageFigureMixin:
+
+class StageFigureComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _character_appearance_cache: Any
+    _character_appearance_context: Any
+    _character_appearance_fingerprint: Any
+    _character_appearance_prompt: Any
+    _character_appearance_tasks: Any
+    _event_session_id: Any
+    _extract_character_appearance_profile: Any
+    _life_character_appearance_cache: Any
+    _life_character_appearance_tasks: Any
+    _media_director_call: Any
+    _remember_character_appearance_profile: Any
+    get_persona_text: Any
+
+
+class StageFigureComponent:
     """从当前角色人设中提取图片工作流可复用的稳定体貌事实。"""
+
+    def __init__(self, context: StageFigureComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _character_appearance_prompt(persona: str) -> str:
@@ -29,17 +51,17 @@ JSON 字段：
         return cache_friendly_prompt(fixed, persona, dynamic_title="当前角色稳定外观人设")
 
     def _character_appearance_cache(self) -> dict[str, str]:
-        cache = getattr(self, "_life_character_appearance_cache", None)
+        cache = getattr(self.context, "_life_character_appearance_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-            self._life_character_appearance_cache = cache
+            self.context._life_character_appearance_cache = cache
         return cache
 
     def _character_appearance_tasks(self) -> dict[str, asyncio.Task[str]]:
-        tasks = getattr(self, "_life_character_appearance_tasks", None)
+        tasks = getattr(self.context, "_life_character_appearance_tasks", None)
         if not isinstance(tasks, dict):
             tasks = {}
-            self._life_character_appearance_tasks = tasks
+            self.context._life_character_appearance_tasks = tasks
         return tasks
 
     @staticmethod
@@ -62,8 +84,8 @@ JSON 字段：
         if not persona:
             return ""
         profile = " ".join(str(appearance_profile or "").strip().split())[:600]
-        cache = self._character_appearance_cache()
-        cache[self._character_appearance_fingerprint(persona)] = profile
+        cache = self.context._character_appearance_cache()
+        cache[self.context._character_appearance_fingerprint(persona)] = profile
         while len(cache) > 16:
             cache.pop(next(iter(cache)))
         return profile
@@ -75,10 +97,10 @@ JSON 字段：
         schedule_extract: bool = True,
         wait_for_extract: bool = False,
     ) -> tuple[str, str]:
-        persona_getter = getattr(self, "get_persona_text", None)
+        persona_getter = getattr(self.context, "get_persona_text", None)
         if not callable(persona_getter):
             return "", ""
-        scope_getter = getattr(self, "_event_session_id", None)
+        scope_getter = getattr(self.context, "_event_session_id", None)
         scope = (
             scope_getter(event) if event is not None and callable(scope_getter) else ""
         )
@@ -90,17 +112,17 @@ JSON 字段：
         if not persona:
             return "", ""
 
-        fingerprint = self._character_appearance_fingerprint(persona)
-        cache = self._character_appearance_cache()
+        fingerprint = self.context._character_appearance_fingerprint(persona)
+        cache = self.context._character_appearance_cache()
         if fingerprint in cache:
             return persona, cache[fingerprint]
         if not schedule_extract:
             return persona, ""
 
-        tasks = self._character_appearance_tasks()
+        tasks = self.context._character_appearance_tasks()
         task = tasks.get(fingerprint)
         if task is None:
-            task = asyncio.create_task(self._extract_character_appearance_profile(persona))
+            task = asyncio.create_task(self.context._extract_character_appearance_profile(persona))
             tasks[fingerprint] = task
 
             def store_result(completed: asyncio.Task[str]) -> None:
@@ -112,7 +134,7 @@ JSON 字段：
                 except Exception as exc:
                     logger.debug(f"{LOG_PREFIX} 角色稳定体貌提取失败：{exc}")
                     return
-                self._remember_character_appearance_profile(persona, profile)
+                self.context._remember_character_appearance_profile(persona, profile)
 
             task.add_done_callback(store_result)
         if wait_for_extract:
@@ -126,10 +148,10 @@ JSON 字段：
         return persona, ""
 
     async def _extract_character_appearance_profile(self, persona: str) -> str:
-        caller = getattr(self, "_media_director_call", None)
+        caller = getattr(self.context, "_media_director_call", None)
         if not callable(caller):
             return ""
-        payload = await caller(self._character_appearance_prompt(persona))
+        payload = await caller(self.context._character_appearance_prompt(persona))
         if not isinstance(payload, dict) or not isinstance(payload.get("supported"), bool):
             raise ValueError("角色稳定体貌提取结果缺少有效 supported 字段")
         if payload["supported"] is not True:
@@ -139,14 +161,14 @@ JSON 字段：
         ]
 
     async def _character_appearance_profile(self, event: Any = None) -> str:
-        _persona, profile = await self._character_appearance_context(
+        _persona, profile = await self.context._character_appearance_context(
             event, wait_for_extract=True
         )
         return profile
 
     async def _close_character_appearance_tasks(self) -> None:
-        tasks = list(self._character_appearance_tasks().values())
-        self._character_appearance_tasks().clear()
+        tasks = list(self.context._character_appearance_tasks().values())
+        self.context._character_appearance_tasks().clear()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -154,4 +176,4 @@ JSON 字段：
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-__all__ = ["StageFigureMixin"]
+__all__ = ["StageFigureComponent"]

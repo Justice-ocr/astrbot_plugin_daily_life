@@ -1,10 +1,10 @@
 from .commands import DailyLifeCommandCenter
-from .panel import DailyLifeDashboardMixin
+from .panel import DailyLifeDashboardComponent
 from .policy import LifeAccessPolicy, LifeActionProposal, LifeActionScope
 
 __all__ = [
     "DailyLifeCommandCenter",
-    "DailyLifeDashboardMixin",
+    "DailyLifeDashboardComponent",
     "LifeAccessPolicy",
     "LifeActionProposal",
     "LifeActionScope",

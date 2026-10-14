@@ -11,12 +11,10 @@ if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
 
 from astrbot_plugin_daily_life.core.runtime.forward import (  # noqa: E402
-    TextForwardMixin,
+    TextForwardService,
     TextImageSource,
 )
-from astrbot_plugin_daily_life.core.runtime.style import (  # noqa: E402
-    ChatStyleRuntimeMixin,
-)
+from componentfixtures import ChatStyleRuntimeComponent  # noqa: E402
 from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 
 
@@ -28,15 +26,26 @@ class _SendConfigContext:
         return dict(self.config)
 
 
-class _ForwardRuntime(TextForwardMixin, ChatStyleRuntimeMixin):
+class _ForwardFixture(ChatStyleRuntimeComponent):
     def __init__(self, config=None):
         self.context = _SendConfigContext(config)
-        self._init_t2i_forward_cache()
+        self.logged = []
+        self.clock = 1000.0
+        self.service = TextForwardService(
+            context=self.context,
+            keep_default_send=self._chat_style_should_keep_default_send,
+            log_outbound=self._log_outbound,
+            clock=lambda: self.clock,
+        )
+
+    async def _log_outbound(self, chain, **kwargs):
+        self.logged.append((chain, kwargs))
+        return True
 
 
 class TextForwardTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.runtime = _ForwardRuntime({"t2i": True, "t2i_word_threshold": 50})
+        self.runtime = _ForwardFixture({"t2i": True, "t2i_word_threshold": 50})
 
     @staticmethod
     def _image_result(event):
@@ -46,7 +55,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         event._daily_life_t2i_default_send = True
         event._daily_life_t2i_source_text = text
         self._image_result(event)
-        return self.runtime.note_t2i_image_sent(event)
+        return self.runtime.service.note_image_sent(event)
 
     def test_t2i_candidate_captures_exact_source_text(self):
         event = Event()
@@ -56,14 +65,14 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(kept)
         self.assertEqual(event._daily_life_t2i_source_text, source * 4)
-        self.assertEqual(self.runtime._t2i_forward_cache, {})
+        self.assertEqual(self.runtime.service._records, {})
 
     def test_send_pipeline_capture_does_not_depend_on_chat_style_enabled(self):
         event = Event()
         source = "关闭聊天表达后也要保留的长文本。" * 5
         event.set_result(event.chain_result([source]))
 
-        captured = self.runtime.capture_t2i_source_before_send(event)
+        captured = self.runtime.service.capture_before_send(event)
 
         self.assertTrue(captured)
         self.assertEqual(event._daily_life_t2i_source_text, source)
@@ -76,7 +85,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(committed)
         self.assertEqual(event.sent_messages, [])
-        records = self.runtime._t2i_forward_cache[event.unified_msg_origin]
+        records = self.runtime.service._records[event.unified_msg_origin]
         self.assertEqual(records[0].text, source)
         self.assertEqual(records[0].message_id, "reply-1")
         self.assertFalse(hasattr(event, "_daily_life_t2i_source_text"))
@@ -87,10 +96,10 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         event._daily_life_t2i_source_text = "转图失败后的原文"
         event.set_result(event.chain_result(["转图失败后的原文"]))
 
-        committed = self.runtime.note_t2i_image_sent(event)
+        committed = self.runtime.service.note_image_sent(event)
 
         self.assertFalse(committed)
-        self.assertEqual(self.runtime._t2i_forward_cache, {})
+        self.assertEqual(self.runtime.service._records, {})
         self.assertFalse(hasattr(event, "_daily_life_t2i_source_text"))
 
     async def test_latest_and_previous_records_send_exact_onebot_forward(self):
@@ -98,7 +107,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         self._commit(event, "第一条，原样。")
         self._commit(event, "第二条\n也原样？")
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event, index=2))
+        payload = json.loads(await self.runtime.service.forward_text(event, index=2))
 
         self.assertEqual(payload["status"], "sent")
         self.assertEqual(len(event.sent_messages), 1)
@@ -109,13 +118,17 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.uin, "10000")
         self.assertEqual(node.name, "机器人")
         self.assertEqual(str(node.content[0]), "第一条，原样。")
+        self.assertEqual(self.runtime.logged, [(message, {
+            "scope": event.unified_msg_origin,
+            "source_event": event, "source": "t2i_forward",
+        })])
 
     async def test_forward_uses_current_onebot_nickname(self):
         bot = ActionBot({"get_login_info": {"nickname": "测试机器人昵称"}})
         event = Event(bot=bot, self_id="10000")
         self._commit(event, "需要转发的原文")
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event))
+        payload = json.loads(await self.runtime.service.forward_text(event))
 
         self.assertEqual(payload["status"], "sent")
         node = event.sent_messages[0].chain[0].nodes[0]
@@ -127,7 +140,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         event = Event(bot=bot, self_id="10000")
         self._commit(event, "需要转发的原文")
 
-        await self.runtime.forward_t2i_text(event)
+        await self.runtime.service.forward_text(event)
 
         node = event.sent_messages[0].chain[0].nodes[0]
         self.assertEqual(node.name, "嵌套机器人昵称")
@@ -138,8 +151,8 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         self._commit(private, "私聊原文")
         self._commit(group, "群聊原文")
 
-        await self.runtime.forward_t2i_text(private)
-        await self.runtime.forward_t2i_text(group)
+        await self.runtime.service.forward_text(private)
+        await self.runtime.service.forward_text(group)
 
         private_text = str(private.sent_messages[0].chain[0].nodes[0].content[0])
         group_text = str(group.sent_messages[0].chain[0].nodes[0].content[0])
@@ -148,16 +161,16 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_expired_record_is_unavailable(self):
         event = Event()
-        self.runtime._t2i_forward_cache[event.unified_msg_origin] = [
+        self.runtime.service._records[event.unified_msg_origin] = [
             TextImageSource(
                 text="过期原文",
-                created_at=self.runtime._t2i_forward_now()
-                - self.runtime._T2I_FORWARD_TTL_SECONDS
+                created_at=self.runtime.clock
+                - self.runtime.service.TTL_SECONDS
                 - 1,
             )
         ]
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event))
+        payload = json.loads(await self.runtime.service.forward_text(event))
 
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(event.sent_messages, [])
@@ -167,13 +180,13 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         for index in range(7):
             self._commit(event, f"原文{index}")
 
-        records = self.runtime._t2i_forward_cache[event.unified_msg_origin]
+        records = self.runtime.service._records[event.unified_msg_origin]
 
         self.assertEqual(
             [record.text for record in records],
             ["原文2", "原文3", "原文4", "原文5", "原文6"],
         )
-        await self.runtime.forward_t2i_text(event, index=5)
+        await self.runtime.service.forward_text(event, index=5)
         text = str(event.sent_messages[0].chain[0].nodes[0].content[0])
         self.assertEqual(text, "原文2")
 
@@ -184,7 +197,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         )
         self._commit(event, "微信原文")
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event))
+        payload = json.loads(await self.runtime.service.forward_text(event))
 
         self.assertEqual(payload["status"], "unsupported")
         self.assertEqual(event.sent_messages, [])
@@ -192,7 +205,7 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_record_is_unavailable(self):
         event = Event()
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event))
+        payload = json.loads(await self.runtime.service.forward_text(event))
 
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(event.sent_messages, [])
@@ -205,10 +218,30 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         event = FailedEvent()
         self._commit(event, "不可泄漏的原文")
 
-        payload = json.loads(await self.runtime.forward_t2i_text(event))
+        payload = json.loads(await self.runtime.service.forward_text(event))
 
         self.assertEqual(payload["status"], "error")
         self.assertEqual(event.sent_messages, [])
+        self.assertEqual(self.runtime.logged, [])
+
+    async def test_eviction_and_clear_do_not_affect_another_instance(self):
+        first = Event(unified_msg_origin="aiocqhttp:FriendMessage:u1")
+        second = Event(unified_msg_origin="aiocqhttp:FriendMessage:u2")
+        other = _ForwardFixture()
+        self._commit(first, "会话一原文")
+        self._commit(second, "会话二原文")
+        first._daily_life_t2i_default_send = True
+        first._daily_life_t2i_source_text = "另一实例的原文"
+        self._image_result(first)
+        other.service.note_image_sent(first)
+
+        self.runtime.service.evict_scopes({first.unified_msg_origin})
+
+        self.assertEqual(json.loads(await self.runtime.service.forward_text(first))["status"], "unavailable")
+        self.assertEqual(json.loads(await self.runtime.service.forward_text(second))["status"], "sent")
+        self.runtime.service.clear()
+        self.assertEqual(self.runtime.service._records, {})
+        self.assertEqual(json.loads(await other.service.forward_text(first))["status"], "sent")
 
     async def test_plugin_tool_delegates_requested_index(self):
         calls = []

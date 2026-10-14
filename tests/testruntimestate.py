@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 
 import unittest
+from unittest.mock import AsyncMock
 
 from runtimehelpers import (
     AltProvider,
@@ -17,7 +18,7 @@ from runtimehelpers import (
     PhysiologicalRhythmLogRecord,
     Provider,
     ProviderRequest,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     TimelineItem,
     WeatherInfo,
     async_return,
@@ -564,7 +565,7 @@ class RuntimeStateTest(unittest.TestCase):
             state=LifeState.from_value({"summary": "状态平稳"}),
         )
 
-        prompt = runtime._build_state_update_prompt(
+        prompt = runtime.state_refresh._build_state_update_prompt(
             data,
             datetime.datetime(2026, 7, 5, 12, 0),
             "test",
@@ -596,7 +597,7 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertIn("当前是否清醒仍按实时状态和时间轴判断", text)
 
 
-class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     async def test_slow_memory_ranking_cannot_delay_chat_context_indefinitely(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -634,7 +635,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.call_text_model = call_text_model
         runtime.close_text_session = close_text_session
 
-        selected = await runtime._meaning_rank_with_model(
+        selected = await runtime.meaning._meaning_rank_with_model(
             "今天准备做什么？",
             {
                 "summaries": [("summary:1", "在家休息", "摘要一")],
@@ -965,8 +966,11 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await runtime.inject_life_context(req2, event2)
 
         self.assertEqual(runtime.archive.relationship_calls, 1)
-        self.assertIn("喜欢看展", req2.system_prompt)
-        self.assertIn("<daily_life>", req2.system_prompt)
+        temporary_facts = "\n".join(part.text for part in req2.extra_user_content_parts)
+        self.assertIn("喜欢看展", temporary_facts)
+        self.assertIn("<daily_life>", temporary_facts)
+        self.assertNotIn("喜欢看展", req2.system_prompt)
+        self.assertTrue(req2.extra_user_content_parts[-1].model_dump_for_context()["_no_save"])
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
     async def test_injection_snapshot_coalesces_concurrent_cache_misses(self):
@@ -1055,10 +1059,13 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await asyncio.wait_for(generation_started.wait(), timeout=1)
 
         self.assertEqual(runtime.composer.calls, 1)
-        self.assertIn("<daily_life>", req.system_prompt)
-        self.assertIn("[HiddenScheduleUnavailable]", req.system_prompt)
-        self.assertIn("禁止编造今天正在做什么", req.system_prompt)
-        self.assertNotIn("[HiddenScheduleMemory]", req.system_prompt)
+        temporary_facts = "\n".join(part.text for part in req.extra_user_content_parts)
+        self.assertIn("<daily_life>", temporary_facts)
+        self.assertIn("[HiddenScheduleUnavailable]", temporary_facts)
+        self.assertIn("禁止编造今天正在做什么", temporary_facts)
+        self.assertNotIn("[HiddenScheduleMemory]", temporary_facts)
+        self.assertNotIn("[HiddenScheduleUnavailable]", req.system_prompt)
+        self.assertTrue(req.extra_user_content_parts[-1].model_dump_for_context()["_no_save"])
         self.assertEqual(runtime.archive.days, {})
 
         allow_generation.set()
@@ -2268,6 +2275,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             }
         )
         runtime.archive = DataManager()
+        runtime.sync_continuous_kernel_state = AsyncMock()
         runtime.composer = type(
             "Composer",
             (),
@@ -2275,6 +2283,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "_get_provider": staticmethod(get_provider),
                 "_call_llm_text": staticmethod(call_llm_text),
                 "_cleanup_conversation": staticmethod(cleanup),
+                "sync_day_world_facts": staticmethod(lambda *args, **kwargs: async_return([])),
                 "_compute_sleep_continuity": staticmethod(
                     lambda previous, day: (0.0, 0.0, float(day.state.energy or 0))
                 ),
@@ -2394,6 +2403,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime.archive = DataManager()
         runtime.mark_page_status_changed = lambda _kind: async_return(None)
+        runtime.sync_continuous_kernel_state = AsyncMock()
         runtime.composer = type(
             "Composer",
             (),
@@ -2401,6 +2411,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "_get_provider": staticmethod(get_provider),
                 "_call_llm_text": staticmethod(call_llm_text),
                 "_cleanup_conversation": staticmethod(cleanup),
+                "sync_day_world_facts": staticmethod(lambda *args, **kwargs: async_return([])),
                 "_compute_sleep_continuity": staticmethod(
                     lambda previous, day: (0.0, 0.0, float(day.state.energy or 0))
                 ),
@@ -2487,6 +2498,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             }
         )
         runtime.archive = DataManager()
+        runtime.sync_continuous_kernel_state = AsyncMock()
         runtime.composer = type(
             "Composer",
             (),
@@ -2494,6 +2506,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "_get_provider": staticmethod(get_provider),
                 "_call_llm_text": staticmethod(call_llm_text),
                 "_cleanup_conversation": staticmethod(cleanup),
+                "sync_day_world_facts": staticmethod(lambda *args, **kwargs: async_return([])),
                 "_compute_sleep_continuity": staticmethod(
                     lambda previous, day: (0.0, 0.0, float(day.state.energy or 0))
                 ),
@@ -2559,6 +2572,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         async def cleanup(session_id):
             return None
 
+        runtime.sync_continuous_kernel_state = AsyncMock()
         runtime.composer = type(
             "Composer",
             (),
@@ -2566,6 +2580,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "_get_provider": staticmethod(get_provider),
                 "_call_llm_text": staticmethod(call_llm_text),
                 "_cleanup_conversation": staticmethod(cleanup),
+                "sync_day_world_facts": staticmethod(lambda *args, **kwargs: async_return([])),
                 "_compute_sleep_continuity": staticmethod(
                     lambda previous, day: (0.0, 0.0, float(day.state.energy or 0))
                 ),

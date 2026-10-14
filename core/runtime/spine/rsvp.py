@@ -10,29 +10,65 @@ from astrbot.api import logger
 
 from ...archive import DayRevisionConflict
 from ...clock import now as life_now
+from ...life.itinerary import apply_edited_timeline
 from ...models import CommitmentRecord, DayRecord, EventRecord, PlaceRecord
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class SpineInviteMixin:
+
+class SpineInviteComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _accept_invite_timeline_update: Any
+    _commitment_reconcile_marker_value: Any
+    _commitment_reconcile_markers: Any
+    _commitment_reconcile_signature: Any
+    _decline_invite_timeline_update: Any
+    _event_context_meta: Any
+    _get_curr_period: Any
+    _outfit_instruction_is_due: Any
+    _save_invite_day: Any
+    _schedule_background_task: Any
+    _store_commitment_reconcile_marker: Any
+    _sync_outfit_after_invite_background: Any
+    apply_commitment_to_current_day: Any
+    archive: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    mark_page_status_changed: Any
+    refresh_state_for_day: Any
+    remember_interaction: Any
+    schedule_invite_contact: Any
+    schedule_invite_outfit_sync: Any
+    schedule_memos_memo: Any
+    schedule_memos_selected_items: Any
+    sync_outfit_after_invite: Any
+
+
+class SpineInviteComponent:
+    def __init__(self, context: SpineInviteComponentContext) -> None:
+        self.context = context
+
     async def _save_invite_day(self, data: DayRecord, date_str: str) -> DayRecord:
         """保存邀约变化，避免覆盖更新的实时状态。"""
 
         try:
-            return await self.archive.save_day(data)
+            return await self.context.archive.save_day(data)
         except DayRevisionConflict as exc:
             if "字段 state" not in str(exc) and "字段 state_log" not in str(exc):
                 raise
 
-        latest = await self.archive.get_day(date_str)
+        latest = await self.context.archive.get_day(date_str)
         if latest is None:
             raise DayRevisionConflict(f"日期 {date_str} 已被其他任务删除")
             # 保留最新状态，通过常规版本合并重试邀约自身的修改，
             # 继续保护并发的时间轴和 meta 编辑。
         data.state = copy.deepcopy(latest.state)
         data.state_log = copy.deepcopy(latest.state_log)
-        return await self.archive.save_day(data)
+        return await self.context.archive.save_day(data)
 
     async def sync_outfit_after_invite(
         self,
@@ -42,20 +78,20 @@ class SpineInviteMixin:
     ) -> DayRecord | None:
         try:
             current_time = current_time or life_now()
-            async with operation_lock(self, f"outfit:{date_str}"):
-                current_period = self._get_curr_period(current_time)
+            async with operation_lock(self.context, f"outfit:{date_str}"):
+                current_period = self.context._get_curr_period(current_time)
                 kwargs: dict[str, Any] = {"current_time": current_time}
                 if instruction:
                     kwargs["instruction"] = instruction
                     kwargs["instruction_source"] = "commitment"
-                updated = await self.composer.update_outfit(
+                updated = await self.context.composer.update_outfit(
                     date_str, current_period, **kwargs
                 )
                 if updated:
                     if instruction:
                         updated.meta.pop("pending_commitment_outfit", None)
-                        await self.archive.save_day(updated)
-                    await self.mark_page_status_changed("invite_outfit_update")
+                        await self.context.archive.save_day(updated)
+                    await self.context.mark_page_status_changed("invite_outfit_update")
                 return updated
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 邀约后的穿搭判断失败：{exc}")
@@ -67,7 +103,7 @@ class SpineInviteMixin:
         current_time: datetime.datetime,
         instruction: str = "",
     ) -> None:
-        await self.sync_outfit_after_invite(date_str, current_time, instruction)
+        await self.context.sync_outfit_after_invite(date_str, current_time, instruction)
 
     def schedule_invite_outfit_sync(
         self,
@@ -79,8 +115,8 @@ class SpineInviteMixin:
         instruction_digest = hashlib.sha1(
             str(instruction or "").strip().encode("utf-8")
         ).hexdigest()[:12]
-        return self._schedule_background_task(
-            self._sync_outfit_after_invite_background(
+        return self.context._schedule_background_task(
+            self.context._sync_outfit_after_invite_background(
                 date_str, current_time, instruction
             ),
             label="邀约穿搭判断",
@@ -197,23 +233,23 @@ class SpineInviteMixin:
                 return False
             if media_at <= now.replace(tzinfo=None):
                 return False
-        async with operation_lock(self, f"commitment_reconcile:{today_str}:{item.id}"):
-            data = await self.archive.get_day(today_str)
+        async with operation_lock(self.context, f"commitment_reconcile:{today_str}:{item.id}"):
+            data = await self.context.archive.get_day(today_str)
             if not data or not data.timeline:
                 return False
-            signature = self._commitment_reconcile_signature(data, item)
-            markers = self._commitment_reconcile_markers(data)
+            signature = self.context._commitment_reconcile_signature(data, item)
+            markers = self.context._commitment_reconcile_markers(data)
             marker_key = str(item.id or f"content:{item.content[:80]}")
             handled_markers = {
-                self._commitment_reconcile_marker_value("applied", signature),
-                self._commitment_reconcile_marker_value("skipped", signature),
+                self.context._commitment_reconcile_marker_value("applied", signature),
+                self.context._commitment_reconcile_marker_value("skipped", signature),
             }
             if markers.get(marker_key) in handled_markers:
                 return False
             (
                 new_timeline,
                 decision,
-            ) = await self.composer.reconcile_commitment_with_timeline(
+            ) = await self.context.composer.reconcile_commitment_with_timeline(
                 today_str,
                 data.timeline,
                 item,
@@ -227,15 +263,15 @@ class SpineInviteMixin:
             if not new_timeline:
                 if decision.get("_retryable") is True:
                     return False
-                self._store_commitment_reconcile_marker(
+                self.context._store_commitment_reconcile_marker(
                     data, markers, marker_key, signature, "skipped"
                 )
-                await self.archive.save_day(data)
+                await self.context.archive.save_day(data)
                 return False
 
-            data.timeline = new_timeline
-            applied_signature = self._commitment_reconcile_signature(data, item)
-            self._store_commitment_reconcile_marker(
+            apply_edited_timeline(data, new_timeline, decision)
+            applied_signature = self.context._commitment_reconcile_signature(data, item)
+            self.context._store_commitment_reconcile_marker(
                 data, markers, marker_key, applied_signature, "applied"
             )
             audited_places = decision.get("_audited_places")
@@ -248,7 +284,7 @@ class SpineInviteMixin:
                     if place is not None
                 ]
                 if data.places:
-                    await self.archive.touch_places(
+                    await self.context.archive.touch_places(
                         today_str, data.places, source="commitment"
                     )
             location_audit = decision.get("_location_audit")
@@ -274,10 +310,10 @@ class SpineInviteMixin:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
-            await self.archive.save_day(data)
+            await self.context.archive.save_day(data)
             if item.id:
-                await self.archive.link_commitments_to_day(today_str, [item.id])
-                schedule_contact = getattr(self, "schedule_invite_contact", None)
+                await self.context.archive.link_commitments_to_day(today_str, [item.id])
+                schedule_contact = getattr(self.context, "schedule_invite_contact", None)
                 if callable(schedule_contact) and (
                     item.owner == "共同" or decision.get("shared_activity") is True
                 ):
@@ -286,7 +322,7 @@ class SpineInviteMixin:
                         timeline_edits=decision.get("timeline_edits"),
                         observed_at=now,
                     )
-            await self.archive.add_events(
+            await self.context.archive.add_events(
                 today_str,
                 [
                     EventRecord(
@@ -298,11 +334,11 @@ class SpineInviteMixin:
                     )
                 ],
             )
-            await self.mark_page_status_changed("commitment_schedule_update")
+            await self.context.mark_page_status_changed("commitment_schedule_update")
             if not outfit_instruction:
-                self.schedule_invite_outfit_sync(today_str, now)
-            elif self._outfit_instruction_is_due(today_str, outfit_effective_time, now):
-                self.schedule_invite_outfit_sync(today_str, now, outfit_instruction)
+                self.context.schedule_invite_outfit_sync(today_str, now)
+            elif self.context._outfit_instruction_is_due(today_str, outfit_effective_time, now):
+                self.context.schedule_invite_outfit_sync(today_str, now, outfit_instruction)
             return True
 
     async def reconcile_due_commitments_for_day(
@@ -321,9 +357,9 @@ class SpineInviteMixin:
         """
 
         changed = False
-        for commitment in (await self.archive.get_due_commitments(date_str))[:8]:
+        for commitment in (await self.context.archive.get_due_commitments(date_str))[:8]:
             changed = (
-                await self.apply_commitment_to_current_day(commitment, now=now)
+                await self.context.apply_commitment_to_current_day(commitment, now=now)
                 or changed
             )
         return changed
@@ -343,7 +379,7 @@ class SpineInviteMixin:
         raw_message: str,
     ) -> str:
         data.meta.pop("pending_invite_alternative", None)
-        data.timeline = new_timeline
+        apply_edited_timeline(data, new_timeline, decision)
         audited_places = decision.get("_audited_places")
         if isinstance(audited_places, list):
             data.places = [
@@ -352,7 +388,7 @@ class SpineInviteMixin:
                 if place is not None
             ]
             if data.places:
-                await self.archive.touch_places(today_str, data.places, source="invite")
+                await self.context.archive.touch_places(today_str, data.places, source="invite")
         location_audit = decision.get("_location_audit")
         if isinstance(location_audit, dict):
             data.meta["location_audit_provider"] = str(
@@ -361,8 +397,8 @@ class SpineInviteMixin:
             data.meta["location_audit_city"] = str(
                 location_audit.get("home_city") or ""
             )
-        if self.config.state.enabled:
-            data = await self.refresh_state_for_day(
+        if self.context.config.state.enabled:
+            data = await self.context.refresh_state_for_day(
                 today_str,
                 data,
                 now,
@@ -370,7 +406,7 @@ class SpineInviteMixin:
                 detail=f"已接受【{sender_name}】的邀约：{invite_details}",
                 force=True,
             )
-        accepted_commitment = await self.archive.save_commitment(
+        accepted_commitment = await self.context.archive.save_commitment(
             CommitmentRecord(
                 content=invite_details,
                 trigger_date=today_str,
@@ -385,20 +421,20 @@ class SpineInviteMixin:
             )
         )
         if accepted_commitment.id:
-            await self.archive.link_commitments_to_day(
+            await self.context.archive.link_commitments_to_day(
                 today_str, [accepted_commitment.id]
             )
         # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
         # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
-        await self._save_invite_day(data, today_str)
-        schedule_contact = getattr(self, "schedule_invite_contact", None)
+        await self.context._save_invite_day(data, today_str)
+        schedule_contact = getattr(self.context, "schedule_invite_contact", None)
         if accepted_commitment.id and callable(schedule_contact):
             await schedule_contact(
                 accepted_commitment,
                 timeline_edits=decision.get("timeline_edits"),
                 observed_at=now,
             )
-        await self.archive.add_events(
+        await self.context.archive.add_events(
             today_str,
             [
                 EventRecord(
@@ -410,8 +446,8 @@ class SpineInviteMixin:
                 )
             ],
         )
-        self.schedule_invite_outfit_sync(today_str, now)
-        self.schedule_memos_selected_items(
+        self.context.schedule_invite_outfit_sync(today_str, now)
+        self.context.schedule_memos_selected_items(
             context_meta,
             [
                 f"邀约结果：接受了与【{sender_name}】的邀约：{invite_details}",
@@ -448,7 +484,7 @@ class SpineInviteMixin:
         context_meta: dict[str, str],
         raw_message: str,
     ) -> str:
-        await self.archive.add_events(
+        await self.context.archive.add_events(
             today_str,
             [
                 EventRecord(
@@ -460,8 +496,8 @@ class SpineInviteMixin:
                 )
             ],
         )
-        if self.config.state.enabled:
-            await self.refresh_state_for_day(
+        if self.context.config.state.enabled:
+            await self.context.refresh_state_for_day(
                 today_str,
                 data,
                 now,
@@ -490,14 +526,14 @@ class SpineInviteMixin:
                 )
         if not alternative:
             data.meta.pop("pending_invite_alternative", None)
-        await self._save_invite_day(data, today_str)
+        await self.context._save_invite_day(data, today_str)
         memos_invite_items = [
             f"邀约结果：暂未接受【{sender_name}】的邀约：{invite_details}",
             f"原因：{reason}",
         ]
         if alternative:
             memos_invite_items.append(alternative.strip())
-        self.schedule_memos_selected_items(
+        self.context.schedule_memos_selected_items(
             context_meta,
             memos_invite_items,
             reason="同步已处理的邀约结果，避免后续重复邀请或忘记改约倾向。",
@@ -524,8 +560,8 @@ class SpineInviteMixin:
     async def accept_user_invite(self, event: Any, invite_details: str) -> str:
         now = life_now()
         today_str = now.strftime("%Y-%m-%d")
-        async with operation_lock(self, f"invite:{today_str}"):
-            data = await self.archive.get_day(today_str)
+        async with operation_lock(self.context, f"invite:{today_str}"):
+            data = await self.context.archive.get_day(today_str)
             if not data or not data.timeline:
                 return json.dumps(
                     {
@@ -536,9 +572,9 @@ class SpineInviteMixin:
                     ensure_ascii=False,
                 )
 
-            sender_name = await self.contact_resolver.resolve_event_sender(event)
-            context_meta = await self._event_context_meta(event, sender_name, now)
-            await self.remember_interaction(
+            sender_name = await self.context.contact_resolver.resolve_event_sender(event)
+            context_meta = await self.context._event_context_meta(event, sender_name, now)
+            await self.context.remember_interaction(
                 event,
                 sender_name,
                 f"提出邀约：{invite_details}",
@@ -554,8 +590,8 @@ class SpineInviteMixin:
             )
             if pending_alternative:
                 invite_text += f"；最近尚待对方确认的改约方案：{pending_alternative}"
-            if self.config.state.enabled:
-                data = await self.refresh_state_for_day(
+            if self.context.config.state.enabled:
+                data = await self.context.refresh_state_for_day(
                     today_str,
                     data,
                     now,
@@ -563,7 +599,7 @@ class SpineInviteMixin:
                     detail=f"收到【{sender_name}】的邀约：{invite_details}",
                     force=True,
                 )
-            reason, new_timeline, decision = await self.composer.handle_invite(
+            reason, new_timeline, decision = await self.context.composer.handle_invite(
                 today_str,
                 data.timeline,
                 invite_text,
@@ -572,19 +608,19 @@ class SpineInviteMixin:
                 current_state=data.state,
                 current_places=data.places,
             )
-            await self.composer.learn_preferences_from_payload(
+            await self.context.composer.learn_preferences_from_payload(
                 decision,
                 date_str=today_str,
                 source="invite_tool",
             )
-            await self.composer.persist_life_events_from_payload(
+            await self.context.composer.persist_life_events_from_payload(
                 decision,
                 date_str=today_str,
                 source="invite_tool",
             )
 
             if new_timeline:
-                return await self._accept_invite_timeline_update(
+                return await self.context._accept_invite_timeline_update(
                     data=data,
                     new_timeline=new_timeline,
                     today_str=today_str,
@@ -597,7 +633,7 @@ class SpineInviteMixin:
                     raw_message=raw_message,
                 )
 
-            return await self._decline_invite_timeline_update(
+            return await self.context._decline_invite_timeline_update(
                 data=data,
                 today_str=today_str,
                 now=now,
@@ -612,18 +648,18 @@ class SpineInviteMixin:
     async def add_memo_for_tomorrow(self, event: Any, memo_details: str) -> str:
         now = life_now()
         tomorrow_str = (now + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        sender_name = await self.contact_resolver.resolve_event_sender(event)
+        sender_name = await self.context.contact_resolver.resolve_event_sender(event)
         formatted_memo = f"与【{sender_name}】的约定：{memo_details}"
-        await self.archive.set_memo(tomorrow_str, formatted_memo)
-        await self.mark_page_status_changed("memo")
-        await self.remember_interaction(
+        await self.context.archive.set_memo(tomorrow_str, formatted_memo)
+        await self.context.mark_page_status_changed("memo")
+        await self.context.remember_interaction(
             event,
             sender_name,
             f"约定明天：{memo_details}",
             tomorrow_str,
             source="memo",
         )
-        await self.archive.add_events(
+        await self.context.archive.add_events(
             tomorrow_str,
             [
                 EventRecord(
@@ -635,8 +671,8 @@ class SpineInviteMixin:
                 )
             ],
         )
-        context_meta = await self._event_context_meta(event, sender_name, now)
-        self.schedule_memos_memo(context_meta, formatted_memo)
+        context_meta = await self.context._event_context_meta(event, sender_name, now)
+        self.context.schedule_memos_memo(context_meta, formatted_memo)
         logger.info("[大语言模型工具] 已将明天邀约写入备忘录")
         return json.dumps(
             {

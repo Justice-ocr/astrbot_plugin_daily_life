@@ -1,4 +1,6 @@
 """以对应会话中已发送的消息为依据，确认聊天中虚拟动作的完成情况。"""
+from __future__ import annotations
+
 
 from __future__ import annotations
 
@@ -10,13 +12,25 @@ from ...life.tools import timeline_item_datetime
 from ...models import INTERNAL_SIMULATED_ACTION_TYPES, LifeActionIntent
 from ..locks import operation_lock
 
+from typing import Protocol
 
-class ChatExecutionMixin:
+
+class ChatExecutionComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    archive: Any
+    composer: Any
+
+
+class ChatExecutionComponent:
+    def __init__(self, context: ChatExecutionComponentContext) -> None:
+        self.context = context
+
     async def _chat_execution_context(self, batch: dict[str, Any]) -> dict[str, Any]:
         scope = str(batch.get("session_id") or "")
         rows = batch.get("messages") or []
         date = str(rows[-1].get("occurred_at") or "")[:10] if rows else ""
-        getter = getattr(self.archive, "get_open_commitments_for_scope", None)
+        getter = getattr(self.context.archive, "get_open_commitments_for_scope", None)
         commitments = (
             await getter(scope, date) if callable(getter) and scope and date else []
         )
@@ -24,7 +38,7 @@ class ChatExecutionMixin:
         for row in rows:
             row_date = str(row.get("occurred_at") or "")[:10]
             if row_date and row_date not in days:
-                day = await self.archive.get_day(row_date)
+                day = await self.context.archive.get_day(row_date)
                 if day is not None:
                     days[row_date] = day
         actions = []
@@ -104,12 +118,12 @@ class ChatExecutionMixin:
             if action_id:
                 candidate = actions.get(action_id)
                 recorder = getattr(
-                    getattr(self, "composer", None), "record_life_action_receipt", None
+                    getattr(self.context, "composer", None), "record_life_action_receipt", None
                 )
                 if not candidate or not callable(recorder):
                     continue
-                async with operation_lock(self, f"action:{candidate['date']}"):
-                    day = await self.archive.get_day(candidate["date"])
+                async with operation_lock(self.context, f"action:{candidate['date']}"):
+                    day = await self.context.archive.get_day(candidate["date"])
                     index = candidate.get("timeline_index")
                     if (
                         day is None
@@ -140,7 +154,7 @@ class ChatExecutionMixin:
                 if outcome is None or outcome.status != "committed":
                     continue
             ids = update.get("commitment_ids")
-            complete = getattr(self.archive, "complete_simulated_commitment", None)
+            complete = getattr(self.context.archive, "complete_simulated_commitment", None)
             for item_id in ids if isinstance(ids, list) else []:
                 item = commitments.get(str(item_id))
                 if (

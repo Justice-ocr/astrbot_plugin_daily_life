@@ -229,8 +229,8 @@ def credit_goal(
         skill = world.setdefault("skills", {}).setdefault(
             goal["skill"], {"practice_minutes": 0.0, "sessions": 0, "last_evidence": ""}
         )
-        skill["practice_minutes"] = round(skill["practice_minutes"] + minutes, 2)
-        skill["sessions"] += 1
+        skill["practice_minutes"] = round(skill.get("practice_minutes", 0) + minutes, 2)
+        skill["sessions"] = skill.get("sessions", 0) + 1
         skill["last_evidence"] = run["action"]["action_id"]
 
 

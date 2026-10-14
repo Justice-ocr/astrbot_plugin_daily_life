@@ -24,3 +24,25 @@ def timestamp() -> int:
 
 def format_now(fmt: str = "%Y-%m-%d %H:%M") -> str:
     return now().strftime(fmt)
+
+
+def local_datetime(
+    value: object, *, naive_timezone: datetime.tzinfo = TIMEZONE
+) -> datetime.datetime | None:
+    """解析时间并转换到生活时区；无时区值由字段的存储契约指定来源。"""
+    try:
+        parsed = (
+            value if isinstance(value, datetime.datetime)
+            else datetime.datetime.fromisoformat(str(value or "").strip())
+        )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=naive_timezone)
+        return parsed.astimezone(TIMEZONE).replace(tzinfo=None)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def local_timestamp(value: object) -> float | None:
+    """供 SQLite 比较生活时间，不修改已有历史记录。"""
+    parsed = local_datetime(value)
+    return parsed.replace(tzinfo=TIMEZONE).timestamp() if parsed is not None else None

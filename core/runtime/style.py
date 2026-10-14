@@ -5,12 +5,12 @@ import copy
 import random
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
 from ..config.options.basis import chat_style_length_limit
-from .delay import ChatDelayMixin
+from . import delay as _part_chat_delay_component
 from .delivery import EventDeliveryRequest, ReplyDeliveryService
 from .markers import LOG_PREFIX
 
@@ -49,7 +49,57 @@ class _ChatStyleSegmentSource:
     explicit_line_count: int
 
 
-class ChatStyleRuntimeMixin(ChatDelayMixin):
+class ChatStyleRuntimeComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _CHAT_STYLE_MAX_DELAY_SECONDS: Any
+    _CHAT_STYLE_PENDING_SEGMENTS_ATTR: Any
+    _build_chat_style_decision_hint: Any
+    _chat_style_astrbot_send_config: Any
+    _chat_style_clean_inline_markdown: Any
+    _chat_style_clean_segment_plans: Any
+    _chat_style_compact_text: Any
+    _chat_style_context: Any
+    _chat_style_copy_text_component: Any
+    _chat_style_enabled: Any
+    _chat_style_int_config: Any
+    _chat_style_limit_for_event: Any
+    _chat_style_natural_segment_delay_seconds: Any
+    _chat_style_pending_segments: Any
+    _chat_style_pending_trace: Any
+    _chat_style_punctuation_cleaning_active: Any
+    _chat_style_result_is_text_only: Any
+    _chat_style_segment_chain: Any
+    _chat_style_should_keep_default_send: Any
+    _chat_style_text_component_text: Any
+    _chat_style_text_is_structural: Any
+    _chat_style_typing_weight: Any
+    _chat_style_unwrap_t2i_prose_fences: Any
+    _event_is_group_message: Any
+    _event_session_id: Any
+    _note_chat_style_segmented_send: Any
+    _plan_chat_style_natural_segments: Any
+    _replace_text_result: Any
+    _replace_text_result_with_segments: Any
+    _semantic_segment_clean_plan_punctuation: Any
+    _semantic_segment_enabled: Any
+    _semantic_segment_epoch: Any
+    _semantic_segment_revision: Any
+    _voice_switch_reply_text_from_event: Any
+    capture_chat_memory_bot_reply: Any
+    config: Any
+    context: Any
+    log_chat_style_trace: Any
+    mark_structured_pending_bot_text: Any
+    note_tool_reaction_message_sent: Any
+    reply_delivery: Any
+    schedule_pending_chat_state_refresh: Any
+
+
+class ChatStyleRuntimeComponent:
+    def __init__(self, context: ChatStyleRuntimeComponentContext) -> None:
+        self.context = context
+
     _CHAT_STYLE_PENDING_SEGMENTS_ATTR = "_daily_life_chat_style_pending_segments"
     _CHAT_STYLE_STRONG_BREAKS = frozenset({"。", "！", "？", "!", "?", "~", "～", "…"})
     _CHAT_STYLE_SOFT_BREAKS = frozenset({"，", ",", "；", ";", "、"})
@@ -78,11 +128,11 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
     )
 
     def _chat_style_enabled(self) -> bool:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
         return bool(style and getattr(style, "enabled", False))
 
     def _chat_style_astrbot_send_config(self, event: Any) -> dict[str, Any]:
-        context = getattr(self, "context", None)
+        context = getattr(self.context, "context", None)
         getter = getattr(context, "get_config", None)
         if callable(getter):
             try:
@@ -108,12 +158,12 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             if not getattr(event, "_daily_life_t2i_source_text", ""):
                 setattr(event, "_daily_life_t2i_source_text", str(text or ""))
             return True
-        config = self._chat_style_astrbot_send_config(event)
+        config = self.context._chat_style_astrbot_send_config(event)
         compact_length = len(str(text or ""))
         if not config or compact_length <= 0:
             return False
         if bool(config.get("t2i")):
-            threshold = self._chat_style_int_config(
+            threshold = self.context._chat_style_int_config(
                 config.get("t2i_word_threshold"), 150, minimum=50
             )
             if compact_length > threshold:
@@ -127,30 +177,27 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         return False
 
     def _chat_style_context(self, event: Any) -> dict[str, str]:
-        is_group = self._event_is_group_message(event) if event is not None else False
+        is_group = self.context._event_is_group_message(event) if event is not None else False
         return {"scope": "group" if is_group else "private"}
 
     def _chat_style_limit_for_event(self, event: Any) -> int:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        if not self._chat_style_enabled() or not style:
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        if not self.context._chat_style_enabled() or not style:
             return 0
         return chat_style_length_limit(
-            style, is_group=event is not None and self._event_is_group_message(event)
+            style, is_group=event is not None and self.context._event_is_group_message(event)
         )
 
     def _build_chat_style_decision_hint(
         self, event: Any, context: dict[str, str]
     ) -> str:
-        if not self._chat_style_enabled():
+        if not self.context._chat_style_enabled():
             return ""
-        limit = self._chat_style_limit_for_event(event)
+        limit = self.context._chat_style_limit_for_event(event)
         scope_label = "群聊" if context.get("scope") == "group" else "私聊"
-        focus = "自然接话；轻闲聊用短气口，一句只放一个主要意思，有内容就完整说清楚。"
         lines = [
             "\n[HiddenChatDecision]",
-            f"- 当前回应重心：{focus}",
             f"- 消息传输范围：{scope_label}；只用于表达长度和发送节奏，不代表现实距离。",
-            "- 普通聊天使用纯文本，不使用 Markdown 加粗、斜体、删除线或标题格式。",
         ]
         if limit > 0:
             lines.append(
@@ -162,13 +209,13 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
     async def build_chat_style_injection_context(
         self, event: Any, message: str = ""
     ) -> str:
-        if not self._chat_style_enabled():
+        if not self.context._chat_style_enabled():
             return ""
-        if self._semantic_segment_enabled():
-            limit = self._chat_style_limit_for_event(event)
+        if self.context._semantic_segment_enabled():
+            limit = self.context._chat_style_limit_for_event(event)
             scope_label = (
                 "群聊"
-                if event is not None and self._event_is_group_message(event)
+                if event is not None and self.context._event_is_group_message(event)
                 else "私聊"
             )
             length_hint = (
@@ -179,19 +226,13 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                 else "当前没有设置单个分段的参考长度；按自然表达决定。"
             )
             return (
-                "\n[HiddenChatStyle]\n"
-                "先判断这轮回复要完成的表达动作和信息深度，再用角色自己的口吻回答。"
-                "普通闲聊优先用短而完整的自然句接话，不刻意扩写；"
-                "需要转换表达重心或追加独立意思时自然另起一条。"
-                "内容说清就自然停住，不机械追加反问或铺陈；有依据的生活细节顺势带一句即可，不逐项铺陈。"
-                "认真问题、事实解释和情绪支持按内容完整说清，不机械压缩。"
-                "普通聊天使用纯文本，不使用 Markdown 加粗、斜体、删除线或标题格式。"
+                "\n[HiddenChatScene]\n"
                 + length_hint
             )
-        context = self._chat_style_context(event)
+        context = self.context._chat_style_context(event)
         if event is not None:
             setattr(event, "_daily_life_chat_style_context", context)
-        return self._build_chat_style_decision_hint(event, context)
+        return self.context._build_chat_style_decision_hint(event, context)
 
     @staticmethod
     def _chat_style_text_is_structural(text: str) -> bool:
@@ -290,29 +331,29 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         return "".join(output)
 
     def apply_chat_plain_text_cleanup_before_send(self, event: Any) -> bool:
-        if not self._chat_style_enabled() or not self._chat_style_result_is_text_only(
+        if not self.context._chat_style_enabled() or not self.context._chat_style_result_is_text_only(
             event
         ):
             return False
         result = getattr(event, "get_result", lambda: None)()
         chain = getattr(result, "chain", None)
         source_text = "".join(
-            self._chat_style_text_component_text(item) for item in chain or []
+            self.context._chat_style_text_component_text(item) for item in chain or []
         )
         if not source_text:
             return False
-        if self._chat_style_should_keep_default_send(event, source_text):
-            cleaned = self._chat_style_unwrap_t2i_prose_fences(source_text)
+        if self.context._chat_style_should_keep_default_send(event, source_text):
+            cleaned = self.context._chat_style_unwrap_t2i_prose_fences(source_text)
             if cleaned == source_text:
                 return False
             setattr(event, "_daily_life_t2i_source_text", cleaned)
-            return self._replace_text_result(event, cleaned)
-        if self._chat_style_text_is_structural(source_text):
+            return self.context._replace_text_result(event, cleaned)
+        if self.context._chat_style_text_is_structural(source_text):
             return False
-        cleaned = self._chat_style_clean_inline_markdown(source_text)
+        cleaned = self.context._chat_style_clean_inline_markdown(source_text)
         if cleaned == source_text:
             return False
-        return self._replace_text_result(event, cleaned)
+        return self.context._replace_text_result(event, cleaned)
 
     def _replace_text_result(self, event: Any, text: str) -> bool:
         result = getattr(event, "get_result", lambda: None)()
@@ -322,11 +363,11 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         text_indexes = [
             index
             for index, item in enumerate(chain)
-            if self._chat_style_text_component_text(item).strip()
+            if self.context._chat_style_text_component_text(item).strip()
         ]
         if text_indexes and len(text_indexes) == len(chain):
             chain[:] = [
-                self._chat_style_copy_text_component(chain[text_indexes[0]], text)
+                self.context._chat_style_copy_text_component(chain[text_indexes[0]], text)
             ]
             return True
         for index, item in enumerate(chain):
@@ -425,16 +466,16 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         return round(weight, 2)
 
     def _chat_style_initial_typing_delay_seconds(self, text: str) -> float:
-        weight = self._chat_style_typing_weight(text)
+        weight = self.context._chat_style_typing_weight(text)
         if weight <= 0:
             return 0.0
         low = 0.35 + min(1.0, weight * 0.018)
         high = low + 0.45 + min(0.7, weight * 0.012)
-        low = round(min(self._CHAT_STYLE_MAX_DELAY_SECONDS, low), 2)
-        high = round(min(self._CHAT_STYLE_MAX_DELAY_SECONDS, max(low, high)), 2)
+        low = round(min(self.context._CHAT_STYLE_MAX_DELAY_SECONDS, low), 2)
+        high = round(min(self.context._CHAT_STYLE_MAX_DELAY_SECONDS, max(low, high)), 2)
         if high <= 0:
             return 0.0
-        return min(self._CHAT_STYLE_MAX_DELAY_SECONDS, random.uniform(low, high))
+        return min(self.context._CHAT_STYLE_MAX_DELAY_SECONDS, random.uniform(low, high))
 
     @classmethod
     def _chat_style_protected_span_end(cls, text: str, index: int) -> int:
@@ -593,7 +634,16 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             if source.units and source.units[0].break_kind == "strong"
             else 0
         )
+        leading_soft_length = (
+            len(cls._chat_style_compact_text(source.units[0].body))
+            if source.units and source.units[0].break_kind == "soft"
+            else 0
+        )
         short_strong_lead = 4 <= leading_strong_length <= max(4, min(8, target // 2))
+        short_soft_lead = (
+            3 <= leading_soft_length <= 4
+            and text_length - leading_soft_length > target
+        )
         length_segments = max(2, (text_length + target - 1) // target)
         explicit_segments = max(1, source.explicit_line_count)
         max_segments = min(
@@ -630,7 +680,10 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         if short_strong_lead and text_length - leading_strong_length > target:
             max_segments = min(cap, len(source.units), max_segments + 1)
         allow_soft_split = (
-            strong_break_count == 0 or text_length > target * 2 or short_strong_lead
+            strong_break_count == 0
+            or text_length > target * 2
+            or short_strong_lead
+            or short_soft_lead
         )
         balanced_target = max(8, (text_length + max_segments - 1) // max_segments)
         min_current = (
@@ -638,6 +691,8 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             if source.explicit_line_count > 1
             else max(4, min(10, balanced_target // 2))
         )
+        if short_soft_lead:
+            min_current = min(min_current, leading_soft_length + 1)
         target = max(min_current * 2, balanced_target)
         return allow_soft_split, max_segments, target, min_current
 
@@ -860,8 +915,8 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         self, event: Any, segments: list[_ChatStyleSegmentPlan]
     ) -> bool:
         if event is not None:
-            setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
-        pending = self._chat_style_pending_segments(segments)
+            setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+        pending = self.context._chat_style_pending_segments(segments)
         if len(pending) < 2:
             return False
         cleaned = [segment.text for segment in pending]
@@ -870,7 +925,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         if not isinstance(chain, list) or not chain:
             return False
         original_parts = [
-            self._chat_style_text_component_text(item).strip() for item in chain
+            self.context._chat_style_text_component_text(item).strip() for item in chain
         ]
         if not all(original_parts):
             return False
@@ -879,17 +934,17 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         try:
             item = chain[0]
             chain[:] = [
-                self._chat_style_copy_text_component(item, segment)
+                self.context._chat_style_copy_text_component(item, segment)
                 for segment in cleaned
             ]
-            setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, pending)
+            setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, pending)
             return True
         except Exception as exc:
             logger.debug(
                 f"{LOG_PREFIX} 自然分段结果替换失败：{type(exc).__name__}",
                 exc_info=True,
             )
-            setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+            setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
             return False
 
     def _chat_style_clean_segment_plans(
@@ -903,9 +958,9 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         try:
             from .reply import SegmentPart, SemanticSegmentPlan
 
-            style = getattr(getattr(self, "config", None), "chat_style", None)
+            style = getattr(getattr(self.context, "config", None), "chat_style", None)
             cleanup_enabled = bool(getattr(style, "punctuation_cleanup_enabled", True))
-            configured_cleanup_applies = self._chat_style_punctuation_cleaning_active(
+            configured_cleanup_applies = self.context._chat_style_punctuation_cleaning_active(
                 event, source_text
             )
             source_segments = [
@@ -924,7 +979,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                 source="natural",
                 valid=True,
             )
-            clean_plan = self._semantic_segment_clean_plan_punctuation(
+            clean_plan = self.context._semantic_segment_clean_plan_punctuation(
                 event, raw_plan, source_text
             )
             return [
@@ -948,19 +1003,19 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
     def _chat_style_punctuation_cleaning_active(
         self, event: Any, source_text: str
     ) -> bool:
-        if not self._chat_style_enabled():
+        if not self.context._chat_style_enabled():
             return False
-        if not self._chat_style_result_is_text_only(event):
+        if not self.context._chat_style_result_is_text_only(event):
             return False
-        config = self._chat_style_astrbot_send_config(event)
-        if not isinstance(config, dict) or "t2i_word_threshold" not in config:
+        config = self.context._chat_style_astrbot_send_config(event)
+        if not isinstance(config, dict) or not config:
             return False
-        threshold = self._chat_style_int_config(
+        threshold = self.context._chat_style_int_config(
             config.get("t2i_word_threshold"), 150, minimum=50
         )
         if len(str(source_text or "")) > threshold:
             return False
-        return not self._chat_style_text_is_structural(source_text)
+        return not self.context._chat_style_text_is_structural(source_text)
 
     def _chat_style_segment_chain(self, event: Any, result: Any, item: Any) -> Any:
         derive = getattr(result, "derive", None)
@@ -978,18 +1033,18 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             "note_proactive_bot_reply",
             "note_voice_switch_text_result",
         ):
-            method = getattr(self, method_name, None)
+            method = getattr(self.context, method_name, None)
             if callable(method):
                 method(event)
 
     async def send_chat_style_segments_if_needed(self, event: Any) -> bool:
-        if not self._chat_style_enabled():
+        if not self.context._chat_style_enabled():
             if event is not None:
-                setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+                setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
             return False
         if (
             getattr(event, "_daily_life_semantic_segment_plan", None) is not None
-            and self._semantic_segment_enabled()
+            and self.context._semantic_segment_enabled()
         ):
             return False
         if event is None:
@@ -997,33 +1052,33 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         pending = [
             segment
             for segment in list(
-                getattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, []) or []
+                getattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, []) or []
             )
             if isinstance(segment, _ChatStylePendingSegment) and segment.text
         ]
         if len(pending) < 2:
             return False
-        setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+        setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
         segments = [segment.text for segment in pending]
         result = getattr(event, "get_result", lambda: None)()
-        scope = self._event_session_id(event)
-        revision = self._semantic_segment_revision(scope)
-        epoch = self._semantic_segment_epoch(scope)
-        service = getattr(self, "reply_delivery", None) or ReplyDeliveryService(self)
+        scope = self.context._event_session_id(event)
+        revision = self.context._semantic_segment_revision(scope)
+        epoch = self.context._semantic_segment_epoch(scope)
+        service = getattr(self.context, "reply_delivery", None) or ReplyDeliveryService(self.context)
         outcome = await service.send_event(
             EventDeliveryRequest(
                 event=event,
                 texts=tuple(segments),
                 scope=scope,
                 match="exact",
-                text_from_item=lambda item: self._chat_style_text_component_text(
+                text_from_item=lambda item: self.context._chat_style_text_component_text(
                     item
                 ).strip(),
-                build_message=lambda index, chain: self._chat_style_segment_chain(
+                build_message=lambda index, chain: self.context._chat_style_segment_chain(
                     event, result, chain[index]
                 ),
                 delay_seconds=lambda index: (
-                    self._chat_style_natural_segment_delay_seconds(
+                    self.context._chat_style_natural_segment_delay_seconds(
                         pending[index - 1].text,
                         pending[index].text,
                         previous_break_kind=pending[index - 1].break_kind,
@@ -1031,8 +1086,8 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                 ),
                 sleep=asyncio.sleep,
                 is_current=lambda: (
-                    self._semantic_segment_revision(scope) == revision
-                    and self._semantic_segment_epoch(scope) == epoch
+                    self.context._semantic_segment_revision(scope) == revision
+                    and self.context._semantic_segment_epoch(scope) == epoch
                 ),
             )
         )
@@ -1042,10 +1097,10 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             )
             return False
         if outcome.status == "cancelled":
-            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            marker = getattr(self.context, "mark_structured_pending_bot_text", None)
             if callable(marker) and outcome.sent_count > 0:
                 marker(event, "\n".join(segments[: outcome.sent_count]))
-            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            capture = getattr(self.context, "capture_chat_memory_bot_reply", None)
             if callable(capture) and outcome.sent_count > 0:
                 try:
                     await capture(event)
@@ -1062,17 +1117,17 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             )
             return False
         try:
-            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            marker = getattr(self.context, "mark_structured_pending_bot_text", None)
             if callable(marker):
                 marker(event, "\n".join(segments))
-            reaction = getattr(self, "note_tool_reaction_message_sent", None)
+            reaction = getattr(self.context, "note_tool_reaction_message_sent", None)
             if callable(reaction):
                 await reaction(event)
-            scheduler = getattr(self, "schedule_pending_chat_state_refresh", None)
+            scheduler = getattr(self.context, "schedule_pending_chat_state_refresh", None)
             if callable(scheduler):
                 scheduler(event)
-            self._note_chat_style_segmented_send(event)
-            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            self.context._note_chat_style_segmented_send(event)
+            capture = getattr(self.context, "capture_chat_memory_bot_reply", None)
             if callable(capture):
                 try:
                     await capture(event)
@@ -1080,7 +1135,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                     logger.warning(f"{LOG_PREFIX} 分段回复记忆入队失败：{exc}")
             logger.debug(
                 f"{LOG_PREFIX} 自然分段发送：{len(segments)} 段；"
-                f"{self._chat_style_pending_trace(pending)}"
+                f"{self.context._chat_style_pending_trace(pending)}"
             )
             return True
         except Exception as exc:
@@ -1089,47 +1144,47 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             return True
 
     def apply_chat_style_before_send(self, event: Any) -> bool:
-        if not self._chat_style_enabled():
+        if not self.context._chat_style_enabled():
             if event is not None:
-                setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+                setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
             return False
         if getattr(event, "_daily_life_natural_fallback_active", False):
             return False
         if (
             getattr(event, "_daily_life_semantic_segment_plan", None) is not None
-            and self._semantic_segment_enabled()
+            and self.context._semantic_segment_enabled()
         ):
             return False
         if event is not None:
-            setattr(event, self._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
-        style = getattr(getattr(self, "config", None), "chat_style", None)
+            setattr(event, self.context._CHAT_STYLE_PENDING_SEGMENTS_ATTR, [])
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
         if not style:
             return False
-        reply_text = self._voice_switch_reply_text_from_event(event)
+        reply_text = self.context._voice_switch_reply_text_from_event(event)
         if not reply_text:
             return False
-        context = self._chat_style_context(event)
+        context = self.context._chat_style_context(event)
         if event is not None:
             setattr(event, "_daily_life_chat_style_context", context)
-        if self._chat_style_should_keep_default_send(event, reply_text):
-            self.log_chat_style_trace(event, reply_text, context, changed=False)
+        if self.context._chat_style_should_keep_default_send(event, reply_text):
+            self.context.log_chat_style_trace(event, reply_text, context, changed=False)
             return False
         changed = False
-        plans = self._plan_chat_style_natural_segments(
+        plans = self.context._plan_chat_style_natural_segments(
             reply_text,
-            self._chat_style_limit_for_event(event),
+            self.context._chat_style_limit_for_event(event),
         )
-        plans = self._chat_style_clean_segment_plans(event, plans, reply_text)
-        if self._replace_text_result_with_segments(event, plans):
+        plans = self.context._chat_style_clean_segment_plans(event, plans, reply_text)
+        if self.context._replace_text_result_with_segments(event, plans):
             changed = True
             reply_text = "\n".join(segment.text for segment in plans)
-        elif plans and self._chat_style_punctuation_cleaning_active(event, reply_text):
+        elif plans and self.context._chat_style_punctuation_cleaning_active(event, reply_text):
             cleaned_text = plans[0].text
             if cleaned_text != reply_text:
-                if self._replace_text_result(event, cleaned_text):
+                if self.context._replace_text_result(event, cleaned_text):
                     changed = True
                     reply_text = cleaned_text
-        self.log_chat_style_trace(event, reply_text, context, changed=changed)
+        self.context.log_chat_style_trace(event, reply_text, context, changed=changed)
         return changed
 
     def log_chat_style_trace(
@@ -1140,17 +1195,32 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         *,
         changed: bool = False,
     ) -> None:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        if not self._chat_style_enabled() or not style:
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        if not self.context._chat_style_enabled() or not style:
             return
         context = context if isinstance(context, dict) else {}
         scope = context.get("scope") or (
             "group"
-            if event is not None and self._event_is_group_message(event)
+            if event is not None and self.context._event_is_group_message(event)
             else "private"
         )
         logger.debug(
             f"{LOG_PREFIX} 表达节奏：通道={'群聊' if scope == 'group' else '私聊'}；"
             f"自然分段={'是' if changed else '否'}；"
-            f"长度={len(self._chat_style_compact_text(reply_text))}"
+            f"长度={len(self.context._chat_style_compact_text(reply_text))}"
         )
+
+    _CHAT_STYLE_SEGMENT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_SEGMENT_DELAY_RANGE
+
+    _CHAT_STYLE_SHORT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_SHORT_DELAY_RANGE
+
+    _CHAT_STYLE_LONG_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LONG_DELAY_RANGE
+
+    _CHAT_STYLE_LEAD_SHORT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_SHORT_DELAY_RANGE
+
+    _CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE
+
+    _CHAT_STYLE_LEAD_LONG_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_LONG_DELAY_RANGE
+
+    _CHAT_STYLE_MAX_DELAY_SECONDS = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_MAX_DELAY_SECONDS
+

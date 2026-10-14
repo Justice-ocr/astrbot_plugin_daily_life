@@ -7,8 +7,25 @@ from typing import Any
 from ...clock import TIMEZONE
 from .grain import StructuredMessage
 
+from typing import Protocol
 
-class StructuredGlanceMixin:
+
+class StructuredGlanceComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_session_id: Any
+    _format_structured_message_line: Any
+    _structured_history_payload: Any
+    _structured_result_text: Any
+    _structured_scope_messages: Any
+    _structured_text: Any
+    note_structured_bot_message: Any
+
+
+class StructuredGlanceComponent:
+    def __init__(self, context: StructuredGlanceComponentContext) -> None:
+        self.context = context
+
     def _structured_result_text(self, event: Any) -> tuple[str, str]:
         pending = str(
             getattr(event, "_daily_life_structured_pending_bot_text", "") or ""
@@ -67,13 +84,13 @@ class StructuredGlanceMixin:
     def note_structured_sent_result(self, event: Any) -> StructuredMessage | None:
         if hasattr(event, "_has_send_oper") and not event._has_send_oper:
             return None
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             return None
-        text, media = self._structured_result_text(event)
+        text, media = self.context._structured_result_text(event)
         if not text:
             return None
-        return self.note_structured_bot_message(
+        return self.context.note_structured_bot_message(
             scope, text, source_event=event, media=media
         )
 
@@ -83,12 +100,12 @@ class StructuredGlanceMixin:
         scope = (
             event_or_scope
             if isinstance(event_or_scope, str)
-            else self._event_session_id(event_or_scope)
+            else self.context._event_session_id(event_or_scope)
         )
         scope = str(scope or "").strip()
         if not scope:
             return ""
-        messages = list(self._structured_scope_messages(scope))[
+        messages = list(self.context._structured_scope_messages(scope))[
             -max(1, int(limit or 8)) :
         ]
         if not messages:
@@ -98,7 +115,7 @@ class StructuredGlanceMixin:
             "  <note>最近真实消息结构，优先用于判断群聊里谁在对谁说话；不是长期记忆。</note>",
         ]
         for item in messages:
-            lines.append(self._format_structured_message_line(item))
+            lines.append(self.context._format_structured_message_line(item))
         lines.append("</structured_conversation>")
         return "\n".join(lines)
 
@@ -120,13 +137,13 @@ class StructuredGlanceMixin:
             for key, value in attrs.items()
             if str(value or "").strip()
         )
-        content = self._structured_text(item.content, 180)
+        content = self.context._structured_text(item.content, 180)
         if item.media and item.media not in content:
             content = f"[{item.media}] {content}".strip()
         at_targets = "、".join(
             target.name or target.user_id for target in item.at_targets
         )
-        quote = self._structured_text(item.reply_to_content, 100)
+        quote = self.context._structured_text(item.reply_to_content, 100)
         extras = []
         if at_targets:
             extras.append(f"@{at_targets}")
@@ -143,16 +160,16 @@ class StructuredGlanceMixin:
         scope = (
             event_or_scope
             if isinstance(event_or_scope, str)
-            else self._event_session_id(event_or_scope)
+            else self.context._event_session_id(event_or_scope)
         )
         scope = str(scope or "").strip()
         if not scope:
             return []
-        messages = list(self._structured_scope_messages(scope))[
+        messages = list(self.context._structured_scope_messages(scope))[
             -max(1, int(limit or 6)) :
         ]
         return [
-            self._structured_history_payload(item)
+            self.context._structured_history_payload(item)
             for item in messages
             if item.content or item.media
         ]

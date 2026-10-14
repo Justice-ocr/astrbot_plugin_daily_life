@@ -18,24 +18,27 @@ from core.life.lookback import (
     historical_appearance_context,
     record_appearance_snapshot,
 )
-from core.life.settlement import LifeActionMixin
-from core.life.invite import InviteMixin
-from core.life.record import DailyRecordMixin
+from componentfixtures import LifeActionComponent
+from componentfixtures import InviteComponent
+from componentfixtures import DailyRecordComponent
 from core.life.wardrobe import (
     format_outfit_components,
     merge_outfit_components,
     normalize_outfit_components,
 )
-from core.runtime.capture.execution import ChatExecutionMixin
-from core.runtime.capture.batch import ChatMemoryBatchMixin
+from componentfixtures import ChatExecutionComponent
+from componentfixtures import ChatMemoryBatchComponent
 from core.runtime.live import DailyLifeRuntime
 
 
 class AppearanceRepairTest(unittest.TestCase):
-    def test_legacy_main_does_not_resurrect_removed_components(self):
+    def test_structured_main_does_not_resurrect_removed_components(self):
         full = "浅粉色细吊带短款背心，搭配同色轻薄长袖开衫外套与高腰蕾丝边抽绳短裤，脚穿浅粉色毛绒交叉宽带厚底露趾居家拖鞋，佩戴细锁骨链"
         ledger = {
-            "main_clothing": {"state": "worn", "description": full},
+            "main_clothing": {
+                "state": "worn",
+                "description": "浅粉色细吊带短款背心与高腰蕾丝边抽绳短裤",
+            },
             "outer_layer": {
                 "state": "removed",
                 "description": "浅粉色轻薄长袖开衫外套，已脱下",
@@ -69,11 +72,11 @@ class AppearanceRepairTest(unittest.TestCase):
             )
         self.assertEqual(day.outfit, full)
 
-    def test_partial_update_removes_overlap_without_discarding_other_clothes(self):
+    def test_partial_update_preserves_independent_main_description(self):
         base = {
             "main_clothing": {
                 "state": "worn",
-                "description": "白衬衫，蓝牛仔裤，黑皮鞋",
+                "description": "白衬衫，蓝牛仔裤",
             }
         }
         result = merge_outfit_components(
@@ -81,15 +84,24 @@ class AppearanceRepairTest(unittest.TestCase):
         )
         self.assertEqual(format_outfit_components(result), "白衬衫，蓝牛仔裤")
 
-    def test_component_details_are_preserved_while_duplicate_main_text_is_removed(self):
+    def test_normalization_does_not_cut_similar_text_from_main(self):
         ledger = {
-            "main_clothing": {"state": "worn", "description": "白衬衫，蓝牛仔裤，黑皮鞋"},
-            "footwear": {"state": "removed", "description": "黑皮鞋，鞋面有细纹"},
+            "main_clothing": {"state": "worn", "description": "米白色针织上衣，浅蓝色长裤"},
+            "outer_layer": {"state": "removed", "description": "米白色针织外套"},
         }
         normalized = normalize_outfit_components(ledger)
-        self.assertEqual(normalized["footwear"]["description"], "黑皮鞋，鞋面有细纹")
-        self.assertEqual(normalized["main_clothing"]["description"], "白衬衫，蓝牛仔裤")
+        self.assertEqual(normalized, ledger)
         self.assertEqual(normalize_outfit_components(normalized), normalized)
+
+    def test_normalization_never_leaves_empty_wearing_phrases(self):
+        description = "粉色睡衣，脚穿粉色拖鞋，佩戴细锁骨链"
+        ledger = {
+            "main_clothing": {"state": "worn", "description": description},
+            "footwear": {"state": "removed", "description": "粉色拖鞋"},
+            "carried_accessories": {"state": "removed", "description": "细锁骨链"},
+        }
+        # 规范化仅处理数据格式；混合描述应由结构化裁定拆分，不能截掉名词。
+        self.assertEqual(normalize_outfit_components(ledger), ledger)
 
     def test_snapshots_preserve_two_changes_in_same_period(self):
         day = DayRecord(date="2026-09-23", outfit="蓝裙", meta={"hair": "低马尾"})
@@ -127,9 +139,9 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
             item["place"] = "新地点"
             return {"timeline": [item]}, ""
 
-        mixin = InviteMixin()
-        mixin.domains = SimpleNamespace(audit_daily_locations=audit)
-        changed, _, reason = await mixin._audit_future_timeline(
+        engine = InviteComponent()
+        engine.domains = SimpleNamespace(audit_daily_locations=audit)
+        changed, _, reason = await engine._audit_future_timeline(
             past_timeline=[],
             mutable_timeline=[TimelineItem(time="21:00", activity="躺下休息", activity_kind="rest")],
             protected_timeline=[],
@@ -243,7 +255,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
                 status="scheduled",
             )
         )
-        runtime = ChatExecutionMixin()
+        runtime = ChatExecutionComponent()
         runtime.archive = self.archive
         batch = {
             "session_id": scope,
@@ -284,7 +296,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         item, runtime, batch, payload = await self._execution()
         batch["messages"][0]["message_id"] = ""
         payload["execution_updates"][0]["source_message_id"] = "1"
-        prompt = ChatMemoryBatchMixin()._build_chat_memory_batch_prompt(batch)
+        prompt = ChatMemoryBatchComponent()._build_chat_memory_batch_prompt(batch)
         source = json.loads(prompt.split("输入批次：", 1)[1])
         self.assertEqual(source["messages"][0]["message_id"], "1")
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 1)
@@ -294,7 +306,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         old = DayRecord(date="2026-09-24", outfit="蓝裙")
         record_appearance_snapshot(old, dt.datetime(2026, 9, 24, 10))
         await self.archive.save_day(old)
-        recorder = DailyRecordMixin()
+        recorder = DailyRecordComponent()
         recorder.archive = self.archive
         new = DayRecord(
             date=old.date,
@@ -350,7 +362,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_action_does_not_mark_timeline_or_commitment_done(self):
         item, runtime, batch, payload = await self._execution()
-        engine = LifeActionMixin()
+        engine = LifeActionComponent()
         engine.archive = self.archive
         engine.sync_day_world_facts = AsyncMock()
         runtime.composer = engine
@@ -383,7 +395,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_successful_action_completes_timeline_and_commitment_once(self):
         item, runtime, batch, payload = await self._execution()
-        engine = LifeActionMixin()
+        engine = LifeActionComponent()
         engine.archive = self.archive
         engine.sync_day_world_facts = AsyncMock()
         runtime.composer = engine

@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from support import DayRecord, LifeArchive, LifeSettings, LifeState, TimelineItem
+from support import DailyLifeRuntime, DayRecord, LifeArchive, LifeSettings, LifeState, TimelineItem
 
 from core.life.body import ContinuousBody
 from core.life.domain import LifeDomainService
@@ -27,15 +27,15 @@ from core.life.presence import (
     sync_kernel_from_day,
     update_self_model,
 )
-from core.life.settlement import LifeActionMixin
+from componentfixtures import LifeActionComponent
 from core.models import LifeActionIntent
-from core.runtime.continuous import ContinuousLifeMixin, next_decision_time
-from core.runtime.proactive.send import ProactiveSendMixin
-from core.runtime.status import StatusMixin, _StateRefreshSpec
+from core.runtime.continuous import next_decision_time
+from componentfixtures import ProactiveSendComponent
+from core.runtime.status import StateRefreshService, _StateRefreshSpec
 from core.runtime.timer import LifeRhythmClock
 
 
-class Composer(LifeActionMixin):
+class Composer(LifeActionComponent):
     def __init__(self, archive, domains):
         self.archive = archive
         self.domains = domains
@@ -47,7 +47,7 @@ class Composer(LifeActionMixin):
         return 0, 0, 0
 
 
-class Runtime(ContinuousLifeMixin):
+class Runtime(DailyLifeRuntime):
     def __init__(self, archive, now):
         self.archive = archive
         self.now = now
@@ -55,7 +55,7 @@ class Runtime(ContinuousLifeMixin):
         self.config = LifeSettings.from_dict({})
         self.domains = LifeDomainService(self.config.domains, archive)
         self.composer = Composer(archive, self.domains)
-        self._continuous_life_decision = AsyncMock(return_value={})
+        self.continuous_life._decide = AsyncMock(return_value={})
         self.mark_page_status_changed = AsyncMock()
 
     def _runtime_now(self):
@@ -103,6 +103,16 @@ def goal_payload():
 
 
 class ContinuousBodyTest(unittest.TestCase):
+    def test_only_actual_meal_reduces_hunger(self):
+        for action_type in ("cook", "order_food"):
+            with self.subTest(action_type=action_type):
+                body = ContinuousBody(hunger=80)
+                body.complete(action_type, {})
+                self.assertEqual(body.hunger, 80)
+        body = ContinuousBody(hunger=80)
+        body.complete("meal", {})
+        self.assertEqual(body.hunger, 15)
+
     def test_changes_depend_on_elapsed_time_not_poll_count(self):
         one = ContinuousBody(energy=40, hunger=10, thirst=10)
         many = copy.deepcopy(one)
@@ -366,9 +376,10 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
                 state=LifeState(energy=65, sleepiness=30),
             )
         )
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
 
     async def asyncTearDown(self):
+        await self.runtime.continuous_life.close()
         await self.archive.aclose()
         self.temp.cleanup()
 
@@ -401,14 +412,14 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
                 "duration_minutes": duration,
                 "payload": payload or {},
             }
-        await self.runtime._apply_continuous_decision(
+        await self.runtime.continuous_life._apply_continuous_decision(
             day, world, decision, self.runtime.now
         )
         return (await self.archive.get_continuous_life()).get("run")
 
     async def tick(self, minutes=1):
         self.runtime.now += datetime.timedelta(minutes=minutes)
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
 
     async def test_no_chat_action_runs_and_completes_with_process_evidence(self):
         run = await self.start()
@@ -505,9 +516,9 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.start(duration=5)
         await self.tick()
         self.runtime.now -= datetime.timedelta(seconds=30)
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
         self.runtime.now += datetime.timedelta(seconds=30)
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
         self.assertEqual(
             (await self.archive.get_continuous_life())["run"]["active_seconds"], 60
         )
@@ -577,7 +588,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime = Runtime(
             self.archive, self.runtime.now + datetime.timedelta(hours=3)
         )
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
         self.assertEqual(world["run"]["status"], "paused")
         self.assertEqual(world["run"]["active_seconds"], 60)
@@ -588,7 +599,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.start(duration=5)
         await self.tick()
         other = Runtime(self.archive, self.runtime.now + datetime.timedelta(seconds=10))
-        await other._check_continuous_life_once()
+        await other.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
         self.assertEqual(world["run"]["status"], "paused")
         self.assertEqual(world["run"]["active_seconds"], 60)
@@ -599,13 +610,13 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.tick()
         day = await self.archive.get_day(self.runtime.date)
         world = await self.archive.get_continuous_life()
-        await self.runtime._apply_continuous_decision(
+        await self.runtime.continuous_life._apply_continuous_decision(
             day, world, {"decision": "pause", "reason": "先聊一会"}, self.runtime.now
         )
         await self.tick(10)
         day = await self.archive.get_day(self.runtime.date)
         world = await self.archive.get_continuous_life()
-        await self.runtime._apply_continuous_decision(
+        await self.runtime.continuous_life._apply_continuous_decision(
             day, world, {"decision": "resume", "reason": "继续练习"}, self.runtime.now
         )
         await self.tick()
@@ -629,7 +640,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.archive.save_day(DayRecord(date=next_date, state=LifeState()))
         self.runtime.date = next_date
         self.runtime.now = datetime.datetime(2026, 10, 8, 10)
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
         thread = world["kernel"]["open_threads"][0]
         self.assertEqual(thread["id"], "photography")
@@ -753,13 +764,13 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.runtime.now += datetime.timedelta(minutes=1)
             with self.assertRaises(RuntimeError):
-                await self.runtime._check_continuous_life_once()
+                await self.runtime.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
         self.assertEqual(world["run"]["status"], "settling")
         self.assertEqual(world["goals"][0]["steps"][0]["practice_minutes"], 0)
         self.runtime.composer._save_action_receipt = original
         await self.tick()
-        await self.runtime._finish_continuous_action(run, self.runtime.now)
+        await self.runtime.continuous_life._finish_continuous_action(run, self.runtime.now)
         world = await self.archive.get_continuous_life()
         self.assertEqual(world["goals"][0]["steps"][0]["practice_minutes"], 2)
         self.assertEqual(world["skills"]["构图练习"]["sessions"], 1)
@@ -786,13 +797,14 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.runtime.now += datetime.timedelta(minutes=1)
             with self.assertRaises(RuntimeError):
-                await self.runtime._check_continuous_life_once()
+                await self.runtime.continuous_life._check_continuous_life_once()
         self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 1)
         await self.tick()
         self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 1)
         meals = await self.archive.get_meal_records()
         self.assertEqual(len(meals), 1)
         self.assertEqual(meals[0]["action_id"], run["action"]["action_id"])
+        self.assertEqual(meals[0]["status"], "prepared")
 
     async def test_stock_removed_during_cooking_does_not_create_a_meal(self):
         await self.archive.adjust_pantry_item("鸡蛋", 1, unit="个")
@@ -808,6 +820,29 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
             (await self.archive.get_continuous_life())["history"][-1]["status"],
             "failed",
         )
+
+    async def test_invite_outfit_stays_pending_until_execution_finishes(self):
+        from core.life.itinerary import apply_edited_timeline
+        action = LifeActionIntent.from_value({
+            "action_id": "invite-outfit", "action_type": "change_outfit", "target": "外出连衣裙",
+            "timeline_index": 0, "duration_minutes": 2, "source": "invite",
+        })
+        def plan(day):
+            apply_edited_timeline(day, [TimelineItem(time="01:00", activity="换衣服")],
+                                  {"_planned_life_actions": [action.as_dict()]})
+        await self.archive.mutate_day(self.runtime.date, plan)
+        await self.start(planned=action)
+        await self.tick()
+        self.assertEqual((await self.archive.get_day(self.runtime.date)).outfit, "居家服")
+        self.assertEqual(await self.archive.get_life_action_receipts(action_id=action.action_id), [])
+        await self.tick()
+        day = await self.archive.get_day(self.runtime.date)
+        self.assertEqual(day.outfit, "外出连衣裙")
+        self.assertEqual(day.timeline[0].execution_state, "completed")
+        receipts = await self.archive.get_life_action_receipts(action_id=action.action_id)
+        self.assertEqual(len(receipts), 1)
+        await self.tick()
+        self.assertEqual(len(await self.archive.get_life_action_receipts(action_id=action.action_id)), 1)
 
     async def test_new_user_outfit_prevents_running_plan_from_overwriting_it(self):
         action = LifeActionIntent.from_value(
@@ -890,7 +925,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(world["run"]["status"], "paused")
         self.assertFalse(world["sleeping"])
         day = await self.archive.get_day(self.runtime.date)
-        await self.runtime._apply_continuous_decision(
+        await self.runtime.continuous_life._apply_continuous_decision(
             day, world, {"decision": "resume", "reason": "尝试睡眠"}, self.runtime.now
         )
         self.assertEqual(
@@ -899,7 +934,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cross_day_completion_keeps_original_day_and_shared_body(self):
         self.runtime.now = datetime.datetime(2026, 10, 7, 23, 59)
-        await self.runtime._check_continuous_life_once()
+        await self.runtime.continuous_life._check_continuous_life_once()
         await self.start(duration=2)
         self.runtime.date = "2026-10-08"
         await self.archive.save_day(
@@ -929,7 +964,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
                 },
             }
 
-        self.runtime._continuous_life_decision = decision
+        self.runtime.continuous_life._decide = decision
         await self.archive.mutate_continuous_life(
             self.runtime.date, lambda day, world: world.pop("next_decision_at", None)
         )
@@ -946,6 +981,56 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
             release.set()
             await pending
         self.assertNotIn("run", await self.archive.get_continuous_life())
+
+    async def test_close_cancels_active_check_and_rejects_new_checks(self):
+        service = self.runtime.continuous_life
+        started = asyncio.Event()
+
+        async def wait_for_shutdown():
+            started.set()
+            await asyncio.Event().wait()
+
+        service._check_continuous_life_once = AsyncMock(side_effect=wait_for_shutdown)
+        pending = asyncio.create_task(self.runtime.check_continuous_life())
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(service.close(), 1)
+        self.assertTrue(pending.cancelled())
+        self.assertFalse(service._check_lock.locked())
+        self.assertEqual(service._checks, set())
+        await self.runtime.check_continuous_life()
+        service._check_continuous_life_once.assert_awaited_once()
+
+    async def test_check_lock_and_observer_belong_to_each_service_instance(self):
+        other = Runtime(self.archive, self.runtime.now)
+        first, second = self.runtime.continuous_life, other.continuous_life
+        self.assertNotEqual(first._observer_id, second._observer_id)
+        first_started, second_started, release = (
+            asyncio.Event(), asyncio.Event(), asyncio.Event()
+        )
+
+        async def wait_first():
+            first_started.set()
+            await release.wait()
+
+        async def wait_second():
+            second_started.set()
+            await release.wait()
+
+        first._check_continuous_life_once = AsyncMock(side_effect=wait_first)
+        second._check_continuous_life_once = AsyncMock(side_effect=wait_second)
+        left = asyncio.create_task(self.runtime.check_continuous_life())
+        right = asyncio.create_task(other.check_continuous_life())
+        try:
+            await asyncio.wait_for(first_started.wait(), 1)
+            await asyncio.wait_for(second_started.wait(), 1)
+            # 同一实例跳过重入，另一个实例仍能独立执行。
+            await asyncio.wait_for(self.runtime.check_continuous_life(), 1)
+            first._check_continuous_life_once.assert_awaited_once()
+            second._check_continuous_life_once.assert_awaited_once()
+        finally:
+            release.set()
+            await asyncio.gather(left, right)
+            await second.close()
 
     async def test_real_reply_wakes_sleep_without_losing_observed_rest(self):
         await self.start("rest", duration=30, rest_kind="sleep")
@@ -988,11 +1073,34 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         day = await self.archive.get_day(runtime.date)
         world = await self.archive.get_continuous_life()
-        payload = await ContinuousLifeMixin._continuous_life_decision(
-            runtime, day, world, runtime.now
-        )
+        payload = await runtime.continuous_decision.choose(day, world, runtime.now)
         self.assertIn("刚才说好的事情有变化", runtime.call_text_model.call_args.args[1])
         self.assertIn("chat:current-chat:new", payload["_sources"])
+
+    async def test_delayed_preparation_remains_available_for_semantic_decision(self):
+        runtime = self.runtime
+        runtime.now += datetime.timedelta(minutes=12)
+        runtime.composer._get_persona = AsyncMock(return_value="角色")
+        runtime.composer._collect_recent_chat_context = AsyncMock(return_value="等我换件衣服")
+        runtime.composer._cleanup_conversation = AsyncMock()
+        runtime.get_text_provider = AsyncMock(return_value=object())
+        runtime.call_text_model = AsyncMock(return_value='{"decision":"wait","reason":"先判断是否仍要出门"}')
+        day = await self.archive.get_day(runtime.date)
+        day.timeline = [TimelineItem(time="01:00", activity="换衣", execution_state="elapsed")]
+        day.meta["planned_life_actions"] = json.dumps([{
+            "action_id": "delayed", "action_type": "change_outfit", "target": "裙子",
+            "timeline_index": 0, "duration_minutes": 3,
+        }])
+        world = await self.archive.get_continuous_life()
+        result = await runtime.continuous_decision.choose(day, world, runtime.now)
+        self.assertEqual(result["_candidates"][0]["action_id"], "delayed")
+        self.assertGreaterEqual(result["_candidates"][0]["delay_minutes"], 12)
+        self.assertEqual(result["decision"], "wait")
+        self.assertEqual(await self.archive.get_life_action_receipts(), [])
+        for state in ("completed", "cancelled", "skipped", "expired"):
+            day.timeline[0].execution_state = state
+            result = await runtime.continuous_decision.choose(day, world, runtime.now)
+            self.assertEqual(result["_candidates"], [])
 
     async def test_media_and_unplanned_location_actions_cannot_be_simulated(self):
         for action_type in (
@@ -1009,9 +1117,19 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_state_refresh_preserves_body_and_concurrent_user_outfit(self):
         runtime = self.runtime
-        runtime._state_refresh_recalled = lambda event: False
-        runtime._persist_state_side_records = AsyncMock()
-        runtime._apply_state_continuity = StatusMixin._apply_state_continuity
+        service = StateRefreshService(
+            config=lambda: runtime.config.state,
+            archive=lambda: self.archive,
+            compute_sleep=runtime.composer._compute_sleep_continuity,
+            replan=AsyncMock(),
+            sync_world_facts=runtime.composer.sync_day_world_facts,
+            text_provider=AsyncMock(),
+            call_text_model=AsyncMock(),
+            close_text_session=AsyncMock(),
+            event_was_recalled=lambda event, **kwargs: False,
+            sync_kernel=runtime.sync_continuous_kernel_state,
+            notify_status=runtime.mark_page_status_changed,
+        )
         old_day = await self.archive.get_day(runtime.date)
         await self.archive.mutate_day(
             runtime.date, lambda day: setattr(day, "outfit", "新睡衣")
@@ -1019,8 +1137,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.tick()
         body = (await self.archive.get_continuous_life())["body"]
         spec = _StateRefreshSpec(runtime.date, runtime.now, "chat", "交谈", None, False)
-        current = await StatusMixin._commit_state_refresh(
-            runtime,
+        current = await service._commit_state_refresh(
             old_day,
             {"state": {"energy": 5, "sleepiness": 95, "mood_score": 62}},
             spec,
@@ -1053,7 +1170,7 @@ class QuietLifeTest(unittest.IsolatedAsyncioTestCase):
             clock.stop()
 
     async def test_quiet_guard_blocks_unsolicited_but_allows_agreed_delivery(self):
-        runtime = ProactiveSendMixin()
+        runtime = ProactiveSendComponent()
         runtime._state_refresh_in_quiet_hours = lambda now: True
         runtime.media_request_is_current_turn = lambda event: True
         unsolicited = SimpleNamespace(_daily_life_quiet_guard=True)

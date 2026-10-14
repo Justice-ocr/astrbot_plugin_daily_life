@@ -8,6 +8,7 @@ from astrbot.api import logger
 from ..clock import TIMEZONE
 from ..config.options import LifeSettings
 from ..life.tools import parse_schedule_time
+from ..telemetry import LoopDelayProbe
 
 
 class LifeRhythmClock:
@@ -27,6 +28,7 @@ class LifeRhythmClock:
         weekly_task: Callable[[], Awaitable[None]] | None = None,
         continuous_life_task: Callable[[], Awaitable[None]] | None = None,
         wardrobe_task: Callable[[], Awaitable[None]] | None = None,
+        loop_delay_reporter: Callable[[float], None] | None = None,
     ):
         self.config = config
         self.scheduler = AsyncIOScheduler(
@@ -48,6 +50,7 @@ class LifeRhythmClock:
         self.proactive_idle_task = proactive_idle_task
         self.durable_task = durable_task
         self.last_error = ""
+        self.loop_probe = LoopDelayProbe(loop_delay_reporter)
 
     @property
     def healthy(self) -> bool:
@@ -136,12 +139,14 @@ class LifeRhythmClock:
 
             if not self.scheduler.running:
                 self.scheduler.start()
+            self.loop_probe.start()
         except Exception as exc:
             self.last_error = str(exc)
             logger.error(f"[日常生活] 调度器初始化失败：{exc}")
             raise
 
     def stop(self):
+        self.loop_probe.stop()
         if self.scheduler.running:
             self.scheduler.shutdown()
 

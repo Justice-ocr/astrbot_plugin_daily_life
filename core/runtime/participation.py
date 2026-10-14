@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..life.entities import living_context
 
 
-class LivingRuntimeMixin:
+class LivingStateService:
+    """管理有用户证据的共同活动、物品和记忆纠正。"""
+
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], Any],
+        session_id: Callable[[Any], str],
+        message_id: Callable[[Any], str],
+        event_was_recalled: Callable[[Any], bool],
+        message_was_recalled: Callable[[str, str], bool],
+        notify_status: Callable[[str], Awaitable[Any]],
+    ) -> None:
+        self._archive = archive
+        self._session_id = session_id
+        self._message_id = message_id
+        self._event_was_recalled = event_was_recalled
+        self._was_recalled = message_was_recalled
+        self._notify_status = notify_status
+
     def _living_evidence(self, event: Any, evidence: str) -> tuple[str, str]:
-        scope = self._event_session_id(event)
-        message_id = self._event_message_id(event)
+        scope = self._session_id(event)
+        message_id = self._message_id(event)
         getter = getattr(event, "get_message_str", None)
         text = str(
             getter() if callable(getter) else getattr(event, "message_str", "")
@@ -20,13 +40,12 @@ class LivingRuntimeMixin:
             raise ValueError(
                 "请引用本轮用户完整原话作为证据，不能根据时间或推测更新经历。"
             )
-        if self.event_was_recalled(event):
+        if self._event_was_recalled(event):
             raise ValueError("原消息已撤回，不再更新。")
         return scope, f"message:{scope}:{message_id}"
 
     async def living_context_for_scope(self, scope: str) -> str:
-        reader = getattr(self.archive, "get_living_entities", None)
-        return living_context(await reader(scope)) if callable(reader) else ""
+        return living_context(await self._archive().get_living_entities(scope))
 
     async def manage_shared_activity(
         self,
@@ -39,10 +58,10 @@ class LivingRuntimeMixin:
         evidence: str = "",
         revision: int = 0,
     ) -> str:
-        scope = self._event_session_id(event)
+        scope = self._session_id(event)
         if action == "list":
             return json.dumps(
-                await self.archive.get_living_entities(scope, kind="shared_activity"),
+                await self._archive().get_living_entities(scope, kind="shared_activity"),
                 ensure_ascii=False,
             )
         states = {
@@ -58,14 +77,14 @@ class LivingRuntimeMixin:
             return "共同活动操作无效。"
         try:
             scope, source = self._living_evidence(event, evidence)
-            current = await self.archive.get_living_entity(activity_id, scope)
+            current = await self._archive().get_living_entity(activity_id, scope)
             if not current or current["scope"] != scope:
                 return "未找到本会话已经确认的共同活动；新邀约请先使用 accept_user_invite。"
             if action == "resume" and current["state"] != "paused":
                 return "活动当前没有暂停，请先读取最新状态。"
             if action == "progress" and current["state"] != "active":
                 return "共同活动尚未进行，不能记录进行进度。"
-            result = await self.archive.update_shared_activity(
+            result = await self._archive().update_shared_activity(
                 activity_id,
                 scope,
                 state=states[action] or current["state"],
@@ -75,7 +94,7 @@ class LivingRuntimeMixin:
                 evidence=evidence,
                 revision=revision,
             )
-            await self.mark_page_status_changed("continuous_life")
+            await self._notify_status("continuous_life")
             return json.dumps(result, ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
@@ -93,10 +112,21 @@ class LivingRuntimeMixin:
         content: str = "",
         evidence: str = "",
         revision: int = 0,
+        owner: str = "",
+        quantity: float = -1,
+        unit: str = "",
+        available_at: str = "",
     ) -> str:
-        scope = self._event_session_id(event)
+        scope = self._session_id(event)
+        if action in {"get", "history"}:
+            item = await self._archive().get_living_entity(object_id, scope)
+            if not item:
+                return "未找到当前会话可读取的物品或作品。"
+            if action == "history":
+                return json.dumps(await self._archive().get_artifact_versions(object_id, scope), ensure_ascii=False)
+            return json.dumps(item, ensure_ascii=False)
         if action == "list":
-            items = await self.archive.get_living_entities(
+            items = await self._archive().get_living_entities(
                 scope, kind="object", limit=30
             )
             return json.dumps(items, ensure_ascii=False)
@@ -106,7 +136,7 @@ class LivingRuntimeMixin:
             return "更新需要已有物品编号。"
         try:
             scope, source = self._living_evidence(event, evidence)
-            result = await self.archive.update_life_object(
+            result = await self._archive().update_life_object(
                 scope,
                 entity_id=object_id,
                 title=title,
@@ -117,8 +147,10 @@ class LivingRuntimeMixin:
                 evidence_id=source,
                 evidence=evidence,
                 revision=revision,
+                owner=owner, quantity=None if quantity == -1 else quantity,
+                unit=unit, available_at=available_at,
             )
-            await self.mark_page_status_changed("continuous_life")
+            await self._notify_status("continuous_life")
             return json.dumps(result, ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
@@ -129,7 +161,7 @@ class LivingRuntimeMixin:
         try:
             scope, source = self._living_evidence(event, evidence)
             admin = getattr(event, "is_admin", None)
-            result = await self.archive.correct_life_memory(
+            result = await self._archive().correct_life_memory(
                 scope,
                 memory_id,
                 correction,
@@ -137,7 +169,7 @@ class LivingRuntimeMixin:
                 evidence=evidence,
                 allow_global=bool(admin()) if callable(admin) else False,
             )
-            await self.mark_page_status_changed("chat_memory")
+            await self._notify_status("chat_memory")
             return json.dumps(result, ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
@@ -162,13 +194,12 @@ class LivingRuntimeMixin:
                 or not str(correction.get("correction") or "").strip()
             ):
                 continue
-            recalled = getattr(self, "_message_was_recalled", None)
-            if callable(recalled) and recalled(
+            if self._was_recalled(
                 batch["session_id"], str(row.get("message_id") or row["id"])
             ):
                 continue
             try:
-                await self.archive.correct_life_memory(
+                await self._archive().correct_life_memory(
                     batch["session_id"],
                     correction["memory_id"],
                     correction["correction"],
@@ -178,3 +209,6 @@ class LivingRuntimeMixin:
                 )
             except ValueError:
                 continue
+
+
+__all__ = ["LivingStateService"]

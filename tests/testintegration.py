@@ -16,9 +16,7 @@ if str(PLUGIN_PARENT) not in sys.path:
 
 from astrbot_plugin_daily_life.core.archive import LifeArchive  # noqa: E402
 from astrbot_plugin_daily_life.core.models import ChatSummaryRecord  # noqa: E402
-from astrbot_plugin_daily_life.core.runtime.mirror.export import (  # noqa: E402
-    SnapshotExportMixin,
-)
+from componentfixtures import SnapshotExportComponent  # noqa: E402
 from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 
 
@@ -73,7 +71,7 @@ class _TargetArchive:
         ]
 
 
-class _Snapshot(SnapshotExportMixin):
+class _Snapshot(SnapshotExportComponent):
     def __init__(self):
         self.archive = _TargetArchive()
 
@@ -194,7 +192,7 @@ class _ShareArchive:
         ]
 
 
-class _ShareSnapshot(SnapshotExportMixin):
+class _ShareSnapshot(SnapshotExportComponent):
     def __init__(self):
         self.archive = _ShareArchive()
 

@@ -1,4 +1,4 @@
-from .render import HiddenExperienceMixin
+from .render import HiddenExperienceComponent
 
 
-__all__ = ["HiddenExperienceMixin"]
+__all__ = ["HiddenExperienceComponent"]

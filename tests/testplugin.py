@@ -29,13 +29,12 @@ if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
 
 from astrbot_plugin_daily_life import main as plugin_module  # noqa: E402
-from astrbot_plugin_daily_life.core.runtime.reply import (  # noqa: E402
-    SemanticSegmentRuntimeMixin,
-)
+from componentfixtures import SemanticSegmentRuntimeComponent  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.sender import (  # noqa: E402
     ExpressiveSendMessageTool,
 )
-from astrbot_plugin_daily_life.core.runtime.voice import VoiceSwitchMixin  # noqa: E402
+from componentfixtures import VoiceSwitchComponent  # noqa: E402
+from core.runtime.voice import preface as fixture_voice_preface_module  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.voice import (  # noqa: E402
     preface as voice_preface_module,
 )
@@ -53,12 +52,43 @@ def patched_follow_up_runners(runners):
     follow_up = types.SimpleNamespace(_ACTIVE_AGENT_RUNNERS=runners)
     voice_preface_module._astrbot_follow_up = follow_up
     try:
-        yield follow_up
+        with patch.object(fixture_voice_preface_module, "_astrbot_follow_up", follow_up):
+            yield follow_up
     finally:
         voice_preface_module._astrbot_follow_up = old_follow_up
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_media_arguments_do_not_mark_video_or_start_reactions(self):
+        calls = []
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            note_life_video_reference_source=lambda *args, **kwargs: calls.append("reference"),
+            note_tool_reaction_start=lambda *args: record_async(calls, "reaction_start", args),
+            handle_llm_tool_start=lambda *args: record_async(calls, "tool_start", args),
+            handle_llm_tool_respond=lambda *args: record_async(calls, "tool_result", args),
+            note_tool_reaction_result=lambda *args: record_async(calls, "reaction_result", args),
+        )
+        from astrbot.core.agent.tool import FunctionTool
+
+        async def handler(event, prompt=""):
+            return prompt
+
+        original = FunctionTool(
+            name="life_video_generate", description="",
+            parameters={"type": "object", "properties": {"prompt": {"type": "string"}}},
+            handler=handler,
+        )
+        tool = plugin_module.ArgumentCheckedTool(original)
+        event = Event()
+        await plugin.on_using_llm_tool(event, tool, {"reason": "视频"})
+        await plugin.on_llm_tool_respond(event, tool, {"reason": "视频"}, "参数错误")
+        self.assertEqual(calls, [])
+        self.assertFalse(getattr(event, plugin._VIDEO_TOOL_USED_ATTR, False))
+        await plugin.on_using_llm_tool(event, tool, {"prompt": "当前居家视频"})
+        self.assertTrue(getattr(event, plugin._VIDEO_TOOL_USED_ATTR, False))
+        self.assertEqual(calls[0], "reference")
+
     async def test_location_is_readable_before_turn_memory_and_model_request(self):
         from testlocation import event_with, segment
         observed = []
@@ -840,7 +870,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         async def apply_semantic_segment_before_send(event):
             calls.append("semantic")
             texts = [
-                SemanticSegmentRuntimeMixin._semantic_segment_text(item).strip()
+                SemanticSegmentRuntimeComponent._semantic_segment_text(item).strip()
                 for item in event.get_result().chain
             ]
             if texts and all(texts):
@@ -1238,7 +1268,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_does_not_suppress_generic_active_agent_intermediate_result(
         self,
     ):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1263,7 +1293,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent_messages, [])
 
     async def test_runtime_suppresses_voice_tool_preface_before_tool_runs(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1286,7 +1316,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(event.get_result())
 
     async def test_runtime_assigns_identical_preface_to_send_message_tool(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1362,7 +1392,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_skips_send_tool_after_other_tool_sent_identical_preface(
         self,
     ):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1404,7 +1434,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_does_not_suppress_without_active_tool_runner(
         self,
     ):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1420,7 +1450,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(event.get_result())
 
     async def test_runtime_suppresses_emoji_tool_preface_before_tool_runs(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1451,7 +1481,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent_messages, [])
 
     async def test_runtime_suppresses_after_voice_tool_is_used(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1473,7 +1503,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(event.get_result())
 
     def test_runtime_does_not_clear_next_turn_after_voice_tool_was_sent(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1495,7 +1525,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime._tool_reply_round_store(), {})
 
     async def test_runtime_keeps_final_text_after_emoji_tool_is_used(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1519,7 +1549,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime._tool_reply_round_store(), {})
 
     async def test_runtime_keeps_final_text_when_voice_tool_falls_back(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1539,7 +1569,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime._tool_reply_round_store(), {})
 
     async def test_runtime_does_not_suppress_voice_word_without_tool_state(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             @staticmethod
             def _event_session_id(event):
                 return event.unified_msg_origin
@@ -1560,7 +1590,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(event.get_result())
 
     async def test_runtime_routes_visible_tool_preface_through_chat_expression(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             def __init__(self):
                 self.expression_calls = []
 
@@ -1625,7 +1655,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runtime.expression_calls), 6)
 
     async def test_runtime_keeps_mixed_tool_preface_as_original_message_chain(self):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             def __init__(self):
                 self.expression_calls = []
 
@@ -1696,14 +1726,14 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            VoiceSwitchMixin._coerce_tool_names(response),
+            VoiceSwitchComponent._coerce_tool_names(response),
             {"life_voice_generate", "life_image_generate"},
         )
 
     async def test_runtime_missing_scope_method_does_not_suppress_without_tool_state(
         self,
     ):
-        class Runtime(VoiceSwitchMixin):
+        class Runtime(VoiceSwitchComponent):
             pass
 
         class Runner:

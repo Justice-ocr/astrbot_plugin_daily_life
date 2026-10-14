@@ -11,8 +11,44 @@ from ..models import (
     MemoryEpisodeClusterRecord,
 )
 
+from typing import Protocol
 
-class LongTermMemoryArchiveMixin:
+
+class LongTermMemoryArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _ENTITY_CATEGORY_MAP: Any
+    _apply_memory_lifecycle_unlocked: Any
+    _compose_long_term_memory: Any
+    _compose_memory_cluster: Any
+    _compose_memory_conflict: Any
+    _compose_memory_decision_link: Any
+    _compose_memory_entity: Any
+    _conn: Any
+    _decision_memory_query: Any
+    _long_term_memory_scope_clause: Any
+    _maintain_long_term_memory_quality_unlocked: Any
+    _memory_cluster_title: Any
+    _memory_entity_name: Any
+    _memory_entity_type: Any
+    _memory_lifecycle_kind: Any
+    _memory_search_query: Any
+    _memory_search_terms: Any
+    _record_memory_conflicts_unlocked: Any
+    _run_db: Any
+    _search_long_term_memory_fts_unlocked: Any
+    _search_long_term_memory_like_unlocked: Any
+    _text: Any
+    _upsert_long_term_memory_unlocked: Any
+    _upsert_memory_cluster_unlocked: Any
+    _upsert_memory_decision_link_unlocked: Any
+    _upsert_memory_entity_unlocked: Any
+
+
+class LongTermMemoryArchiveComponent:
+    def __init__(self, context: LongTermMemoryArchiveComponentContext) -> None:
+        self.context = context
+
     _ENTITY_CATEGORY_MAP = {
         "relationship": "person",
         "place": "place",
@@ -130,10 +166,10 @@ class LongTermMemoryArchiveMixin:
             return None
         # 来源已被用户纠正时，迟到的后台任务即使改写措辞也不能重新确立旧事实。
         # 再次纠正同一条记录只能由 correct_life_memory 的事务显式放行。
-        source_table = self._text(memory.source_table)
-        source_id = self._text(memory.source_id)
+        source_table = self.context._text(memory.source_table)
+        source_id = self.context._text(memory.source_id)
         if not replacing_correction and source_table and source_id:
-            invalidated = self._conn.execute(
+            invalidated = self.context._conn.execute(
                 """SELECT 1 FROM long_term_memories WHERE scope=? AND source_table=?
                 AND source_id=? AND status='invalidated' LIMIT 1""",
                 (memory.scope, source_table, source_id),
@@ -141,14 +177,14 @@ class LongTermMemoryArchiveMixin:
             if invalidated:
                 return None
         # 无来源标识的记录仍按原文阻止被纠正版本复活。
-        invalidated = self._conn.execute(
+        invalidated = self.context._conn.execute(
             """SELECT 1 FROM long_term_memories WHERE scope=? AND source_table=? AND source_id=?
             AND content=? AND status='invalidated' LIMIT 1""",
             (memory.scope, memory.source_table, memory.source_id, memory.content),
         ).fetchone()
         if invalidated and not replacing_correction:
             return None
-        cursor = self._conn.execute(
+        self.context._conn.execute(
             """
             INSERT INTO long_term_memories(
                 scope, category, title, content, source_table, source_id,
@@ -160,55 +196,50 @@ class LongTermMemoryArchiveMixin:
                 session_id = COALESCE(NULLIF(excluded.session_id, ''), long_term_memories.session_id),
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), long_term_memories.message_id),
                 date = COALESCE(NULLIF(excluded.date, ''), long_term_memories.date),
-                confidence = MAX(long_term_memories.confidence, excluded.confidence),
+                confidence = excluded.confidence,
                 weight = MAX(long_term_memories.weight, excluded.weight),
                 status = excluded.status,
                 expires_at = COALESCE(NULLIF(excluded.expires_at, ''), long_term_memories.expires_at),
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
-                self._text(memory.scope),
-                self._text(memory.category) or "general",
-                self._text(memory.title),
-                self._text(memory.content),
-                self._text(memory.source_table),
-                self._text(memory.source_id),
-                self._text(memory.session_id),
-                self._text(memory.message_id),
-                self._text(memory.date),
+                self.context._text(memory.scope),
+                self.context._text(memory.category) or "general",
+                self.context._text(memory.title),
+                self.context._text(memory.content),
+                self.context._text(memory.source_table),
+                self.context._text(memory.source_id),
+                self.context._text(memory.session_id),
+                self.context._text(memory.message_id),
+                self.context._text(memory.date),
                 float(memory.confidence),
                 float(memory.weight),
-                self._text(memory.status) or "active",
-                self._text(memory.expires_at),
+                self.context._text(memory.status) or "active",
+                self.context._text(memory.expires_at),
             ),
         )
-        row_id = cursor.lastrowid
-        if not row_id:
-            row = self._conn.execute(
-                """
-                SELECT * FROM long_term_memories
-                WHERE scope = ? AND category = ? AND content = ?
-                  AND source_table = ? AND source_id = ?
-                """,
-                (
-                    self._text(memory.scope),
-                    self._text(memory.category) or "general",
-                    self._text(memory.content),
-                    self._text(memory.source_table),
-                    self._text(memory.source_id),
-                ),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT * FROM long_term_memories WHERE id = ?", (row_id,)
-            ).fetchone()
-        saved = self._compose_long_term_memory(row) if row else None
+        # UPSERT 更新已有行时 lastrowid 仍可能指向上一次插入的其他记录。
+        row = self.context._conn.execute(
+            """
+            SELECT * FROM long_term_memories
+            WHERE scope = ? AND category = ? AND content = ?
+              AND source_table = ? AND source_id = ?
+            """,
+            (
+                self.context._text(memory.scope),
+                self.context._text(memory.category) or "general",
+                self.context._text(memory.content),
+                self.context._text(memory.source_table),
+                self.context._text(memory.source_id),
+            ),
+        ).fetchone()
+        saved = self.context._compose_long_term_memory(row) if row else None
         if saved:
-            self._maintain_long_term_memory_quality_unlocked(saved)
+            self.context._maintain_long_term_memory_quality_unlocked(saved)
         return saved
 
     def _memory_lifecycle_kind(self, category: str) -> str:
-        category = self._text(category).lower()
+        category = self.context._text(category).lower()
         if category == "short_term" or category.startswith("focus"):
             return "short_term"
         if category == "correction" or "correction" in category:
@@ -222,11 +253,11 @@ class LongTermMemoryArchiveMixin:
         return "episode"
 
     def _apply_memory_lifecycle_unlocked(self, memory: LongTermMemoryRecord) -> None:
-        kind = self._memory_lifecycle_kind(memory.category)
+        kind = self.context._memory_lifecycle_kind(memory.category)
         weight = float(memory.weight or 1.0)
-        expires_at = self._text(memory.expires_at)
+        expires_at = self.context._text(memory.expires_at)
         if kind == "short_term" and not expires_at:
-            expires_at = self._conn.execute(
+            expires_at = self.context._conn.execute(
                 "SELECT DATE('now', '+7 days', 'localtime') AS day"
             ).fetchone()["day"]
             weight = max(weight, 1.2)
@@ -234,7 +265,7 @@ class LongTermMemoryArchiveMixin:
             weight = max(weight, 2.0 if kind == "correction" else 1.5)
         elif kind == "episode":
             weight = max(0.6, weight)
-        self._conn.execute(
+        self.context._conn.execute(
             """
             UPDATE long_term_memories
             SET weight = ?, expires_at = COALESCE(NULLIF(?, ''), expires_at),
@@ -256,46 +287,51 @@ class LongTermMemoryArchiveMixin:
         return (content.split() or [memory.category or "记忆"])[0][:80]
 
     def _memory_entity_type(self, memory: LongTermMemoryRecord) -> str:
-        category = self._text(memory.category).lower()
+        category = self.context._text(memory.category).lower()
         if category.startswith("preference"):
             return "preference"
         prefix = category.split(":", 1)[0]
-        return self._ENTITY_CATEGORY_MAP.get(prefix, "topic")
+        return self.context._ENTITY_CATEGORY_MAP.get(prefix, "topic")
 
     def _upsert_memory_entity_unlocked(
         self, memory: LongTermMemoryRecord
     ) -> MemoryEntityRecord | None:
-        name = self._text(self._memory_entity_name(memory))
+        name = self.context._text(self.context._memory_entity_name(memory))
         if not name:
             return None
-        entity_type = self._memory_entity_type(memory)
-        row = self._conn.execute(
+        entity_type = self.context._memory_entity_type(memory)
+        row = self.context._conn.execute(
             """
             SELECT * FROM memory_entities
             WHERE scope = ? AND entity_type = ? AND name = ?
             """,
-            (self._text(memory.scope), entity_type, name),
+            (self.context._text(memory.scope), entity_type, name),
         ).fetchone()
         if row:
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE memory_entities
-                SET last_seen = COALESCE(NULLIF(?, ''), last_seen),
-                    mention_count = mention_count + 1,
+                SET first_seen = CASE WHEN first_seen = '' OR (? <> '' AND ? < first_seen) THEN ? ELSE first_seen END,
+                    last_seen = CASE WHEN ? <> '' AND ? > last_seen THEN ? ELSE last_seen END,
                     confidence = MAX(confidence, ?),
                     status = 'active',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
-                    self._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
                     float(memory.confidence or 1.0),
                     int(row["id"]),
                 ),
             )
             entity_id = int(row["id"])
         else:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO memory_entities(
                     scope, entity_type, name, first_seen, last_seen,
@@ -304,29 +340,35 @@ class LongTermMemoryArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, 1, ?, 'active')
                 """,
                 (
-                    self._text(memory.scope),
+                    self.context._text(memory.scope),
                     entity_type,
                     name,
-                    self._text(memory.date),
-                    self._text(memory.date),
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
                     float(memory.confidence or 1.0),
                 ),
             )
             entity_id = int(cursor.lastrowid)
-        self._conn.execute(
+        self.context._conn.execute(
             """
             INSERT OR REPLACE INTO memory_entity_links(entity_id, memory_id, relation, weight)
             VALUES (?, ?, 'mentions', ?)
             """,
             (entity_id, int(memory.id), float(memory.weight or 1.0)),
         )
-        row = self._conn.execute(
+        self.context._conn.execute(
+            """UPDATE memory_entities SET mention_count =
+            (SELECT COUNT(*) FROM memory_entity_links WHERE entity_id = ?)
+            WHERE id = ?""",
+            (entity_id, entity_id),
+        )
+        row = self.context._conn.execute(
             "SELECT * FROM memory_entities WHERE id = ?", (entity_id,)
         ).fetchone()
-        return self._compose_memory_entity(row) if row else None
+        return self.context._compose_memory_entity(row) if row else None
 
     def _memory_cluster_title(self, memory: LongTermMemoryRecord) -> str:
-        category = self._text(memory.category).split(":", 1)[0] or "general"
+        category = self.context._text(memory.category).split(":", 1)[0] or "general"
         if category in {"short_term", "correction"}:
             return memory.title or memory.content[:60]
         return f"{category}:{memory.title or memory.content[:40]}"
@@ -334,33 +376,40 @@ class LongTermMemoryArchiveMixin:
     def _upsert_memory_cluster_unlocked(
         self, memory: LongTermMemoryRecord
     ) -> MemoryEpisodeClusterRecord | None:
-        if self._memory_lifecycle_kind(memory.category) not in {
+        if self.context._memory_lifecycle_kind(memory.category) not in {
             "episode",
             "short_term",
         }:
             return None
-        title = self._memory_cluster_title(memory)[:120]
+        title = self.context._memory_cluster_title(memory)[:120]
         summary = memory.content
-        row = self._conn.execute(
-            """
-            SELECT * FROM memory_episode_clusters
-            WHERE scope = ? AND title = ? AND category = ?
-            """,
-            (
-                self._text(memory.scope),
-                title,
-                self._text(memory.category).split(":", 1)[0] or "life",
-            ),
-        ).fetchone()
+        category = self.context._text(memory.category).split(":", 1)[0] or "life"
+        # 同一来源的修订使用已有经历链，不依赖摘要标题是否恰好相同。
+        row = None
+        if memory.source_table and memory.source_id:
+            row = self.context._conn.execute(
+                """SELECT c.* FROM memory_episode_clusters c
+                JOIN memory_episode_cluster_items i ON i.cluster_id = c.id
+                JOIN long_term_memories m ON m.id = i.memory_id
+                WHERE c.scope = ? AND c.category = ?
+                  AND m.source_table = ? AND m.source_id = ?
+                ORDER BY c.id LIMIT 1""",
+                (memory.scope, category, memory.source_table, memory.source_id),
+            ).fetchone()
+        if row is None:
+            row = self.context._conn.execute(
+                """SELECT * FROM memory_episode_clusters
+                WHERE scope = ? AND title = ? AND category = ?""",
+                (self.context._text(memory.scope), title, category),
+            ).fetchone()
         if row:
             cluster_id = int(row["id"])
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE memory_episode_clusters
                 SET summary = COALESCE(NULLIF(?, ''), summary),
                     first_date = CASE WHEN first_date = '' OR (? <> '' AND ? < first_date) THEN ? ELSE first_date END,
                     last_date = CASE WHEN ? <> '' AND ? > last_date THEN ? ELSE last_date END,
-                    memory_count = memory_count + 1,
                     weight = MAX(weight, ?),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -378,7 +427,7 @@ class LongTermMemoryArchiveMixin:
                 ),
             )
         else:
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO memory_episode_clusters(
                     scope, title, summary, category, first_date, last_date,
@@ -387,35 +436,46 @@ class LongTermMemoryArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'active')
                 """,
                 (
-                    self._text(memory.scope),
+                    self.context._text(memory.scope),
                     title,
                     summary,
-                    self._text(memory.category).split(":", 1)[0] or "life",
-                    self._text(memory.date),
-                    self._text(memory.date),
+                    self.context._text(memory.category).split(":", 1)[0] or "life",
+                    self.context._text(memory.date),
+                    self.context._text(memory.date),
                     float(memory.weight or 1.0),
                 ),
             )
             cluster_id = int(cursor.lastrowid)
-        self._conn.execute(
+        self.context._conn.execute(
             """
-            INSERT OR REPLACE INTO memory_episode_cluster_items(cluster_id, memory_id, sort_order)
+            INSERT OR IGNORE INTO memory_episode_cluster_items(cluster_id, memory_id, sort_order)
             VALUES (?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM memory_episode_cluster_items WHERE cluster_id = ?), 0))
             """,
             (cluster_id, int(memory.id), cluster_id),
         )
-        row = self._conn.execute(
+        self.context._conn.execute(
+            """UPDATE memory_episode_clusters SET memory_count =
+            (SELECT COUNT(*) FROM memory_episode_cluster_items WHERE cluster_id = ?),
+            summary = COALESCE((SELECT m.content FROM memory_episode_cluster_items i
+                JOIN long_term_memories m ON m.id = i.memory_id
+                WHERE i.cluster_id = ? AND m.status = 'active'
+                  AND (m.expires_at = '' OR m.expires_at >= DATE('now', 'localtime'))
+                ORDER BY m.date DESC, m.id DESC LIMIT 1), '')
+            WHERE id = ?""",
+            (cluster_id, cluster_id, cluster_id),
+        )
+        row = self.context._conn.execute(
             "SELECT * FROM memory_episode_clusters WHERE id = ?", (cluster_id,)
         ).fetchone()
-        return self._compose_memory_cluster(row) if row else None
+        return self.context._compose_memory_cluster(row) if row else None
 
     def _record_memory_conflicts_unlocked(
         self, memory: LongTermMemoryRecord
     ) -> list[MemoryConflictRecord]:
-        category = self._text(memory.category)
-        if self._memory_lifecycle_kind(category) not in {"short_term", "correction"}:
+        category = self.context._text(memory.category)
+        if self.context._memory_lifecycle_kind(category) not in {"short_term", "correction"}:
             return []
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             """
             SELECT * FROM long_term_memories
             WHERE id <> ? AND status = 'active'
@@ -424,13 +484,17 @@ class LongTermMemoryArchiveMixin:
             ORDER BY weight DESC, id DESC
             LIMIT 8
             """,
-            (int(memory.id), self._text(memory.scope)),
+            (int(memory.id), self.context._text(memory.scope)),
         ).fetchall()
         conflicts: list[MemoryConflictRecord] = []
+        conflict_type = (
+            "override" if self.context._memory_lifecycle_kind(category) == "correction"
+            else "temporary_tension"
+        )
         for row in rows:
-            other = self._compose_long_term_memory(row)
+            other = self.context._compose_long_term_memory(row)
             summary = f"{memory.content} / {other.content}"
-            cursor = self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT OR IGNORE INTO memory_conflicts(
                     scope, memory_id, related_memory_id, conflict_type,
@@ -439,32 +503,30 @@ class LongTermMemoryArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, 'open')
                 """,
                 (
-                    self._text(memory.scope),
+                    self.context._text(memory.scope),
                     int(memory.id),
                     int(other.id),
-                    "override"
-                    if self._memory_lifecycle_kind(category) == "correction"
-                    else "temporary_tension",
+                    conflict_type,
                     summary[:300],
                     "优先按时间范围和来源强度判断，不直接覆盖长期记忆。",
                 ),
             )
-            conflict_id = int(cursor.lastrowid or 0)
-            if conflict_id:
-                conflict_row = self._conn.execute(
-                    "SELECT * FROM memory_conflicts WHERE id = ?", (conflict_id,)
-                ).fetchone()
-                if conflict_row:
-                    conflicts.append(self._compose_memory_conflict(conflict_row))
+            conflict_row = self.context._conn.execute(
+                """SELECT * FROM memory_conflicts
+                WHERE scope = ? AND memory_id = ? AND related_memory_id = ? AND conflict_type = ?""",
+                (self.context._text(memory.scope), int(memory.id), int(other.id), conflict_type),
+            ).fetchone()
+            if conflict_row:
+                conflicts.append(self.context._compose_memory_conflict(conflict_row))
         return conflicts
 
     def _maintain_long_term_memory_quality_unlocked(
         self, memory: LongTermMemoryRecord
     ) -> None:
-        self._apply_memory_lifecycle_unlocked(memory)
-        self._upsert_memory_entity_unlocked(memory)
-        self._upsert_memory_cluster_unlocked(memory)
-        self._record_memory_conflicts_unlocked(memory)
+        self.context._apply_memory_lifecycle_unlocked(memory)
+        self.context._upsert_memory_entity_unlocked(memory)
+        self.context._upsert_memory_cluster_unlocked(memory)
+        self.context._record_memory_conflicts_unlocked(memory)
 
     async def upsert_long_term_memory(
         self, memory: LongTermMemoryRecord | dict[str, Any]
@@ -474,11 +536,11 @@ class LongTermMemoryArchiveMixin:
             return None
 
         def write() -> LongTermMemoryRecord | None:
-            saved = self._upsert_long_term_memory_unlocked(record)
-            self._conn.commit()
+            saved = self.context._upsert_long_term_memory_unlocked(record)
+            self.context._conn.commit()
             return saved
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def upsert_long_term_memories(
         self,
@@ -496,21 +558,26 @@ class LongTermMemoryArchiveMixin:
             saved = [
                 item
                 for record in records
-                if (item := self._upsert_long_term_memory_unlocked(record))
+                if (item := self.context._upsert_long_term_memory_unlocked(record))
             ]
-            self._conn.commit()
+            self.context._conn.commit()
             return saved
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     def _long_term_memory_scope_clause(
-        self, scopes: list[str]
+        self, scopes: list[str], *, include_self: bool = False
     ) -> tuple[str, list[str]]:
-        clean = [self._text(scope) for scope in scopes if self._text(scope)]
+        clean = [self.context._text(scope) for scope in scopes if self.context._text(scope)]
         if not clean:
             return "", []
         placeholders = ", ".join("?" for _ in clean)
-        return f" AND (m.scope = '' OR m.scope IN ({placeholders}))", clean
+        self_clause = (
+            " OR (m.scope = 'global' AND m.category = 'autobiography'"
+            " AND m.source_table = 'continuous_life_entries')"
+            if include_self else ""
+        )
+        return f" AND (m.scope = '' OR m.scope IN ({placeholders}){self_clause})", clean
 
     def _search_long_term_memory_fts_unlocked(
         self,
@@ -520,11 +587,11 @@ class LongTermMemoryArchiveMixin:
         categories: list[str],
         limit: int,
     ) -> list[LongTermMemoryRecord]:
-        match = self._memory_search_query(query)
+        match = self.context._memory_search_query(query)
         if not match:
             return []
-        scope_clause, scope_params = self._long_term_memory_scope_clause(scopes)
-        category_params = [self._text(item) for item in categories if self._text(item)]
+        scope_clause, scope_params = self.context._long_term_memory_scope_clause(scopes, include_self=True)
+        category_params = [self.context._text(item) for item in categories if self.context._text(item)]
         category_clause = ""
         if category_params:
             category_clause = (
@@ -542,11 +609,11 @@ class LongTermMemoryArchiveMixin:
             ORDER BY bm25_score ASC, m.weight DESC, m.updated_at DESC, m.id DESC
             LIMIT ?
         """
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             sql, [match, *scope_params, *category_params, max(1, int(limit))]
         ).fetchall()
         return [
-            self._compose_long_term_memory(row, score=-float(row["bm25_score"] or 0.0))
+            self.context._compose_long_term_memory(row, score=-float(row["bm25_score"] or 0.0))
             for row in rows
         ]
 
@@ -558,7 +625,7 @@ class LongTermMemoryArchiveMixin:
         categories: list[str],
         limit: int,
     ) -> list[LongTermMemoryRecord]:
-        tokens = self._memory_search_terms(query)[:12]
+        tokens = self.context._memory_search_terms(query)[:12]
         if not tokens:
             return []
         conditions = " OR ".join(
@@ -568,14 +635,14 @@ class LongTermMemoryArchiveMixin:
         for token in tokens:
             pattern = f"%{token}%"
             params.extend([pattern, pattern, pattern])
-        scope_clause, scope_params = self._long_term_memory_scope_clause(scopes)
-        category_params = [self._text(item) for item in categories if self._text(item)]
+        scope_clause, scope_params = self.context._long_term_memory_scope_clause(scopes, include_self=True)
+        category_params = [self.context._text(item) for item in categories if self.context._text(item)]
         category_clause = ""
         if category_params:
             category_clause = (
                 f" AND m.category IN ({', '.join('?' for _ in category_params)})"
             )
-        rows = self._conn.execute(
+        rows = self.context._conn.execute(
             f"""
             SELECT m.* FROM long_term_memories m
             WHERE m.status = 'active'
@@ -588,7 +655,7 @@ class LongTermMemoryArchiveMixin:
             """,
             [*params, *scope_params, *category_params, max(1, int(limit))],
         ).fetchall()
-        return [self._compose_long_term_memory(row, score=0.1) for row in rows]
+        return [self.context._compose_long_term_memory(row, score=0.1) for row in rows]
 
     async def search_long_term_memories(
         self,
@@ -598,13 +665,13 @@ class LongTermMemoryArchiveMixin:
         categories: list[str] | None = None,
         limit: int = 5,
     ) -> list[LongTermMemoryRecord]:
-        query = self._text(query)
+        query = self.context._text(query)
         if not query:
             return []
 
         def read() -> list[LongTermMemoryRecord]:
             try:
-                hits = self._search_long_term_memory_fts_unlocked(
+                hits = self.context._search_long_term_memory_fts_unlocked(
                     query,
                     scopes=scopes or [],
                     categories=categories or [],
@@ -614,14 +681,14 @@ class LongTermMemoryArchiveMixin:
                     return hits
             except sqlite3.Error:
                 pass
-            return self._search_long_term_memory_like_unlocked(
+            return self.context._search_long_term_memory_like_unlocked(
                 query,
                 scopes=scopes or [],
                 categories=categories or [],
                 limit=limit,
             )
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def list_recent_long_term_memories(
         self,
@@ -630,19 +697,20 @@ class LongTermMemoryArchiveMixin:
         categories: list[str] | None = None,
         limit: int = 8,
     ) -> list[LongTermMemoryRecord]:
+        """列出有效记忆；limit=0 用于后台索引及全历史语义检索。"""
         def read() -> list[LongTermMemoryRecord]:
-            scope_clause, scope_params = self._long_term_memory_scope_clause(
-                scopes or []
+            scope_clause, scope_params = self.context._long_term_memory_scope_clause(
+                scopes or [], include_self=True
             )
             category_params = [
-                self._text(item) for item in (categories or []) if self._text(item)
+                self.context._text(item) for item in (categories or []) if self.context._text(item)
             ]
             category_clause = ""
             if category_params:
                 category_clause = (
                     f" AND category IN ({', '.join('?' for _ in category_params)})"
                 )
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT * FROM long_term_memories m
                 WHERE status = 'active'
@@ -652,11 +720,11 @@ class LongTermMemoryArchiveMixin:
                 ORDER BY weight DESC, updated_at DESC, id DESC
                 LIMIT ?
                 """,
-                [*scope_params, *category_params, max(1, int(limit))],
+                [*scope_params, *category_params, int(limit) if limit > 0 else -1],
             ).fetchall()
-            return [self._compose_long_term_memory(row) for row in rows]
+            return [self.context._compose_long_term_memory(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_memory_episode_clusters(
         self,
@@ -665,10 +733,10 @@ class LongTermMemoryArchiveMixin:
         limit: int = 8,
     ) -> list[MemoryEpisodeClusterRecord]:
         def read() -> list[MemoryEpisodeClusterRecord]:
-            scope_clause, scope_params = self._long_term_memory_scope_clause(
+            scope_clause, scope_params = self.context._long_term_memory_scope_clause(
                 scopes or []
             )
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT * FROM memory_episode_clusters m
                 WHERE status = 'active'
@@ -678,9 +746,9 @@ class LongTermMemoryArchiveMixin:
                 """,
                 [*scope_params, max(1, int(limit))],
             ).fetchall()
-            return [self._compose_memory_cluster(row) for row in rows]
+            return [self.context._compose_memory_cluster(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_memory_entities(
         self,
@@ -690,16 +758,16 @@ class LongTermMemoryArchiveMixin:
         limit: int = 12,
     ) -> list[MemoryEntityRecord]:
         def read() -> list[MemoryEntityRecord]:
-            scope_clause, scope_params = self._long_term_memory_scope_clause(
+            scope_clause, scope_params = self.context._long_term_memory_scope_clause(
                 scopes or []
             )
             params: list[Any] = [*scope_params]
             type_clause = ""
-            clean_type = self._text(entity_type)
+            clean_type = self.context._text(entity_type)
             if clean_type:
                 type_clause = " AND entity_type = ?"
                 params.append(clean_type)
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT * FROM memory_entities m
                 WHERE status = 'active'
@@ -710,9 +778,9 @@ class LongTermMemoryArchiveMixin:
                 """,
                 [*params, max(1, int(limit))],
             ).fetchall()
-            return [self._compose_memory_entity(row) for row in rows]
+            return [self.context._compose_memory_entity(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_memory_conflicts(
         self,
@@ -722,16 +790,16 @@ class LongTermMemoryArchiveMixin:
         limit: int = 8,
     ) -> list[MemoryConflictRecord]:
         def read() -> list[MemoryConflictRecord]:
-            scope_clause, scope_params = self._long_term_memory_scope_clause(
+            scope_clause, scope_params = self.context._long_term_memory_scope_clause(
                 scopes or []
             )
             params: list[Any] = [*scope_params]
             status_clause = ""
-            clean_status = self._text(status)
+            clean_status = self.context._text(status)
             if clean_status:
                 status_clause = " AND status = ?"
                 params.append(clean_status)
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT * FROM memory_conflicts m
                 WHERE 1 = 1
@@ -742,9 +810,9 @@ class LongTermMemoryArchiveMixin:
                 """,
                 [*params, max(1, int(limit))],
             ).fetchall()
-            return [self._compose_memory_conflict(row) for row in rows]
+            return [self.context._compose_memory_conflict(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     def _upsert_memory_decision_link_unlocked(
         self,
@@ -756,7 +824,7 @@ class LongTermMemoryArchiveMixin:
     ) -> MemoryDecisionLinkRecord | None:
         if not decision_id or not memory_id:
             return None
-        self._conn.execute(
+        self.context._conn.execute(
             """
             INSERT INTO memory_decision_links(decision_id, memory_id, influence, weight)
             VALUES (?, ?, ?, ?)
@@ -767,24 +835,24 @@ class LongTermMemoryArchiveMixin:
             (
                 int(decision_id),
                 int(memory_id),
-                self._text(influence),
+                self.context._text(influence),
                 max(0.0, min(float(weight or 1.0), 10.0)),
             ),
         )
-        row = self._conn.execute(
+        row = self.context._conn.execute(
             "SELECT * FROM memory_decision_links WHERE decision_id = ? AND memory_id = ?",
             (int(decision_id), int(memory_id)),
         ).fetchone()
-        return self._compose_memory_decision_link(row) if row else None
+        return self.context._compose_memory_decision_link(row) if row else None
 
     def _decision_memory_query(self, decision: Any) -> str:
         data = (
             decision.as_dict() if hasattr(decision, "as_dict") else dict(decision or {})
         )
         return " ".join(
-            self._text(data.get(key))
+            self.context._text(data.get(key))
             for key in ("decision", "reason", "evidence", "outcome", "subject")
-            if self._text(data.get(key))
+            if self.context._text(data.get(key))
         )
 
     def _link_decision_memory_candidates_unlocked(
@@ -797,11 +865,11 @@ class LongTermMemoryArchiveMixin:
             decision.as_dict() if hasattr(decision, "as_dict") else dict(decision or {})
         )
         decision_id = int(data.get("id") or 0)
-        query = self._decision_memory_query(data)
+        query = self.context._decision_memory_query(data)
         if not (decision_id and query):
             return []
         try:
-            memories = self._search_long_term_memory_fts_unlocked(
+            memories = self.context._search_long_term_memory_fts_unlocked(
                 query,
                 scopes=[],
                 categories=[],
@@ -810,7 +878,7 @@ class LongTermMemoryArchiveMixin:
         except sqlite3.Error:
             memories = []
         if not memories:
-            memories = self._search_long_term_memory_like_unlocked(
+            memories = self.context._search_long_term_memory_like_unlocked(
                 query,
                 scopes=[],
                 categories=[],
@@ -818,7 +886,7 @@ class LongTermMemoryArchiveMixin:
             )
         links: list[MemoryDecisionLinkRecord] = []
         for memory in memories[: max(1, int(limit))]:
-            link = self._upsert_memory_decision_link_unlocked(
+            link = self.context._upsert_memory_decision_link_unlocked(
                 decision_id,
                 int(memory.id),
                 influence=memory.title or memory.content[:80],
@@ -845,7 +913,7 @@ class LongTermMemoryArchiveMixin:
                     memory_id = int(memory.get("id") or 0)
                 else:
                     memory_id = int(getattr(memory, "id", 0) or 0)
-                link = self._upsert_memory_decision_link_unlocked(
+                link = self.context._upsert_memory_decision_link_unlocked(
                     int(decision_id),
                     memory_id,
                     influence=influence,
@@ -853,10 +921,10 @@ class LongTermMemoryArchiveMixin:
                 )
                 if link:
                     links.append(link)
-            self._conn.commit()
+            self.context._conn.commit()
             return links
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def get_memory_decision_links(
         self,
@@ -865,7 +933,7 @@ class LongTermMemoryArchiveMixin:
         limit: int = 8,
     ) -> list[MemoryDecisionLinkRecord]:
         def read() -> list[MemoryDecisionLinkRecord]:
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT * FROM memory_decision_links
                 WHERE decision_id = ?
@@ -874,15 +942,15 @@ class LongTermMemoryArchiveMixin:
                 """,
                 (int(decision_id), max(1, int(limit))),
             ).fetchall()
-            return [self._compose_memory_decision_link(row) for row in rows]
+            return [self.context._compose_memory_decision_link(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_memory_decision_sources(
         self, decision_id: int, *, limit: int = 5
     ) -> list[dict[str, Any]]:
         def read() -> list[dict[str, Any]]:
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """
                 SELECT l.*, m.scope, m.category, m.title, m.content, m.source_table, m.source_id, m.date
                 FROM memory_decision_links l
@@ -898,21 +966,21 @@ class LongTermMemoryArchiveMixin:
                     "id": int(row["id"] or 0),
                     "decision_id": int(row["decision_id"] or 0),
                     "memory_id": int(row["memory_id"] or 0),
-                    "influence": self._text(row["influence"]),
+                    "influence": self.context._text(row["influence"]),
                     "weight": float(row["weight"] or 0.0),
-                    "scope": self._text(row["scope"]),
-                    "category": self._text(row["category"]),
-                    "title": self._text(row["title"]),
-                    "content": self._text(row["content"]),
-                    "source_table": self._text(row["source_table"]),
-                    "source_id": self._text(row["source_id"]),
-                    "date": self._text(row["date"]),
-                    "created_at": self._text(row["created_at"]),
+                    "scope": self.context._text(row["scope"]),
+                    "category": self.context._text(row["category"]),
+                    "title": self.context._text(row["title"]),
+                    "content": self.context._text(row["content"]),
+                    "source_table": self.context._text(row["source_table"]),
+                    "source_id": self.context._text(row["source_id"]),
+                    "date": self.context._text(row["date"]),
+                    "created_at": self.context._text(row["created_at"]),
                 }
                 for row in rows
             ]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def cleanup_long_term_memories(self, cutoff_date: str) -> int:
         def write() -> int:
@@ -928,9 +996,9 @@ class LongTermMemoryArchiveMixin:
                     (cutoff_date,),
                 ),
             ):
-                cursor = self._conn.execute(sql, params)
+                cursor = self.context._conn.execute(sql, params)
                 deleted += max(int(cursor.rowcount or 0), 0)
-            self._conn.commit()
+            self.context._conn.commit()
             return deleted
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)

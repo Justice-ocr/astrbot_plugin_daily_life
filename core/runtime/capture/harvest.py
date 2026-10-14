@@ -1,13 +1,35 @@
+from __future__ import annotations
+
 from typing import Any
 
 from ...clock import now as life_now
 from ...models import ChatSummaryRecord
 
+from typing import Protocol
 
-class ImprintHarvestMixin:
+
+class ImprintHarvestComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _event_context_meta: Any
+    _event_profile_id: Any
+    _memos_items_from_payload: Any
+    _relationship_contact_payload: Any
+    _save_long_term_memory: Any
+    archive: Any
+    composer: Any
+    config: Any
+    get_text_provider: Any
+    schedule_memos_selected_items: Any
+
+
+class ImprintHarvestComponent:
+    def __init__(self, context: ImprintHarvestComponentContext) -> None:
+        self.context = context
+
     async def _get_memory_provider(self):
-        provider_id = self.config.memory.provider
-        return await self.get_text_provider(provider_id)
+        provider_id = self.context.config.memory.provider
+        return await self.context.get_text_provider(provider_id)
 
     async def _save_chat_memory_preferences(
         self,
@@ -15,7 +37,7 @@ class ImprintHarvestMixin:
         context_meta: dict[str, str],
         saved_records: dict[str, list[Any]],
     ) -> None:
-        saved_preferences = await self.composer.learn_preferences_from_payload(
+        saved_preferences = await self.context.composer.learn_preferences_from_payload(
             payload,
             date_str=context_meta["date"],
             source="chat_memory_batch",
@@ -24,7 +46,7 @@ class ImprintHarvestMixin:
             list(saved_preferences or [])
         )
         for preference in saved_preferences or []:
-            await self._save_long_term_memory(
+            await self.context._save_long_term_memory(
                 meta=context_meta,
                 category=f"preference:{preference.category}",
                 title=preference.category,
@@ -43,12 +65,12 @@ class ImprintHarvestMixin:
         saved_records: dict[str, list[Any]],
         message: str,
     ) -> None:
-        memos_items = self._memos_items_from_payload(
+        memos_items = self.context._memos_items_from_payload(
             payload,
             saved_summary=saved,
             saved_records=saved_records,
         )
-        self.schedule_memos_selected_items(
+        self.context.schedule_memos_selected_items(
             context_meta,
             memos_items,
             reason="同步批量提炼确认的长期聊天记忆。",
@@ -65,9 +87,9 @@ class ImprintHarvestMixin:
         source: str = "chat",
     ) -> None:
         now = life_now()
-        profile_id = self._event_profile_id(event, sender_name)
-        meta = await self._event_context_meta(event, sender_name, now)
-        await self.archive.touch_relationship(
+        profile_id = self.context._event_profile_id(event, sender_name)
+        meta = await self.context._event_context_meta(event, sender_name, now)
+        await self.context.archive.touch_relationship(
             profile_id,
             name=sender_name,
             note=note,
@@ -76,5 +98,5 @@ class ImprintHarvestMixin:
             platform=meta["platform"],
             user_id=meta["user_id"],
             alias=sender_name,
-            **self._relationship_contact_payload(meta),
+            **self.context._relationship_contact_payload(meta),
         )

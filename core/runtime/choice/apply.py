@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import time
 import uuid
 from typing import Any
 
@@ -14,12 +15,67 @@ from ...life.tools import extract_json_from_text
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
-RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS = 2.5
+from typing import Protocol
+
+RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS = 15.0
 
 
-class ResponseGateApplyMixin:
+class ResponseGateApplyComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _continuous_turn_trim_messages: Any
+    _event_is_group_message: Any
+    _event_message_id: Any
+    _get_proactive_provider: Any
+    _response_gate_clear_wait: Any
+    _response_gate_continuation_reason: Any
+    _response_gate_current_state: Any
+    _response_gate_experience_delta: Any
+    _response_gate_feedback_delta: Any
+    _response_gate_force_reply_reason: Any
+    _response_gate_in_backoff: Any
+    _response_gate_mark_wait: Any
+    _response_gate_note_attention: Any
+    _response_gate_pending_count: Any
+    _response_gate_record_no_reply: Any
+    _response_gate_record_reply: Any
+    _response_gate_record_seen: Any
+    _response_gate_relationship_delta: Any
+    _response_gate_reply: Any
+    _response_gate_scope_enabled: Any
+    _response_gate_scope_key: Any
+    _response_gate_score: Any
+    _response_gate_semantic_decision: Any
+    _response_gate_semantic_metrics: Any
+    _response_gate_should_skip: Any
+    _response_gate_superseded_decision: Any
+    _response_gate_visible_text: Any
+    _response_gate_wait_state: Any
+    _suppress_default_llm: Any
+    apply_interaction_turn_decision: Any
+    call_text_model: Any
+    close_text_session: Any
+    complete_continuous_turn: Any
+    config: Any
+    continuous_turn_event_is_inflight_follow_up: Any
+    continuous_turn_message_count: Any
+    continuous_turn_messages: Any
+    evaluate_response_gate: Any
+    note_conversation_turn_decision: Any
+    raw_config: Any
+    record_observed_private_user_message: Any
+    resolve_interaction_context: Any
+    stop_stale_continuous_turn_event: Any
+    structured_recent_history_messages: Any
+    wait_continuous_turn_after_semantic: Any
+
+
+class ResponseGateApplyComponent:
+    def __init__(self, context: ResponseGateApplyComponentContext) -> None:
+        self.context = context
+
     def _response_gate_superseded_decision(self, event: Any) -> dict[str, Any] | None:
-        checker = getattr(self, "stop_stale_continuous_turn_event", None)
+        checker = getattr(self.context, "stop_stale_continuous_turn_event", None)
         if not callable(checker) or not checker(event):
             return None
         return {
@@ -29,12 +85,12 @@ class ResponseGateApplyMixin:
         }
 
     def _response_gate_scope_enabled(self, event: Any) -> bool:
-        is_group = self._event_is_group_message(event)
+        is_group = self.context._event_is_group_message(event)
         field = "group_enabled" if is_group else "private_enabled"
-        config = getattr(self.config, "response_gate", None)
+        config = getattr(self.context.config, "response_gate", None)
         parsed_value = bool(getattr(config, field, False)) if config else False
 
-        raw_config = getattr(self, "raw_config", None)
+        raw_config = getattr(self.context, "raw_config", None)
         raw_section = (
             raw_config.get("response_gate_config")
             if isinstance(raw_config, dict)
@@ -45,11 +101,11 @@ class ResponseGateApplyMixin:
         return parsed_value
 
     async def apply_response_gate_for_event(self, event: Any) -> dict[str, Any]:
-        decision = await self.evaluate_response_gate(event)
+        decision = await self.context.evaluate_response_gate(event)
         if decision.get("superseded"):
             return decision
         if decision.get("action") == "wait":
-            wait_handler = getattr(self, "wait_continuous_turn_after_semantic", None)
+            wait_handler = getattr(self.context, "wait_continuous_turn_after_semantic", None)
             wait_outcome = (
                 await wait_handler(event) if callable(wait_handler) else "disabled"
             )
@@ -60,38 +116,38 @@ class ResponseGateApplyMixin:
                     "superseded": True,
                 }
             if wait_outcome == "reply":
-                key = self._response_gate_scope_key(event)
-                self._response_gate_record_reply(key, life_now())
+                key = self.context._response_gate_scope_key(event)
+                self.context._response_gate_record_reply(key, life_now())
                 decision = {
                     **decision,
                     "action": "reply",
                     "reason": "语义判断适合等待补充，已在收束上限后统一回复",
                     "continuous_turn_waited": True,
                 }
-        note_decision = getattr(self, "note_conversation_turn_decision", None)
+        note_decision = getattr(self.context, "note_conversation_turn_decision", None)
         if callable(note_decision):
             note_decision(event, decision)
         if decision.get("action") == "observe":
-            await self.record_observed_private_user_message(event)
-            self._suppress_default_llm(event)
-            complete_turn = getattr(self, "complete_continuous_turn", None)
+            await self.context.record_observed_private_user_message(event)
+            self.context._suppress_default_llm(event)
+            complete_turn = getattr(self.context, "complete_continuous_turn", None)
             if callable(complete_turn):
                 complete_turn(event)
             logger.debug(
                 f"{LOG_PREFIX} 随心回复：观察不回复；{decision.get('reason') or '当前不适合回复'}"
             )
         elif decision.get("action") == "wait":
-            key = self._response_gate_scope_key(event)
+            key = self.context._response_gate_scope_key(event)
             now = life_now()
-            self._response_gate_mark_wait(
+            self.context._response_gate_mark_wait(
                 key,
                 now,
                 reason=str(decision.get("reason") or ""),
-                message_id=self._event_message_id(event),
-                message_text=self._response_gate_visible_text(event),
+                message_id=self.context._event_message_id(event),
+                message_text=self.context._response_gate_visible_text(event),
             )
-            await self.record_observed_private_user_message(event)
-            self._suppress_default_llm(event)
+            await self.context.record_observed_private_user_message(event)
+            self.context._suppress_default_llm(event)
             logger.debug(
                 f"{LOG_PREFIX} 随心回复：等待；{decision.get('reason') or '先把发言权留给对方'}"
             )
@@ -106,7 +162,7 @@ class ResponseGateApplyMixin:
         pending_count: int,
         wait_state: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        provider_getter = getattr(self, "_get_proactive_provider", None)
+        provider_getter = getattr(self.context, "_get_proactive_provider", None)
         if not callable(provider_getter):
             return None
         try:
@@ -118,22 +174,22 @@ class ResponseGateApplyMixin:
             return None
         if not provider:
             return None
-        is_group = self._event_is_group_message(event)
-        turn_getter = getattr(self, "continuous_turn_messages", None)
+        is_group = self.context._event_is_group_message(event)
+        turn_getter = getattr(self.context, "continuous_turn_messages", None)
         turn_messages = list(turn_getter(event)) if callable(turn_getter) else []
         current_message = (
             turn_messages[-1]
             if turn_messages
-            else self._response_gate_visible_text(event) or "仅包含媒体"
+            else self.context._response_gate_visible_text(event) or "仅包含媒体"
         )
         accumulated_messages = (
             list(wait_state.get("messages") or []) if wait_state else []
         )
         accumulated_messages.extend(turn_messages or [current_message])
-        accumulated_messages, _ = self._continuous_turn_trim_messages(
+        accumulated_messages, _ = self.context._continuous_turn_trim_messages(
             accumulated_messages, [""] * len(accumulated_messages)
         )
-        interaction_context = await self.resolve_interaction_context(
+        interaction_context = await self.context.resolve_interaction_context(
             event=event,
             now=life_now(),
         )
@@ -168,8 +224,21 @@ JSON 输出要求：
             if bool(getattr(interaction_context, "pending_current", False))
             else interaction_context.mode_label
         )
+        history_getter = getattr(self.context, "structured_recent_history_messages", None)
+        recent_context = []
+        if callable(history_getter):
+            current_id = self.context._event_message_id(event)
+            for item in history_getter(event, limit=6):
+                if current_id and str(item.get("message_id") or "") == current_id:
+                    continue
+                recent_context.append({
+                    "role": item.get("role"),
+                    "name": str(item.get("name") or "")[:40],
+                    "content": str(item.get("content") or item.get("media") or "")[:180],
+                })
         dynamic = f"""消息传输范围：{"群聊" if is_group else "私聊"}
 本轮开始前最近互动方式：{previous_mode_label}
+最近双方交流：{json.dumps(recent_context, ensure_ascii=False)}
 当前消息：{current_message}
 本轮连续内容：{json.dumps(accumulated_messages, ensure_ascii=False)}
 本轮累计消息：{pending_count}
@@ -178,10 +247,11 @@ JSON 输出要求：
 本地状态分：{score:.3f}
 本地状态依据：{"；".join(reasons) or "无"}"""
         session_id = f"daily_life_response_gate_{uuid.uuid4().hex[:8]}"
-        provider_id = str(getattr(self.config.proactive, "provider", "") or "")
+        provider_id = str(getattr(self.context.config.proactive, "provider", "") or "")
+        started = time.monotonic()
         try:
             raw = await asyncio.wait_for(
-                self.call_text_model(
+                self.context.call_text_model(
                     provider,
                     cache_friendly_prompt(fixed, dynamic),
                     session_id,
@@ -192,9 +262,11 @@ JSON 输出要求：
             )
             payload = extract_json_from_text(raw)
             if not isinstance(payload, dict):
-                self._response_gate_semantic_metrics["invalid"] += 1
+                self.context._response_gate_semantic_metrics["invalid"] += 1
                 return None
-            interaction_applier = getattr(self, "apply_interaction_turn_decision", None)
+            if self.context._response_gate_superseded_decision(event):
+                return None
+            interaction_applier = getattr(self.context, "apply_interaction_turn_decision", None)
             if callable(interaction_applier):
                 await interaction_applier(
                     event,
@@ -207,9 +279,13 @@ JSON 输出要求：
             except (TypeError, ValueError):
                 confidence = 0.0
             if action not in {"reply", "wait", "observe"} or confidence < 0.55:
-                self._response_gate_semantic_metrics["invalid"] += 1
+                self.context._response_gate_semantic_metrics["invalid"] += 1
                 return None
-            self._response_gate_semantic_metrics["accepted"] += 1
+            self.context._response_gate_semantic_metrics["accepted"] += 1
+            logger.debug(
+                f"{LOG_PREFIX} 随心回复语义裁定：{action}；"
+                f"耗时 {time.monotonic() - started:.2f} 秒"
+            )
             return {
                 "action": action,
                 "confidence": round(confidence, 3),
@@ -218,7 +294,12 @@ JSON 输出要求：
                 "semantic": True,
             }
         except asyncio.TimeoutError:
-            self._response_gate_semantic_metrics["timeout"] += 1
+            self.context._response_gate_semantic_metrics["timeout"] += 1
+            logger.warning(
+                f"{LOG_PREFIX} 随心回复语义裁定超过 "
+                f"{RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS:g} 秒，改用本地状态判断；"
+                "可在闲时回复设置中选择响应更快的模型"
+            )
             return None
         except Exception as exc:
             logger.debug(
@@ -226,7 +307,7 @@ JSON 输出要求：
             )
             return None
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def evaluate_response_gate(
         self,
@@ -234,52 +315,52 @@ JSON 输出要求：
         *,
         now: datetime.datetime | None = None,
     ) -> dict[str, Any]:
-        superseded = self._response_gate_superseded_decision(event)
+        superseded = self.context._response_gate_superseded_decision(event)
         if superseded:
             return superseded
         follow_up_checker = getattr(
-            self, "continuous_turn_event_is_inflight_follow_up", None
+            self.context, "continuous_turn_event_is_inflight_follow_up", None
         )
         if callable(follow_up_checker) and follow_up_checker(event):
-            return self._response_gate_reply("接续正在生成的当前话轮", forced=True)
-        config = getattr(self.config, "response_gate", None)
+            return self.context._response_gate_reply("接续正在生成的当前话轮", forced=True)
+        config = getattr(self.context.config, "response_gate", None)
         if not config:
-            return self._response_gate_reply("随心回复配置不可用")
-        if self._response_gate_should_skip(event):
-            return self._response_gate_reply(
+            return self.context._response_gate_reply("随心回复配置不可用")
+        if self.context._response_gate_should_skip(event):
+            return self.context._response_gate_reply(
                 "命令、插件处理、自身消息或已停止事件不进入门控"
             )
-        is_group = self._event_is_group_message(event)
-        if not self._response_gate_scope_enabled(event):
+        is_group = self.context._event_is_group_message(event)
+        if not self.context._response_gate_scope_enabled(event):
             scope = "群聊" if is_group else "私聊"
-            return self._response_gate_reply(f"未启用{scope}随心回复")
+            return self.context._response_gate_reply(f"未启用{scope}随心回复")
 
         now = now or life_now()
-        key = self._response_gate_scope_key(event)
+        key = self.context._response_gate_scope_key(event)
         if not key:
-            return self._response_gate_reply("没有可用会话标识")
+            return self.context._response_gate_reply("没有可用会话标识")
 
-        forced_reason = self._response_gate_force_reply_reason(event)
+        forced_reason = self.context._response_gate_force_reply_reason(event)
         if forced_reason:
-            self._response_gate_record_reply(key, now)
-            self._response_gate_note_attention(key, now, replied=True, priority=100)
-            return self._response_gate_reply(forced_reason, forced=True)
+            self.context._response_gate_record_reply(key, now)
+            self.context._response_gate_note_attention(key, now, replied=True, priority=100)
+            return self.context._response_gate_reply(forced_reason, forced=True)
 
-        pending_count = self._response_gate_record_seen(key, now)
-        turn_count_getter = getattr(self, "continuous_turn_message_count", None)
+        pending_count = self.context._response_gate_record_seen(key, now)
+        turn_count_getter = getattr(self.context, "continuous_turn_message_count", None)
         turn_count = (
             int(turn_count_getter(event) or 0) if callable(turn_count_getter) else 0
         )
         if turn_count > pending_count:
             pending_count = turn_count
-            self._response_gate_pending_count[key] = pending_count
-        wait_state = self._response_gate_wait_state(key, now)
-        continuation_reason = self._response_gate_continuation_reason(key, now)
+            self.context._response_gate_pending_count[key] = pending_count
+        wait_state = self.context._response_gate_wait_state(key, now)
+        continuation_reason = self.context._response_gate_continuation_reason(key, now)
         if continuation_reason:
-            self._response_gate_record_reply(key, now)
-            return self._response_gate_reply(continuation_reason, forced=True)
+            self.context._response_gate_record_reply(key, now)
+            return self.context._response_gate_reply(continuation_reason, forced=True)
 
-        if self._response_gate_in_backoff(key, now, pending_count):
+        if self.context._response_gate_in_backoff(key, now, pending_count):
             return {"action": "observe", "reason": "连续不回复后的短暂安静观察仍在生效"}
 
         relationship_reasons: list[str] = []
@@ -291,15 +372,15 @@ JSON 输出要求：
             feedback_delta,
             experience_delta,
         ) = await asyncio.gather(
-            self._response_gate_current_state(now),
-            self._response_gate_relationship_delta(event, now, relationship_reasons),
-            self._response_gate_feedback_delta(key, feedback_reasons),
-            self._response_gate_experience_delta(key, event, experience_reasons),
+            self.context._response_gate_current_state(now),
+            self.context._response_gate_relationship_delta(event, now, relationship_reasons),
+            self.context._response_gate_feedback_delta(key, feedback_reasons),
+            self.context._response_gate_experience_delta(key, event, experience_reasons),
         )
-        superseded = self._response_gate_superseded_decision(event)
+        superseded = self.context._response_gate_superseded_decision(event)
         if superseded:
             return superseded
-        score, reasons = self._response_gate_score(event, state, pending_count, now)
+        score, reasons = self.context._response_gate_score(event, state, pending_count, now)
         score += relationship_delta + feedback_delta + experience_delta
         reasons.extend(relationship_reasons)
         reasons.extend(feedback_reasons)
@@ -309,31 +390,31 @@ JSON 输出要求：
             score += 0.08
         score = max(0.0, min(score, 1.0))
 
-        semantic = await self._response_gate_semantic_decision(
+        semantic = await self.context._response_gate_semantic_decision(
             event,
             score=score,
             reasons=reasons,
             pending_count=pending_count,
             wait_state=wait_state,
         )
-        superseded = self._response_gate_superseded_decision(event)
+        superseded = self.context._response_gate_superseded_decision(event)
         if superseded:
             return superseded
         if semantic:
             action = semantic["action"]
             if action == "reply":
-                self._response_gate_record_reply(key, now)
+                self.context._response_gate_record_reply(key, now)
             elif action == "observe":
-                self._response_gate_clear_wait(key)
-                self._response_gate_record_no_reply(key, now)
+                self.context._response_gate_clear_wait(key)
+                self.context._response_gate_record_no_reply(key, now)
             return {**semantic, "score": round(score, 3)}
 
-        self._response_gate_semantic_metrics["fallback"] += 1
+        self.context._response_gate_semantic_metrics["fallback"] += 1
         fallback_threshold = 0.58 if is_group else 0.5
         action = "reply" if score >= fallback_threshold else "observe"
 
         if action == "reply":
-            self._response_gate_record_reply(key, now)
+            self.context._response_gate_record_reply(key, now)
             return {
                 "action": "reply",
                 "score": round(score, 3),
@@ -341,7 +422,7 @@ JSON 输出要求：
                 or "语义裁定暂不可用，当前结构化状态适合回复",
             }
 
-        self._response_gate_record_no_reply(key, now)
+        self.context._response_gate_record_no_reply(key, now)
         return {
             "action": "observe",
             "score": round(score, 3),

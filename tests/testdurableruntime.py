@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import tempfile
 import unittest
@@ -6,16 +7,17 @@ from types import SimpleNamespace
 
 # 导入运行时模块前先安装 AstrBot 测试替身。
 from support import LifeArchive  # isort: skip
+from core.clock import now as life_now
 
 from core.life.reliability import NonRetryableProviderError
 from core.models import CommitmentRecord
-from core.runtime.channel.summary import RuntimeMediaCommonMixin
-from core.runtime.proactive.followup import ProactiveFollowupMixin
-from core.runtime.receipt import RuntimeActionReceiptMixin
-from core.runtime.spine.boot import SpineBootMixin
+from componentfixtures import RuntimeMediaCommonComponent
+from componentfixtures import ProactiveFollowupComponent
+from componentfixtures import RuntimeActionReceiptComponent
+from componentfixtures import SpineBootComponent
 
 
-class _MediaRuntime(RuntimeActionReceiptMixin, SpineBootMixin):
+class _MediaRuntime(RuntimeActionReceiptComponent, SpineBootComponent):
     def __init__(self, archive, image_path):
         self.archive = archive
         self.image_path = image_path
@@ -52,7 +54,7 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.archive = LifeArchive(Path(self.directory.name) / "life.db")
-        self.runtime = SpineBootMixin.__new__(SpineBootMixin)
+        self.runtime = SpineBootComponent.__new__(SpineBootComponent)
         self.runtime.archive = self.archive
         self.runtime._durable_task_owner = "test-runtime"
         self.runtime._durable_runtime_handlers = {}
@@ -83,8 +85,61 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["done"])
         self.assertEqual(tasks[0].status, "completed")
 
+    async def test_media_lane_runs_while_life_task_is_waiting(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        delivered = []
+
+        async def long_review():
+            started.set()
+            await release.wait()
+
+        async def deliver(task):
+            delivered.append(task.task_key)
+
+        self.runtime._durable_runtime_handlers["daily_review"] = long_review
+        self.runtime.resume_durable_media_delivery = deliver
+        await self.archive.enqueue_durable_task("review:blocking", "daily_review", {})
+        running = asyncio.create_task(self.runtime._run_durable_tasks_once())
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            await self.archive.enqueue_durable_task(
+                "media:while-review", "media_delivery", {}
+            )
+            self.assertEqual(await asyncio.wait_for(
+                self.runtime._run_durable_tasks_once(), 2
+            ), 1)
+            self.assertEqual(delivered, ["media:while-review"])
+        finally:
+            release.set()
+            await running
+        tasks = await self.archive.get_durable_tasks()
+        self.assertEqual({item.status for item in tasks}, {"completed"})
+
+    async def test_lease_compares_mixed_iso_time_formats(self):
+        await self.archive.enqueue_durable_task(
+            "media:future", "media_delivery", {},
+            available_at="2026-10-12T12:05:00+08:00",
+        )
+        self.assertEqual(await self.archive.lease_durable_tasks(
+            "test", now="2026-10-12 12:04:59", include_kinds=("media_delivery",)
+        ), [])
+        leased = await self.archive.lease_durable_tasks(
+            "test", now="2026-10-12 12:05:00", include_kinds=("media_delivery",)
+        )
+        self.assertEqual([task.task_key for task in leased], ["media:future"])
+
+    async def test_retry_delay_uses_life_timezone(self):
+        task = SimpleNamespace(attempts=1, max_attempts=3)
+        retry_at = datetime.datetime.fromisoformat(
+            self.runtime._durable_retry_at(task)
+        )
+        remaining = (retry_at - life_now()).total_seconds()
+        self.assertGreater(remaining, 25)
+        self.assertLessEqual(remaining, 30)
+
     async def test_delivered_media_followup_uses_llm_and_sends_reply(self):
-        runtime = RuntimeMediaCommonMixin.__new__(RuntimeMediaCommonMixin)
+        runtime = RuntimeMediaCommonComponent.__new__(RuntimeMediaCommonComponent)
         prompts = []
         sent = []
 
@@ -521,7 +576,7 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.archive = LifeArchive(Path(self.directory.name) / "life.db")
-        self.runtime = ProactiveFollowupMixin.__new__(ProactiveFollowupMixin)
+        self.runtime = ProactiveFollowupComponent.__new__(ProactiveFollowupComponent)
         self.runtime.archive = self.archive
 
     async def asyncTearDown(self):

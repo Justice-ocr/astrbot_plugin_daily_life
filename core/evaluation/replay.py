@@ -3,14 +3,84 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from ..life.settlement import LifeActionMixin
 from ..models import DayRecord, LifeState, TimelineItem
-from ..runtime.proactive.lifecycle import ProactiveLifecycleMixin
 from .scenarios import ScenarioCase, ScenarioObservation
 
+from ..runtime.proactive.lifecycle import ProactiveLifecycleComponent
+from ..life.settlement import LifeActionComponent
+from functools import cached_property
+from ..composition import ComponentCall
 
-class _ProductionDomain(ProactiveLifecycleMixin, LifeActionMixin):
+
+class _ProductionDomain:
     """供场景回放复用的生产领域实现组合。"""
+
+    _PROACTIVE_UTILITY_FIELDS = ProactiveLifecycleComponent._PROACTIVE_UTILITY_FIELDS
+
+    _PROACTIVE_UTILITY_THRESHOLD = ProactiveLifecycleComponent._PROACTIVE_UTILITY_THRESHOLD
+
+    _PROACTIVE_LIFECYCLE_TRANSITIONS = ProactiveLifecycleComponent._PROACTIVE_LIFECYCLE_TRANSITIONS
+
+    _proactive_social_sessions = ComponentCall("_part_proactive_lifecycle_component", ProactiveLifecycleComponent, "_proactive_social_sessions")
+
+    _proactive_lifecycle_snapshot = ComponentCall("_part_proactive_lifecycle_component", ProactiveLifecycleComponent, "_proactive_lifecycle_snapshot")
+
+    _transition_proactive_lifecycle = ComponentCall("_part_proactive_lifecycle_component", ProactiveLifecycleComponent, "_transition_proactive_lifecycle")
+
+    _proactive_score = staticmethod(ProactiveLifecycleComponent._proactive_score)
+
+    _normalize_proactive_utility = ComponentCall("_part_proactive_lifecycle_component", ProactiveLifecycleComponent, "_normalize_proactive_utility")
+
+    _load_action_settlements = staticmethod(LifeActionComponent._load_action_settlements)
+
+    _validate_action_contract = staticmethod(LifeActionComponent._validate_action_contract)
+
+    _action_condition_value = staticmethod(LifeActionComponent._action_condition_value)
+
+    _action_condition_matches = staticmethod(LifeActionComponent._action_condition_matches)
+
+    _validate_action_preconditions = classmethod(LifeActionComponent._validate_action_preconditions.__func__)
+
+    _resolve_action_effects = staticmethod(LifeActionComponent._resolve_action_effects)
+
+    _validate_action_effects = staticmethod(LifeActionComponent._validate_action_effects)
+
+    _commit_action_effects = staticmethod(LifeActionComponent._commit_action_effects)
+
+    _planned_outfit_action_is_superseded = staticmethod(LifeActionComponent._planned_outfit_action_is_superseded)
+
+    settle_life_action = ComponentCall("_part_life_action_component", LifeActionComponent, "settle_life_action")
+
+    sync_day_world_facts = ComponentCall("_part_life_action_component", LifeActionComponent, "sync_day_world_facts")
+
+    _save_action_receipt = ComponentCall("_part_life_action_component", LifeActionComponent, "_save_action_receipt")
+
+    _receipt_evidence_text = staticmethod(LifeActionComponent._receipt_evidence_text)
+
+    record_life_action_receipt = ComponentCall("_part_life_action_component", LifeActionComponent, "record_life_action_receipt")
+
+    record_matching_life_action_receipt = ComponentCall("_part_life_action_component", LifeActionComponent, "record_matching_life_action_receipt")
+
+    settle_and_persist_life_action = ComponentCall("_part_life_action_component", LifeActionComponent, "settle_and_persist_life_action")
+
+    settle_completed_planned_actions = ComponentCall("_part_life_action_component", LifeActionComponent, "settle_completed_planned_actions")
+
+    extract_schedule_anchors = ComponentCall("_part_life_action_component", LifeActionComponent, "extract_schedule_anchors")
+
+    refine_upcoming_anchors = ComponentCall("_part_life_action_component", LifeActionComponent, "refine_upcoming_anchors")
+
+    replan_future_anchors = ComponentCall("_part_life_action_component", LifeActionComponent, "replan_future_anchors")
+
+    evaluate_reflection_threshold = ComponentCall("_part_life_action_component", LifeActionComponent, "evaluate_reflection_threshold")
+
+    @cached_property
+    def _part_proactive_lifecycle_component(self):
+        return ProactiveLifecycleComponent(self)
+
+    @cached_property
+    def _part_life_action_component(self):
+        return LifeActionComponent(self)
+
 
 
 class ProductionScenarioEvaluator:

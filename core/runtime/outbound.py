@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
 
-from .markers import LOG_PREFIX
 from ..sources.platforms import (
     call_bot_action,
     get_onebot_client,
     parse_unified_origin,
 )
-
+from .elapsed import ConversationTimingService
+from .markers import LOG_PREFIX
 
 _TEXT_TYPES = {"", "text", "plain"}
 _COMPONENT_LABELS = {
@@ -80,11 +81,25 @@ def message_outline(chain: Any) -> str:
     return str(text or "").strip()
 
 
-class OutboundLogMixin:
+class OutboundLogService:
     """记录统一出站正文。"""
 
     _OUTBOUND_LOGGED_DIRECT_ATTR = "_daily_life_logged_direct_bodies"
-    _OUTBOUND_BOT_NAME_CACHE_ATTR = "_daily_life_outbound_bot_name_cache"
+
+    def __init__(
+        self,
+        *,
+        context: Any,
+        timing: ConversationTimingService,
+        schedule: Callable[..., bool],
+    ) -> None:
+        self._context = context
+        self._timing = timing
+        self._schedule = schedule
+        self._bot_names: dict[str, str] = {}
+
+    def clear(self) -> None:
+        self._bot_names.clear()
 
     @staticmethod
     def _outbound_bot_name_value(value: Any) -> str:
@@ -103,13 +118,6 @@ class OutboundLogMixin:
             return cls._outbound_bot_name_value(raw)
         name, bot_id = raw.split("/", 1)
         return f"{cls._outbound_bot_name_value(name)}/{cls._outbound_bot_name_value(bot_id)}"
-
-    def _outbound_bot_name_cache(self) -> dict[str, str]:
-        cache = getattr(self, self._OUTBOUND_BOT_NAME_CACHE_ATTR, None)
-        if not isinstance(cache, dict):
-            cache = {}
-            setattr(self, self._OUTBOUND_BOT_NAME_CACHE_ATTR, cache)
-        return cache
 
     @staticmethod
     def _outbound_bot_id_value(value: Any) -> str:
@@ -131,7 +139,7 @@ class OutboundLogMixin:
         platform_id, _ = parse_unified_origin(str(scope or ""))
         cache_key = ":".join(item for item in (platform_id, bot_id) if item)
         cache_key = cache_key or platform_id or "default"
-        cache = self._outbound_bot_name_cache()
+        cache = self._bot_names
         if cache.get(cache_key):
             return cache[cache_key]
 
@@ -144,7 +152,7 @@ class OutboundLogMixin:
                 name = ""
 
         bot = get_onebot_client(
-            getattr(self, "context", None),
+            self._context,
             target_umo=str(scope or ""),
             event=source_event,
         )
@@ -215,22 +223,25 @@ class OutboundLogMixin:
             return False
         sent_at = time.time() if sent_at is None else sent_at
         scope = scope or str(getattr(source_event, "unified_msg_origin", "") or "")
-        note = getattr(self, "note_conversation_sent", None)
-        if callable(note):
-            note(scope, sent_at, source_event)
-        record = getattr(self, "record_conversation_delivery", None)
-        schedule = getattr(self, "_schedule_background_task", None)
-        if persist_receipt and callable(record) and callable(schedule):
-            schedule(record(scope, sent_at), label="保存对话发送时间")
-        # 出站日志只记录机器人昵称/QQ号和正文，不记录用户身份或会话标识。
-        bot_identity = self._outbound_bot_identity_value(bot_name) or "机器人"
-        logger.info(
-            f"{LOG_PREFIX} {bot_identity}: {content}",
-            extra={
-                "category": "user_chat",
-                "outbound_source": str(source or "plugin"),
-            },
-        )
+        self._timing.note_conversation_sent(scope, sent_at, source_event)
+        if persist_receipt:
+            self._schedule(
+                self._timing.record_conversation_delivery(scope, sent_at),
+                label="保存对话发送时间",
+            )
+        # 框架已记录普通回复正文；这里只保留发送回执，避免同一条消息在日志中出现两次。
+        if source == "reply":
+            logger.debug(f"{LOG_PREFIX} 普通回复发送回执已记录。")
+        else:
+            # 插件直发消息没有框架的普通回复日志，需要保留其出站正文。
+            bot_identity = self._outbound_bot_identity_value(bot_name) or "机器人"
+            logger.info(
+                f"{LOG_PREFIX} {bot_identity}: {content}",
+                extra={
+                    "category": "user_chat",
+                    "outbound_source": str(source or "plugin"),
+                },
+            )
         if source_event is not None:
             self._outbound_direct_bodies(source_event).append(content)
         return True
@@ -242,9 +253,7 @@ class OutboundLogMixin:
         source_event = kwargs.get("source_event")
         scope = str(kwargs.get("scope") or getattr(source_event, "unified_msg_origin", "") or "")
         # 先记录发送回执，再查询昵称，防止这段等待期间的新消息丢失时间锚点。
-        record = getattr(self, "record_conversation_delivery", None)
-        if callable(record):
-            await record(scope, sent_at, source_event)
+        await self._timing.record_conversation_delivery(scope, sent_at, source_event)
         name = await self.prepare_outbound_bot_name(scope=scope, source_event=source_event)
         return self.log_outbound_message(
             chain, bot_name=name, sent_at=sent_at, persist_receipt=False, **kwargs
@@ -287,4 +296,5 @@ class OutboundLogMixin:
             source_event=event, source=source, bot_name=bot_name,
         )
 
-__all__ = ["OutboundLogMixin", "message_outline"]
+
+__all__ = ["OutboundLogService", "message_outline"]

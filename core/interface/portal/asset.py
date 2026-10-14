@@ -8,6 +8,8 @@ from pathlib import Path
 from ...paths import runtime_data_root
 from .codec import encode_base64, file_sha256
 
+from typing import Any, Protocol
+
 REFERENCE_IMAGE_MAX_MB = 12
 IMAGE_GALLERIES = {
     "character_reference": {
@@ -23,7 +25,27 @@ IMAGE_GALLERIES = {
 }
 
 
-class PortalReferenceMixin:
+class PortalReferenceComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _page_friend_reference_key: Any
+    _page_gallery_dir: Any
+    _page_gallery_spec: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_receive_upload: Any
+    _page_reference_image_delete: Any
+    _page_reference_image_preview: Any
+    _page_reference_image_upload: Any
+    _page_reference_mime: Any
+    _page_safe_gallery_path: Any
+    runtime: Any
+
+
+class PortalReferenceComponent:
+    def __init__(self, context: PortalReferenceComponentContext) -> None:
+        self.context = context
+
     def _page_gallery_spec(self, gallery: str) -> dict:
         key = str(gallery or "character_reference").strip() or "character_reference"
         spec = IMAGE_GALLERIES.get(key)
@@ -39,20 +61,20 @@ class PortalReferenceMixin:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
 
     def _page_gallery_dir(self, gallery: str, profile_id: str = "") -> Path:
-        target = runtime_data_root(getattr(self.runtime, "data_path", None))
-        for part in self._page_gallery_spec(gallery)["dir"]:
+        target = runtime_data_root(getattr(self.context.runtime, "data_path", None))
+        for part in self.context._page_gallery_spec(gallery)["dir"]:
             target /= part
         if gallery == "friend_reference":
-            target /= self._page_friend_reference_key(profile_id)
+            target /= self.context._page_friend_reference_key(profile_id)
         return target
 
     def _page_reference_dir(self) -> Path:
-        return self._page_gallery_dir("character_reference")
+        return self.context._page_gallery_dir("character_reference")
 
     def _page_safe_gallery_path(
         self, gallery: str, path_text: str, profile_id: str = ""
     ) -> Path:
-        target_dir = self._page_gallery_dir(gallery, profile_id).resolve()
+        target_dir = self.context._page_gallery_dir(gallery, profile_id).resolve()
         path = Path(str(path_text or "")).expanduser().resolve()
         try:
             path.relative_to(target_dir)
@@ -61,7 +83,7 @@ class PortalReferenceMixin:
         return path
 
     def _page_safe_reference_path(self, path_text: str) -> Path:
-        return self._page_safe_gallery_path("character_reference", path_text)
+        return self.context._page_safe_gallery_path("character_reference", path_text)
 
     @staticmethod
     def _page_reference_mime(path: Path) -> str:
@@ -77,12 +99,12 @@ class PortalReferenceMixin:
         self, gallery: str = "character_reference", profile_id: str = ""
     ):
         async def handler():
-            spec = self._page_gallery_spec(gallery)
-            target_dir = self._page_gallery_dir(gallery, profile_id)
+            spec = self.context._page_gallery_spec(gallery)
+            target_dir = self.context._page_gallery_dir(gallery, profile_id)
             temporary = target_dir / f".reference_{secrets.token_hex(8)}.upload"
             try:
                 try:
-                    upload = await self._page_receive_upload(
+                    upload = await self.context._page_receive_upload(
                         temporary,
                         max_bytes=REFERENCE_IMAGE_MAX_MB * 1024 * 1024,
                     )
@@ -107,35 +129,35 @@ class PortalReferenceMixin:
                     "item": {
                         "path": str(target),
                         "name": filename.strip() or target.name,
-                        "mime": mime or self._page_reference_mime(target),
+                        "mime": mime or self.context._page_reference_mime(target),
                         "size": int(upload.get("size") or 0),
                     }
                 }
             finally:
                 await asyncio.to_thread(temporary.unlink, missing_ok=True)
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def _page_reference_image_delete(
         self, gallery: str = "character_reference", profile_id: str = ""
     ):
         async def handler():
-            body = await self._page_json_body()
-            target = self._page_safe_gallery_path(
+            body = await self.context._page_json_body()
+            target = self.context._page_safe_gallery_path(
                 gallery, str(body.get("path") or ""), profile_id
             )
             if await asyncio.to_thread(target.is_file):
                 await asyncio.to_thread(lambda: target.unlink(missing_ok=True))
             return {"path": str(target)}
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def _page_reference_image_preview(
         self, gallery: str = "character_reference", profile_id: str = ""
     ):
         async def handler():
-            body = await self._page_json_body()
-            target = self._page_safe_gallery_path(
+            body = await self.context._page_json_body()
+            target = self.context._page_safe_gallery_path(
                 gallery, str(body.get("path") or ""), profile_id
             )
             if not await asyncio.to_thread(target.is_file):
@@ -146,25 +168,25 @@ class PortalReferenceMixin:
             data = await asyncio.to_thread(target.read_bytes)
             encoded = await asyncio.to_thread(encode_base64, data)
             return {
-                "data_url": f"data:{self._page_reference_mime(target)};base64,{encoded}"
+                "data_url": f"data:{self.context._page_reference_mime(target)};base64,{encoded}"
             }
 
-        return await self._page_json(handler)
+        return await self.context._page_json(handler)
 
     async def page_character_reference_upload(self):
-        return await self._page_reference_image_upload()
+        return await self.context._page_reference_image_upload()
 
     async def page_character_reference_delete(self):
-        return await self._page_reference_image_delete()
+        return await self.context._page_reference_image_delete()
 
     async def page_character_reference_preview(self):
-        return await self._page_reference_image_preview()
+        return await self.context._page_reference_image_preview()
 
     async def page_friend_reference_upload(self, profile_id: str = ""):
-        return await self._page_reference_image_upload("friend_reference", profile_id)
+        return await self.context._page_reference_image_upload("friend_reference", profile_id)
 
     async def page_friend_reference_delete(self, profile_id: str = ""):
-        return await self._page_reference_image_delete("friend_reference", profile_id)
+        return await self.context._page_reference_image_delete("friend_reference", profile_id)
 
     async def page_friend_reference_preview(self, profile_id: str = ""):
-        return await self._page_reference_image_preview("friend_reference", profile_id)
+        return await self.context._page_reference_image_preview("friend_reference", profile_id)

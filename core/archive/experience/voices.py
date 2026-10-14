@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
@@ -11,18 +13,37 @@ from ...models import (
 )
 from .lines import _pack_lines, _unpack_lines
 
+from typing import Protocol
 
-class ExpressionArchiveMixin:
+
+class ExpressionArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_emoji_asset: Any
+    _compose_expression_intent: Any
+    _compose_expression_profile: Any
+    _compose_expression_review: Any
+    _compose_temporary_expression_state: Any
+    _conn: Any
+    _flag: Any
+    _run_db: Any
+    _text: Any
+
+
+class ExpressionArchiveComponent:
+    def __init__(self, context: ExpressionArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_expression_profile(self, row: sqlite3.Row) -> ExpressionProfileRecord:
         return ExpressionProfileRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
             profile_id=row["profile_id"],
-            label=self._text(row["label"]),
-            tone=self._text(row["tone"]),
+            label=self.context._text(row["label"]),
+            tone=self.context._text(row["tone"]),
             habits=_unpack_lines(row["habits"]),
             avoid=_unpack_lines(row["avoid"]),
-            evidence=self._text(row["evidence"]),
+            evidence=self.context._text(row["evidence"]),
             confidence=float(row["confidence"] or 0.0),
             source=row["source"],
             created_at=row["created_at"],
@@ -39,9 +60,9 @@ class ExpressionArchiveMixin:
         )
         if not item:
             return None
-        scope = self._text(item.scope)
-        profile_id = self._text(item.profile_id)
-        label = self._text(item.label) or scope or profile_id or "表达习惯"
+        scope = self.context._text(item.scope)
+        profile_id = self.context._text(item.profile_id)
+        label = self.context._text(item.label) or scope or profile_id or "表达习惯"
         updates = (
             "tone = excluded.tone, habits = excluded.habits, avoid = excluded.avoid, "
             "evidence = excluded.evidence, confidence = excluded.confidence,"
@@ -56,7 +77,7 @@ class ExpressionArchiveMixin:
         )
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 f"""
                 INSERT INTO expression_profiles(
                     scope, profile_id, label, tone, habits, avoid, evidence,
@@ -72,22 +93,22 @@ class ExpressionArchiveMixin:
                     scope,
                     profile_id,
                     label,
-                    self._text(item.tone),
+                    self.context._text(item.tone),
                     _pack_lines(item.habits),
                     _pack_lines(item.avoid),
-                    self._text(item.evidence),
+                    self.context._text(item.evidence),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
-                    self._text(item.source) or "chat_memory",
+                    self.context._text(item.source) or "chat_memory",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM expression_profiles WHERE scope = ? AND profile_id = ? AND label = ?",
                 (scope, profile_id, label),
             ).fetchone()
-            return self._compose_expression_profile(row) if row else None
+            return self.context._compose_expression_profile(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_expression_profiles(
         self,
@@ -102,30 +123,30 @@ class ExpressionArchiveMixin:
             clauses = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if profile_id:
                 clauses.append("profile_id = ?")
-                params.append(self._text(profile_id))
+                params.append(self.context._text(profile_id))
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY updated_at DESC, confidence DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_expression_profile(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_expression_profile(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_expression_review(self, row: sqlite3.Row) -> ExpressionReviewRecord:
         return ExpressionReviewRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
-            reply_text=self._text(row["reply_text"]),
+            reply_text=self.context._text(row["reply_text"]),
             passed=bool(row["passed"]),
-            risk=self._text(row["risk"]),
-            suggestion=self._text(row["suggestion"]),
-            reason=self._text(row["reason"]),
+            risk=self.context._text(row["risk"]),
+            suggestion=self.context._text(row["suggestion"]),
+            reason=self.context._text(row["reason"]),
             source=row["source"],
             created_at=row["created_at"],
         )
@@ -140,7 +161,7 @@ class ExpressionArchiveMixin:
             return None
 
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO expression_reviews(
                     scope, reply_text, passed, risk, suggestion, reason, source, created_at
@@ -148,22 +169,22 @@ class ExpressionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
-                    self._text(item.scope),
-                    self._text(item.reply_text),
-                    self._flag(item.passed),
-                    self._text(item.risk),
-                    self._text(item.suggestion),
-                    self._text(item.reason),
-                    self._text(item.source) or "proactive_reply",
+                    self.context._text(item.scope),
+                    self.context._text(item.reply_text),
+                    self.context._flag(item.passed),
+                    self.context._text(item.risk),
+                    self.context._text(item.suggestion),
+                    self.context._text(item.reason),
+                    self.context._text(item.source) or "proactive_reply",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM expression_reviews WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_expression_review(row) if row else None
+            return self.context._compose_expression_review(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_expression_reviews(
         self,
@@ -178,20 +199,20 @@ class ExpressionArchiveMixin:
             clauses = []
             if scope:
                 clauses.append("scope = ?")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if passed is not None:
                 clauses.append("passed = ?")
-                params.append(self._flag(passed))
+                params.append(self.context._flag(passed))
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_expression_review(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_expression_review(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_temporary_expression_state(
         self, row: sqlite3.Row
@@ -199,9 +220,9 @@ class ExpressionArchiveMixin:
         return TemporaryExpressionStateRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
-            label=self._text(row["label"]),
-            tone=self._text(row["tone"]),
-            reason=self._text(row["reason"]),
+            label=self.context._text(row["label"]),
+            tone=self.context._text(row["tone"]),
+            reason=self.context._text(row["reason"]),
             intensity=int(row["intensity"] or 0),
             expires_at=row["expires_at"],
             source=row["source"],
@@ -220,11 +241,11 @@ class ExpressionArchiveMixin:
         )
         if not item:
             return None
-        scope = self._text(item.scope)
-        label = self._text(item.label) or self._text(item.tone) or "临时表达状态"
+        scope = self.context._text(item.scope)
+        label = self.context._text(item.label) or self.context._text(item.tone) or "临时表达状态"
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO temporary_expression_states(
                     scope, label, tone, reason, intensity, expires_at,
@@ -242,21 +263,21 @@ class ExpressionArchiveMixin:
                 (
                     scope,
                     label,
-                    self._text(item.tone),
-                    self._text(item.reason),
+                    self.context._text(item.tone),
+                    self.context._text(item.reason),
                     max(0, min(int(item.intensity or 0), 100)),
-                    self._text(item.expires_at),
-                    self._text(item.source) or "chat_memory",
+                    self.context._text(item.expires_at),
+                    self.context._text(item.source) or "chat_memory",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM temporary_expression_states WHERE scope = ? AND label = ?",
                 (scope, label),
             ).fetchone()
-            return self._compose_temporary_expression_state(row) if row else None
+            return self.context._compose_temporary_expression_state(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_temporary_expression_states(
         self,
@@ -271,7 +292,7 @@ class ExpressionArchiveMixin:
             clauses = []
             if scope:
                 clauses.append("(scope = ? OR scope = '')")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if active_only:
                 clauses.append("(expires_at = '' OR expires_at >= ?)")
                 params.append(life_today().isoformat())
@@ -281,24 +302,24 @@ class ExpressionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_temporary_expression_state(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_temporary_expression_state(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_expression_intent(self, row: sqlite3.Row) -> ExpressionIntentRecord:
         return ExpressionIntentRecord(
             id=int(row["id"] or 0),
             scope=row["scope"],
             message_id=row["message_id"],
-            reply_text=self._text(row["reply_text"]),
-            emotion=self._text(row["emotion"]),
-            emotion_category=self._text(row["emotion_category"]),
-            emoji_intent=self._text(row["emoji_intent"]),
-            action_intent=self._text(row["action_intent"]),
+            reply_text=self.context._text(row["reply_text"]),
+            emotion=self.context._text(row["emotion"]),
+            emotion_category=self.context._text(row["emotion_category"]),
+            emoji_intent=self.context._text(row["emoji_intent"]),
+            action_intent=self.context._text(row["action_intent"]),
             send_emoji=bool(row["send_emoji"]),
             emoji_id=int(row["emoji_id"] or 0),
-            reason=self._text(row["reason"]),
+            reason=self.context._text(row["reason"]),
             source=row["source"],
             created_at=row["created_at"],
         )
@@ -313,7 +334,7 @@ class ExpressionArchiveMixin:
             return None
 
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 INSERT INTO expression_intents(
                     scope, message_id, reply_text, emotion, emotion_category, emoji_intent, action_intent,
@@ -322,26 +343,26 @@ class ExpressionArchiveMixin:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
-                    self._text(item.scope),
-                    self._text(item.message_id),
-                    self._text(item.reply_text),
-                    self._text(item.emotion),
-                    self._text(item.emotion_category),
-                    self._text(item.emoji_intent),
-                    self._text(item.action_intent),
-                    self._flag(item.send_emoji),
+                    self.context._text(item.scope),
+                    self.context._text(item.message_id),
+                    self.context._text(item.reply_text),
+                    self.context._text(item.emotion),
+                    self.context._text(item.emotion_category),
+                    self.context._text(item.emoji_intent),
+                    self.context._text(item.action_intent),
+                    self.context._flag(item.send_emoji),
                     max(int(item.emoji_id or 0), 0),
-                    self._text(item.reason),
-                    self._text(item.source) or "proactive_reply",
+                    self.context._text(item.reason),
+                    self.context._text(item.source) or "proactive_reply",
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM expression_intents WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._compose_expression_intent(row) if row else None
+            return self.context._compose_expression_intent(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_expression_intents(
         self,
@@ -354,32 +375,32 @@ class ExpressionArchiveMixin:
             params: list[Any] = []
             if scope:
                 sql += " WHERE scope = ? OR scope = ''"
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             sql += " ORDER BY id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_expression_intent(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_expression_intent(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_emoji_asset(self, row: sqlite3.Row) -> EmojiAssetRecord:
         return EmojiAssetRecord(
             id=int(row["id"] or 0),
             file_hash=row["file_hash"],
-            file_path=self._text(row["file_path"]),
-            label=self._text(row["label"]),
-            description=self._text(row["description"]),
+            file_path=self.context._text(row["file_path"]),
+            label=self.context._text(row["label"]),
+            description=self.context._text(row["description"]),
             emotions=_unpack_lines(row["emotions"]),
             source_scope=row["source_scope"],
             source_message_id=row["source_message_id"],
-            source_url=self._text(row["source_url"]),
-            source_kind=self._text(row["source_kind"]) or "trusted",
-            asset_type=self._text(row["asset_type"]),
+            source_url=self.context._text(row["source_url"]),
+            source_kind=self.context._text(row["source_kind"]) or "trusted",
+            asset_type=self.context._text(row["asset_type"]),
             confidence=float(row["confidence"] or 0.0),
             sendable=bool(row["sendable"]),
-            rejected_reason=self._text(row["rejected_reason"]),
+            rejected_reason=self.context._text(row["rejected_reason"]),
             status=row["status"],
             used_count=int(row["used_count"] or 0),
             last_used_at=row["last_used_at"],
@@ -395,10 +416,10 @@ class ExpressionArchiveMixin:
         )
         if not item:
             return None
-        file_hash = self._text(item.file_hash) or self._text(item.file_path)
+        file_hash = self.context._text(item.file_hash) or self.context._text(item.file_path)
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO emoji_assets(
                     file_hash, file_path, label, description, emotions, source_scope,
@@ -431,40 +452,40 @@ class ExpressionArchiveMixin:
                 """,
                 (
                     file_hash,
-                    self._text(item.file_path),
-                    self._text(item.label),
-                    self._text(item.description),
+                    self.context._text(item.file_path),
+                    self.context._text(item.label),
+                    self.context._text(item.description),
                     _pack_lines(item.emotions),
-                    self._text(item.source_scope),
-                    self._text(item.source_message_id),
-                    self._text(item.source_url),
-                    self._text(item.source_kind) or "trusted",
-                    self._text(item.asset_type),
+                    self.context._text(item.source_scope),
+                    self.context._text(item.source_message_id),
+                    self.context._text(item.source_url),
+                    self.context._text(item.source_kind) or "trusted",
+                    self.context._text(item.asset_type),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
-                    self._flag(item.sendable),
-                    self._text(item.rejected_reason),
-                    self._text(item.status) or "pending",
+                    self.context._flag(item.sendable),
+                    self.context._text(item.rejected_reason),
+                    self.context._text(item.status) or "pending",
                     max(int(item.used_count or 0), 0),
-                    self._text(item.last_used_at),
+                    self.context._text(item.last_used_at),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM emoji_assets WHERE file_hash = ?", (file_hash,)
             ).fetchone()
-            return self._compose_emoji_asset(row) if row else None
+            return self.context._compose_emoji_asset(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_emoji_asset_by_hash(self, file_hash: str) -> EmojiAssetRecord | None:
         def dbwork():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM emoji_assets WHERE file_hash = ?",
-                (self._text(file_hash),),
+                (self.context._text(file_hash),),
             ).fetchone()
-            return self._compose_emoji_asset(row) if row else None
+            return self.context._compose_emoji_asset(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_emoji_assets(
         self,
@@ -479,7 +500,7 @@ class ExpressionArchiveMixin:
             clauses: list[str] = []
             if status:
                 clauses.append("status = ?")
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             if sendable_only:
                 clauses.append("sendable = 1")
             if clauses:
@@ -488,10 +509,10 @@ class ExpressionArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_emoji_asset(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_emoji_asset(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def delete_emoji_assets(self, emoji_ids: list[int]) -> int:
         ids = sorted({int(item) for item in emoji_ids if int(item or 0) > 0})
@@ -500,18 +521,18 @@ class ExpressionArchiveMixin:
         placeholders = ",".join("?" for _ in ids)
 
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 f"DELETE FROM emoji_assets WHERE id IN ({placeholders})",
                 tuple(ids),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return max(int(cursor.rowcount or 0), 0)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def mark_emoji_used(self, emoji_id: int, used_at: str = "") -> bool:
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE emoji_assets
                 SET used_count = used_count + 1,
@@ -519,9 +540,9 @@ class ExpressionArchiveMixin:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (self._text(used_at), int(emoji_id)),
+                (self.context._text(used_at), int(emoji_id)),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

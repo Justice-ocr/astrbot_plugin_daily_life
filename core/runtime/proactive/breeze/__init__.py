@@ -1,5 +1,5 @@
-from .effect import AirEffectMixin
-from .meter import AirMeterMixin
+from .effect import AirEffectComponent
+from .meter import AirMeterComponent
 
 
-__all__ = ["AirEffectMixin", "AirMeterMixin"]
+__all__ = ["AirEffectComponent", "AirMeterComponent"]

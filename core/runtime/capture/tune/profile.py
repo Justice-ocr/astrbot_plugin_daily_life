@@ -13,32 +13,52 @@ from ....prompts import (
 )
 from ...markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ProfileMixin:
+
+class ProfileComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_relationship_calibration_prompt: Any
+    _get_memory_provider: Any
+    _list_payload: Any
+    _relationship_calibration_cache: Any
+    _relationship_calibration_signature: Any
+    _str_payload: Any
+    archive: Any
+    call_text_model: Any
+    close_text_session: Any
+    config: Any
+
+
+class ProfileComponent:
+    def __init__(self, context: ProfileComponentContext) -> None:
+        self.context = context
+
     def _relationship_calibration_signature(
         self, relationship: Any, persona_hint: str
     ) -> tuple[Any, ...]:
         notes = getattr(relationship, "notes", []) or []
         points = getattr(relationship, "memory_points", []) or []
         return (
-            self._str_payload(persona_hint),
-            self._str_payload(getattr(relationship, "persona_hint", "")),
-            self._str_payload(getattr(relationship, "subjective_name", "")),
+            self.context._str_payload(persona_hint),
+            self.context._str_payload(getattr(relationship, "persona_hint", "")),
+            self.context._str_payload(getattr(relationship, "subjective_name", "")),
             tuple(
-                self._str_payload(item)
+                self.context._str_payload(item)
                 for item in (getattr(relationship, "subjective_tags", []) or [])
-                if self._str_payload(item)
+                if self.context._str_payload(item)
             ),
-            self._str_payload(getattr(relationship, "relationship_story", "")),
+            self.context._str_payload(getattr(relationship, "relationship_story", "")),
             tuple(
-                self._str_payload(getattr(item, "content", ""))
+                self.context._str_payload(getattr(item, "content", ""))
                 for item in notes[-3:]
-                if self._str_payload(getattr(item, "content", ""))
+                if self.context._str_payload(getattr(item, "content", ""))
             ),
             tuple(
-                self._str_payload(getattr(item, "content", ""))
+                self.context._str_payload(getattr(item, "content", ""))
                 for item in points[-5:]
-                if self._str_payload(getattr(item, "content", ""))
+                if self.context._str_payload(getattr(item, "content", ""))
             ),
         )
 
@@ -46,19 +66,19 @@ class ProfileMixin:
         self, relationship: Any, persona_hint: str
     ) -> str:
         tags = [
-            self._str_payload(item)
+            self.context._str_payload(item)
             for item in (getattr(relationship, "subjective_tags", []) or [])
-            if self._str_payload(item)
+            if self.context._str_payload(item)
         ]
         notes = [
-            self._str_payload(getattr(item, "content", ""))
+            self.context._str_payload(getattr(item, "content", ""))
             for item in (getattr(relationship, "notes", []) or [])[-3:]
-            if self._str_payload(getattr(item, "content", ""))
+            if self.context._str_payload(getattr(item, "content", ""))
         ]
         points = [
-            self._str_payload(getattr(item, "content", ""))
+            self.context._str_payload(getattr(item, "content", ""))
             for item in (getattr(relationship, "memory_points", []) or [])[-5:]
-            if self._str_payload(getattr(item, "content", ""))
+            if self.context._str_payload(getattr(item, "content", ""))
         ]
         fixed = f"""审阅一份关系档案是否和当前角色人设线索冲突。
 
@@ -82,15 +102,15 @@ JSON 输出要求：
 - 如果档案没有冲突，needs_revision=false，其余字段可留空。
 - 如果有冲突，只重写冲突相关内容。
 - 输出内容必须站在我的第一人称体验写，不要写成工具或平台视角。"""
-        normalized_persona_hint = self._str_payload(persona_hint)
+        normalized_persona_hint = self.context._str_payload(persona_hint)
         persona_evidence = "已提供" if normalized_persona_hint else "证据不足"
-        dynamic = f"""对象称呼：{self._str_payload(getattr(relationship, "name", "")) or self._str_payload(getattr(relationship, "id", ""))}
+        dynamic = f"""对象称呼：{self.context._str_payload(getattr(relationship, "name", "")) or self.context._str_payload(getattr(relationship, "id", ""))}
 对方在人设中的线索：{normalized_persona_hint or "无"}
 称谓依据：{persona_evidence}
-已保存人设线索：{self._str_payload(getattr(relationship, "persona_hint", "")) or "无"}
-主观称呼：{self._str_payload(getattr(relationship, "subjective_name", "")) or "无"}
+已保存人设线索：{self.context._str_payload(getattr(relationship, "persona_hint", "")) or "无"}
+主观称呼：{self.context._str_payload(getattr(relationship, "subjective_name", "")) or "无"}
 主观标签：{"、".join(tags) if tags else "无"}
-关系叙事：{self._str_payload(getattr(relationship, "relationship_story", "")) or "无"}
+关系叙事：{self.context._str_payload(getattr(relationship, "relationship_story", "")) or "无"}
 最近印象：{"；".join(notes) if notes else "无"}
 关系点：{"；".join(points) if points else "无"}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="待审阅关系档案")
@@ -101,31 +121,31 @@ JSON 输出要求：
         persona_hint: str,
         date_str: str,
     ) -> None:
-        persona_hint = self._str_payload(persona_hint)
+        persona_hint = self.context._str_payload(persona_hint)
         if not profile_id:
             return
-        relationship = await self.archive.get_relationship(profile_id)
+        relationship = await self.context.archive.get_relationship(profile_id)
         if not relationship:
             return
-        signature = self._relationship_calibration_signature(relationship, persona_hint)
-        cache = getattr(self, "_relationship_calibration_cache", None)
+        signature = self.context._relationship_calibration_signature(relationship, persona_hint)
+        cache = getattr(self.context, "_relationship_calibration_cache", None)
         if cache is None:
             cache = {}
-            self._relationship_calibration_cache = cache
+            self.context._relationship_calibration_cache = cache
         if cache.get(profile_id) == signature:
             return
         try:
-            provider = await self._get_memory_provider()
+            provider = await self.context._get_memory_provider()
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 关系档案语义校准无法获取模型：{exc}")
             return
         if not provider:
             return
         session_id = f"daily_life_relation_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self._build_relationship_calibration_prompt(relationship, persona_hint)
+        prompt = self.context._build_relationship_calibration_prompt(relationship, persona_hint)
         try:
-            provider_id = self.config.memory.provider
-            text = await self.call_text_model(
+            provider_id = self.context.config.memory.provider
+            text = await self.context.call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -140,40 +160,40 @@ JSON 输出要求：
                 while len(cache) > 256:
                     cache.pop(next(iter(cache)))
                 return
-            await self.archive.revise_relationship_profile(
+            await self.context.archive.revise_relationship_profile(
                 profile_id,
                 date_str=date_str,
                 source="语义校准",
-                subjective_name=self._str_payload(payload.get("subjective_name")),
+                subjective_name=self.context._str_payload(payload.get("subjective_name")),
                 subjective_tags=[
-                    self._str_payload(item)
-                    for item in self._list_payload(
+                    self.context._str_payload(item)
+                    for item in self.context._list_payload(
                         payload.get("subjective_tags") or payload.get("tags")
                     )
-                    if self._str_payload(item)
+                    if self.context._str_payload(item)
                 ][:8],
-                relationship_story=self._str_payload(payload.get("relationship_story")),
-                note=self._str_payload(payload.get("note")),
+                relationship_story=self.context._str_payload(payload.get("relationship_story")),
+                note=self.context._str_payload(payload.get("note")),
                 relationship_points=[
-                    self._str_payload(item)
-                    for item in self._list_payload(
+                    self.context._str_payload(item)
+                    for item in self.context._list_payload(
                         payload.get("relationship_points") or payload.get("points")
                     )
-                    if self._str_payload(item)
+                    if self.context._str_payload(item)
                 ][:6],
             )
-            revised = await self.archive.get_relationship(profile_id)
+            revised = await self.context.archive.get_relationship(profile_id)
             cache[profile_id] = (
-                self._relationship_calibration_signature(revised, persona_hint)
+                self.context._relationship_calibration_signature(revised, persona_hint)
                 if revised
                 else signature
             )
             while len(cache) > 256:
                 cache.pop(next(iter(cache)))
             logger.debug(
-                f"{LOG_PREFIX} 已语义校准关系档案：{self._str_payload(getattr(relationship, 'name', '')) or profile_id}"
+                f"{LOG_PREFIX} 已语义校准关系档案：{self.context._str_payload(getattr(relationship, 'name', '')) or profile_id}"
             )
         except Exception as e:
             logger.debug(f"{LOG_PREFIX} 关系档案语义校准跳过：{e}")
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)

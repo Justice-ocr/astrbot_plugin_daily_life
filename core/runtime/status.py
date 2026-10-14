@@ -2,6 +2,7 @@ import copy
 import datetime
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,7 @@ from ..life.tools import (
 )
 from ..models import DayRecord, EmotionArcRecord, LifeState
 from ..prompts import (
+    BODY_CONDITION_JSON_EXAMPLE,
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_STATE_BEHAVIOR_RULES,
@@ -45,10 +47,35 @@ class _StateRefreshSpec:
     notify_page: bool
 
 
-class StatusMixin:
-    async def _get_state_provider(self):
-        provider_id = self.config.state.provider
-        return await self.get_text_provider(provider_id)
+class StateRefreshService:
+    """通过显式依赖刷新实时状态，并同步连续生活和状态旁记录。"""
+
+    def __init__(
+        self,
+        *,
+        config: Callable[[], Any],
+        archive: Callable[[], Any],
+        compute_sleep: Callable[[DayRecord | None, DayRecord], tuple[float, float, float]],
+        replan: Callable[..., Any],
+        sync_world_facts: Callable[..., Awaitable[Any]],
+        text_provider: Callable[[str], Awaitable[Any]],
+        call_text_model: Callable[..., Awaitable[str]],
+        close_text_session: Callable[[str], Awaitable[None]],
+        event_was_recalled: Callable[..., bool],
+        sync_kernel: Callable[..., Awaitable[None]],
+        notify_status: Callable[[str], Awaitable[Any]],
+    ) -> None:
+        self._config = config
+        self._archive = archive
+        self._compute_sleep = compute_sleep
+        self._replan = replan
+        self._sync_world_facts = sync_world_facts
+        self._text_provider = text_provider
+        self._call_text_model = call_text_model
+        self._close_text_session = close_text_session
+        self._event_was_recalled = event_was_recalled
+        self._sync_kernel = sync_kernel
+        self._notify_status = notify_status
 
     def _build_state_update_prompt(
         self,
@@ -145,7 +172,7 @@ class StatusMixin:
   "sleep": {{"quality": 0-100, "depth": "awake|light_rest|light_sleep|deep_sleep", "summary": "睡眠影响是否仍在"}},
   "physiological_rhythm": {{
     "energy_curve": "此刻到接下来一段时间的精力起伏",
-    "body_condition": {{"label": "身体状态", "intensity": "burden_present=true 时填写身体负荷强度 0-100，否则填 0", "burden_present": "布尔值，true 表示当前确有身体负荷，false 表示当前无身体负荷", "source": "依据来源", "expires_at": "YYYY-MM-DD、YYYY-MM-DD HH:MM 或空字符串"}},
+    "body_condition": {BODY_CONDITION_JSON_EXAMPLE},
     "recovery_actions": ["自然恢复动作"],
     "social_battery": 0-100,
     "attention_state": "注意力/感官负荷状态",
@@ -176,9 +203,8 @@ class StatusMixin:
 - sleep.depth 是此刻睡眠/休息层级：awake=清醒，light_rest=浅休息但仍可能留意，light_sleep=浅睡眠且普通消息难进入，deep_sleep=深度睡眠只可能被强打断信号影响。它由能量、困意、当前活动、昨日睡眠债、时间线索和消息打断等级共同判断，不要由固定时间直接决定。
 - 用户希望晚点休息时，结合当前对话与疲惫程度调整节奏；顺延结束只是再次评估的时间，不代表已经入睡。困倦可以和继续聊天并存，不能因为陪聊把体力、睡眠债或困倦直接清零。
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
-- body_condition.burden_present 是身体负荷的唯一语义开关：有负荷填 true 并让 intensity、source、recovery_actions 与期限相互一致；无负荷填 false、intensity=0。不要让消费端从 label、source、summary 或其他自然语言反推身体负荷。
-- 结合下方“状态因果线索”重新审视状态。线索只允许由已有体力、睡眠、压力或身体负荷带来连续的小幅变化；没有依据时保持稳定，不得凭日期、时段或随机性制造疾病、疼痛或情绪低潮。
-- 已有 body_condition 在 expires_at 到期前默认仍有余波；除非本轮有明确恢复或新的身体事实，不得直接改成“完全舒适”。
+- 结合下方“状态因果线索”、近期身体感受及实际活动评估当前阶段；用户关心、一次开心的聊天或复核时间到达，都不能直接清除生病感。
+- 生病感减轻、持续或恢复都要与当前身体事实一致；明显影响未来安排时使用 schedule_replan 调低强度或改约，已执行的安排保持不变。
 - 不要输出 meta.life_mode 或 meta.sleep_mode；它们属于今日生成的日程基调，不属于实时状态刷新。
 - emotion_arc 只记录当前情绪脉络的结构化摘要；没有新触发时可以延续原状态并降低强度。
 - 实时刷新只能更新此刻身体、情绪和未来日程可行性，不得推导或保存长期偏好、关系事实与生活事件。
@@ -308,7 +334,7 @@ class StatusMixin:
     def _state_refresh_recalled(self, source_event: Any) -> bool:
         return bool(
             source_event is not None
-            and self.event_was_recalled(source_event, log_skip=True)
+            and self._event_was_recalled(source_event, log_skip=True)
         )
 
     async def _state_refresh_prompt(
@@ -318,18 +344,13 @@ class StatusMixin:
         source: str,
         detail: str,
     ) -> str:
-        emotion_context = ""
-        get_emotion_arcs = getattr(self.archive, "get_emotion_arcs", None)
-        if callable(get_emotion_arcs):
-            emotion_context = self._format_emotion_arcs_for_state_prompt(
-                await get_emotion_arcs(limit=4, scope="", include_global=True)
-            )
-        rhythm_context = ""
-        get_rhythm_trend = getattr(self.archive, "get_physiological_rhythm_trend", None)
-        if callable(get_rhythm_trend):
-            rhythm_context = self._format_rhythm_trend_for_state_prompt(
-                await get_rhythm_trend(days=7, limit=6)
-            )
+        archive = self._archive()
+        emotion_context = self._format_emotion_arcs_for_state_prompt(
+            await archive.get_emotion_arcs(limit=4, scope="", include_global=True)
+        )
+        rhythm_context = self._format_rhythm_trend_for_state_prompt(
+            await archive.get_physiological_rhythm_trend(days=7, limit=6)
+        )
         return self._build_state_update_prompt(
             data,
             now,
@@ -394,28 +415,24 @@ class StatusMixin:
                     and str(current_body.label or "").strip()
                     != str(previous_body.label or "").strip()
                 )
+                or current_body.kind != previous_body.kind
+                or current_body.phase != previous_body.phase
+                or current_body.burden_present != previous_body.burden_present
             )
         if not significant_change:
             return
-        save_rhythm_log = getattr(self.archive, "save_physiological_rhythm_log", None)
-        if callable(save_rhythm_log):
-            rhythm_log = physiological_rhythm_log_from_state(
-                state, date=spec.date_str, source=spec.source
-            )
-            if rhythm_log:
-                await save_rhythm_log(rhythm_log)
-        save_emotion_arc = getattr(self.archive, "save_emotion_arc", None)
-        if callable(save_emotion_arc):
-            arc = self._emotion_arc_from_state_payload(
-                result,
-                state,
-                date_str=spec.date_str,
-                now=spec.now,
-                source=spec.source,
-                detail=spec.detail,
-            )
-            if arc:
-                await save_emotion_arc(arc)
+        archive = self._archive()
+        rhythm_log = physiological_rhythm_log_from_state(
+            state, date=spec.date_str, source=spec.source
+        )
+        if rhythm_log:
+            await archive.save_physiological_rhythm_log(rhythm_log)
+        arc = self._emotion_arc_from_state_payload(
+            result, state, date_str=spec.date_str, now=spec.now,
+            source=spec.source, detail=spec.detail,
+        )
+        if arc:
+            await archive.save_emotion_arc(arc)
 
     async def _commit_state_refresh(
         self,
@@ -423,128 +440,90 @@ class StatusMixin:
         result: dict[str, Any],
         spec: _StateRefreshSpec,
     ) -> DayRecord:
-        previous_state = copy.deepcopy(data.state)
-        state = LifeState.from_value(
-            normalize_state(
-                result.get("state", result),
-                now=spec.now,
-                source=spec.source,
-                previous=data.state,
-                max_score_delta=12,
-            )
-        )
+        archive = self._archive()
         previous_date = (spec.now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        previous_day = await self.archive.get_day(previous_date)
-        continuity_target = (
-            copy.deepcopy(data) if spec.source_event is not None else data
-        )
-        continuity_target.state = state
-        debt, delta, carryover = self.composer._compute_sleep_continuity(
-            previous_day, continuity_target
-        )
+        previous_day = await archive.get_day(previous_date)
         if self._state_refresh_recalled(spec.source_event):
             return data
-        if spec.source_event is None:
-            self._apply_state_continuity(data, state, debt, delta, carryover)
-
-        if self._state_refresh_recalled(spec.source_event):
-            return data
-        if spec.source_event is not None:
-            self._apply_state_continuity(data, state, debt, delta, carryover)
-
+        previous_state = data.state
+        state = data.state
         revision = None
+        committed = False
         raw_replan = result.get("schedule_replan")
         replan_payload = raw_replan if isinstance(raw_replan, dict) else {}
-        replanner = getattr(self.composer, "replan_future_anchors", None)
-        if replan_payload.get("should_replan") is True and callable(replanner):
-            replacements = replan_payload.get("replacements")
-            if isinstance(replacements, list):
-                revision = replanner(data, replacements, now=spec.now)
-                if revision.status == "applied":
-                    data.meta.pop("schedule_replan_pending", None)
-                    data.meta["schedule_replan_reason"] = str(
-                        replan_payload.get("reason") or revision.reason
-                    ).strip()[:240]
+        replacements = replan_payload.get("replacements")
 
-        if data.meta.get("continuous_body"):
-            def commit_current(latest):
-                nonlocal state, previous_state, revision
-                if self._state_refresh_recalled(spec.source_event):
-                    return False
-                previous_state = copy.deepcopy(latest.state)
-                state = LifeState.from_value(normalize_state(
-                    result.get("state", result), now=spec.now, source=spec.source,
-                    previous=latest.state, max_score_delta=12,
+        def apply(latest: DayRecord, *, continuous: bool = False) -> bool:
+            nonlocal state, previous_state, revision, committed
+            if self._state_refresh_recalled(spec.source_event):
+                return False
+            previous_state = copy.deepcopy(latest.state)
+            state = LifeState.from_value(normalize_state(
+                result.get("state", result), now=spec.now, source=spec.source,
+                previous=latest.state, max_score_delta=12,
+            ))
+            latest.state = state
+            debt, delta, carryover = self._compute_sleep(previous_day, latest)
+            self._apply_state_continuity(latest, state, debt, delta, carryover)
+            if continuous:
+                project_body(latest, ContinuousBody.from_value(
+                    json.loads(latest.meta["continuous_body"]), latest
                 ))
-                self._apply_state_continuity(latest, state, debt, delta, carryover)
-                project_body(latest, ContinuousBody.from_value(json.loads(latest.meta["continuous_body"]), latest))
                 if previous_state is not None:
                     state.sleep.depth = previous_state.sleep.depth
-                if replan_payload.get("should_replan") is True and callable(replanner) and isinstance(replan_payload.get("replacements"), list):
-                    revision = replanner(latest, replan_payload["replacements"], now=spec.now)
-                    if revision.status == "applied":
-                        latest.meta.pop("schedule_replan_pending", None)
-                        latest.meta["schedule_replan_reason"] = str(replan_payload.get("reason") or revision.reason).strip()[:240]
-                latest.state_log = [*latest.state_log, state_log_entry(state, spec.now)][-10:]
-            current = await self.archive.mutate_day(data.date, commit_current)
+            if replan_payload.get("should_replan") is True and isinstance(replacements, list):
+                revision = self._replan(latest, replacements, now=spec.now)
+                if revision.status == "applied":
+                    latest.meta.pop("schedule_replan_pending", None)
+                    latest.meta["schedule_replan_reason"] = str(
+                        replan_payload.get("reason") or revision.reason
+                    ).strip()[:240]
+            latest.state_log = [*latest.state_log, state_log_entry(state, spec.now)][-10:]
+            committed = True
+            return True
+
+        if data.meta.get("continuous_body"):
+            current = await archive.mutate_day(
+                data.date, lambda latest: apply(latest, continuous=True)
+            )
             if current is not None:
                 data.apply_persisted(current)
+            else:
+                return data
         else:
-            data.state_log = [*data.state_log, state_log_entry(state, spec.now)][-10:]
-            await self.archive.save_day(data)
-        sync_world_facts = getattr(self.composer, "sync_day_world_facts", None)
-        if callable(sync_world_facts):
-            await sync_world_facts(
-                data,
-                observed_at=spec.now.strftime("%Y-%m-%d %H:%M:%S"),
-                source="state_refresh",
-                source_id=f"state:{spec.date_str}:{spec.now.strftime('%H%M')}",
-                evidence=state.summary,
-            )
-        if revision is not None:
-            trace_saver = getattr(self.archive, "save_decision_trace", None)
-            if callable(trace_saver):
-                await trace_saver(
-                    {
-                        "trace_id": f"schedule_replan:{data.date}:{spec.now.strftime('%H%M')}",
-                        "scope": f"day:{data.date}",
-                        "stage": "committed"
-                        if revision.status == "applied"
-                        else "rejected",
-                        "reason_code": "state_schedule_replan",
-                        "decision": revision.status,
-                        "evidence": [
-                            item
-                            for item in [
-                                str(replan_payload.get("reason") or "").strip(),
-                                *[
-                                    str(item.get("evidence") or "").strip()
-                                    for item in replan_payload.get("replacements", [])
-                                    if isinstance(item, dict)
-                                ],
-                            ]
-                            if item
-                        ],
-                        "outcome": revision.reason,
-                    }
-                )
-        await self._persist_state_side_records(
-            result,
-            state,
-            spec,
-            previous_state,
+            if not apply(data):
+                return data
+            await archive.save_day(data)
+        if not committed or self._state_refresh_recalled(spec.source_event):
+            return data
+        await self._sync_world_facts(
+            data, observed_at=spec.now.strftime("%Y-%m-%d %H:%M:%S"),
+            source="state_refresh",
+            source_id=f"state:{spec.date_str}:{spec.now.strftime('%H%M')}",
+            evidence=state.summary,
         )
-        sync_kernel = getattr(self, "sync_continuous_kernel_state", None)
-        if callable(sync_kernel):
-            try:
-                await sync_kernel(data, now=spec.now)
-            except (AttributeError, RuntimeError):
-                # 旧测试夹具或关闭中的运行时没有持续生活归档时，状态刷新仍应完成。
-                pass
+        if revision is not None:
+            await archive.save_decision_trace({
+                "trace_id": f"schedule_replan:{data.date}:{spec.now.strftime('%H%M')}",
+                "scope": f"day:{data.date}",
+                "stage": "committed" if revision.status == "applied" else "rejected",
+                "reason_code": "state_schedule_replan",
+                "decision": revision.status,
+                "evidence": [
+                    item for item in [
+                        str(replan_payload.get("reason") or "").strip(),
+                        *[str(item.get("evidence") or "").strip()
+                          for item in replacements if isinstance(item, dict)],
+                    ] if item
+                ],
+                "outcome": revision.reason,
+            })
+        await self._persist_state_side_records(result, state, spec, previous_state)
+        await self._sync_kernel(data, now=spec.now)
         if self._state_refresh_recalled(spec.source_event):
             return data
         if spec.notify_page:
-            await self.mark_page_status_changed("state")
+            await self._notify_status("state")
         return data
 
     async def refresh_state_for_day(
@@ -559,32 +538,32 @@ class StatusMixin:
         notify_page: bool = True,
     ) -> DayRecord | None:
         if self._state_refresh_recalled(source_event):
-            return data or await self.archive.get_day(date_str)
+            return data or await self._archive().get_day(date_str)
 
         now = now or life_now()
-        data = data or await self.archive.get_day(date_str)
+        data = data or await self._archive().get_day(date_str)
         if not data:
             return None
 
-        if not self.config.state.enabled:
+        if not self._config().enabled:
             return data
 
         if not force and not state_is_stale(
             data.state,
             now,
-            self.config.state.refresh_minutes,
+            self._config().refresh_minutes,
         ):
             return data
 
-        provider = await self._get_state_provider()
+        provider = await self._text_provider(self._config().provider)
         if not provider:
             return data
 
         session_id = f"daily_life_state_{uuid.uuid4().hex[:8]}"
         try:
             prompt = await self._state_refresh_prompt(data, now, source, detail)
-            provider_id = self.config.state.provider
-            text = await self.call_text_model(
+            provider_id = self._config().provider
+            text = await self._call_text_model(
                 provider,
                 prompt,
                 session_id,
@@ -610,9 +589,12 @@ class StatusMixin:
             )
         except DayRevisionConflict as exc:
             logger.debug(f"{LOG_PREFIX} 实时状态结果已过期，保留较新的生活状态：{exc}")
-            return await self.archive.get_day(date_str)
+            return await self._archive().get_day(date_str)
         except Exception as e:
             logger.warning(f"{LOG_PREFIX} 更新实时状态失败：{e}")
             return data
         finally:
-            await self.close_text_session(session_id)
+            await self._close_text_session(session_id)
+
+
+__all__ = ["StateRefreshService"]

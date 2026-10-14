@@ -977,10 +977,6 @@ function renderTimelineDisplay(timeline) {
           `status execution-status execution-${executionState}`,
           executionLabel
         );
-        const detail = [clean(item.execution_reason, ""), clean(item.execution_updated_at, "")]
-          .filter(Boolean)
-          .join(" · ");
-        if (detail) execution.title = detail;
         body.append(execution);
       }
       li.append(body);
@@ -1792,7 +1788,7 @@ function renderLifecycle(status) {
   const body = continuity.body;
   const run = continuity.run;
   const skills = Object.entries(continuity.skills || {});
-  const total = reviews.length + preferences.length + events.length + goals.length + skills.length + outcomes.length + threads.length + (body?.updated_at ? 1 : 0) + (run ? 1 : 0) + (kernel.updated_at ? 1 : 0);
+  const total = reviews.length + preferences.length + events.length + goals.length + skills.length + outcomes.length + threads.length + (body?.updated_at ? 1 : 0) + (run ? 1 : 0);
   const cognitionTotal = reflections.length + diaries.length + durableTasks.length;
   const totalRecords = total + cognitionTotal;
   if (!totalRecords) {
@@ -1800,24 +1796,6 @@ function renderLifecycle(status) {
     return;
   }
   const records = [];
-  if (kernel.updated_at) {
-    const record = node("div", "record");
-    const title = node("div", "record-title");
-    const affect = kernel.affect || {};
-    const attention = kernel.attention || {};
-    const environment = kernel.environment || {};
-    const agency = kernel.agency || {};
-    title.append(node("span", "", "统一生命内核"), node("span", "muted", "连续快照"));
-    record.append(title, recordLines([
-      `情绪 ${clean(affect.mood, "未记录")} · 心情 ${Math.round(Number(affect.mood_score ?? 50))}/100 · 压力 ${Math.round(Number(affect.stress ?? 50))}/100`,
-      `注意力 ${Math.round(Number(attention.capacity ?? 50))}/100 · ${clean(attention.watch_state, "未记录")} · 自主状态 ${CONTINUOUS_ACTION_STATUS_LABELS[agency.run_status] || clean(agency.run_status, "空闲")}`,
-      `环境 ${clean(environment.place, "未记录地点")} · 穿搭 ${clean(environment.outfit, "未记录")}`,
-      Array.isArray(kernel.events) && kernel.events.length ? `最近事实：${kernel.events.slice(-3).map((item) => clean(item.summary || item.kind, "")).filter(Boolean).join("；")}` : "尚无可展示的事实引用",
-      Array.isArray(kernel.self_model?.interests) && kernel.self_model.interests.length ? `自身兴趣：${kernel.self_model.interests.map((item) => `${clean(item.label)}（${item.status === "supported" ? "已有支持" : "暂定"}）`).join("；")}` : "自身兴趣尚未形成新的证据记录",
-      `自传快照 ${objectItems(kernel.autobiography).length} 条 · 因果记录 ${objectItems(kernel.causal_traces).length} 条`,
-    ]));
-    records.push(record);
-  }
   outcomes.forEach((item) => {
     const record = node("div", "record");
     const title = node("div", "record-title");
@@ -1848,7 +1826,7 @@ function renderLifecycle(status) {
     const title = node("div", "record-title");
     const updated = parseStatusNow(body.updated_at);
     title.append(node("span", "", "身体需求"), node("span", "muted", updated ? formatClock(updated) : ""));
-    const needs = [["体力", "energy"], ["困倦", "sleep_pressure"], ["疲劳", "fatigue"], ["饥饿", "hunger"], ["口渴", "thirst"], ["社交电量", "social_battery"]];
+    const needs = [["体力", "energy"], ["困倦", "sleep_pressure"], ["疲劳", "fatigue"], ["不适负担", "discomfort"], ["饥饿", "hunger"], ["口渴", "thirst"], ["社交电量", "social_battery"]];
     record.append(title, node("div", "record-body", needs.map(([label, key]) => `${label} ${Math.round(Number(body[key] || 0))}`).join(" · ")));
     records.push(record);
   }
@@ -1880,6 +1858,7 @@ function renderLifecycle(status) {
     const title = node("div", "record-title");
     title.append(node("span", "", clean(name)), node("span", "muted", "练习积累"));
     record.append(title, node("div", "record-body", `${Number(skill.sessions || 0)} 次 · ${Number(skill.practice_minutes || 0).toFixed(1)} 分钟`));
+    record.append(recordLines(objectItems(skill.assessments).slice(-3).map((item) => `成果自评：${clean(item.criterion)} · ${clean(item.reason)}${item.next_step ? ` · 后续 ${clean(item.next_step)}` : ""}`)));
     records.push(record);
   });
   reviews.slice(0, 2).forEach((item) => {
@@ -2600,7 +2579,6 @@ function emojiRecord(item = {}) {
   const title = node("div", "emoji-record-title");
   const titleText = clean(item.label || item.description || item.short_hash, "未命名表情");
   const label = node("span", "emoji-record-label", titleText);
-  label.title = titleText;
   const status = node("span", "emoji-status", emojiStatusMark(item));
   status.title = emojiStatusLabel(item);
   title.append(label, status);
@@ -3351,8 +3329,7 @@ function closetRecord(group = {}) {
   items.forEach((entry) => {
     const button = node("button", `closet-component is-${closetStatus(entry)}`, CLOSET_KIND_LABELS[entry.kind] || "造型");
     button.type = "button";
-    button.title = clean(entry.title || entry.description, "查看候选详情");
-    button.setAttribute("aria-label", `查看${CLOSET_KIND_LABELS[entry.kind] || "造型"}：${button.title}`);
+    button.setAttribute("aria-label", `查看${CLOSET_KIND_LABELS[entry.kind] || "造型"}：${clean(entry.title || entry.description, "候选详情")}`);
     button.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(entry.id) : openClosetDetail(entry.id));
     components.append(button);
   });
@@ -3391,14 +3368,15 @@ function renderClosetManagement() {
   }
   el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
   if (el.closetSummary && state.closetWardrobe) {
-    const taste = (state.closetWardrobe.aesthetics || []).filter((entry) => entry.origin !== "user_feedback").slice(0, 2).map((entry) => clean(entry.preference, "")).filter(Boolean);
-    const waiting = (state.closetWardrobe.jobs || []).filter((entry) => !["failed", "uncertain", "cancelled"].includes(entry.status));
-    const additions = [];
-    if (taste.length) additions.push(`自己的审美：${taste.join("；")}`);
-    if (waiting.length) additions.push(`后台补充中 ${waiting.length} 项`);
-    const blocked = (state.closetWardrobe.jobs || []).find((entry) => entry.error);
-    if (blocked) additions.push(`补衣进度：${clean(blocked.error, '等待处理')}`);
-    if (additions.length) el.closetSummary.textContent += ` · ${additions.join(" · ")}`;
+    const taste = (state.closetWardrobe.aesthetics || [])
+      .filter((entry) => entry.origin !== "user_feedback")
+      .map((entry) => clean(entry.preference, ""))
+      .find(Boolean);
+    if (taste) {
+      const characters = Array.from(taste);
+      const preview = characters.length > 36 ? `${characters.slice(0, 36).join("")}…` : taste;
+      el.closetSummary.textContent += ` · 审美：${preview}`;
+    }
   }
   renderClosetDetail();
 }

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from typing import Protocol
+
 
 @dataclass(slots=True)
 class VoiceCallTranscriptTurn:
@@ -15,8 +17,17 @@ class VoiceCallTranscriptTurn:
     interrupted: bool = False
 
 
-class VoiceCallTranscriptMixin:
+class VoiceCallTranscriptComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    pass
+
+
+class VoiceCallTranscriptComponent:
     """归并 WebSocket 与 RTC 通话共用的实时转写事件。"""
+
+    def __init__(self, context: VoiceCallTranscriptComponentContext) -> None:
+        self.context = context
 
     @classmethod
     def _begin_transcript_turn(

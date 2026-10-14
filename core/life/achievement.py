@@ -152,6 +152,13 @@ def apply_reviews(
         step["reviews"] = step["reviews"][-20:]
         step["status"] = "completed" if verdict == "passed" else "needs_practice"
         step["next_step"] = review["next_step"]
+        skill_name = str(goal.get("skill") or "").strip()
+        if skill_name:
+            skill = world.setdefault("skills", {}).setdefault(skill_name, {})
+            assessments = skill.setdefault("assessments", [])
+            assessments.append({**review, "goal_id": goal["id"], "step_id": step["id"],
+                                "criterion": candidate["acceptance"], "verified_mastery": False})
+            skill["assessments"] = assessments[-12:]
         goal["updated_at"] = now.isoformat()
         if all(item.get("status") == "completed" for item in goal["steps"]):
             goal["status"] = "completed"

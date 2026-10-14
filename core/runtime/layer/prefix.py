@@ -6,9 +6,21 @@ from astrbot.core.agent.message import TextPart
 
 from ...prompts import CORE_HIDDEN_CONTEXT_RULES
 
+from typing import Protocol
 
-class RequestPrefixMixin:
+
+class RequestPrefixComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _life_request_policy: Any
+    build_hidden_chat_style_hint: Any
+
+
+class RequestPrefixComponent:
     """固定规则留在 system，本轮生活事实使用框架的临时内容块。"""
+
+    def __init__(self, context: RequestPrefixComponentContext) -> None:
+        self.context = context
 
     def _life_request_policy(self) -> str:
         return (
@@ -20,29 +32,25 @@ class RequestPrefixMixin:
             "\n[TimeRule] 对话时间以真实收发记录为准，间隔不含本轮处理等待。"
             "隔了一阵再接话时，结合话题、关系和当前生活状态自然承接，旧场景不视为一直持续；"
             "无需每次提起时长，不因迟回就推断原因、责怪对方或声称自己一直在等。"
-            f"{self.build_hidden_chat_style_hint()}"
+            f"{self.context.build_hidden_chat_style_hint()}"
             "\n</daily_life_policy>"
         )
 
     def _apply_life_request_context(self, req: Any, context: str) -> None:
-        policy = self._life_request_policy()
+        policy = self.context._life_request_policy()
         previous = str(getattr(req, "_daily_life_owned_system_context", "") or "")
         system = str(getattr(req, "system_prompt", "") or "")
         if previous:
             system = system.replace(previous, "", 1)
         parts = getattr(req, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            parts = []
+            req.extra_user_content_parts = parts
         previous_part = getattr(req, "_daily_life_temporary_context", None)
-        if isinstance(parts, list) and previous_part is not None:
+        if previous_part is not None:
             parts[:] = [part for part in parts if part is not previous_part]
-        part = TextPart(text=context)
-        mark_temp = getattr(part, "mark_as_temp", None)
-        if isinstance(parts, list) and callable(mark_temp):
-            part = mark_temp()
-            parts.append(part)
-            req._daily_life_temporary_context = part
-            owned = policy
-        else:
-            # 缺少临时内容接口的框架保持原注入方式，避免背景写入永久历史。
-            owned = policy + context
-        req.system_prompt = system + owned
-        req._daily_life_owned_system_context = owned
+        part = TextPart(text=context).mark_as_temp()
+        parts.append(part)
+        req._daily_life_temporary_context = part
+        req.system_prompt = system + policy
+        req._daily_life_owned_system_context = policy

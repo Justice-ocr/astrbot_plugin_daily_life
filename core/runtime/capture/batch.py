@@ -18,13 +18,74 @@ from ...sources.platforms import parse_unified_origin
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from ..elapsed import RECEIVED_AT, SENT_AT, local_message_time
-from .execution import ChatExecutionMixin
-from .diction import ExpressionLearningMixin
 from .jsonclean import call_pure_json
 
+from . import diction as _part_expression_learning_component
+from typing import Protocol
 
-class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
+
+class ChatMemoryBatchComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _append_memory_decision_log: Any
+    _batch_expression_context: Any
+    _bool_payload: Any
+    _build_chat_memory_batch_prompt: Any
+    _calibrate_chat_memory_payload: Any
+    _chat_execution_context: Any
+    _chat_memory_elapsed_seconds: Any
+    _chat_memory_stopping: Any
+    _chat_memory_wakeup: Any
+    _chat_memory_worker: Any
+    _chat_memory_worker_task: Any
+    _chinese_text_payload: Any
+    _current_role_label: Any
+    _ensure_chat_memory_worker: Any
+    _event_context_meta: Any
+    _event_has_command_handler: Any
+    _event_message_component_facts: Any
+    _extract_speaker_persona_hint: Any
+    _get_memory_provider: Any
+    _normalize_batch_expression_learning: Any
+    _normalize_chat_memory_batch_payload: Any
+    _process_chat_memory_batch: Any
+    _safe_event_call: Any
+    _sanitize_batch_readable_fields: Any
+    _save_batch_commitments: Any
+    _save_batch_execution_updates: Any
+    _save_batch_expression_learning: Any
+    _save_batch_memory_targets: Any
+    _save_batch_temporal_facts: Any
+    _save_chat_memory_batch_payload: Any
+    _save_chat_memory_preferences: Any
+    _save_experience_payload: Any
+    _save_memory_awareness_records: Any
+    _save_memory_targets: Any
+    _schedule_chat_memory_memos: Any
+    _str_payload: Any
+    _structured_result_text: Any
+    _validate_chat_memory_payload: Any
+    apply_commitment_to_current_day: Any
+    archive: Any
+    close_text_session: Any
+    config: Any
+    contact_resolver: Any
+    direct_media_was_delivered: Any
+    event_was_recalled: Any
+    format_structured_message_context: Any
+    mark_page_status_changed: Any
+    note_memory_corrections: Any
+    process_due_chat_memory_batches: Any
+    schedule_commitment_photo: Any
+    schedule_commitment_video: Any
+    schedule_proactive_commitment: Any
+
+
+class ChatMemoryBatchComponent:
     """保存收到的聊天快照，并按互不重叠的会话批次提炼。"""
+
+    def __init__(self, context: ChatMemoryBatchComponentContext) -> None:
+        self.context = context
 
     _BATCH_READABLE_FIELDS = {
         "brief",
@@ -66,56 +127,59 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         return result
 
     def _init_chat_memory_batcher(self) -> None:
-        self._chat_memory_wakeup = asyncio.Event()
-        self._chat_memory_worker_task: asyncio.Task | None = None
-        self._chat_memory_stopping = False
+        self.context._chat_memory_wakeup = asyncio.Event()
+        self.context._chat_memory_worker_task: asyncio.Task | None = None
+        self.context._chat_memory_stopping = False
 
     def _start_chat_memory_batcher(self) -> None:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._ensure_chat_memory_worker()
-        if self._chat_memory_worker_task is not None:
-            self._chat_memory_wakeup.set()
+        self.context._ensure_chat_memory_worker()
+        if self.context._chat_memory_worker_task is not None:
+            self.context._chat_memory_wakeup.set()
 
     def _ensure_chat_memory_worker(self) -> None:
-        if self._chat_memory_stopping or not self.config.memory.enabled:
+        if self.context._chat_memory_stopping or not self.context.config.memory.enabled:
             return
-        task = self._chat_memory_worker_task
+        task = self.context._chat_memory_worker_task
         if task is None or task.done():
-            self._chat_memory_worker_task = asyncio.create_task(
-                self._chat_memory_worker(), name="daily-life-chat-memory-batcher"
+            self.context._chat_memory_worker_task = asyncio.create_task(
+                self.context._chat_memory_worker(), name="daily-life-chat-memory-batcher"
             )
 
     async def _shutdown_chat_memory_batcher(self) -> None:
-        self._chat_memory_stopping = True
-        self._chat_memory_wakeup.set()
-        task = self._chat_memory_worker_task
+        self.context._chat_memory_stopping = True
+        self.context._chat_memory_wakeup.set()
+        task = self.context._chat_memory_worker_task
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self._chat_memory_worker_task = None
+        self.context._chat_memory_worker_task = None
 
     async def capture_chat_memory_message(
         self,
         event: Any,
         now: datetime.datetime | None = None,
     ) -> bool:
-        if not self.config.memory.enabled or event is None:
+        if not self.context.config.memory.enabled or event is None:
+            return False
+        self_checker = getattr(self.context, "_proactive_is_self_message", None)
+        if callable(self_checker) and self_checker(event):
             return False
         message = str(getattr(event, "message_str", "") or "").strip()
         if (
             not message
-            or self._event_has_command_handler(event)
-            or self.event_was_recalled(event, log_skip=True)
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
         ):
             return False
         now = now or local_message_time(event, RECEIVED_AT) or life_now()
-        sender_name = await self.contact_resolver.resolve_event_sender(event)
-        if self.event_was_recalled(event, log_skip=True):
+        sender_name = await self.context.contact_resolver.resolve_event_sender(event)
+        if self.context.event_was_recalled(event, log_skip=True):
             return False
-        meta = await self._event_context_meta(event, sender_name, now)
+        meta = await self.context._event_context_meta(event, sender_name, now)
         session_id = str(meta.get("session_id") or "").strip()
         if not session_id:
             return False
@@ -145,15 +209,15 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "is_directed": meta.get("is_directed") == "true",
             "is_quoted": meta.get("is_quoted") == "true",
             "message_text": message,
-            "message_facts": self._event_message_component_facts(event, message),
+            "message_facts": self.context._event_message_component_facts(event, message),
             "quote_context": meta.get("quote_context", ""),
             "structured_context": meta.get("structured", ""),
             "occurred_at": occurred_at,
         }
-        _, inserted = await self.archive.enqueue_chat_memory_message(snapshot)
+        _, inserted = await self.context.archive.enqueue_chat_memory_message(snapshot)
         if inserted:
-            self._ensure_chat_memory_worker()
-            self._chat_memory_wakeup.set()
+            self.context._ensure_chat_memory_worker()
+            self.context._chat_memory_wakeup.set()
         return inserted
 
     async def capture_chat_memory_bot_reply(
@@ -162,17 +226,17 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         now: datetime.datetime | None = None,
     ) -> bool:
         if (
-            not self.config.memory.enabled
+            not self.context.config.memory.enabled
             or event is None
-            or getattr(self, "contact_resolver", None) is None
-            or getattr(self, "archive", None) is None
+            or getattr(self.context, "contact_resolver", None) is None
+            or getattr(self.context, "archive", None) is None
         ):
             return False
-        if self._event_has_command_handler(event) or self.event_was_recalled(
+        if self.context._event_has_command_handler(event) or self.context.event_was_recalled(
             event, log_skip=True
         ):
             return False
-        result_reader = getattr(self, "_structured_result_text", None)
+        result_reader = getattr(self.context, "_structured_result_text", None)
         if not callable(result_reader):
             return False
         message, media = result_reader(event)
@@ -180,8 +244,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         if not message:
             return False
         now = now or local_message_time(event, SENT_AT) or life_now()
-        sender_name = await self.contact_resolver.resolve_event_sender(event)
-        meta = await self._event_context_meta(event, sender_name, now)
+        sender_name = await self.context.contact_resolver.resolve_event_sender(event)
+        meta = await self.context._event_context_meta(event, sender_name, now)
         session_id = str(meta.get("session_id") or "").strip()
         if not session_id:
             return False
@@ -192,7 +256,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             separators=(",", ":"),
         )
         event_key = "bot:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        self_id = str(self._safe_event_call(event, "get_self_id") or "bot").strip()
+        self_id = str(self.context._safe_event_call(event, "get_self_id") or "bot").strip()
         snapshot = {
             "event_key": event_key,
             "session_id": session_id,
@@ -210,15 +274,15 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "message_text": message,
             "message_facts": f"已发送{media}" if media else "",
             "quote_context": "",
-            "structured_context": self.format_structured_message_context(
+            "structured_context": self.context.format_structured_message_context(
                 session_id, limit=6
             ),
             "occurred_at": now.isoformat(timespec="seconds"),
         }
-        _, inserted = await self.archive.enqueue_chat_memory_message(snapshot)
+        _, inserted = await self.context.archive.enqueue_chat_memory_message(snapshot)
         if inserted:
-            self._ensure_chat_memory_worker()
-            self._chat_memory_wakeup.set()
+            self.context._ensure_chat_memory_worker()
+            self.context._chat_memory_wakeup.set()
         return inserted
 
     async def capture_proactive_chat_memory_reply(
@@ -231,9 +295,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
     ) -> bool:
         """把已成功发送的主动消息纳入同一套语义记忆与承诺提炼。"""
 
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         enqueue = getattr(archive, "enqueue_chat_memory_message", None)
-        if not self.config.memory.enabled or not callable(enqueue):
+        if not self.context.config.memory.enabled or not callable(enqueue):
             return False
         scope = str(scope or "").strip()
         message = str(message or "").strip()
@@ -255,7 +319,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "sender_profile_id": "bot",
             "sender_name": "我",
             "platform": platform,
-            "user_id": user_id if ":FriendMessage:" in scope else "",
+            # 主动消息的接收方不是这条消息的说话人。
+            "user_id": "",
             "group_id": user_id if ":GroupMessage:" in scope else "",
             "group_name": "",
             "is_group": ":GroupMessage:" in scope,
@@ -264,29 +329,29 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "message_text": message,
             "message_facts": f"已发送{media}" if media else "",
             "quote_context": "",
-            "structured_context": self.format_structured_message_context(
+            "structured_context": self.context.format_structured_message_context(
                 scope, limit=6
             ),
             "occurred_at": occurred_at,
         }
         _, inserted = await enqueue(snapshot)
         if inserted:
-            self._ensure_chat_memory_worker()
-            self._chat_memory_wakeup.set()
+            self.context._ensure_chat_memory_worker()
+            self.context._chat_memory_wakeup.set()
         return inserted
 
     async def _chat_memory_worker(self) -> None:
-        poll = max(2, int(self.config.memory.worker_poll_seconds))
-        while not self._chat_memory_stopping:
+        poll = max(2, int(self.context.config.memory.worker_poll_seconds))
+        while not self.context._chat_memory_stopping:
             try:
-                await asyncio.wait_for(self._chat_memory_wakeup.wait(), timeout=poll)
+                await asyncio.wait_for(self.context._chat_memory_wakeup.wait(), timeout=poll)
             except asyncio.TimeoutError:
                 pass
-            self._chat_memory_wakeup.clear()
-            if self._chat_memory_stopping:
+            self.context._chat_memory_wakeup.clear()
+            if self.context._chat_memory_stopping:
                 return
             try:
-                await self.process_due_chat_memory_batches()
+                await self.context.process_due_chat_memory_batches()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -307,13 +372,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
     async def process_due_chat_memory_batches(
         self, now: datetime.datetime | None = None
     ) -> int:
-        if not self.config.memory.enabled:
+        if not self.context.config.memory.enabled:
             return 0
         now = now or life_now()
         processed = 0
-        for state in await self.archive.list_chat_memory_sessions():
+        for state in await self.context.archive.list_chat_memory_sessions():
             pending_count = int(state.get("pending_count") or 0)
-            idle_min_messages = self.config.memory.idle_flush_min_messages
+            idle_min_messages = self.context.config.memory.idle_flush_min_messages
             pending_user_count = int(state.get("pending_user_count") or 0)
             pending_assistant_count = int(state.get("pending_assistant_count") or 0)
             if pending_user_count > 0 and pending_assistant_count > 0:
@@ -325,37 +390,37 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                 # 但其中仍可能产生新的未来联系承诺，应在安静后独立收束。
                 idle_min_messages = 1
             threshold = (
-                self.config.memory.group_message_threshold
+                self.context.config.memory.group_message_threshold
                 if bool(state.get("is_group"))
-                else self.config.memory.private_message_threshold
+                else self.context.config.memory.private_message_threshold
             )
             idle_due = (
                 pending_count >= idle_min_messages
-                and self._chat_memory_elapsed_seconds(
+                and self.context._chat_memory_elapsed_seconds(
                     str(state.get("last_message_at") or ""), now
                 )
-                >= self.config.memory.idle_flush_seconds
+                >= self.context.config.memory.idle_flush_seconds
             )
             if pending_count < threshold and not idle_due:
                 continue
             while pending_count >= threshold or idle_due:
-                batch = await self.archive.begin_chat_memory_batch(
+                batch = await self.context.archive.begin_chat_memory_batch(
                     str(state["session_id"]),
-                    max_messages=self.config.memory.max_batch_messages,
-                    max_chars=self.config.memory.max_batch_chars,
+                    max_messages=self.context.config.memory.max_batch_messages,
+                    max_chars=self.context.config.memory.max_batch_chars,
                 )
                 if not batch:
                     break
-                if not await self._process_chat_memory_batch(batch):
+                if not await self.context._process_chat_memory_batch(batch):
                     break
                 processed += 1
                 pending_count -= len(batch["messages"])
                 idle_due = (
                     pending_count >= idle_min_messages
-                    and self._chat_memory_elapsed_seconds(
+                    and self.context._chat_memory_elapsed_seconds(
                         str(state.get("last_message_at") or ""), now
                     )
-                    >= self.config.memory.idle_flush_seconds
+                    >= self.context.config.memory.idle_flush_seconds
                 )
         return processed
 
@@ -549,6 +614,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     "object_value": "任意 JSON 值；INVALIDATE 和 NONE 时可为空",
                     "confidence": 0.0,
                     "source_message_id": "输入消息中真实存在的 message_id",
+                    "epistemic_status": "reported 明确陈述|inferred 推测|uncertain 不确定",
+                    "evidence_quote": "来源消息中的逐字证据片段",
                     "evidence_signal": "reinforce|dispute",
                     "evidence_summary": "证据的简短中文概括",
                 }
@@ -601,6 +668,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             "evidence 必须逐字复制 source_message_id 对应的整条 assistant 消息，不得截取肯定片段；只有整条消息明确陈述目标已完成时 completed=true。"
             "不能删掉否定词；worth_saving=false 也应输出有依据的执行同步。没有依据输出空数组，不猜。"
             "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
+            "每条标注 epistemic_status 和 evidence_quote；推测、不确定、愿望或假设不能写成 reported，角色回复不能证明用户现实状态。推测独立保存供确认，不覆盖已有事实。"
             "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
             "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
             '现实互动方式统一使用 temporal_facts：subject 必须是对应人物的 profile_id，predicate 固定为 interaction_mode，object_value 固定为 {"mode":"co_present"} 或 {"mode":"remote"}。'
@@ -616,10 +684,10 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         payload: dict[str, Any],
         batch: dict[str, Any],
     ) -> dict[str, Any]:
-        normalized = self._sanitize_batch_readable_fields(dict(payload), batch)
-        worth_saving = self._bool_payload(normalized.get("worth_saving"))
-        brief = self._chinese_text_payload(normalized.get("brief"))
-        long_summary = self._chinese_text_payload(normalized.get("long_summary"))
+        normalized = self.context._sanitize_batch_readable_fields(dict(payload), batch)
+        worth_saving = self.context._bool_payload(normalized.get("worth_saving"))
+        brief = self.context._chinese_text_payload(normalized.get("brief"))
+        long_summary = self.context._chinese_text_payload(normalized.get("long_summary"))
         if not worth_saving:
             brief = ""
             long_summary = ""
@@ -635,10 +703,10 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             else {}
         )
         for field in ("reason", "reactivation_hint"):
-            visibility[field] = self._chinese_text_payload(visibility.get(field))
+            visibility[field] = self.context._chinese_text_payload(visibility.get(field))
         visibility["reason"] = compact_explanation_text(visibility.get("reason"))
         visibility["is_directed_at_bot"] = any(
-            self._bool_payload(row.get("is_directed"))
+            self.context._bool_payload(row.get("is_directed"))
             for row in batch.get("messages", [])
             if isinstance(row, dict)
         )
@@ -650,9 +718,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             else {}
         )
         for field in ("topic", "summary"):
-            environment[field] = self._chinese_text_payload(environment.get(field))
+            environment[field] = self.context._chinese_text_payload(environment.get(field))
         if not any(
-            self._bool_payload(row.get("is_group"))
+            self.context._bool_payload(row.get("is_group"))
             for row in batch.get("messages", [])
             if isinstance(row, dict)
         ):
@@ -665,10 +733,10 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             else {}
         )
         for field in ("reason", "scene_type", "inner_monologue", "reply_strategy"):
-            decision[field] = self._chinese_text_payload(decision.get(field))
+            decision[field] = self.context._chinese_text_payload(decision.get(field))
         decision["reason"] = compact_explanation_text(decision.get("reason"))
         normalized["action_decision"] = decision
-        self._normalize_batch_expression_learning(normalized, batch)
+        self.context._normalize_batch_expression_learning(normalized, batch)
         return normalized
 
     @classmethod
@@ -804,7 +872,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                 for row in source_rows
             ]
             media_kind = str(raw.get("media_kind") or "").strip().lower()
-            delivery_check = getattr(self, "direct_media_was_delivered", None)
+            delivery_check = getattr(self.context, "direct_media_was_delivered", None)
             if media_kind in {"photo", "video"} and callable(delivery_check):
                 if await delivery_check(
                     batch["session_id"], media_kind, source_message_ids
@@ -825,22 +893,22 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             )
             if (
                 not commitment
-                or commitment.confidence < self.config.commitments.min_confidence
+                or commitment.confidence < self.context.config.commitments.min_confidence
             ):
                 continue
-            stored = await self.archive.save_commitment(commitment)
+            stored = await self.context.archive.save_commitment(commitment)
             if media_kind in {"photo", "video"} and callable(delivery_check):
                 if await delivery_check(
                     batch["session_id"], media_kind, source_message_ids
                 ):
-                    await self.archive.set_commitment_status(
+                    await self.context.archive.set_commitment_status(
                         stored.id, "done", life_now().isoformat(timespec="seconds")
                     )
                     continue
             follow_up = raw.get("follow_up")
             follow_up = follow_up if isinstance(follow_up, dict) else {}
             follow_up_action = str(follow_up.get("action") or "none").strip()
-            apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
+            apply_to_day = getattr(self.context, "apply_commitment_to_current_day", None)
             if callable(apply_to_day) and follow_up_action == "none":
                 try:
                     await apply_to_day(
@@ -850,13 +918,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 批次承诺合并到当天日程失败：{exc}")
-            get_commitment = getattr(self.archive, "get_commitment", None)
+            get_commitment = getattr(self.context.archive, "get_commitment", None)
             if callable(get_commitment):
                 final_commitment = await get_commitment(stored.id)
                 if final_commitment is not None:
                     stored = final_commitment
             saved.append(stored)
-            scheduler = getattr(self, "schedule_proactive_commitment", None)
+            scheduler = getattr(self.context, "schedule_proactive_commitment", None)
             if callable(scheduler):
                 try:
                     await scheduler(
@@ -867,7 +935,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 主动承诺任务登记失败：{exc}")
-            photo_scheduler = getattr(self, "schedule_commitment_photo", None)
+            photo_scheduler = getattr(self.context, "schedule_commitment_photo", None)
             if callable(photo_scheduler):
                 try:
                     await photo_scheduler(
@@ -877,7 +945,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 承诺拍照任务登记失败：{exc}")
-            video_scheduler = getattr(self, "schedule_commitment_video", None)
+            video_scheduler = getattr(self.context, "schedule_commitment_video", None)
             if callable(video_scheduler):
                 try:
                     await video_scheduler(
@@ -887,9 +955,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 承诺拍视频任务登记失败：{exc}")
-            domain_settings = getattr(self.config, "domains", None)
+            domain_settings = getattr(self.context.config, "domains", None)
             save_action_item = getattr(
-                self.archive, "save_conversation_action_item", None
+                self.context.archive, "save_conversation_action_item", None
             )
             if (
                 bool(getattr(domain_settings, "enabled", False))
@@ -945,9 +1013,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             成功写入或确认的事实记录。
         """
 
-        writer = getattr(self.archive, "write_temporal_fact", None)
-        current_reader = getattr(self.archive, "get_current_temporal_fact", None)
-        evidence_saver = getattr(self.archive, "add_fact_evidence_signal", None)
+        writer = getattr(self.context.archive, "write_temporal_fact", None)
+        current_reader = getattr(self.context.archive, "get_current_temporal_fact", None)
+        evidence_saver = getattr(self.context.archive, "add_fact_evidence_signal", None)
         raw_facts = payload.get("temporal_facts")
         if not callable(writer) or not isinstance(raw_facts, list):
             return []
@@ -1051,7 +1119,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                                     "signal": "reinforce",
                                     "weight": 1.0,
                                     "confidence": confidence,
-                                    "summary": self._chinese_text_payload(
+                                    "summary": self.context._chinese_text_payload(
                                         raw.get("evidence_summary")
                                     ),
                                     "source": "chat_batch",
@@ -1066,6 +1134,18 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     continue
                 if operation == "NONE":
                     continue
+            epistemic = str(raw.get("epistemic_status") or "uncertain")
+            quote = str(raw.get("evidence_quote") or "").strip()[:1200]
+            source_text = str(source_row.get("message_text") or "")
+            if epistemic not in {"reported", "inferred", "uncertain"}:
+                epistemic = "uncertain"
+            if epistemic == "reported" and (
+                source_row.get("role") != "user" or source_row.get("is_quoted")
+                or not quote or quote not in source_text
+            ):
+                epistemic = "uncertain"
+            if epistemic != "reported":
+                confidence = min(confidence, 0.5 if epistemic == "inferred" else 0.4)
             try:
                 fact = await writer(
                     operation,
@@ -1084,6 +1164,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                             "session_id": scope,
                             "message_id": source_message_id,
                             "batch_id": batch.get("id"),
+                            "epistemic_status": epistemic,
+                            "evidence_quote": quote if quote in source_text else "",
                         },
                     },
                 )
@@ -1095,6 +1177,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             signal = str(raw.get("evidence_signal") or "").strip().lower()
             if (
                 operation != "NONE"
+                and getattr(fact, "status", "") == "active"
                 and signal in {"reinforce", "dispute"}
                 and callable(evidence_saver)
                 and int(getattr(fact, "id", 0) or 0) > 0
@@ -1107,7 +1190,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                         "signal": signal,
                         "weight": 1.0,
                         "confidence": confidence,
-                        "summary": self._chinese_text_payload(
+                        "summary": self.context._chinese_text_payload(
                             raw.get("evidence_summary")
                         ),
                         "source": "chat_batch",
@@ -1128,10 +1211,16 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         fallback_meta: dict[str, str],
     ) -> list[dict[str, Any]]:
         rows_by_profile: dict[str, dict[str, Any]] = {}
+        assistant_profiles: set[str] = set()
         for row in batch["messages"]:
             profile_id = str(row.get("sender_profile_id") or "").strip()
-            if profile_id:
+            role = str(row.get("role") or "user").strip().lower()
+            if profile_id and role == "assistant":
+                assistant_profiles.add(profile_id)
+            elif profile_id and role == "user":
                 rows_by_profile[profile_id] = row
+        for profile_id in assistant_profiles:
+            rows_by_profile.pop(profile_id, None)
         saved: list[dict[str, Any]] = []
         targets = payload.get("memory_targets", [])
         if not isinstance(targets, list):
@@ -1156,45 +1245,52 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                 }
             )
             saved.extend(
-                await self._save_memory_targets({"memory_targets": [target]}, meta)
+                await self.context._save_memory_targets({"memory_targets": [target]}, meta)
             )
         return saved
 
     async def _save_chat_memory_batch_payload(
         self, payload: dict[str, Any], batch: dict[str, Any]
     ) -> ChatSummaryRecord | None:
-        payload = self._normalize_chat_memory_batch_payload(payload, batch)
+        payload = self.context._normalize_chat_memory_batch_payload(payload, batch)
         rows = batch["messages"]
         last = rows[-1]
+        user_rows = [
+            row
+            for row in rows
+            if str(row.get("role") or "user").strip().lower() == "user"
+        ]
+        # 用户侧的观察和关系归属取最近一条用户消息，不能取批次末尾的 bot 回复。
+        source_row = user_rows[-1] if user_rows else last
         meta = {
             "session_id": batch["session_id"],
-            "message_id": str(last.get("message_id") or last["id"]),
-            "platform": str(last.get("platform") or ""),
-            "user_id": str(last.get("user_id") or ""),
-            "sender_profile_id": str(last.get("sender_profile_id") or ""),
-            "sender_name": str(last.get("sender_name") or ""),
-            "group_id": str(last.get("group_id") or ""),
-            "group_name": str(last.get("group_name") or ""),
+            "message_id": str(source_row.get("message_id") or source_row["id"]),
+            "platform": str(source_row.get("platform") or ""),
+            "user_id": str(source_row.get("user_id") or "") if user_rows else "",
+            "sender_profile_id": str(source_row.get("sender_profile_id") or "") if user_rows else "",
+            "sender_name": str(source_row.get("sender_name") or "") if user_rows else "",
+            "group_id": str(source_row.get("group_id") or ""),
+            "group_name": str(source_row.get("group_name") or ""),
             "date": str(last.get("occurred_at") or "")[:10],
-            "is_group": "true" if last.get("is_group") else "false",
-            "is_directed": "true" if last.get("is_directed") else "false",
-            "is_quoted": "true" if last.get("is_quoted") else "false",
-            "quote_context": str(last.get("quote_context") or ""),
-            "structured": str(last.get("structured_context") or ""),
+            "is_group": "true" if source_row.get("is_group") else "false",
+            "is_directed": "true" if source_row.get("is_directed") else "false",
+            "is_quoted": "true" if source_row.get("is_quoted") else "false",
+            "quote_context": str(source_row.get("quote_context") or ""),
+            "structured": str(source_row.get("structured_context") or ""),
         }
         relationship = None
         profile_id = meta["sender_profile_id"]
-        relationship_getter = getattr(self.archive, "get_relationship", None)
+        relationship_getter = getattr(self.context.archive, "get_relationship", None)
         if profile_id and callable(relationship_getter):
             try:
                 relationship = await relationship_getter(profile_id)
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 读取聊天对象关系档案失败：{exc}")
         persona_hint = ""
-        hint_getter = getattr(self, "_extract_speaker_persona_hint", None)
-        if callable(hint_getter):
+        hint_getter = getattr(self.context, "_extract_speaker_persona_hint", None)
+        if user_rows and callable(hint_getter):
             try:
-                persona_hint = self._str_payload(
+                persona_hint = self.context._str_payload(
                     await hint_getter(
                         meta["sender_name"],
                         relationship=relationship,
@@ -1202,11 +1298,11 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                 )
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 提取聊天对象人设线索失败：{exc}")
-        role_getter = getattr(self, "_current_role_label", None)
+        role_getter = getattr(self.context, "_current_role_label", None)
         if callable(role_getter):
             try:
                 meta["current_role_label"] = (
-                    self._str_payload(await role_getter()) or "我"
+                    self.context._str_payload(await role_getter()) or "我"
                 )
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 读取当前角色称呼失败：{exc}")
@@ -1280,32 +1376,61 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         ):
             payload = dict(payload)
             payload["_interaction_audited"] = False
-        payload = await self._calibrate_chat_memory_payload(
+        payload = await self.context._calibrate_chat_memory_payload(
             payload,
             meta,
             persona_hint,
         )
-        payload = self._normalize_chat_memory_batch_payload(payload, batch)
-        await self._save_batch_execution_updates(payload, batch)
-        commitments = await self._save_batch_commitments(payload, batch)
-        temporal_facts = await self._save_batch_temporal_facts(payload, batch)
-        correction_notifier = getattr(self, "note_memory_corrections", None)
+        payload = self.context._normalize_chat_memory_batch_payload(payload, batch)
+        await self.context._save_batch_execution_updates(payload, batch)
+        commitments = await self.context._save_batch_commitments(payload, batch)
+        temporal_facts = await self.context._save_batch_temporal_facts(payload, batch)
+        correction_notifier = getattr(self.context, "note_memory_corrections", None)
         if callable(correction_notifier) and isinstance(payload.get("memory_corrections"), list):
             await correction_notifier(payload.get("memory_corrections"), batch)
-        await self._save_memory_awareness_records(payload, meta)
+        if user_rows:
+            await self.context._save_memory_awareness_records(payload, meta)
         try:
             observed_at = datetime.datetime.fromisoformat(
                 str(last.get("occurred_at") or "")
             )
         except (TypeError, ValueError):
             observed_at = life_now()
-        await self._append_memory_decision_log(payload, meta, observed_at)
-        await self._save_batch_expression_learning(payload, batch, meta)
+        if user_rows:
+            await self.context._append_memory_decision_log(payload, meta, observed_at)
+        await self.context._save_batch_expression_learning(payload, batch, meta)
         if not payload.get("worth_saving"):
             return None
+        user_names = {
+            str(row.get("sender_profile_id") or "").strip(): str(
+                row.get("sender_name") or ""
+            ).strip()
+            for row in user_rows
+            if str(row.get("sender_profile_id") or "").strip()
+        }
+        assistant_profiles = {
+            str(row.get("sender_profile_id") or "").strip()
+            for row in rows
+            if str(row.get("role") or "user").strip().lower() == "assistant"
+            and str(row.get("sender_profile_id") or "").strip()
+        }
+        summary_people = []
+        raw_people = payload.get("people")
+        for person in raw_people if isinstance(raw_people, list) else []:
+            if not isinstance(person, dict):
+                summary_people.append(person)
+                continue
+            person_id = str(person.get("profile_id") or "").strip()
+            if person_id in assistant_profiles:
+                summary_people.append("我")
+            elif person_id in user_names:
+                summary_people.append(user_names[person_id])
+            else:
+                summary_people.append(person)
         summary = ChatSummaryRecord.from_value(
             {
                 **payload,
+                "people": summary_people,
                 "session_id": batch["session_id"],
                 "date": meta["date"],
                 "source": "chat_batch",
@@ -1315,13 +1440,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             if commitments or temporal_facts:
                 return None
             raise ValueError("模型标记值得保存，但没有给出有效摘要")
-        saved = await self.archive.save_chat_summary(summary)
-        saved_records = await self._save_experience_payload(payload, meta, saved)
-        saved_records["memory_targets"] = await self._save_batch_memory_targets(
+        saved = await self.context.archive.save_chat_summary(summary)
+        saved_records = await self.context._save_experience_payload(payload, meta, saved)
+        saved_records["memory_targets"] = await self.context._save_batch_memory_targets(
             payload, batch, meta
         )
-        await self._save_chat_memory_preferences(payload, meta, saved_records)
-        self._schedule_chat_memory_memos(
+        await self.context._save_chat_memory_preferences(payload, meta, saved_records)
+        self.context._schedule_chat_memory_memos(
             payload,
             meta,
             saved,
@@ -1335,9 +1460,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
         return saved
 
     async def _process_chat_memory_batch(self, batch: dict[str, Any]) -> bool:
-        provider = await self._get_memory_provider()
+        provider = await self.context._get_memory_provider()
         if not provider:
-            await self.archive.fail_chat_memory_batch(
+            await self.context.archive.fail_chat_memory_batch(
                 batch["id"], "未找到可用的记忆模型"
             )
             return False
@@ -1346,7 +1471,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             f"{LOG_PREFIX} 开始聊天记忆批处理：会话={batch['session_id']}，消息={len(batch['messages'])}"
         )
         try:
-            fact_getter = getattr(self.archive, "get_temporal_facts", None)
+            fact_getter = getattr(self.context.archive, "get_temporal_facts", None)
             if callable(fact_getter):
                 current_facts = await fact_getter(
                     scope=str(batch.get("session_id") or ""),
@@ -1376,7 +1501,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             except (IndexError, TypeError):
                 timeline_date = ""
             if timeline_date:
-                current_day = await self.archive.get_day(timeline_date)
+                current_day = await self.context.archive.get_day(timeline_date)
                 if current_day is not None:
                     batch = {
                         **batch,
@@ -1384,9 +1509,9 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                             item.as_dict() for item in current_day.timeline
                         ],
                     }
-            batch = {**batch, **await self._chat_execution_context(batch)}
-            batch = {**batch, **await self._batch_expression_context(batch)}
-            memory_reader = getattr(self.archive, "list_recent_long_term_memories", None)
+            batch = {**batch, **await self.context._chat_execution_context(batch)}
+            batch = {**batch, **await self.context._batch_expression_context(batch)}
+            memory_reader = getattr(self.context.archive, "list_recent_long_term_memories", None)
             if callable(memory_reader):
                 recent_memories = await memory_reader(scopes=[batch["session_id"]], limit=12)
                 batch = {**batch, "correctable_memories": [
@@ -1394,13 +1519,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     for item in recent_memories if item.scope == batch["session_id"]
                 ]}
             payload = await call_pure_json(
-                self,
+                self.context,
                 provider,
-                self._build_chat_memory_batch_prompt(batch),
+                self.context._build_chat_memory_batch_prompt(batch),
                 llm_session,
-                primary_provider_id=self.config.memory.provider,
+                primary_provider_id=self.context.config.memory.provider,
                 strict=True,
-                validator=self._validate_chat_memory_payload,
+                validator=self.context._validate_chat_memory_payload,
                 fallback={
                     "worth_saving": False,
                     "commitments": [],
@@ -1411,11 +1536,11 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
             )
             if not isinstance(payload, dict):
                 raise ValueError("模型未返回 JSON 对象")
-            saved = await self._save_chat_memory_batch_payload(payload, batch)
-            await self.archive.complete_chat_memory_batch(
+            saved = await self.context._save_chat_memory_batch_payload(payload, batch)
+            await self.context.archive.complete_chat_memory_batch(
                 batch["id"], saved.id if saved else 0
             )
-            mark_changed = getattr(self, "mark_page_status_changed", None)
+            mark_changed = getattr(self.context, "mark_page_status_changed", None)
             if callable(mark_changed):
                 try:
                     await mark_changed("chat_memory")
@@ -1423,30 +1548,35 @@ class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
                     logger.warning(f"{LOG_PREFIX} 聊天记忆面板刷新通知失败：{exc}")
             return True
         except asyncio.CancelledError:
-            await self.archive.fail_chat_memory_batch(
+            await self.context.archive.fail_chat_memory_batch(
                 batch["id"], "任务被取消", permanent=True
             )
             raise
         except NonRetryableProviderError as exc:
-            await self.archive.fail_chat_memory_batch(
+            await self.context.archive.fail_chat_memory_batch(
                 batch["id"],
                 str(exc),
                 permanent=True,
-                max_attempts=self.config.memory.batch_max_attempts,
+                max_attempts=self.context.config.memory.batch_max_attempts,
             )
             logger.warning(f"{LOG_PREFIX} 聊天记忆批处理进入死信：{exc}")
             return False
         except Exception as exc:
             attempts = int(batch.get("attempt_count") or 1)
-            base = max(1, int(self.config.memory.batch_retry_base_seconds))
+            base = max(1, int(self.context.config.memory.batch_retry_base_seconds))
             delay = min(3600, base * (2 ** max(0, attempts - 1)))
-            await self.archive.fail_chat_memory_batch(
+            await self.context.archive.fail_chat_memory_batch(
                 batch["id"],
                 str(exc),
                 retry_after_seconds=delay,
-                max_attempts=self.config.memory.batch_max_attempts,
+                max_attempts=self.context.config.memory.batch_max_attempts,
             )
             logger.warning(f"{LOG_PREFIX} 聊天记忆批处理失败：{exc}")
             return False
         finally:
-            await self.close_text_session(llm_session)
+            await self.context.close_text_session(llm_session)
+
+    @staticmethod
+    def _batch_expression_scope(batch: dict[str, _part_expression_learning_component.Any]) -> str:
+        return _part_expression_learning_component.ExpressionLearningComponent._batch_expression_scope(batch)
+

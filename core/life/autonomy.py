@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 from collections import Counter
 
@@ -5,6 +7,8 @@ from astrbot.api import logger
 
 from ..models import LifeDecisionRecord
 from ..models.coerce import compact_text
+
+from typing import Any, Protocol
 
 
 def _compact(value: object, limit: int = 120) -> str:
@@ -24,7 +28,24 @@ def _decision_evidence_field(value: object, limit: int = 180) -> str:
     return "、".join(part.strip() for part in normalized.split("；") if part.strip())
 
 
-class LifeAutonomyMixin:
+class LifeAutonomyComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_emotion_arc_context: Any
+    _build_execution_review_context: Any
+    _build_recent_life_decision_context: Any
+    _build_short_term_life_context: Any
+    _counter_line: Any
+    _current_residence_boundary_date: Any
+    _is_before_residence_boundary: Any
+    archive: Any
+    config: Any
+
+
+class LifeAutonomyComponent:
+    def __init__(self, context: LifeAutonomyComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _counter_line(counter: Counter[str], label: str, limit: int = 4) -> str:
         pairs = [(key, count) for key, count in counter.most_common(limit) if key]
@@ -34,7 +55,7 @@ class LifeAutonomyMixin:
 
     async def _build_recent_pattern_context(self, date: datetime.datetime) -> str:
         lookback_days = max(
-            int(getattr(self.config, "reference_history_days", 3) or 0), 7
+            int(getattr(self.context.config, "reference_history_days", 3) or 0), 7
         )
         lookback_days = min(lookback_days, 14)
         modes: Counter[str] = Counter()
@@ -42,9 +63,9 @@ class LifeAutonomyMixin:
 
         for offset in range(1, lookback_days + 1):
             day_str = (date - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
-            if await self._is_before_residence_boundary(day_str):
+            if await self.context._is_before_residence_boundary(day_str):
                 continue
-            day = await self.archive.get_day(day_str)
+            day = await self.context.archive.get_day(day_str)
             if not day:
                 continue
             meta = day.meta or {}
@@ -57,14 +78,14 @@ class LifeAutonomyMixin:
                     counter[value] += 1
 
         summary_lines = [
-            self._counter_line(modes, "近期生活模式"),
-            self._counter_line(intents, "近期活动倾向"),
+            self.context._counter_line(modes, "近期生活模式"),
+            self.context._counter_line(intents, "近期活动倾向"),
         ]
         return _lines("🧭 近期生活惯性", [line for line in summary_lines if line])
 
     async def _build_short_term_life_context(self) -> str:
         sections: list[str] = []
-        focus_slots = await self.archive.get_focus_slots(limit=6)
+        focus_slots = await self.context.archive.get_focus_slots(limit=6)
         if focus_slots:
             lines = [
                 f"- [{item.id}] {item.label or item.focus_key}：进度 {item.progress}/100；优先级 {item.priority}/100；{item.reason or '近期需要留意'}"
@@ -73,7 +94,7 @@ class LifeAutonomyMixin:
             ]
             sections.append(_lines("🎯 短期目标与注意槽", lines))
 
-        corrections = await self.archive.get_memory_corrections(
+        corrections = await self.context.archive.get_memory_corrections(
             limit=6, unapplied_only=True
         )
         if corrections:
@@ -94,7 +115,7 @@ class LifeAutonomyMixin:
         return "\n\n".join(section for section in sections if section)
 
     async def _build_emotion_arc_context(self, date: datetime.datetime) -> str:
-        getter = getattr(self.archive, "get_emotion_arcs", None)
+        getter = getattr(self.context.archive, "get_emotion_arcs", None)
         if not callable(getter):
             return ""
         arcs = await getter(
@@ -125,11 +146,11 @@ class LifeAutonomyMixin:
         )
 
     async def _build_recent_life_decision_context(self, limit: int = 8) -> str:
-        get_decisions = getattr(self.archive, "get_life_decisions", None)
+        get_decisions = getattr(self.context.archive, "get_life_decisions", None)
         if not callable(get_decisions):
             return ""
         decisions = await get_decisions(limit=limit)
-        boundary = await self._current_residence_boundary_date()
+        boundary = await self.context._current_residence_boundary_date()
         lines = [
             f"- {item.date or item.created_at[:10]}｜{item.kind}｜{item.decision}"
             + (f"；原因：{item.reason}" if item.reason else "")
@@ -142,10 +163,10 @@ class LifeAutonomyMixin:
 
     async def _build_execution_review_context(self, date: datetime.datetime) -> str:
         previous_date = (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        if await self._is_before_residence_boundary(previous_date):
+        if await self.context._is_before_residence_boundary(previous_date):
             return ""
-        previous_review = await self.archive.get_daily_review(previous_date)
-        decisions = await self.archive.get_life_decisions(limit=8, kind="daily_plan")
+        previous_review = await self.context.archive.get_daily_review(previous_date)
+        decisions = await self.context.archive.get_life_decisions(limit=8, kind="daily_plan")
         previous_decision = next(
             (item for item in decisions if item.date == previous_date), None
         )
@@ -168,15 +189,15 @@ class LifeAutonomyMixin:
         from .continuity import execution_context
 
         sections = [
-            await self._build_short_term_life_context(),
-            await self._build_emotion_arc_context(date),
-            await self._build_recent_life_decision_context(),
-            await self._build_execution_review_context(date),
+            await self.context._build_short_term_life_context(),
+            await self.context._build_emotion_arc_context(date),
+            await self.context._build_recent_life_decision_context(),
+            await self.context._build_execution_review_context(date),
         ]
-        getter = getattr(self.archive, "get_continuous_life", None)
+        getter = getattr(self.context.archive, "get_continuous_life", None)
         if callable(getter):
             sections.append(execution_context(await getter()))
-        living_reader = getattr(self.archive, "get_living_entities", None)
+        living_reader = getattr(self.context.archive, "get_living_entities", None)
         if callable(living_reader):
             from .entities import living_context
 
@@ -197,7 +218,7 @@ class LifeAutonomyMixin:
         source: str = "autonomous_life",
         focus_scope: str = "",
     ) -> LifeDecisionRecord | None:
-        saver = getattr(self.archive, "save_life_decision", None)
+        saver = getattr(self.context.archive, "save_life_decision", None)
         if not callable(saver):
             return None
         try:
@@ -214,7 +235,7 @@ class LifeAutonomyMixin:
                     source=source,
                 )
             )
-            evidence_saver = getattr(self.archive, "save_memory_evidence", None)
+            evidence_saver = getattr(self.context.archive, "save_memory_evidence", None)
             if saved and callable(evidence_saver):
                 from ..models import MemoryEvidenceRecord
 

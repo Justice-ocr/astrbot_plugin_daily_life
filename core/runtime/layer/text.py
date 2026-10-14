@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 from typing import Any
@@ -18,18 +20,39 @@ from ...life.tools import (
 from ...models import CommitmentRecord, DayRecord
 from ...prompts import CORE_HIDDEN_CONTEXT_RULES
 
+from typing import Protocol
 
-class LayerTextMixin:
+
+class LayerTextComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _chat_style_enabled: Any
+    _format_hidden_schedule_window: Any
+    _format_hidden_state_compact: Any
+    _format_timeline_item_compact: Any
+    _get_time_status: Any
+    _hidden_text: Any
+    _semantic_segment_enabled: Any
+    build_hidden_activity_hint: Any
+    build_hidden_chat_style_hint: Any
+    build_hidden_expression_channel_hint: Any
+    config: Any
+
+
+class LayerTextComponent:
+    def __init__(self, context: LayerTextComponentContext) -> None:
+        self.context = context
+
     def build_hidden_chat_style_hint(self) -> str:
-        style = getattr(getattr(self, "config", None), "chat_style", None)
-        checker = getattr(self, "_chat_style_enabled", None)
+        style = getattr(getattr(self.context, "config", None), "chat_style", None)
+        checker = getattr(self.context, "_chat_style_enabled", None)
         if not style or (callable(checker) and not checker()):
             return ""
         if not callable(checker) and not bool(getattr(style, "enabled", False)):
             return ""
 
-        if self._semantic_segment_enabled():
-            style = getattr(getattr(self, "config", None), "chat_style", None)
+        if self.context._semantic_segment_enabled():
+            style = getattr(getattr(self.context, "config", None), "chat_style", None)
             try:
                 casual_limit = int(getattr(style, "casual_max_chars", 50) or 50)
             except (TypeError, ValueError):
@@ -37,7 +60,7 @@ class LayerTextMixin:
             prompt = format_chat_style_prompt(
                 getattr(style, "casual_short_prompt", "")
             )
-            prompt_hint = f"\n- {self._hidden_text(prompt, 360)}" if prompt else ""
+            prompt_hint = f"\n- {self.context._hidden_text(prompt, 360)}" if prompt else ""
             length_hint = (
                 f"\n- 日常闲聊参考长度约 {casual_limit} 字左右；只作节奏参考，"
                 "普通闲聊整轮保持简短，不因分条而扩写；必要的解释和情绪支持说完整，不按字数删减。"
@@ -58,7 +81,7 @@ class LayerTextMixin:
             getattr(style, "casual_short_prompt", "")
         )
         if prompt:
-            lines.append(f"- {self._hidden_text(prompt, 360)}")
+            lines.append(f"- {self.context._hidden_text(prompt, 360)}")
 
         casual_max = getattr(style, "casual_max_chars", None)
         try:
@@ -103,23 +126,23 @@ class LayerTextMixin:
             if value is not None and value != "":
                 scores.append(f"{label} {value}/100")
 
-        mood = self._hidden_text(state_dict.get("mood"), 32)
-        summary = self._hidden_text(state_dict.get("summary"), 120)
-        watch_state = self._hidden_text(state_dict.get("watch_state"), 32)
-        interrupt_level = self._hidden_text(state_dict.get("interrupt_level"), 32)
-        interrupt_reason = self._hidden_text(state_dict.get("interrupt_reason"), 100)
+        mood = self.context._hidden_text(state_dict.get("mood"), 32)
+        summary = self.context._hidden_text(state_dict.get("summary"), 120)
+        watch_state = self.context._hidden_text(state_dict.get("watch_state"), 32)
+        interrupt_level = self.context._hidden_text(state_dict.get("interrupt_level"), 32)
+        interrupt_reason = self.context._hidden_text(state_dict.get("interrupt_reason"), 100)
         sleep = (
             state_dict.get("sleep") if isinstance(state_dict.get("sleep"), dict) else {}
         )
-        sleep_depth = self._hidden_text(sleep.get("depth"), 24)
-        sleep_summary = self._hidden_text(sleep.get("summary"), 80)
+        sleep_depth = self.context._hidden_text(sleep.get("depth"), 24)
+        sleep_summary = self.context._hidden_text(sleep.get("summary"), 80)
         rhythm = (
             state_dict.get("physiological_rhythm")
             if isinstance(state_dict.get("physiological_rhythm"), dict)
             else {}
         )
         rhythm_text = (
-            self._hidden_text(format_physiological_rhythm_prompt(rhythm), 180)
+            self.context._hidden_text(format_physiological_rhythm_prompt(rhythm), 180)
             if rhythm
             else ""
         )
@@ -161,15 +184,15 @@ class LayerTextMixin:
         timeline_date: Any = None,
         meta: dict | None = None,
     ) -> str:
-        time_text = self._hidden_text(getattr(item, "time", ""), 8)
+        time_text = self.context._hidden_text(getattr(item, "time", ""), 8)
         planned = timeline_item_datetime(item, timeline_date)
         if planned and (getattr(item, "day_offset", 0) or 0):
             time_text = planned.strftime("%m-%d %H:%M")
         deferred = timeline_deferred_until(item, timeline_date, meta)
         if deferred:
             time_text += f" → 顺延 {deferred:%m-%d %H:%M}"
-        activity = self._hidden_text(getattr(item, "activity", ""), limit)
-        status = self._hidden_text(getattr(item, "status", ""), 16)
+        activity = self.context._hidden_text(getattr(item, "activity", ""), limit)
+        status = self.context._hidden_text(getattr(item, "status", ""), 16)
         status_text = f" [{status}]" if status else ""
         text = f"{time_text} {activity}{status_text}".strip()
         if include_travel:
@@ -212,13 +235,13 @@ class LayerTextMixin:
         index_text = "；".join(
             part
             for part in (
-                self._format_timeline_item_compact(item, limit=24, timeline_date=date, meta=meta)
+                self.context._format_timeline_item_compact(item, limit=24, timeline_date=date, meta=meta)
                 for _, _, item in timed
             )
             if part
         )
         if index_text:
-            lines.append(f"- 全天索引: {self._hidden_text(index_text, 420)}")
+            lines.append(f"- 全天索引: {self.context._hidden_text(index_text, 420)}")
 
         for pos in range(max(0, current_pos - 1), min(len(timed), current_pos + 3)):
             item = timed[pos][2]
@@ -243,7 +266,7 @@ class LayerTextMixin:
                 if previous_item is not None
                 else ""
             )
-            compact = self._format_timeline_item_compact(
+            compact = self.context._format_timeline_item_compact(
                 item,
                 previous_place=previous_place,
                 include_travel=True,
@@ -267,7 +290,7 @@ class LayerTextMixin:
         using_extended_night: bool,
     ) -> tuple[str, str, str]:
         time_context = build_time_context(
-            now, getattr(self.config, "schedule_time", "07:00")
+            now, getattr(self.context.config, "schedule_time", "07:00")
         )
         period_cn = time_context.period_cn
         if using_extended_night:
@@ -302,7 +325,7 @@ class LayerTextMixin:
                 period_cn,
             )
 
-        status_desc = self._get_time_status(now)
+        status_desc = self.context._get_time_status(now)
         curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
         run = timeline_execution_run(data.meta, data.date)
         run_index = run["action"]["timeline_index"] if run else None
@@ -352,12 +375,12 @@ class LayerTextMixin:
         )
         if residence_context_stale:
             period_cn = build_time_context(
-                now, getattr(self.config, "schedule_time", "07:00")
+                now, getattr(self.context.config, "schedule_time", "07:00")
             ).period_cn
             status_desc = "居住地已变化，当前生活状态等待新记录确认"
             activity = "当前地点、穿搭、天气和时间轴暂不引用旧记录"
         else:
-            status_desc, activity, period_cn = self.build_hidden_activity_hint(
+            status_desc, activity, period_cn = self.context.build_hidden_activity_hint(
                 data,
                 now,
                 using_extended_night,
@@ -377,7 +400,7 @@ class LayerTextMixin:
         ]
         if include_rules:
             parts.append(f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}")
-        style_hint = self.build_hidden_chat_style_hint() if include_rules else ""
+        style_hint = self.context.build_hidden_chat_style_hint() if include_rules else ""
         if style_hint:
             parts.append(style_hint)
 
@@ -407,7 +430,7 @@ class LayerTextMixin:
                 )
 
             if data.timeline:
-                schedule_window = self._format_hidden_schedule_window(
+                schedule_window = self.context._format_hidden_schedule_window(
                     data.timeline, now, timeline_date=data.date, meta=data.meta
                 )
                 if schedule_window:
@@ -467,7 +490,7 @@ class LayerTextMixin:
         parts.append(f"\n[HiddenCalendar] {format_calendar_context(now)}")
         parts.append(f"\n[HiddenSeason] {format_season_context(now)}")
         if not residence_context_stale:
-            state_context = self._format_hidden_state_compact(data.state)
+            state_context = self.context._format_hidden_state_compact(data.state)
             if state_context:
                 parts.append(f"\n{state_context}")
 
@@ -491,7 +514,7 @@ class LayerTextMixin:
             )
 
         parts.append("\n</daily_life>")
-        channel_hint = self.build_hidden_expression_channel_hint(expression_event)
+        channel_hint = self.context.build_hidden_expression_channel_hint(expression_event)
         if channel_hint:
             parts.append(channel_hint)
         return "".join(parts)
@@ -507,7 +530,7 @@ class LayerTextMixin:
         include_rules: bool = True,
     ) -> str:
         period_cn = build_time_context(
-            now, getattr(self.config, "schedule_time", "07:00")
+            now, getattr(self.context.config, "schedule_time", "07:00")
         ).period_cn
         date_hint = "凌晨延续时段" if using_extended_night else "当前日期"
         external = (
@@ -526,7 +549,7 @@ class LayerTextMixin:
         )
         rules_context = (
             f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}"
-            f"{self.build_hidden_chat_style_hint()}"
+            f"{self.context.build_hidden_chat_style_hint()}"
             if include_rules else ""
         )
         return (
@@ -543,5 +566,5 @@ class LayerTextMixin:
             f"\n[HiddenCalendar] {format_calendar_context(now)}"
             f"\n[HiddenSeason] {format_season_context(now)}"
             "\n</daily_life>"
-            f"{self.build_hidden_expression_channel_hint(event)}"
+            f"{self.context.build_hidden_expression_channel_hint(event)}"
         )

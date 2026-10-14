@@ -13,8 +13,13 @@ CORE_STATE_BEHAVIOR_RULES = """- 体力、困意、压力、忙碌度、社交�
 - 人会有无明确外部大事的日常波动：偶尔提不起劲、闷、烦、想独处或身体有轻微短期不适都可以成立。波动应低频、有生活逻辑并影响当天选择，不能为了拟人化每天强造负面情绪。
 - body_condition.burden_present 是身体负荷的唯一语义开关：true 才表示当前有身体负荷，intensity 才有意义；false 表示无身体负荷且 intensity 必须为 0。不要从 label、source、summary 或其他自然语言内容推断该字段。
 - body_condition.intensity 只表示已确认身体负荷的强度：20-39=轻微，40-69=明显，70 以上=严重；绝不能把“健康、清爽、精力充沛”的程度填入 intensity。
-- 新出现的身体不适必须给出可观察来源、合理恢复动作和 expires_at，并优先使用“嗓子发干、鼻子不舒服、胃口欠佳、头有点发沉”等生活感受，不擅自作医学诊断，不随机制造重病；期限未到时保持连续，到期后再根据恢复事实减轻或结束。
+- 生活模拟允许角色低频觉察新出现的具体身体感受；不要求用户先说角色生病，也不因过去没有症状就永远健康。source 记录当下自身感受或已发生的生活经过；困倦、压力、天气或用户自己的病情都不能单独证明角色生病，不编造诊断、检查结果或重病。
+- body_condition.kind 区分 ordinary=无负荷、discomfort=短时不适、illness_like=影响生活且需要持续恢复的生病感。illness_like 用 phase 记录 onset/ongoing/recovering/resolved，started_at 沿用本次起始时间；不能按日期抽签或预定未来几点生病。
+- 恢复是连续过程：recovery_actions 写接下来愿意采取的照顾动作，不当成已经做过。illness_like 的 expires_at 是复核点，经过这个时刻不代表痊愈；根据实际休息、活动反馈和身体感受减轻或恢复，结束时填 phase=resolved、burden_present=false、intensity=0 和 recovery_evidence，不能用未来计划或一句开心的话证明恢复。
+- 不适应自然影响活动强度、外出、饮食选择、休息和交流余力；明显不舒服时调整不再合适的未来安排，恢复后逐步恢复活动。聊天只在影响眼前话题或安排时简短提起，不反复汇报症状，也不借生病索取陪伴或关心。
 - 情绪不好不等于情绪失控：mood_score 可以偏低但 emotional_stability 仍较高；情绪、压力、身体负荷与忙碌度必须分别判断。"""
+
+BODY_CONDITION_JSON_EXAMPLE = '''{"label": "身体状态", "intensity": "有负荷时填 20-100，否则填 0", "burden_present": "布尔值，是否确有身体负荷", "kind": "ordinary | discomfort | illness_like", "phase": "none | onset | ongoing | recovering | resolved", "started_at": "本次生病感的起始日期时间或空字符串", "source": "角色自身身体感受或已发生经过", "expires_at": "YYYY-MM-DD HH:MM 或空字符串；生病感的复核点", "recovery_evidence": "本次确认恢复的已发生依据，否则为空字符串"}'''
 
 LIFE_PREFERENCE_CATEGORY_ENUM = (
     "activity|outfit|top|bottom|footwear|accessory|hair|makeup|nails|"

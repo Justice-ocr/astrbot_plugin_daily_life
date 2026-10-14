@@ -36,6 +36,8 @@ from .wardrobe import (
     serialize_outfit_components,
 )
 
+from typing import Protocol
+
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
 ACTION_EXPIRATION_META_KEY = "life_action_expirations"
 SCHEDULE_ANCHOR_META_KEY = "schedule_anchors"
@@ -171,8 +173,33 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
 }
 
 
-class LifeActionMixin:
+class LifeActionComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _commit_action_effects: Any
+    _load_action_settlements: Any
+    _mark_style_catalog_references: Any
+    _planned_outfit_action_is_superseded: Any
+    _receipt_evidence_text: Any
+    _resolve_action_effects: Any
+    _save_action_receipt: Any
+    _validate_action_contract: Any
+    _validate_action_effects: Any
+    _validate_action_preconditions: Any
+    archive: Any
+    domains: Any
+    extract_schedule_anchors: Any
+    record_life_action_receipt: Any
+    settle_and_persist_life_action: Any
+    settle_life_action: Any
+    sync_day_world_facts: Any
+
+
+class LifeActionComponent:
     """提供生活动作结算、分层日程和反思门槛能力。"""
+
+    def __init__(self, context: LifeActionComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _load_action_settlements(day: DayRecord) -> dict[str, Any]:
@@ -482,7 +509,7 @@ class LifeActionMixin:
         action = LifeActionIntent.from_value(intent)
         current_time = now or life_now()
         committed_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
-        settlements = self._load_action_settlements(day)
+        settlements = self.context._load_action_settlements(day)
 
         if action.action_id and isinstance(settlements.get(action.action_id), dict):
             replayed = LifeActionOutcome.from_value(settlements[action.action_id])
@@ -491,13 +518,13 @@ class LifeActionMixin:
 
         rule = _ACTION_RULES.get(action.action_type, {})
         state = day.state
-        reason = self._validate_action_contract(day, action, rule, state)
+        reason = self.context._validate_action_contract(day, action, rule, state)
         if not reason:
-            reason = self._validate_action_preconditions(day, state, action)
-        effects = self._resolve_action_effects(action, rule)
+            reason = self.context._validate_action_preconditions(day, state, action)
+        effects = self.context._resolve_action_effects(action, rule)
         if not reason:
-            reason = self._validate_action_effects(effects, rule)
-        preserve_outfit_fact = self._planned_outfit_action_is_superseded(day, action)
+            reason = self.context._validate_action_effects(effects, rule)
+        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(day, action)
 
         outcome = LifeActionOutcome(
             action_id=action.action_id,
@@ -509,7 +536,7 @@ class LifeActionMixin:
             evidence=action.evidence,
         )
         if not reason:
-            self._commit_action_effects(
+            self.context._commit_action_effects(
                 day,
                 action,
                 effects,
@@ -551,7 +578,7 @@ class LifeActionMixin:
             实际写入或确认的事实记录。
         """
 
-        writer = getattr(self.archive, "upsert_current_temporal_fact", None)
+        writer = getattr(self.context.archive, "upsert_current_temporal_fact", None)
         if not callable(writer):
             return []
         timestamp = observed_at or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -587,7 +614,7 @@ class LifeActionMixin:
         *,
         now: datetime.datetime,
     ) -> Any:
-        saver = getattr(self.archive, "save_life_action_receipt", None)
+        saver = getattr(self.context.archive, "save_life_action_receipt", None)
         if not callable(saver):
             return None
         evidence = receipt.get("evidence")
@@ -666,7 +693,7 @@ class LifeActionMixin:
         status = str(receipt.get("status") or "confirmed").strip().lower()
         if status not in {"confirmed", "simulated", "failed", "cancelled"}:
             return None
-        domain_service = getattr(self, "domains", None)
+        domain_service = getattr(self.context, "domains", None)
         validator = getattr(domain_service, "validate_action", None)
         if status in {"confirmed", "simulated"} and callable(validator):
             valid, validation_reason = await validator(action)
@@ -677,20 +704,20 @@ class LifeActionMixin:
                     "source": "life_domain_validation",
                     "evidence": [validation_reason],
                 }
-        evidence = self._receipt_evidence_text(receipt, action.evidence)
+        evidence = self.context._receipt_evidence_text(receipt, action.evidence)
         receipt = {
             **receipt,
             "status": status,
             "occurred_at": str(receipt.get("occurred_at") or "").strip()
             or current_time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        await self._save_action_receipt(day, action, receipt, now=current_time)
+        await self.context._save_action_receipt(day, action, receipt, now=current_time)
         if status in {"failed", "cancelled"}:
             outcome = LifeActionOutcome(
                 action_id=action.action_id,
                 action_type=action.action_type,
                 status=status,
-                reason=self._receipt_evidence_text(receipt, "动作未能执行"),
+                reason=self.context._receipt_evidence_text(receipt, "动作未能执行"),
                 committed_at=current_time.strftime("%Y-%m-%d %H:%M:%S"),
                 timeline_index=action.timeline_index,
                 evidence=evidence,
@@ -718,8 +745,8 @@ class LifeActionMixin:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            await self.archive.save_day(day)
-            saver = getattr(self.archive, "save_life_action_outcome", None)
+            await self.context.archive.save_day(day)
+            saver = getattr(self.context.archive, "save_life_action_outcome", None)
             if callable(saver):
                 await saver(
                     {
@@ -740,7 +767,7 @@ class LifeActionMixin:
                         "committed_at": outcome.committed_at,
                     }
                 )
-            tracer = getattr(self.archive, "save_decision_trace", None)
+            tracer = getattr(self.context.archive, "save_decision_trace", None)
             if callable(tracer):
                 await tracer(
                     {
@@ -759,7 +786,7 @@ class LifeActionMixin:
         # 因此不能在检查前提前标记完成。
         action.source = "daily_plan"
         action.evidence = evidence
-        outcome = await self.settle_and_persist_life_action(
+        outcome = await self.context.settle_and_persist_life_action(
             day,
             action,
             now=current_time,
@@ -769,16 +796,16 @@ class LifeActionMixin:
         )
         if outcome.status == "committed":
             if action.action_type == "change_outfit":
-                wear_recorder = getattr(self.archive, "record_wardrobe_wear", None)
+                wear_recorder = getattr(self.context.archive, "record_wardrobe_wear", None)
                 if callable(wear_recorder):
-                    saved_day = await self.archive.get_day(day.date)
+                    saved_day = await self.context.archive.get_day(day.date)
                     if saved_day:
                         await wear_recorder(saved_day, event_id="action-wear:" + action.action_id)
-                marker = getattr(self, "_mark_style_catalog_references", None)
+                marker = getattr(self.context, "_mark_style_catalog_references", None)
                 if callable(marker):
                     await marker(action.payload.get("catalog_reference_ids"))
             if action.action_type in {"chat", "social"} and action.target:
-                writer = getattr(self.archive, "upsert_current_temporal_fact", None)
+                writer = getattr(self.context.archive, "upsert_current_temporal_fact", None)
                 if callable(writer):
                     await writer(
                         scope="global",
@@ -853,7 +880,7 @@ class LifeActionMixin:
                 item.timeline_index,
             )
         )
-        return await self.record_life_action_receipt(
+        return await self.context.record_life_action_receipt(
             day, candidates[0].action_id, receipt, now=now
         )
 
@@ -881,8 +908,8 @@ class LifeActionMixin:
             已持久化的幂等动作结果。
         """
         action = LifeActionIntent.from_value(intent)
-        preserve_outfit_fact = self._planned_outfit_action_is_superseded(day, action)
-        continuous_mutator = getattr(self.archive, "mutate_continuous_life", None)
+        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(day, action)
+        continuous_mutator = getattr(self.context.archive, "mutate_continuous_life", None)
         if day.meta.get("continuous_body") and callable(continuous_mutator):
             outcome = None
             def commit(latest, world):
@@ -894,13 +921,13 @@ class LifeActionMixin:
                         action.timeline_index = None
                     else:
                         action.timeline_index = current.timeline_index
-                preserve_outfit_fact = self._planned_outfit_action_is_superseded(latest, action)
-                wardrobe_validator = getattr(self.archive, '_wardrobe_action_issue_unlocked', None)
+                preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(latest, action)
+                wardrobe_validator = getattr(self.context.archive, '_wardrobe_action_issue_unlocked', None)
                 wardrobe_issue = wardrobe_validator(action.payload.get('catalog_reference_ids')) if action.action_type == 'change_outfit' and callable(wardrobe_validator) else ''
                 if wardrobe_issue:
                     outcome = LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status='rejected', reason=wardrobe_issue)
                 else:
-                    outcome = self.settle_life_action(latest, action, now=now)
+                    outcome = self.context.settle_life_action(latest, action, now=now)
                 if outcome.status == "committed" and not outcome.replayed and world.get("body"):
                     world["body"] = json.loads(latest.meta["continuous_body"])
                 if not outcome.replayed and outcome.status in {"committed", "failed", "rejected"}:
@@ -917,10 +944,10 @@ class LifeActionMixin:
                 return LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status="rejected", reason="原生活日记录已清理")
             day.apply_persisted(latest)
         else:
-            outcome = self.settle_life_action(day, action, now=now)
-            await self.archive.save_day(day)
+            outcome = self.context.settle_life_action(day, action, now=now)
+            await self.context.archive.save_day(day)
 
-        save_outcome = getattr(self.archive, "save_life_action_outcome", None)
+        save_outcome = getattr(self.context.archive, "save_life_action_outcome", None)
         if callable(save_outcome) and action.action_id and action.action_type:
             await save_outcome(
                 {
@@ -943,7 +970,7 @@ class LifeActionMixin:
                 }
             )
 
-        save_trace = getattr(self.archive, "save_decision_trace", None)
+        save_trace = getattr(self.context.archive, "save_decision_trace", None)
         if callable(save_trace) and action.action_id:
             await save_trace(
                 {
@@ -957,7 +984,7 @@ class LifeActionMixin:
                 }
             )
         if outcome.status == "committed":
-            complete = getattr(self.archive, "complete_simulated_commitment", None)
+            complete = getattr(self.context.archive, "complete_simulated_commitment", None)
             links = action.payload.get("commitment_links")
             if action.action_type in INTERNAL_SIMULATED_ACTION_TYPES and callable(
                 complete
@@ -974,7 +1001,7 @@ class LifeActionMixin:
                         evidence=fact_evidence or outcome.evidence,
                         source_id=action.action_id,
                     )
-            domain_service = getattr(self, "domains", None)
+            domain_service = getattr(self.context, "domains", None)
             apply_domain = getattr(domain_service, "apply_action", None)
             if callable(apply_domain):
                 try:
@@ -984,14 +1011,14 @@ class LifeActionMixin:
                         outcome,
                         receipt_status=receipt_status,
                     )
-                    await self.archive.save_day(day)
+                    await self.context.archive.save_day(day)
                 except Exception as exc:
                     logger.warning(
                         "[日常生活] 生活动作已结算，但领域记录暂未写入，"
                         f"后续巡检会自动补写：{action.action_type}；{exc}"
                     )
             if not preserve_outfit_fact:
-                await self.sync_day_world_facts(
+                await self.context.sync_day_world_facts(
                     day,
                     observed_at=outcome.committed_at,
                     source=fact_source,
@@ -1070,10 +1097,10 @@ class LifeActionMixin:
                 continue
             # completed 已不能由时钟产生，只能来自显式回执或有证据的复盘。
             # 对虚拟世界内部动作，此时才允许生成模拟回执并落地库存、地点等事实。
-            domain_service = getattr(self, "domains", None)
+            domain_service = getattr(self.context, "domains", None)
             should_simulate = getattr(domain_service, "should_simulate", None)
             if callable(should_simulate) and should_simulate(action):
-                simulated = await self.record_life_action_receipt(
+                simulated = await self.context.record_life_action_receipt(
                     day,
                     action.action_id,
                     {
@@ -1096,7 +1123,7 @@ class LifeActionMixin:
                 if simulated is not None:
                     outcomes.append(simulated)
                 continue
-            receipt_getter = getattr(self.archive, "get_life_action_receipts", None)
+            receipt_getter = getattr(self.context.archive, "get_life_action_receipts", None)
             existing_receipts = (
                 await receipt_getter(action_id=action.action_id, limit=1)
                 if callable(receipt_getter)
@@ -1135,7 +1162,7 @@ class LifeActionMixin:
             timeline_item.execution_updated_at = expired_at
             expirations[action.action_id] = outcome.as_dict()
             changed = True
-            save_outcome = getattr(self.archive, "save_life_action_outcome", None)
+            save_outcome = getattr(self.context.archive, "save_life_action_outcome", None)
             if callable(save_outcome):
                 await save_outcome(
                     {
@@ -1156,7 +1183,7 @@ class LifeActionMixin:
                         "committed_at": expired_at,
                     }
                 )
-            save_trace = getattr(self.archive, "save_decision_trace", None)
+            save_trace = getattr(self.context.archive, "save_decision_trace", None)
             if callable(save_trace):
                 await save_trace(
                     {
@@ -1173,7 +1200,7 @@ class LifeActionMixin:
             day.meta[ACTION_EXPIRATION_META_KEY] = json.dumps(
                 expirations, ensure_ascii=False, separators=(",", ":")
             )
-            await self.archive.save_day(day)
+            await self.context.archive.save_day(day)
         return outcomes
 
     def extract_schedule_anchors(
@@ -1256,7 +1283,7 @@ class LifeActionMixin:
         current_time = now or life_now()
         horizon_minutes = max(1, min(720, int(horizon_minutes)))
         refined = []
-        for anchor in self.extract_schedule_anchors(day):
+        for anchor in self.context.extract_schedule_anchors(day):
             anchor_time = timeline_item_datetime(anchor, day.date)
             if anchor_time is None:
                 continue
@@ -1314,7 +1341,7 @@ class LifeActionMixin:
                 if item.replaces_anchor_id
             }
         anchor_map = {
-            item.anchor_id: item for item in self.extract_schedule_anchors(day)
+            item.anchor_id: item for item in self.context.extract_schedule_anchors(day)
         }
         if not normalized:
             return PlanRevision(reason="没有提供替换锚点", revised_at=revised_at)
@@ -1399,7 +1426,7 @@ class LifeActionMixin:
             revision = 1
         day.meta["schedule_revision"] = str(revision)
         day.meta["schedule_last_replanned_at"] = revised_at
-        self.extract_schedule_anchors(day)
+        self.context.extract_schedule_anchors(day)
         return PlanRevision(
             status="applied",
             reason="已只更新指定的未来锚点",
@@ -1482,5 +1509,5 @@ class LifeActionMixin:
 __all__ = [
     "ACTION_SETTLEMENT_META_KEY",
     "SCHEDULE_ANCHOR_META_KEY",
-    "LifeActionMixin",
+    "LifeActionComponent",
 ]

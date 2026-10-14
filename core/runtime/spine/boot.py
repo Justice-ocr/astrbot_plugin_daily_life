@@ -14,6 +14,7 @@ from astrbot.api import logger
 from astrbot.core.star.context import Context
 
 from ...archive import LifeArchive
+from ...clock import now as life_now
 from ...config.options import LifeSettings
 from ...life import (
     LifeBackgroundComposer,
@@ -27,6 +28,7 @@ from ...media.video.errors import VideoTaskFailed
 from ...paths import runtime_data_path
 from ...search import SearchService
 from ...sources import ContactNameResolver
+from ...sources.platforms import get_platform_id
 from ..context import ContextSnapshotRepository
 from ..delivery import ReplyDeliveryService
 from ..gateway import ModelGateway
@@ -35,6 +37,8 @@ from ..scopes import RuntimeScopeState
 from ..timer import LifeRhythmClock
 from ..voicecall import VoiceCallManager
 from ..voicecall.voicegateway import voice_gateway_start_error_detail
+
+from typing import Protocol
 
 _DURABLE_TASK_LABELS = {
     "daily_refresh": "每日生活刷新",
@@ -50,6 +54,14 @@ _DURABLE_TASK_LABELS = {
     "commitment_photo": "承诺拍照",
     "commitment_video": "承诺拍视频",
 }
+_DURABLE_MEDIA_KINDS = (
+    "media_delivery",
+    "image_generation",
+    "share_image_generation",
+    "share_video_generation",
+    "commitment_photo",
+    "commitment_video",
+)
 
 # 平台管理器会先加载插件，再异步建立 IM 适配器连接。首次日程生成依赖
 # 平台历史和联系人接口，因此不能只把“平台实例已创建”当成已就绪。
@@ -97,7 +109,136 @@ class RuntimeServiceField:
             setattr(services, self.name, value)
 
 
-class SpineBootMixin:
+class SpineBootComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _bind_runtime: Any
+    _build_rhythm: Any
+    _build_runtime_services: Any
+    _cancel_background_tasks: Any
+    _cancel_proactive_idle_tasks: Any
+    _close_character_appearance_tasks: Any
+    _close_injection_snapshot_flight: Any
+    _close_runtime_component: Any
+    _close_runtime_services: Any
+    _create_memos_service: Any
+    _drain_durable_tasks: Any
+    _durable_retry_at: Any
+    _durable_runtime_handlers: Any
+    _durable_task_key: Any
+    _durable_task_owner: Any
+    _durable_worker_lock: Any
+    _durable_media_lock: Any
+    _evict_scope_services: Any
+    _init_background_tasks: Any
+    _init_chat_memory_batcher: Any
+    _init_continuous_turn_state: Any
+    _init_response_gate_state: Any
+    _init_sight: Any
+    _injection_snapshot_cache: Any
+    _install_runtime_services: Any
+    _is_platform_ready: Any
+    _leased_rhythm_callback: Any
+    _load_friend_daily_looks: Any
+    _log_boot_summary: Any
+    _manager_has_configured_platform: Any
+    _model_cache_meter: Any
+    _native_video_client: Any
+    _operation_locks: Any
+    _page_status_changed: Any
+    _page_status_version: Any
+    _platform_instances: Any
+    _platform_type: Any
+    _proactive_air_state: Any
+    _proactive_feedback_watch: Any
+    _proactive_idle_candidates: Any
+    _proactive_idle_tasks: Any
+    _proactive_last_reply_at: Any
+    _proactive_private_last_revisit_at: Any
+    _retired_runtime_services: Any
+    _run_durable_handler: Any
+    _run_durable_task_worker: Any
+    _run_durable_tasks_once: Any
+    _run_durable_lane: Any
+    _schedule_durable_task_pump: Any
+    _runtime_data_path: Any
+    _runtime_initialized: Any
+    _runtime_service_binding: Any
+    _runtime_service_condition: Any
+    _runtime_service_lease_depth: Any
+    _runtime_service_lease_owner: Any
+    _runtime_services: Any
+    _schedule_background_task: Any
+    _semantic_segment_init_state: Any
+    _service_binding: Any
+    _service_condition: Any
+    _service_lease_depth: Any
+    _service_lease_owner: Any
+    _service_swap_pending: Any
+    _service_task_bindings: Any
+    _service_users: Any
+    _service_version_users: Any
+    _shutdown_chat_memory_batcher: Any
+    _shutdown_started: Any
+    _sight_flight: Any
+    _sight_prepare_flight: Any
+    _sight_reader: Any
+    _start_chat_memory_batcher: Any
+    _virtual_life_metrics: Any
+    archive: Any
+    begin_shutdown: Any
+    check_autonomous_life_update: Any
+    check_continuous_life: Any
+    check_wardrobe_life: Any
+    close_memos_service: Any
+    composer: Any
+    config: Any
+    contact_resolver: Any
+    context: Any
+    context_snapshot: Any
+    conversation_timing: Any
+    daily_generation: Any
+    data_path: Any
+    domains: Any
+    ensure_startup_day_data: Any
+    failed_dates: Any
+    generation_lock: Any
+    maintain_emoji_assets: Any
+    media: Any
+    memos: Any
+    model_gateway: Any
+    outbound_log: Any
+    raw_config: Any
+    reconcile_commitment_photo_tasks: Any
+    reconcile_commitment_video_tasks: Any
+    reconcile_scheduled_invite_contacts: Any
+    reply_delivery: Any
+    resume_durable_image_generation: Any
+    resume_durable_media_delivery: Any
+    resume_share_image_generation: Any
+    resume_share_video_generation: Any
+    rhythm: Any
+    run_commitment_photo_task: Any
+    run_commitment_video_task: Any
+    run_daily_refresh: Any
+    run_nightly_review: Any
+    run_private_revisit_check: Any
+    run_proactive_commitment_task: Any
+    run_proactive_idle_check: Any
+    run_weekly_refresh: Any
+    runtime_service_lease: Any
+    runtime_services: Any
+    scope_state: Any
+    search: Any
+    voice_call: Any
+    wait_for_platform_ready: Any
+    weather_client: Any
+
+
+class SpineBootComponent:
+    def __init__(self, context: SpineBootComponentContext) -> None:
+        self.context = context
+
     config = RuntimeServiceField()
     media = RuntimeServiceField()
     memos = RuntimeServiceField()
@@ -109,7 +250,7 @@ class SpineBootMixin:
     model_gateway = RuntimeServiceField()
     rhythm = RuntimeServiceField()
 
-    def __init__(
+    def initialize_runtime(
         self,
         context: Context,
         raw_config: Any,
@@ -117,76 +258,77 @@ class SpineBootMixin:
         *,
         defer_start: bool = False,
     ):
-        self.context = context
-        self.raw_config = raw_config
-        self.data_path = data_path
-        self.generation_lock = asyncio.Lock()
-        self._operation_locks: dict[str, Any] = {}
-        self._init_daily_generation_state()
-        self._page_status_version = 0
-        self._page_status_changed = asyncio.Condition()
-        self._init_background_tasks()
-        self._init_response_gate_state()
-        self._init_continuous_turn_state()
-        self._semantic_segment_init_state()
-        self._init_t2i_forward_cache()
-        self.reply_delivery = ReplyDeliveryService(self)
-        self._injection_snapshot_cache: dict[str, Any] = {}
-        self.scope_state = RuntimeScopeState(self)
-        self._service_condition = asyncio.Condition()
-        self._service_users = 0
-        self._service_swap_pending = False
-        self._service_lease_depth = ContextVar(
-            f"daily_life_service_lease_{id(self)}", default=0
+        self.context.context = context
+        self.context.raw_config = raw_config
+        self.context.data_path = data_path
+        self.context.generation_lock = asyncio.Lock()
+        self.context._operation_locks: dict[str, Any] = {}
+        self.context._page_status_version = 0
+        self.context._page_status_changed = asyncio.Condition()
+        self.context._init_background_tasks()
+        self.context._init_response_gate_state()
+        self.context._init_continuous_turn_state()
+        self.context._semantic_segment_init_state()
+        self.context.reply_delivery = ReplyDeliveryService(self.context)
+        self.context._injection_snapshot_cache: dict[str, Any] = {}
+        self.context.scope_state = RuntimeScopeState(
+            self.context, evict_services=self.context._evict_scope_services
         )
-        self._service_lease_owner = ContextVar(
-            f"daily_life_service_lease_owner_{id(self)}", default=None
+        self.context._service_condition = asyncio.Condition()
+        self.context._service_users = 0
+        self.context._service_swap_pending = False
+        self.context._service_lease_depth = ContextVar(
+            f"daily_life_service_lease_{id(self.context)}", default=0
         )
-        self._durable_runtime_handlers: dict[str, Any] = {}
-        self._durable_task_owner = f"runtime:{id(self)}"
-        self.archive = LifeArchive(self.data_path, initialize=not defer_start)
-        self.context_snapshot = ContextSnapshotRepository(self.archive)
-        self._init_sight()
-        self._bind_runtime(LifeSettings.from_dict(raw_config))
-        self.voice_call = VoiceCallManager(self)
-        self._init_chat_memory_batcher()
-        self.failed_dates: dict[str, datetime.datetime] = {}
-        self._proactive_last_reply_at: dict[str, datetime.datetime] = {}
-        self._proactive_idle_candidates: dict[str, dict[str, Any]] = {}
-        self._proactive_idle_tasks: dict[str, asyncio.Task] = {}
-        self._virtual_life_metrics: dict[str, int] = {}
-        self._proactive_private_last_revisit_at: dict[str, datetime.datetime] = {}
-        self._proactive_air_state: dict[str, dict[str, Any]] = {}
-        self._proactive_feedback_watch: dict[str, dict[str, Any]] = {}
-        self._runtime_initialized = not defer_start
+        self.context._service_lease_owner = ContextVar(
+            f"daily_life_service_lease_owner_{id(self.context)}", default=None
+        )
+        self.context._durable_runtime_handlers: dict[str, Any] = {}
+        self.context._durable_task_owner = f"runtime:{id(self.context)}"
+        self.context.archive = LifeArchive(self.context.data_path, initialize=not defer_start)
+        self.context.context_snapshot = ContextSnapshotRepository(self.context.archive)
+        self.context._init_sight()
+        self.context._bind_runtime(LifeSettings.from_dict(raw_config))
+        self.context.voice_call = VoiceCallManager(self.context)
+        self.context._init_chat_memory_batcher()
+        self.context.failed_dates: dict[str, datetime.datetime] = {}
+        self.context._proactive_last_reply_at: dict[str, datetime.datetime] = {}
+        self.context._proactive_idle_candidates: dict[str, dict[str, Any]] = {}
+        self.context._proactive_idle_tasks: dict[str, asyncio.Task] = {}
+        self.context._virtual_life_metrics: dict[str, int] = {}
+        self.context._proactive_private_last_revisit_at: dict[str, datetime.datetime] = {}
+        self.context._proactive_air_state: dict[str, dict[str, Any]] = {}
+        self.context._proactive_feedback_watch: dict[str, dict[str, Any]] = {}
+        self.context._runtime_initialized = not defer_start
         if not defer_start:
-            self._start_chat_memory_batcher()
-            self.rhythm.start()
-        self._log_boot_summary()
+            self.context._start_chat_memory_batcher()
+            self.context.rhythm.start()
+        self.context._log_boot_summary()
 
     async def initialize(self) -> None:
-        if self._runtime_initialized:
+        if self.context._runtime_initialized:
             return
-        await self.archive.initialize()
-        domain_initializer = getattr(getattr(self, "domains", None), "initialize", None)
+        await self.context.archive.initialize()
+        domain_initializer = getattr(getattr(self.context, "domains", None), "initialize", None)
         if callable(domain_initializer):
             await domain_initializer()
-        await self.archive.recover_leased_durable_tasks()
+        await self.context.archive.recover_leased_durable_tasks()
         search_service = getattr(
-            getattr(self, "runtime_services", None), "search", None
+            getattr(self.context, "runtime_services", None), "search", None
         )
         if search_service is None:
-            search_service = getattr(self, "search", None)
+            search_service = getattr(self.context, "search", None)
         restore_research = getattr(search_service, "restore_research_tasks", None)
         if callable(restore_research):
             await restore_research()
-        friend_look_loader = getattr(self, "_load_friend_daily_looks", None)
+        friend_look_loader = getattr(self.context, "_load_friend_daily_looks", None)
         if callable(friend_look_loader):
             await friend_look_loader()
-        self._start_chat_memory_batcher()
-        self.rhythm.start()
-        self._runtime_initialized = True
-        voice_call = getattr(self, "voice_call", None)
+        self.context._start_chat_memory_batcher()
+        self.context.rhythm.start()
+        self.context._runtime_initialized = True
+        self.context.meaning.start_memory_index()
+        voice_call = getattr(self.context, "voice_call", None)
         start_voice_call = getattr(voice_call, "start_if_enabled", None)
         if callable(start_voice_call):
             try:
@@ -200,25 +342,25 @@ class SpineBootMixin:
                     LOG_PREFIX,
                     voice_gateway_start_error_detail(exc, settings),
                 )
-        self._schedule_background_task(
-            self.ensure_startup_day_data(),
+        self.context._schedule_background_task(
+            self.context.ensure_startup_day_data(),
             label="首次生活初始化",
             key="startup_life_day",
         )
-        self._schedule_background_task(
-            self.maintain_emoji_assets(),
+        self.context._schedule_background_task(
+            self.context.maintain_emoji_assets(),
             label="表情素材维护",
             key="startup_emoji_asset_maintenance",
         )
-        self._schedule_background_task(
-            self._run_durable_task_worker(),
+        self.context._schedule_background_task(
+            self.context._run_durable_task_worker(),
             label="可恢复生活任务队列",
             key="durable_task_worker",
         )
 
     def _platform_instances(self) -> list[Any]:
         """返回当前上下文中的平台实例；测试替身或早期启动阶段可为空。"""
-        manager = getattr(getattr(self, "context", None), "platform_manager", None)
+        manager = getattr(getattr(self.context, "context", None), "platform_manager", None)
         if manager is None:
             return []
         get_insts = getattr(manager, "get_insts", None)
@@ -281,10 +423,6 @@ class SpineBootMixin:
                 return bool(api_clients)
             if isinstance(event_clients, (set, list, tuple, dict)):
                 return bool(event_clients)
-            # 兼容旧版或测试替身客户端；只有客户端明确暴露了反向
-            # WebSocket 状态时，才按连接集合进行严格判断。
-            if event_clients is None and api_clients is None:
-                return bool(client)
             # OneBot 的运行状态会先于反向 WebSocket 连接建立，不能回退到
             # status=running，否则启动期联系人查询仍会抢跑。
             return False
@@ -319,70 +457,99 @@ class SpineBootMixin:
         self,
         *,
         timeout: float = _PLATFORM_READY_TIMEOUT_SECONDS,
+        adapter_id: str = "",
+        platform_type: str = "",
     ) -> bool:
         """等待已配置的平台具备联系人和历史查询能力。
 
         没有可枚举平台时直接放行，保证测试、仅网页聊天和无平台部署仍能
         生成日程。真实平台在超时后也会继续生成，但会明确记录降级原因。
         """
-        manager = getattr(getattr(self, "context", None), "platform_manager", None)
-        instances = self._platform_instances()
-        if not instances and not self._manager_has_configured_platform(manager):
+        manager = getattr(getattr(self.context, "context", None), "platform_manager", None)
+        onebot_types = {"aiocqhttp", "onebot", "cqhttp"}
+
+        def matches(platform_id: str, kind: str) -> bool:
+            if adapter_id:
+                return platform_id == adapter_id
+            if platform_type in onebot_types:
+                return kind in onebot_types
+            return not platform_type or kind == platform_type
+
+        def configured_target() -> bool:
+            return any(
+                isinstance(config, dict)
+                and config.get("enable", True)
+                and matches(str(config.get("id", "")), str(config.get("type", "")))
+                for config in (getattr(manager, "platforms_config", None) or [])
+            )
+
+        instances = self.context._platform_instances()
+        scoped = bool(adapter_id or platform_type)
+        if not instances and not (
+            configured_target() if scoped else self.context._manager_has_configured_platform(manager)
+        ):
             return True
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, float(timeout))
         while True:
             # 平台管理器可能在插件任务启动后才把已配置实例放入列表。
-            instances = self._platform_instances()
+            instances = self.context._platform_instances()
+            if scoped:
+                instances = [
+                    instance for instance in instances
+                    if matches(get_platform_id(instance), self.context._platform_type(instance))
+                ]
             if not instances:
-                if not self._manager_has_configured_platform(manager):
+                if not (
+                    configured_target() if scoped else self.context._manager_has_configured_platform(manager)
+                ):
                     return True
                 pending_count = 1
             else:
                 pending_count = sum(
-                    1 for instance in instances if not self._is_platform_ready(instance)
+                    1 for instance in instances if not self.context._is_platform_ready(instance)
                 )
             if not pending_count:
                 return True
             if loop.time() >= deadline:
                 logger.warning(
-                    "[日常生活] 等待平台适配器连接超时，先继续生活初始化；"
+                    "[日常生活] 等待目标平台连接超时，继续使用已有资料；"
                     f"未就绪平台={pending_count}"
                 )
                 return False
             await asyncio.sleep(_PLATFORM_READY_POLL_SECONDS)
 
     def _runtime_data_path(self) -> Path:
-        return runtime_data_path(getattr(self, "data_path", None))
+        return runtime_data_path(getattr(self.context, "data_path", None))
 
     def _build_runtime_services(
         self, config: LifeSettings, raw_config: Any | None = None
     ) -> RuntimeServices:
-        media = LifeMediaService(config, self._runtime_data_path())
-        memos = self._create_memos_service(config)
+        media = LifeMediaService(config, self.context._runtime_data_path())
+        memos = self.context._create_memos_service(config)
         contact_resolver = ContactNameResolver(
-            self.context,
-            self.raw_config if raw_config is None else raw_config,
+            self.context.context,
+            self.context.raw_config if raw_config is None else raw_config,
             log_prefix=LOG_PREFIX,
-            platform_ready_waiter=getattr(self, "wait_for_platform_ready", None),
+            platform_ready_waiter=getattr(self.context, "wait_for_platform_ready", None),
         )
         weather_client = WeatherClient(config.weather)
-        search = SearchService(self.context, config.search, task_store=self.archive)
+        search = SearchService(self.context.context, config.search, task_store=self.context.archive)
         domains = LifeDomainService(
             config.domains,
-            self.archive,
+            self.context.archive,
         )
         composer = LifeBackgroundComposer(
-            self.context,
+            self.context.context,
             config,
-            self.archive,
+            self.context.archive,
             weather_client,
             contact_resolver,
             search,
             domains,
         )
-        composer.model_cache_metrics = self._model_cache_meter()
+        composer.model_cache_metrics = self.context._model_cache_meter()
         return RuntimeServices(
             config=config,
             media=media,
@@ -393,57 +560,70 @@ class SpineBootMixin:
             domains=domains,
             composer=composer,
             model_gateway=ModelGateway(composer),
-            rhythm=self._build_rhythm(config),
+            rhythm=self.context._build_rhythm(config),
         )
 
     def _install_runtime_services(self, services: RuntimeServices) -> None:
-        self._runtime_services = services
-        self._sight_reader = None
+        self.context._runtime_services = services
+        self.context._sight_reader = None
 
     def _current_runtime_services(self) -> RuntimeServices:
-        installed = getattr(self, "_runtime_services", None)
+        installed = getattr(self.context, "_runtime_services", None)
         if installed is not None:
             return installed
         return RuntimeServices(
-            config=self.config,
-            media=getattr(self, "media", None),
-            memos=getattr(self, "memos", None),
-            contact_resolver=getattr(self, "contact_resolver", None),
-            weather_client=getattr(self, "weather_client", None),
-            search=getattr(self, "search", None),
-            domains=getattr(self, "domains", None),
-            composer=getattr(self, "composer", None),
-            model_gateway=getattr(self, "model_gateway", None),
-            rhythm=self.rhythm,
+            config=self.context.config,
+            media=getattr(self.context, "media", None),
+            memos=getattr(self.context, "memos", None),
+            contact_resolver=getattr(self.context, "contact_resolver", None),
+            weather_client=getattr(self.context, "weather_client", None),
+            search=getattr(self.context, "search", None),
+            domains=getattr(self.context, "domains", None),
+            composer=getattr(self.context, "composer", None),
+            model_gateway=getattr(self.context, "model_gateway", None),
+            rhythm=self.context.rhythm,
         )
 
     def _bind_runtime(self, config: LifeSettings) -> None:
-        self._install_runtime_services(self._build_runtime_services(config))
+        self.context._install_runtime_services(self.context._build_runtime_services(config))
 
     def _leased_rhythm_callback(self, callback, *, durable_kind: str = ""):
-        handlers = getattr(self, "_durable_runtime_handlers", None)
+        handlers = getattr(self.context, "_durable_runtime_handlers", None)
         if not isinstance(handlers, dict):
             handlers = {}
-            self._durable_runtime_handlers = handlers
+            self.context._durable_runtime_handlers = handlers
         if durable_kind:
             handlers[durable_kind] = callback
 
         async def run():
-            async with self.runtime_service_lease():
+            async with self.context.runtime_service_lease():
                 if durable_kind:
-                    now = datetime.datetime.now()
-                    task_key = self._durable_task_key(durable_kind, now)
-                    await self.archive.enqueue_durable_task(
+                    now = life_now()
+                    task_key = self.context._durable_task_key(durable_kind, now)
+                    await self.context.archive.enqueue_durable_task(
                         task_key,
                         durable_kind,
                         {"scheduled_at": now.strftime("%Y-%m-%d %H:%M:%S")},
                         priority=80,
                     )
-                    await self._run_durable_tasks_once()
+                    await self.context._run_durable_tasks_once()
                 else:
                     await callback()
 
         return run
+
+    async def _schedule_durable_task_pump(self) -> None:
+        """调度器只提交后台执行，避免长任务占住下一分钟的扫描入口。"""
+        for media_only, key, label, category in (
+            (False, "durable_life_lane", "生活持久任务", "normal"),
+            (True, "durable_media_lane", "媒体持久任务", "durable"),
+        ):
+            self.context._schedule_background_task(
+                self.context._run_durable_lane(media_only=media_only),
+                label=label,
+                key=key,
+                category=category,
+            )
 
     @staticmethod
     def _durable_task_key(kind: str, now: datetime.datetime) -> str:
@@ -461,20 +641,28 @@ class SpineBootMixin:
         if attempts >= maximum:
             return ""
         delay = min(900, 30 * (2 ** max(0, attempts - 1)))
-        return (datetime.datetime.now() + datetime.timedelta(seconds=delay)).strftime(
+        return (life_now() + datetime.timedelta(seconds=delay)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
 
     async def _run_durable_tasks_once(self) -> int:
-        """租用并执行一批白名单生活任务，禁止持久化任意可执行代码。"""
-        lock = getattr(self, "_durable_worker_lock", None)
+        """并行处理生活和媒体队列；每条队列内部仍保持租约顺序。"""
+        results = await asyncio.gather(
+            self.context._run_durable_lane(media_only=False),
+            self.context._run_durable_lane(media_only=True),
+        )
+        return sum(results)
+
+    async def _run_durable_lane(self, *, media_only: bool) -> int:
+        lock_name = "_durable_media_lock" if media_only else "_durable_worker_lock"
+        lock = getattr(self.context, lock_name, None)
         if lock is None:
             lock = asyncio.Lock()
-            self._durable_worker_lock = lock
+            setattr(self.context, lock_name, lock)
         if lock.locked():
             return 0
         async with lock:
-            return await self._drain_durable_tasks()
+            return await self.context._drain_durable_tasks(media_only=media_only)
 
     async def _run_durable_handler(self, task: Any, handler: Any, owner: str) -> Any:
         async def invoke():
@@ -493,7 +681,7 @@ class SpineBootMixin:
         async def renew():
             while True:
                 await asyncio.sleep(60)
-                if not await self.archive.renew_durable_task_lease(task.id, owner):
+                if not await self.context.archive.renew_durable_task_lease(task.id, owner):
                     raise RuntimeError("持久任务租约已失效，停止本次执行")
 
         execution = asyncio.create_task(invoke())
@@ -511,28 +699,29 @@ class SpineBootMixin:
                     pending.cancel()
             await asyncio.gather(execution, heartbeat, return_exceptions=True)
 
-    async def _drain_durable_tasks(self) -> int:
-        reconcile_photos = getattr(self, "reconcile_commitment_photo_tasks", None)
-        if callable(reconcile_photos):
-            await reconcile_photos()
-        reconcile_videos = getattr(self, "reconcile_commitment_video_tasks", None)
-        if callable(reconcile_videos):
-            await reconcile_videos()
-        reconcile_contacts = getattr(self, "reconcile_scheduled_invite_contacts", None)
-        if callable(reconcile_contacts):
-            await reconcile_contacts()
-        await self.archive.recover_expired_durable_tasks()
+    async def _drain_durable_tasks(self, *, media_only: bool = False) -> int:
+        if not media_only:
+            for name in (
+                "reconcile_commitment_photo_tasks",
+                "reconcile_commitment_video_tasks",
+                "reconcile_scheduled_invite_contacts",
+            ):
+                reconcile = getattr(self.context, name, None)
+                if callable(reconcile):
+                    await reconcile()
+        await self.context.archive.recover_expired_durable_tasks()
         completed = 0
         processed_ids = []
         for _ in range(8):
             owner = (
-                f"{getattr(self, '_durable_task_owner', id(self))}:{uuid.uuid4().hex}"
+                f"{getattr(self.context, '_durable_task_owner', id(self.context))}:{uuid.uuid4().hex}"
             )
-            tasks = await self.archive.lease_durable_tasks(
+            tasks = await self.context.archive.lease_durable_tasks(
                 owner,
                 limit=1,
                 lease_seconds=1800,
-                exclude_kinds=("web_research",),
+                include_kinds=_DURABLE_MEDIA_KINDS if media_only else (),
+                exclude_kinds=() if media_only else (*_DURABLE_MEDIA_KINDS, "web_research"),
                 exclude_task_ids=processed_ids,
             )
             if not tasks:
@@ -540,29 +729,29 @@ class SpineBootMixin:
             task = tasks[0]
             processed_ids.append(task.id)
             if task.kind == "media_delivery":
-                handler = getattr(self, "resume_durable_media_delivery", None)
+                handler = getattr(self.context, "resume_durable_media_delivery", None)
             elif task.kind == "image_generation":
-                handler = getattr(self, "resume_durable_image_generation", None)
+                handler = getattr(self.context, "resume_durable_image_generation", None)
             elif task.kind == "share_image_generation":
-                handler = getattr(self, "resume_share_image_generation", None)
+                handler = getattr(self.context, "resume_share_image_generation", None)
             elif task.kind == "share_video_generation":
-                handler = getattr(self, "resume_share_video_generation", None)
+                handler = getattr(self.context, "resume_share_video_generation", None)
             else:
-                handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
+                handler = getattr(self.context, "_durable_runtime_handlers", {}).get(task.kind)
             if not callable(handler):
-                await self.archive.fail_durable_task(
+                await self.context.archive.fail_durable_task(
                     task.id,
                     f"未知持久任务类型：{task.kind}",
                     owner=owner,
-                    retry_at=self._durable_retry_at(task),
+                    retry_at=self.context._durable_retry_at(task),
                 )
                 continue
             try:
-                result = await self._run_durable_handler(task, handler, owner)
+                result = await self.context._run_durable_handler(task, handler, owner)
             except asyncio.CancelledError:
                 raise
             except (NonRetryableProviderError, ImageTaskFailed, VideoTaskFailed) as exc:
-                await self.archive.fail_durable_task(
+                await self.context.archive.fail_durable_task(
                     task.id,
                     str(exc),
                     owner=owner,
@@ -573,11 +762,11 @@ class SpineBootMixin:
                     f"{LOG_PREFIX} 持久生活任务不可重试（{task_label}）：{exc}"
                 )
             except Exception as exc:
-                await self.archive.fail_durable_task(
+                await self.context.archive.fail_durable_task(
                     task.id,
                     str(exc),
                     owner=owner,
-                    retry_at=self._durable_retry_at(task),
+                    retry_at=self.context._durable_retry_at(task),
                 )
                 task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
                 logger.warning(f"{LOG_PREFIX} 持久生活任务失败（{task_label}）：{exc}")
@@ -590,7 +779,7 @@ class SpineBootMixin:
                     )
             else:
                 if isinstance(result, dict) and result.get("retry_at"):
-                    await self.archive.defer_durable_task(
+                    await self.context.archive.defer_durable_task(
                         task.id,
                         str(result.get("retry_at") or ""),
                         owner=owner,
@@ -598,13 +787,13 @@ class SpineBootMixin:
                         progress=result.get("progress"),
                     )
                     continue
-                committed = await self.archive.complete_durable_task(
+                committed = await self.context.archive.complete_durable_task(
                     task.id,
                     result
                     if isinstance(result, dict)
                     else {
                         "kind": task.kind,
-                        "completed_at": datetime.datetime.now().isoformat(),
+                        "completed_at": life_now().isoformat(),
                     },
                     owner=owner,
                 )
@@ -614,93 +803,96 @@ class SpineBootMixin:
     async def _run_durable_task_worker(self) -> None:
         """启动时收束重启前遗留的任务；任务类型由运行时显式注册。"""
         try:
-            await self._run_durable_tasks_once()
+            await self.context._run_durable_tasks_once()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 持久生活任务恢复失败：{exc}")
 
     def _build_rhythm(self, config: LifeSettings | None = None) -> LifeRhythmClock:
-        handlers = getattr(self, "_durable_runtime_handlers", None)
+        handlers = getattr(self.context, "_durable_runtime_handlers", None)
         if not isinstance(handlers, dict):
             handlers = {}
-            self._durable_runtime_handlers = handlers
-        handlers["proactive_commitment"] = self.run_proactive_commitment_task
-        handlers["commitment_photo"] = self.run_commitment_photo_task
-        handlers["commitment_video"] = self.run_commitment_video_task
+            self.context._durable_runtime_handlers = handlers
+        handlers["proactive_commitment"] = self.context.run_proactive_commitment_task
+        handlers["commitment_photo"] = self.context.run_commitment_photo_task
+        handlers["commitment_video"] = self.context.run_commitment_video_task
         return LifeRhythmClock(
-            config=config or self.config,
-            daily_task=self._leased_rhythm_callback(
-                self.run_daily_refresh, durable_kind="daily_refresh"
+            loop_delay_reporter=self.context._model_cache_meter().record_loop_delay,
+            config=config or self.context.config,
+            daily_task=self.context._leased_rhythm_callback(
+                self.context.run_daily_refresh, durable_kind="daily_refresh"
             ),
-            auto_update_task=self._leased_rhythm_callback(
-                self.check_autonomous_life_update
+            auto_update_task=self.context._leased_rhythm_callback(
+                self.context.check_autonomous_life_update
             ),
-            review_task=self._leased_rhythm_callback(
-                self.run_nightly_review, durable_kind="daily_review"
+            review_task=self.context._leased_rhythm_callback(
+                self.context.run_nightly_review, durable_kind="daily_review"
             ),
-            weekly_task=self._leased_rhythm_callback(self.run_weekly_refresh),
-            proactive_revisit_task=self._leased_rhythm_callback(
-                self.run_private_revisit_check, durable_kind="private_revisit"
+            weekly_task=self.context._leased_rhythm_callback(self.context.run_weekly_refresh),
+            proactive_revisit_task=self.context._leased_rhythm_callback(
+                self.context.run_private_revisit_check, durable_kind="private_revisit"
             ),
-            proactive_idle_task=self._leased_rhythm_callback(
-                self.run_proactive_idle_check, durable_kind="proactive_idle"
+            proactive_idle_task=self.context._leased_rhythm_callback(
+                self.context.run_proactive_idle_check, durable_kind="proactive_idle"
             ),
-            durable_task=self._leased_rhythm_callback(self._run_durable_tasks_once),
-            wardrobe_task=self._leased_rhythm_callback(self.check_wardrobe_life),
-            continuous_life_task=self._leased_rhythm_callback(
-                self.check_continuous_life
+            durable_task=self.context._leased_rhythm_callback(
+                self.context._schedule_durable_task_pump
+            ),
+            wardrobe_task=self.context._leased_rhythm_callback(self.context.check_wardrobe_life),
+            continuous_life_task=self.context._leased_rhythm_callback(
+                self.context.check_continuous_life
             ),
         )
 
     def _runtime_service_condition(self) -> asyncio.Condition:
-        condition = getattr(self, "_service_condition", None)
+        condition = getattr(self.context, "_service_condition", None)
         if isinstance(condition, asyncio.Condition):
             return condition
         condition = asyncio.Condition()
-        self._service_condition = condition
-        self._service_users = 0
-        self._service_swap_pending = False
+        self.context._service_condition = condition
+        self.context._service_users = 0
+        self.context._service_swap_pending = False
         return condition
 
     def _runtime_service_lease_depth(self) -> ContextVar[int]:
-        depth = getattr(self, "_service_lease_depth", None)
+        depth = getattr(self.context, "_service_lease_depth", None)
         if isinstance(depth, ContextVar):
             return depth
-        depth = ContextVar(f"daily_life_service_lease_{id(self)}", default=0)
-        self._service_lease_depth = depth
+        depth = ContextVar(f"daily_life_service_lease_{id(self.context)}", default=0)
+        self.context._service_lease_depth = depth
         return depth
 
     def _runtime_service_lease_owner(self) -> ContextVar[asyncio.Task | None]:
-        owner = getattr(self, "_service_lease_owner", None)
+        owner = getattr(self.context, "_service_lease_owner", None)
         if isinstance(owner, ContextVar):
             return owner
-        owner = ContextVar(f"daily_life_service_lease_owner_{id(self)}", default=None)
-        self._service_lease_owner = owner
+        owner = ContextVar(f"daily_life_service_lease_owner_{id(self.context)}", default=None)
+        self.context._service_lease_owner = owner
         return owner
 
     def _runtime_service_binding(self) -> ContextVar[RuntimeServices | None]:
-        binding = getattr(self, "_service_binding", None)
+        binding = getattr(self.context, "_service_binding", None)
         if not isinstance(binding, ContextVar):
-            binding = ContextVar(f"daily_life_services_{id(self)}", default=None)
-            self._service_binding = binding
+            binding = ContextVar(f"daily_life_services_{id(self.context)}", default=None)
+            self.context._service_binding = binding
         return binding
 
     async def _retire_runtime_services(self, services: RuntimeServices) -> None:
-        users = getattr(self, "_service_version_users", {})
+        users = getattr(self.context, "_service_version_users", {})
         if users.get(id(services), 0):
-            retired = getattr(self, "_retired_runtime_services", None)
+            retired = getattr(self.context, "_retired_runtime_services", None)
             if retired is None:
                 retired = {}
-                self._retired_runtime_services = retired
+                self.context._retired_runtime_services = retired
             retired[id(services)] = services
             return
-        await self._close_runtime_services(services)
+        await self.context._close_runtime_services(services)
 
     @asynccontextmanager
     async def runtime_service_lease(self):
-        depth = self._runtime_service_lease_depth()
-        owner = self._runtime_service_lease_owner()
+        depth = self.context._runtime_service_lease_depth()
+        owner = self.context._runtime_service_lease_owner()
         current_task = asyncio.current_task()
         current_depth = depth.get()
         if current_depth > 0 and owner.get() is current_task:
@@ -711,26 +903,26 @@ class SpineBootMixin:
                 depth.reset(token)
             return
 
-        binding = self._runtime_service_binding()
-        services = binding.get() or getattr(self, "_runtime_services", None)
-        task_bindings = getattr(self, "_service_task_bindings", None)
+        binding = self.context._runtime_service_binding()
+        services = binding.get() or getattr(self.context, "_runtime_services", None)
+        task_bindings = getattr(self.context, "_service_task_bindings", None)
         if task_bindings is None:
             task_bindings = {}
-            self._service_task_bindings = task_bindings
+            self.context._service_task_bindings = task_bindings
         inherited_owner = owner.get()
         if (
             inherited_owner is not None
             and inherited_owner is not current_task
             and inherited_owner not in task_bindings
         ):
-            services = getattr(self, "_runtime_services", None)
-        condition = self._runtime_service_condition()
+            services = getattr(self.context, "_runtime_services", None)
+        condition = self.context._runtime_service_condition()
         async with condition:
-            self._service_users = int(getattr(self, "_service_users", 0)) + 1
-            users = getattr(self, "_service_version_users", None)
+            self.context._service_users = int(getattr(self.context, "_service_users", 0)) + 1
+            users = getattr(self.context, "_service_version_users", None)
             if users is None:
                 users = {}
-                self._service_version_users = users
+                self.context._service_version_users = users
             if services is not None:
                 users[id(services)] = users.get(id(services), 0) + 1
         depth_token = depth.set(1)
@@ -746,10 +938,10 @@ class SpineBootMixin:
             task_bindings.pop(current_task, None)
             retired_services = None
             async with condition:
-                self._service_users = max(
-                    0, int(getattr(self, "_service_users", 0)) - 1
+                self.context._service_users = max(
+                    0, int(getattr(self.context, "_service_users", 0)) - 1
                 )
-                if self._service_users == 0:
+                if self.context._service_users == 0:
                     condition.notify_all()
                 if services is not None:
                     remaining = users[id(services)] - 1
@@ -758,20 +950,20 @@ class SpineBootMixin:
                     else:
                         users.pop(id(services), None)
                         retired_services = getattr(
-                            self, "_retired_runtime_services", {}
+                            self.context, "_retired_runtime_services", {}
                         ).pop(id(services), None)
             if retired_services is not None:
-                await self._close_runtime_services(retired_services)
+                await self.context._close_runtime_services(retired_services)
 
     async def _begin_runtime_service_swap(self) -> None:
-        condition = self._runtime_service_condition()
+        condition = self.context._runtime_service_condition()
         async with condition:
-            self._service_swap_pending = True
+            self.context._service_swap_pending = True
 
     async def _end_runtime_service_swap(self) -> None:
-        condition = self._runtime_service_condition()
+        condition = self.context._runtime_service_condition()
         async with condition:
-            self._service_swap_pending = False
+            self.context._service_swap_pending = False
             condition.notify_all()
 
     @staticmethod
@@ -783,7 +975,7 @@ class SpineBootMixin:
             ("媒体服务", services.media),
             ("MemOS 服务", services.memos),
         ):
-            await SpineBootMixin._close_runtime_component(service, label)
+            await SpineBootComponent._close_runtime_component(service, label)
 
     @staticmethod
     async def _close_runtime_component(
@@ -819,66 +1011,85 @@ class SpineBootMixin:
         logger.info(f"{LOG_PREFIX} 「愿此朝夕陪伴你的生活」启动完成")
 
     async def begin_shutdown(self) -> None:
-        if bool(getattr(self, "_shutdown_started", False)):
+        if bool(getattr(self.context, "_shutdown_started", False)):
             return
-        self._shutdown_started = True
-        voice_call = getattr(self, "voice_call", None)
+        self.context._shutdown_started = True
+        voice_call = getattr(self.context, "voice_call", None)
         if voice_call is not None:
             await voice_call.close()
-        self.rhythm.stop()
-        cancel_idle_tasks = getattr(self, "_cancel_proactive_idle_tasks", None)
+        self.context.rhythm.stop()
+        cancel_idle_tasks = getattr(self.context, "_cancel_proactive_idle_tasks", None)
         if callable(cancel_idle_tasks):
             await cancel_idle_tasks()
-        cancel_generations = getattr(self, "_cancel_daily_generation_tasks", None)
-        if callable(cancel_generations):
-            await cancel_generations()
+        generation = getattr(self.context, "daily_generation", None)
+        if generation is not None:
+            await generation.close()
         close_appearance_tasks = getattr(
-            self, "_close_character_appearance_tasks", None
+            self.context, "_close_character_appearance_tasks", None
         )
         if callable(close_appearance_tasks):
             await close_appearance_tasks()
-        close_snapshot_flight = getattr(self, "_close_injection_snapshot_flight", None)
+        close_snapshot_flight = getattr(self.context, "_close_injection_snapshot_flight", None)
         if callable(close_snapshot_flight):
             await close_snapshot_flight()
-        close_query_vector_flight = getattr(
-            self, "_close_meaning_query_vector_flight", None
-        )
-        if callable(close_query_vector_flight):
-            await close_query_vector_flight()
-        await self._shutdown_chat_memory_batcher()
-        await self._cancel_background_tasks()
+        continuous = self.context.__dict__.get("continuous_life")
+        if continuous is not None:
+            await continuous.close()
+        meaning = self.context.__dict__.get("meaning")
+        if meaning is not None:
+            await meaning.close()
+        await self.context._shutdown_chat_memory_batcher()
+        await self.context._cancel_background_tasks()
 
     async def terminate(self) -> None:
-        await self.begin_shutdown()
-        self.scope_state.clear()
-        operation_locks = getattr(self, "_operation_locks", None)
+        await self.context.begin_shutdown()
+        self.context.scope_state.clear()
+        timing = getattr(self.context, "conversation_timing", None)
+        if timing is not None:
+            timing.clear_conversation_timing()
+        outbound = getattr(self.context, "outbound_log", None)
+        if outbound is not None:
+            outbound.clear()
+        forward = self.context.__dict__.get("text_forward")
+        if forward is not None:
+            forward.clear()
+        recall = self.context.__dict__.get("recall")
+        if recall is not None:
+            recall.clear()
+        addressing = self.context.__dict__.get("addressing")
+        if addressing is not None:
+            addressing.clear()
+        reactions = self.context.__dict__.get("tool_reactions")
+        if reactions is not None:
+            reactions.clear()
+        operation_locks = getattr(self.context, "_operation_locks", None)
         if operation_locks is not None:
             operation_locks.clear()
-        flight = getattr(self, "_sight_flight", None)
-        await self._close_runtime_component(flight, "视频任务")
-        prepare_flight = getattr(self, "_sight_prepare_flight", None)
-        await self._close_runtime_component(prepare_flight, "视频素材准备任务")
-        await self._close_runtime_component(getattr(self, "_native_video_client", None), "Gemini 视频识别服务")
-        await self._close_runtime_services(
+        flight = getattr(self.context, "_sight_flight", None)
+        await self.context._close_runtime_component(flight, "视频任务")
+        prepare_flight = getattr(self.context, "_sight_prepare_flight", None)
+        await self.context._close_runtime_component(prepare_flight, "视频素材准备任务")
+        await self.context._close_runtime_component(getattr(self.context, "_native_video_client", None), "Gemini 视频识别服务")
+        await self.context._close_runtime_services(
             RuntimeServices(
-                config=getattr(self, "config", None),
-                media=getattr(self, "media", None),
-                memos=getattr(self, "memos", None),
-                contact_resolver=getattr(self, "contact_resolver", None),
-                weather_client=getattr(self, "weather_client", None),
-                search=getattr(self, "search", None),
-                domains=getattr(self, "domains", None),
-                composer=getattr(self, "composer", None),
-                model_gateway=getattr(self, "model_gateway", None),
-                rhythm=getattr(self, "rhythm", None),
+                config=getattr(self.context, "config", None),
+                media=getattr(self.context, "media", None),
+                memos=getattr(self.context, "memos", None),
+                contact_resolver=getattr(self.context, "contact_resolver", None),
+                weather_client=getattr(self.context, "weather_client", None),
+                search=getattr(self.context, "search", None),
+                domains=getattr(self.context, "domains", None),
+                composer=getattr(self.context, "composer", None),
+                model_gateway=getattr(self.context, "model_gateway", None),
+                rhythm=getattr(self.context, "rhythm", None),
             )
         )
         try:
-            await self.close_memos_service()
+            await self.context.close_memos_service()
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 关闭 MemOS 服务失败：{exc}")
-        archive = getattr(self, "archive", None)
-        await self._close_runtime_component(
+        archive = getattr(self.context, "archive", None)
+        await self.context._close_runtime_component(
             archive,
             "数据库",
             method_names=("aclose", "close"),

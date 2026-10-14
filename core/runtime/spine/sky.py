@@ -6,16 +6,32 @@ from ...clock import timestamp as life_timestamp
 from ...life.tools import analyze_weather
 from ...models import WeatherInfo
 
+from typing import Any, Protocol
+
 _AUTO_WEATHER_REFRESH_SECONDS = 3600
 _MANUAL_WEATHER_REFRESH_SECONDS = 30
 
 
-class SpineClimateMixin:
+class SpineClimateComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    archive: Any
+    composer: Any
+    config: Any
+    domains: Any
+    mark_page_status_changed: Any
+    weather_client: Any
+
+
+class SpineClimateComponent:
+    def __init__(self, context: SpineClimateComponentContext) -> None:
+        self.context = context
+
     async def try_update_weather(self, today_str: str, *, force: bool = False) -> bool:
-        if not self.config.weather.api_key:
+        if not self.context.config.weather.api_key:
             return False
 
-        data = await self.archive.get_day(today_str)
+        data = await self.context.archive.get_day(today_str)
         if not data:
             return False
 
@@ -34,7 +50,7 @@ class SpineClimateMixin:
 
         try:
             city_resolver = getattr(
-                getattr(self, "domains", None),
+                getattr(self.context, "domains", None),
                 "resolve_weather_city",
                 None,
             )
@@ -43,7 +59,7 @@ class SpineClimateMixin:
                 return False
             action = "手动" if force else "自动"
             logger.debug(f"[天气更新] 正在通过柠柚接口{action}刷新 {city} 天气……")
-            weather_data = await self.weather_client.get_weather(city)
+            weather_data = await self.context.weather_client.get_weather(city)
             weather_ok = bool(
                 weather_data.get(
                     "ok",
@@ -54,7 +70,7 @@ class SpineClimateMixin:
             if not weather_ok:
                 return False
 
-            classifier = getattr(getattr(self, "composer", None), "_classify_weather_condition", None)
+            classifier = getattr(getattr(self.context, "composer", None), "_classify_weather_condition", None)
             if callable(classifier):
                 weather_data = await classifier(weather_data)
             analyzed = analyze_weather(weather_data)
@@ -66,9 +82,9 @@ class SpineClimateMixin:
                 latest.weather_info = WeatherInfo.from_value(analyzed)
                 latest.weather_last_update = now_ts
 
-            if await self.archive.mutate_day(today_str, apply_weather) is None:
+            if await self.context.archive.mutate_day(today_str, apply_weather) is None:
                 return False
-            await self.mark_page_status_changed("weather")
+            await self.context.mark_page_status_changed("weather")
             logger.debug(f"[天气更新] 天气数据已更新：{analyzed['raw']}")
             return True
         except Exception as exc:

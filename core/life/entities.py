@@ -94,6 +94,9 @@ def living_context(items: list[dict[str, Any]]) -> str:
                 f"{OBJECT_LABELS.get(item.get('state'), '待确认')}；"
                 f"位置 {item.get('location') or '未记录'}；"
                 f"进度 {item.get('progress') or '未记录'}；"
+                f"归属 {item.get('owner') or '未知'}；数量 {item.get('quantity', '未知')} {item.get('unit', '')}；"
+                f"可用时间 {item.get('available_at') or '未限制'}；"
+                f"作品版本 {item.get('artifact_version') or '无'}；"
                 f"来源 {item.get('provenance', '')}；"
                 f"{str(item.get('content') or '')[:240]}"
             )

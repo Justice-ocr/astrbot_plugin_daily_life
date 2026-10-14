@@ -1,6 +1,6 @@
 import unittest
 
-from core.runtime.spine.boot import SpineBootMixin
+from componentfixtures import SpineBootComponent
 from runtimehelpers import (
     CORE_INTERNAL_SYSTEM_PROMPT,
     BackgroundTaskScheduler,
@@ -16,7 +16,7 @@ from runtimehelpers import (
     Path,
     Provider,
     ProviderRequest,
-    RuntimeAsyncHelperMixin,
+    RuntimeAsyncHelpers,
     SightClip,
     SightInsight,
     SightVault,
@@ -32,6 +32,9 @@ from runtimehelpers import (
     time,
     types,
 )
+
+
+from astrbot.api import logger
 
 
 class FrameworkStopEvent(Event):
@@ -282,17 +285,15 @@ class RuntimeMediaTest(unittest.TestCase):
             unified_msg_origin="aiocqhttp:FriendMessage:123456", sender_id="123456"
         )
 
-        from core.runtime import messenger
-
-        old_debug = messenger.logger.debug
-        messenger.logger.debug = lambda message, *args, **kwargs: messages.append(
+        old_debug = logger.debug
+        logger.debug = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
             runtime.mark_voice_switch_available(event)
             self.assertTrue(runtime.note_voice_switch_text_result(event))
         finally:
-            messenger.logger.debug = old_debug
+            logger.debug = old_debug
 
         self.assertEqual(messages, [])
         cadence = runtime._voice_switch_cadence_store()[event.unified_msg_origin]
@@ -314,10 +315,8 @@ class RuntimeMediaTest(unittest.TestCase):
             unified_msg_origin="aiocqhttp:FriendMessage:123456", sender_id="123456"
         )
 
-        from core.runtime import messenger
-
-        old_info = messenger.logger.info
-        messenger.logger.info = lambda message, *args, **kwargs: messages.append(
+        old_info = logger.info
+        logger.info = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
@@ -327,7 +326,7 @@ class RuntimeMediaTest(unittest.TestCase):
             ] = "我这轮内容有几句铺垫，文字更容易读清楚。"
             self.assertTrue(runtime.note_voice_switch_text_result(event))
         finally:
-            messenger.logger.info = old_info
+            logger.info = old_info
 
         self.assertEqual(messages, [])
         self.assertEqual(runtime.archive.action_decisions, {})
@@ -350,9 +349,9 @@ class RuntimeMediaTest(unittest.TestCase):
         self.assertFalse(runtime.note_voice_switch_text_result(event))
 
 
-class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     async def test_runtime_terminate_closes_media_tasks_before_resources(self):
-        runtime = SpineBootMixin.__new__(SpineBootMixin)
+        runtime = SpineBootComponent.__new__(SpineBootComponent)
         calls = []
 
         runtime.rhythm = types.SimpleNamespace(stop=lambda: calls.append("rhythm"))
@@ -1811,7 +1810,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
 
     async def test_runtime_terminate_continues_after_service_close_failure(self):
-        runtime = SpineBootMixin.__new__(SpineBootMixin)
+        runtime = SpineBootComponent.__new__(SpineBootComponent)
         calls = []
 
         async def fail_weather():
@@ -2178,10 +2177,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        from core.runtime import messenger
-
-        old_info = messenger.logger.info
-        messenger.logger.info = lambda message, *args, **kwargs: messages.append(
+        old_info = logger.info
+        logger.info = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
@@ -2193,7 +2190,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 decision_reason="这句更适合小声说出来。",
             )
         finally:
-            messenger.logger.info = old_info
+            logger.info = old_info
 
         self.assertFalse(any("语音智能切换裁定：语音" in item for item in messages))
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
@@ -2293,10 +2290,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             unified_msg_origin="aiocqhttp:FriendMessage:123456", sender_id="123456"
         )
 
-        from core.runtime import messenger
-
-        old_debug = messenger.logger.debug
-        messenger.logger.debug = lambda message, *args, **kwargs: messages.append(
+        old_debug = logger.debug
+        logger.debug = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
@@ -2307,7 +2302,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 user_requested=True,
             )
         finally:
-            messenger.logger.debug = old_debug
+            logger.debug = old_debug
 
         self.assertTrue(any("语音请求裁定：文字" in item for item in messages))
         self.assertTrue(any("结果：被拦截" in item for item in messages))
@@ -4996,7 +4991,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         await runtime.inject_life_context(req, event)
 
-        self.assertIn("[HiddenMediaExpression]", req.system_prompt)
+        self.assertIn(
+            "[HiddenMediaExpression]",
+            "\n".join(part.text for part in req.extra_user_content_parts),
+        )
         self.assertNotIn("life_voice_generate", req.system_prompt)
         self.assertFalse(runtime.note_voice_switch_text_result(event))
         await asyncio.gather(*list(runtime._background_scheduler.tasks))

@@ -19,14 +19,33 @@ from .routing import (
 )
 from .tools import extract_json_from_text
 
+from typing import Protocol
+
 _LOCATION_SCOPES = frozenset({"local", "travel"})
 _TRAVEL_MODES = ROUTE_MODES | {AUTO_ROUTE_MODE}
 _FULL_DAY_LOCATION_LIMIT = 8
 _PARTIAL_LOCATION_LIMIT = 4
 
 
-class DailyLocationPlanningMixin:
+class DailyLocationPlanningComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _cities_match: Any
+    _haversine: Any
+    _location_plan_text: Any
+    _map: Any
+    _normalize_daily_location_requests: Any
+    _select_location_candidate_route: Any
+    ensure_map_context: Any
+    map_provider_label: Any
+    resolve_home_location: Any
+
+
+class DailyLocationPlanningComponent:
     """为日程生成预选可确认的地图地点。"""
+
+    def __init__(self, context: DailyLocationPlanningComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _location_plan_text(value: Any, limit: int = 96) -> str:
@@ -98,19 +117,19 @@ class DailyLocationPlanningMixin:
         候选仅用于本次生成提示，不会在最终日程采用前写入地点或路线记录。
         """
 
-        if not await self.ensure_map_context():
+        if not await self.context.ensure_map_context():
             return {"available": False, "candidates": [], "warnings": []}
-        home = await self.resolve_home_location()
+        home = await self.context.resolve_home_location()
         if not home:
             return {"available": False, "candidates": [], "warnings": []}
 
-        normalized = self._normalize_daily_location_requests(
+        normalized = self.context._normalize_daily_location_requests(
             requests, limit=max(1, min(_FULL_DAY_LOCATION_LIMIT, int(max_candidates)))
         )
         if not normalized:
             return {
                 "available": True,
-                "map_provider": self.map_provider_label,
+                "map_provider": self.context.map_provider_label,
                 "home_city": str(home.get("city") or "").strip(),
                 "candidates": [],
                 "warnings": [],
@@ -127,7 +146,7 @@ class DailyLocationPlanningMixin:
                 value for value in (request["query"], request["place_hint"]) if value
             )
             try:
-                places = await self._map.search_places(
+                places = await self.context._map.search_places(
                     query,
                     center=home_coordinate if scope == "local" else None,
                     city_hint=city,
@@ -136,7 +155,7 @@ class DailyLocationPlanningMixin:
                     limit=3,
                 )
                 if not places and scope == "local":
-                    places = await self._map.search_places(
+                    places = await self.context._map.search_places(
                         query,
                         city_hint=city,
                         category=request["category"],
@@ -164,7 +183,7 @@ class DailyLocationPlanningMixin:
             for value in values:
                 if not isinstance(value, dict):
                     continue
-                name = self._location_plan_text(value.get("name"), 96)
+                name = self.context._location_plan_text(value.get("name"), 96)
                 coordinate = value.get("coordinate")
                 if (
                     not name
@@ -172,8 +191,8 @@ class DailyLocationPlanningMixin:
                     or len(coordinate) != 2
                 ):
                     continue
-                if not self._cities_match(
-                    self._location_plan_text(value.get("city"), 48), target_city
+                if not self.context._cities_match(
+                    self.context._location_plan_text(value.get("city"), 48), target_city
                 ):
                     continue
                 identity = (str(value.get("poi_id") or "").strip(), name)
@@ -183,7 +202,7 @@ class DailyLocationPlanningMixin:
                     float(coordinate[0]),
                     float(coordinate[1]),
                 )
-                choice = await self._select_location_candidate_route(
+                choice = await self.context._select_location_candidate_route(
                     home_coordinate,
                     destination_coordinate,
                     request=request,
@@ -204,10 +223,10 @@ class DailyLocationPlanningMixin:
                 warnings.append(f"未找到适合“{request['query']}”的可确认地点")
                 continue
 
-            address = self._location_plan_text(selected.get("address"), 160)
-            district = self._location_plan_text(selected.get("district"), 64)
+            address = self.context._location_plan_text(selected.get("address"), 160)
+            district = self.context._location_plan_text(selected.get("district"), 64)
             place_city = (
-                self._location_plan_text(selected.get("city"), 48) or target_city
+                self.context._location_plan_text(selected.get("city"), 48) or target_city
             )
             route = selected_route or {}
             route_minutes_value = route_minutes(route)
@@ -215,11 +234,11 @@ class DailyLocationPlanningMixin:
             candidates.append(
                 {
                     "purpose": request["purpose"],
-                    "name": self._location_plan_text(selected.get("name"), 96),
+                    "name": self.context._location_plan_text(selected.get("name"), 96),
                     "address": address,
                     "district": district,
                     "city": place_city,
-                    "category": self._location_plan_text(selected.get("category"), 96),
+                    "category": self.context._location_plan_text(selected.get("category"), 96),
                     "place_kind": "poi",
                     "place_scope": request["place_scope"],
                     "place_city": place_city
@@ -229,7 +248,7 @@ class DailyLocationPlanningMixin:
                     "travel_mode": selected_mode_value,
                     "travel_mode_locked": request["travel_mode_locked"],
                     "travel_detail": (
-                        self._location_plan_text(route.get("travel_detail"), 32)
+                        self.context._location_plan_text(route.get("travel_detail"), 32)
                         if selected_mode_value == "transit"
                         else ""
                     ),
@@ -245,7 +264,7 @@ class DailyLocationPlanningMixin:
 
         return {
             "available": True,
-            "map_provider": self.map_provider_label,
+            "map_provider": self.context.map_provider_label,
             "home_city": home_city,
             "candidates": candidates,
             "warnings": warnings,
@@ -268,7 +287,7 @@ class DailyLocationPlanningMixin:
 
         async def fetch(mode: str) -> tuple[str, dict[str, Any] | None]:
             try:
-                route = await self._map.route(
+                route = await self.context._map.route(
                     origin,
                     destination,
                     mode,
@@ -305,7 +324,7 @@ class DailyLocationPlanningMixin:
         if options and effective_max_minutes > 0:
             return None
 
-        distance = self._haversine(origin, destination)
+        distance = self.context._haversine(origin, destination)
         fallback_mode = (
             requested_mode
             if locked and requested_mode in ROUTE_MODES
@@ -328,8 +347,23 @@ class DailyLocationPlanningMixin:
         return fallback_mode, fallback_route, fallback_minutes
 
 
-class DailyLocationGenerationMixin:
+class DailyLocationGenerationComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _call_llm_text: Any
+    _daily_location_candidates_context: Any
+    _daily_location_request_prompt: Any
+    _get_provider: Any
+    _system_default_provider: Any
+    config: Any
+    domains: Any
+
+
+class DailyLocationGenerationComponent:
     """把短地点意图、地图候选和最终日程生成串成两阶段流程。"""
+
+    def __init__(self, context: DailyLocationGenerationComponentContext) -> None:
+        self.context = context
 
     @staticmethod
     def _daily_location_request_prompt(context: dict[str, Any]) -> str:
@@ -441,7 +475,7 @@ class DailyLocationGenerationMixin:
         provider_id: str,
         session_id: str,
     ) -> tuple[str, list[dict[str, Any]]]:
-        domains = getattr(self, "domains", None)
+        domains = getattr(self.context, "domains", None)
         availability = getattr(domains, "map_tools_available", None)
         selector = getattr(domains, "prepare_daily_location_candidates", None)
         if not (callable(availability) and availability() and callable(selector)):
@@ -449,7 +483,7 @@ class DailyLocationGenerationMixin:
         try:
             configured_location_provider_id = str(
                 getattr(
-                    getattr(self, "config", None),
+                    getattr(self.context, "config", None),
                     "location_planning_provider",
                     "",
                 )
@@ -458,21 +492,21 @@ class DailyLocationGenerationMixin:
             location_provider = provider
             if configured_location_provider_id:
                 location_provider_id = configured_location_provider_id
-                configured_provider = await self._get_provider(location_provider_id)
+                configured_provider = await self.context._get_provider(location_provider_id)
                 if configured_provider is not None:
                     location_provider = configured_provider
             else:
                 (
                     default_provider,
                     default_provider_id,
-                ) = await self._system_default_provider(provider_id)
+                ) = await self.context._system_default_provider(provider_id)
                 if default_provider is not None:
                     location_provider = default_provider
                     location_provider_id = default_provider_id or provider_id
                 else:
                     location_provider_id = provider_id
-            prompt = self._daily_location_request_prompt(context)
-            completion = await self._call_llm_text(
+            prompt = self.context._daily_location_request_prompt(context)
+            completion = await self.context._call_llm_text(
                 location_provider,
                 prompt,
                 session_id,
@@ -494,7 +528,7 @@ class DailyLocationGenerationMixin:
                 max_candidates=request_limit,
                 weather_info=context.get("weather_info"),
             )
-            location_context = self._daily_location_candidates_context(selected)
+            location_context = self.context._daily_location_candidates_context(selected)
             if location_context:
                 logger.debug(
                     f"[日程生成] 地图地点预选完成：候选={len(selected.get('candidates') or [])}；"
@@ -516,4 +550,4 @@ class DailyLocationGenerationMixin:
         return f"{prompt}\n\n{context}" if context else prompt
 
 
-__all__ = ["DailyLocationGenerationMixin", "DailyLocationPlanningMixin"]
+__all__ = ["DailyLocationGenerationComponent", "DailyLocationPlanningComponent"]

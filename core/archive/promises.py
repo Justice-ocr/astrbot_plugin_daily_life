@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from typing import Any
 
 from ..models import CommitmentRecord
+
+from typing import Protocol
 
 _COMMITMENT_SOURCE_PRIORITY = {
     "invite": 400,
@@ -12,7 +16,21 @@ _COMMITMENT_SOURCE_PRIORITY = {
 }
 
 
-class CommitmentArchiveMixin:
+class CommitmentArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_commitment: Any
+    _conn: Any
+    _get_people_unlocked: Any
+    _replace_people_unlocked: Any
+    _run_db: Any
+    _text: Any
+
+
+class CommitmentArchiveComponent:
+    def __init__(self, context: CommitmentArchiveComponentContext) -> None:
+        self.context = context
+
     def _compose_commitment(self, row: sqlite3.Row) -> CommitmentRecord:
         return CommitmentRecord(
             id=int(row["id"] or 0),
@@ -23,7 +41,7 @@ class CommitmentArchiveMixin:
             time_window=row["time_window"],
             owner=row["owner"],
             media_kind=row["media_kind"],
-            people=self._get_people_unlocked(
+            people=self.context._get_people_unlocked(
                 "commitment_people", "commitment_id", row["id"]
             ),
             place=row["place"],
@@ -46,10 +64,10 @@ class CommitmentArchiveMixin:
         )
         if not item:
             raise ValueError("承诺内容不能为空")
-        item.kind = self._text(item.kind) or "plan"
-        item.status = self._text(item.status) or "active"
-        item.owner = self._text(item.owner) or "未定"
-        item.media_kind = self._text(item.media_kind).lower() or "none"
+        item.kind = self.context._text(item.kind) or "plan"
+        item.status = self.context._text(item.status) or "active"
+        item.owner = self.context._text(item.owner) or "未定"
+        item.media_kind = self.context._text(item.media_kind).lower() or "none"
         item.confidence = max(min(float(item.confidence or 0.0), 1.0), 0.0)
 
         def dbwork():
@@ -59,7 +77,7 @@ class CommitmentArchiveMixin:
                 and item.source_session
                 and item.source_message_id
             ):
-                evidence_rows = self._conn.execute(
+                evidence_rows = self.context._conn.execute(
                     """
                     SELECT *
                     FROM commitments
@@ -72,7 +90,7 @@ class CommitmentArchiveMixin:
                 ).fetchall()
                 evidence_matches = []
                 for row in evidence_rows:
-                    existing = self._compose_commitment(row)
+                    existing = self.context._compose_commitment(row)
                     same_slot = True
                     for field in (
                         "kind",
@@ -117,7 +135,7 @@ class CommitmentArchiveMixin:
                     ):
                         return existing
             if item.id:
-                self._conn.execute(
+                self.context._conn.execute(
                     """
                     UPDATE commitments
                     SET content = ?, kind = ?, trigger_date = ?, trigger_time = ?,
@@ -149,7 +167,7 @@ class CommitmentArchiveMixin:
                 )
                 commitment_id = item.id
             else:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """
                     INSERT INTO commitments(
                         content, kind, trigger_date, trigger_time, time_window, owner, media_kind, place,
@@ -179,16 +197,16 @@ class CommitmentArchiveMixin:
                     ),
                 )
                 commitment_id = int(cursor.lastrowid)
-            self._replace_people_unlocked(
+            self.context._replace_people_unlocked(
                 "commitment_people", "commitment_id", commitment_id, item.people
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM commitments WHERE id = ?", (commitment_id,)
             ).fetchone()
-            return self._compose_commitment(row)
+            return self.context._compose_commitment(row)
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_commitments(
         self, status: str = "active", limit: int = 20
@@ -198,24 +216,24 @@ class CommitmentArchiveMixin:
             sql = "SELECT * FROM commitments"
             if status:
                 sql += " WHERE status = ?"
-                params.append(self._text(status))
+                params.append(self.context._text(status))
             sql += " ORDER BY COALESCE(NULLIF(trigger_date, ''), '9999-12-31'), id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_commitment(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_commitment(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_commitment(self, commitment_id: int) -> CommitmentRecord | None:
         def dbwork():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM commitments WHERE id = ?", (int(commitment_id),)
             ).fetchone()
-            return self._compose_commitment(row) if row else None
+            return self.context._compose_commitment(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_due_commitments(
         self, date_str: str, include_scheduled: bool = False
@@ -224,7 +242,7 @@ class CommitmentArchiveMixin:
         placeholders = ",".join("?" for _ in statuses)
 
         def dbwork():
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 f"""
                 SELECT *
                 FROM commitments
@@ -232,41 +250,41 @@ class CommitmentArchiveMixin:
                   AND (trigger_date = ? OR (trigger_date = '' AND time_window IN ('next_chat', 'next_time')))
                 ORDER BY trigger_time, id
                 """,
-                (*statuses, self._text(date_str)),
+                (*statuses, self.context._text(date_str)),
             ).fetchall()
-            return [self._compose_commitment(row) for row in rows]
+            return [self.context._compose_commitment(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_open_commitments_for_scope(
         self, scope: str, before_date: str, limit: int = 80
     ) -> list[CommitmentRecord]:
         def read():
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """SELECT * FROM commitments WHERE source_session = ?
                 AND status IN ('active', 'scheduled', 'pending')
                 AND (trigger_date = '' OR trigger_date <= ?)
                 ORDER BY trigger_date DESC, id DESC LIMIT ?""",
                 (scope, before_date, max(1, min(200, int(limit)))),
             ).fetchall()
-            return [self._compose_commitment(row) for row in rows]
+            return [self.context._compose_commitment(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def get_open_commitments_for_message(
         self, scope: str, message_id: str
     ) -> list[CommitmentRecord]:
         def read():
-            rows = self._conn.execute(
+            rows = self.context._conn.execute(
                 """SELECT * FROM commitments
                 WHERE source_session = ? AND source_message_id = ?
                 AND status IN ('active', 'scheduled', 'pending')
                 ORDER BY id""",
                 (scope, message_id),
             ).fetchall()
-            return [self._compose_commitment(row) for row in rows]
+            return [self.context._compose_commitment(row) for row in rows]
 
-        return await self._run_db(read)
+        return await self.context._run_db(read)
 
     async def complete_simulated_commitment(
         self,
@@ -282,9 +300,9 @@ class CommitmentArchiveMixin:
             return False
 
         def write():
-            self._conn.execute("BEGIN IMMEDIATE")
+            self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                cursor = self._conn.execute(
+                cursor = self.context._conn.execute(
                     """UPDATE commitments SET status = 'done', completed_at = ?
                     WHERE id = ? AND source_session = ? AND owner = '当前角色'
                     AND media_kind IN ('', 'none') AND kind = 'plan'
@@ -294,11 +312,11 @@ class CommitmentArchiveMixin:
                 )
                 changed = cursor.rowcount > 0
                 if changed:
-                    self._conn.execute(
+                    self.context._conn.execute(
                         "UPDATE conversation_action_items SET status = 'done', updated_at = CURRENT_TIMESTAMP WHERE commitment_id = ?",
                         (int(commitment_id),),
                     )
-                    self._conn.execute(
+                    self.context._conn.execute(
                         """INSERT INTO decision_traces(trace_id, scope, stage, reason_code, decision, evidence_json, outcome)
                         VALUES (?, ?, 'completed', 'virtual_action_evidence', 'done', ?, ?)
                         ON CONFLICT(trace_id, stage) DO NOTHING""",
@@ -309,18 +327,18 @@ class CommitmentArchiveMixin:
                             "依据已发送的角色行动完成陈述同步虚拟承诺",
                         ),
                     )
-                self._conn.commit()
+                self.context._conn.commit()
                 return changed
             except Exception:
-                self._conn.rollback()
+                self.context._conn.rollback()
                 raise
 
-        return await self._run_db(write)
+        return await self.context._run_db(write)
 
     async def set_commitment_status(
         self, commitment_id: int, status: str, when: str = ""
     ) -> bool:
-        status = self._text(status)
+        status = self.context._text(status)
         if status not in {
             "active",
             "scheduled",
@@ -338,9 +356,9 @@ class CommitmentArchiveMixin:
         )
 
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 f"UPDATE commitments SET status = ?, {field} = ? WHERE id = ?",
-                (status, self._text(when), int(commitment_id)),
+                (status, self.context._text(when), int(commitment_id)),
             )
             action_status = {
                 "active": "open",
@@ -351,7 +369,7 @@ class CommitmentArchiveMixin:
                 "expired": "expired",
                 "delivery_failed": "failed",
             }.get(status, status)
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE conversation_action_items
                 SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -359,10 +377,10 @@ class CommitmentArchiveMixin:
                 """,
                 (action_status, int(commitment_id)),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def reschedule_commitment(
         self,
@@ -372,20 +390,20 @@ class CommitmentArchiveMixin:
         trigger_time: str = "",
     ) -> bool:
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 """
                 UPDATE commitments
                 SET trigger_date = ?, trigger_time = ?, time_window = ?, status = 'active', activated_at = ''
                 WHERE id = ?
                 """,
                 (
-                    self._text(trigger_date),
-                    self._text(trigger_time),
-                    self._text(time_window),
+                    self.context._text(trigger_date),
+                    self.context._text(trigger_time),
+                    self.context._text(time_window),
                     int(commitment_id),
                 ),
             )
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE conversation_action_items
                 SET due_at = ?, status = 'open', updated_at = CURRENT_TIMESTAMP
@@ -395,19 +413,19 @@ class CommitmentArchiveMixin:
                     " ".join(
                         value
                         for value in (
-                            self._text(trigger_date),
-                            self._text(trigger_time),
+                            self.context._text(trigger_date),
+                            self.context._text(trigger_time),
                         )
                         if value
                     )
-                    or self._text(time_window),
+                    or self.context._text(time_window),
                     int(commitment_id),
                 ),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def link_commitments_to_day(
         self, date_str: str, commitment_ids: list[int]
@@ -417,11 +435,11 @@ class CommitmentArchiveMixin:
             return
 
         def dbwork():
-            self._conn.executemany(
+            self.context._conn.executemany(
                 "INSERT OR IGNORE INTO day_commitments(date, commitment_id) VALUES (?, ?)",
-                [(self._text(date_str), commitment_id) for commitment_id in ids],
+                [(self.context._text(date_str), commitment_id) for commitment_id in ids],
             )
-            self._conn.executemany(
+            self.context._conn.executemany(
                 """
                 UPDATE commitments
                 SET status = 'scheduled', activated_at = COALESCE(NULLIF(activated_at, ''), CURRENT_TIMESTAMP)
@@ -429,7 +447,7 @@ class CommitmentArchiveMixin:
                 """,
                 [(commitment_id,) for commitment_id in ids],
             )
-            self._conn.executemany(
+            self.context._conn.executemany(
                 """
                 UPDATE conversation_action_items
                 SET status = 'pending', updated_at = CURRENT_TIMESTAMP
@@ -437,6 +455,6 @@ class CommitmentArchiveMixin:
                 """,
                 [(commitment_id,) for commitment_id in ids],
             )
-            self._conn.commit()
+            self.context._conn.commit()
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

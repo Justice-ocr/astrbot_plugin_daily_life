@@ -2,8 +2,30 @@ from __future__ import annotations
 
 from typing import Any
 
+from typing import Protocol
 
-class VoiceSwitchJudgeMixin:
+
+class VoiceSwitchJudgeComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _VOICE_SWITCH_LONG_LINE_LIMIT: Any
+    _VOICE_SWITCH_LONG_TEXT_LIMIT: Any
+    _VOICE_SWITCH_MAX_SHORT_LINES: Any
+    _VOICE_SWITCH_MIN_NATURAL_SCORE: Any
+    _semantic_expression_plan_from_event: Any
+    _voice_switch_has_dense_foreign_shape: Any
+    _voice_switch_has_dense_number_shape: Any
+    _voice_switch_has_list_shape: Any
+    _voice_switch_has_path_shape: Any
+    _voice_switch_structural_text_reason: Any
+    _voice_switch_text_decision: Any
+    _voice_switch_text_too_dense_for_voice: Any
+
+
+class VoiceSwitchJudgeComponent:
+    def __init__(self, context: VoiceSwitchJudgeComponentContext) -> None:
+        self.context = context
+
     _VOICE_SWITCH_MIN_NATURAL_SCORE = 0.58
 
     def _judge_voice_switch_channel(
@@ -11,24 +33,24 @@ class VoiceSwitchJudgeMixin:
     ) -> dict[str, Any]:
         text = str(reply_text or "").strip()
         if not text:
-            return self._voice_switch_text_decision(
+            return self.context._voice_switch_text_decision(
                 "我还没整理出要说的话，先不发语音。", 0.0
             )
 
-        structural_block = self._voice_switch_structural_text_reason(text)
+        structural_block = self.context._voice_switch_structural_text_reason(text)
         if structural_block:
-            return self._voice_switch_text_decision(structural_block, 0.96)
+            return self.context._voice_switch_text_decision(structural_block, 0.96)
 
-        plan_getter = getattr(self, "_semantic_expression_plan_from_event", None)
+        plan_getter = getattr(self.context, "_semantic_expression_plan_from_event", None)
         plan = plan_getter(event) if callable(plan_getter) else None
         if plan is None or str(getattr(plan, "channel", "text")) != "voice":
-            return self._voice_switch_text_decision(
+            return self.context._voice_switch_text_decision(
                 str(getattr(plan, "reason", "") or "这轮没有明确的语音表达需要，保留文字更自然。"),
                 float(getattr(plan, "confidence", 0.0) or 0.0),
             )
         score = max(0.0, min(float(getattr(plan, "confidence", 0.0) or 0.0), 1.0))
-        if score < self._VOICE_SWITCH_MIN_NATURAL_SCORE:
-            return self._voice_switch_text_decision(
+        if score < self.context._VOICE_SWITCH_MIN_NATURAL_SCORE:
+            return self.context._voice_switch_text_decision(
                 "语音表达倾向不够明确，保留文字发送。", score
             )
         emotion_category = str(getattr(plan, "emotion_category", "neutral") or "neutral")
@@ -62,21 +84,21 @@ class VoiceSwitchJudgeMixin:
             return "我这轮带着代码或命令痕迹，打字留给对方看更稳。"
         if "://" in normalized or normalized.startswith("www."):
             return "我这轮带了链接，直接发文字更方便对方点开。"
-        if self._voice_switch_has_path_shape(normalized):
+        if self.context._voice_switch_has_path_shape(normalized):
             return "我这轮带了路径或位置写法，文字更不容易听错。"
-        if len(normalized) > self._VOICE_SWITCH_LONG_TEXT_LIMIT:
+        if len(normalized) > self.context._VOICE_SWITCH_LONG_TEXT_LIMIT:
             return "我这轮内容偏长，打字留下来更清楚。"
-        if len(lines) > self._VOICE_SWITCH_MAX_SHORT_LINES:
+        if len(lines) > self.context._VOICE_SWITCH_MAX_SHORT_LINES:
             return "我这轮分了好几行，打字更方便对方回看。"
-        if any(len(line) > self._VOICE_SWITCH_LONG_LINE_LIMIT for line in lines):
+        if any(len(line) > self.context._VOICE_SWITCH_LONG_LINE_LIMIT for line in lines):
             return "我这轮单句太长，说出来容易散，文字更清楚。"
-        if self._voice_switch_has_list_shape(lines):
+        if self.context._voice_switch_has_list_shape(lines):
             return "我这轮像是在列步骤或清单，文字更合适。"
-        if self._voice_switch_has_dense_foreign_shape(normalized):
+        if self.context._voice_switch_has_dense_foreign_shape(normalized):
             return "我这轮有不少英文名词或参数，打字更不容易误会。"
-        if self._voice_switch_has_dense_number_shape(normalized):
+        if self.context._voice_switch_has_dense_number_shape(normalized):
             return "我这轮数字信息偏多，文字更方便核对。"
-        if self._voice_switch_text_too_dense_for_voice(normalized):
+        if self.context._voice_switch_text_too_dense_for_voice(normalized):
             return "我这轮信息密度有点高，打字更稳。"
         return ""
 

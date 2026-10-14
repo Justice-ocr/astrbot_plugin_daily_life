@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import math
 from pathlib import Path
@@ -25,8 +27,50 @@ from ...sources.dispatch import ScopeDeliveryError
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ProactiveSendMixin:
+
+class ProactiveSendComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _MEDIA_CHAT_TOKEN_ATTR: Any
+    _VOICE_SWITCH_MIN_NATURAL_SCORE: Any
+    _append_proactive_send_history: Any
+    _apply_proactive_send_timing: Any
+    _continuous_turn_identity: Any
+    _event_message_id: Any
+    _event_session_id: Any
+    _mark_failed_proactive_contact: Any
+    _media_chat_tokens: Any
+    _normalize_proactive_reply_text: Any
+    _note_voice_expression_decision: Any
+    _proactive_chat_snapshot: Any
+    _proactive_scope_key: Any
+    _proactive_send_is_current: Any
+    _proactive_source_label: Any
+    _proactive_voice_available: Any
+    _record_message_chain: Any
+    _send_proactive_emoji_if_needed: Any
+    _send_proactive_voice_if_enabled: Any
+    _send_segmented_proactive_message: Any
+    _snapshot_proactive_send_event: Any
+    _state_refresh_in_quiet_hours: Any
+    _voice_allowed_for_scope: Any
+    _voice_switch_structural_text_reason: Any
+    archive: Any
+    can_send_for_source: Any
+    config: Any
+    media: Any
+    media_request_is_current_turn: Any
+    note_structured_bot_message: Any
+    send_background_text: Any
+    send_message_if_not_recalled: Any
+
+
+class ProactiveSendComponent:
+    def __init__(self, context: ProactiveSendComponentContext) -> None:
+        self.context = context
+
     def _snapshot_proactive_send_event(
         self, scope: str, source_event: Any = None, *, bind_source: bool = False
     ) -> Any:
@@ -38,15 +82,15 @@ class ProactiveSendMixin:
         if not hasattr(event, "_daily_life_proactive_send_token"):
             event._daily_life_proactive_send_token = (
                 scope,
-                self._proactive_chat_snapshot(scope),
+                self.context._proactive_chat_snapshot(scope),
             )
-        if bind_source and self._event_message_id(event):
-            identity = self._continuous_turn_identity(event)
-            if identity in getattr(self, "_media_chat_tokens", {}):
+        if bind_source and self.context._event_message_id(event):
+            identity = self.context._continuous_turn_identity(event)
+            if identity in getattr(self.context, "_media_chat_tokens", {}):
                 setattr(
                     event,
-                    self._MEDIA_CHAT_TOKEN_ATTR,
-                    (*identity, self._event_message_id(event)),
+                    self.context._MEDIA_CHAT_TOKEN_ATTR,
+                    (*identity, self.context._event_message_id(event)),
                 )
         return event
 
@@ -55,7 +99,7 @@ class ProactiveSendMixin:
             sorted(
                 (participant, token)
                 for (current_scope, participant), token in getattr(
-                    self, "_media_chat_tokens", {}
+                    self.context, "_media_chat_tokens", {}
                 ).items()
                 if current_scope == scope
             )
@@ -63,15 +107,15 @@ class ProactiveSendMixin:
 
     def _proactive_send_is_current(self, event: Any) -> bool:
         quiet_guard = getattr(event, "_daily_life_quiet_guard", False)
-        quiet_check = getattr(self, "_state_refresh_in_quiet_hours", None)
+        quiet_check = getattr(self.context, "_state_refresh_in_quiet_hours", None)
         if quiet_guard and callable(quiet_check) and quiet_check(life_now()):
             return False
         expires_at = getattr(event, "_daily_life_proactive_expires_at", None)
         if expires_at is not None and life_now() >= expires_at:
             return False
         token = getattr(event, "_daily_life_proactive_send_token", None)
-        return self.media_request_is_current_turn(event) and (
-            token is None or self._proactive_chat_snapshot(token[0]) == token[1]
+        return self.context.media_request_is_current_turn(event) and (
+            token is None or self.context._proactive_chat_snapshot(token[0]) == token[1]
         )
 
     async def _send_proactive_voice_call_invite(
@@ -87,12 +131,12 @@ class ProactiveSendMixin:
         parts = [str(notice or "").strip(), str(link or "").strip()]
         if not all(parts):
             return False
-        source_event = self._snapshot_proactive_send_event(target_scope, source_event)
+        source_event = self.context._snapshot_proactive_send_event(target_scope, source_event)
         source_event._daily_life_quiet_guard = True
         for part in parts:
-            if not self._proactive_send_is_current(source_event):
+            if not self.context._proactive_send_is_current(source_event):
                 return False
-            if not await self.send_background_text(
+            if not await self.context.send_background_text(
                 target_scope,
                 part,
                 mode=BackgroundTextMode.DIRECT,
@@ -135,10 +179,10 @@ class ProactiveSendMixin:
         raise_delivery_errors: bool = False,
     ) -> bool:
         target_scope = str(target_scope or "").strip()
-        reply_text = self._normalize_proactive_reply_text(reply_text)
+        reply_text = self.context._normalize_proactive_reply_text(reply_text)
         if not target_scope or not reply_text:
             return False
-        source_event = self._snapshot_proactive_send_event(
+        source_event = self.context._snapshot_proactive_send_event(
             target_scope,
             source_event,
             bind_source=bool(
@@ -148,38 +192,38 @@ class ProactiveSendMixin:
         if (send_payload or {}).get("source") in {"private_revisit", "proactive_reply", "proactive_voice_call"}:
             source_event._daily_life_quiet_guard = True
         try:
-            if not self._proactive_send_is_current(source_event):
+            if not self.context._proactive_send_is_current(source_event):
                 return False
-            if not self.can_send_for_source(
+            if not self.context.can_send_for_source(
                 target_scope,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
                 return False
-            await self._apply_proactive_send_timing(send_payload)
-            if not self._proactive_send_is_current(source_event):
+            await self.context._apply_proactive_send_timing(send_payload)
+            if not self.context._proactive_send_is_current(source_event):
                 return False
-            if not self.can_send_for_source(
+            if not self.context.can_send_for_source(
                 target_scope,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
                 return False
-            if await self._send_proactive_voice_if_enabled(
+            if await self.context._send_proactive_voice_if_enabled(
                 target_scope,
                 reply_text,
                 send_payload,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
-                self.note_structured_bot_message(target_scope, reply_text, media="语音")
-                await self._append_proactive_send_history(
+                self.context.note_structured_bot_message(target_scope, reply_text, media="语音")
+                await self.context._append_proactive_send_history(
                     target_scope, reply_text, media="语音"
                 )
                 return True
-            if not self._proactive_send_is_current(source_event):
+            if not self.context._proactive_send_is_current(source_event):
                 return False
-            if not await self._send_segmented_proactive_message(
+            if not await self.context._send_segmented_proactive_message(
                 target_scope,
                 reply_text,
                 source_event=source_event,
@@ -187,17 +231,17 @@ class ProactiveSendMixin:
                 raise_delivery_errors=raise_delivery_errors,
             ):
                 return False
-            await self._append_proactive_send_history(target_scope, reply_text)
+            await self.context._append_proactive_send_history(target_scope, reply_text)
             emoji_payload = dict(send_payload or {})
             if source_event is not None:
                 emoji_payload["_source_event"] = source_event
             if source_message_id:
                 emoji_payload["_source_message_id"] = source_message_id
-            await self._send_proactive_emoji_if_needed(target_scope, emoji_payload)
+            await self.context._send_proactive_emoji_if_needed(target_scope, emoji_payload)
             return True
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} {failure_label}：{exc}")
-            await self._mark_failed_proactive_contact(
+            await self.context._mark_failed_proactive_contact(
                 target_scope,
                 exc,
                 relationship=relationship,
@@ -226,7 +270,7 @@ class ProactiveSendMixin:
         not_friend = "不是好友" in reason or "not friend" in reason.lower()
         if resolved_type != "friend" and not not_friend:
             return
-        marker = getattr(self.archive, "mark_relationship_contact_unreachable", None)
+        marker = getattr(self.context.archive, "mark_relationship_contact_unreachable", None)
         if not callable(marker):
             return
         try:
@@ -244,12 +288,12 @@ class ProactiveSendMixin:
         *,
         source: str = "proactive_reply",
     ) -> None:
-        scope = self._event_session_id(event) or self._proactive_scope_key(event)
-        message_id = self._event_message_id(event)
+        scope = self.context._event_session_id(event) or self.context._proactive_scope_key(event)
+        message_id = self.context._event_message_id(event)
         review = payload.get("expression_review")
         candidate = reply_text or str(payload.get("_expression_candidate_text") or "").strip()
         if isinstance(review, dict) and candidate and isinstance(review.get("passed"), bool):
-            await self.archive.save_expression_review(
+            await self.context.archive.save_expression_review(
                 ExpressionReviewRecord.from_value(
                     {
                         **review,
@@ -262,7 +306,7 @@ class ProactiveSendMixin:
             )
         intent = payload.get("expression_intent")
         if isinstance(intent, dict):
-            await self.archive.save_expression_intent(
+            await self.context.archive.save_expression_intent(
                 ExpressionIntentRecord.from_value(
                     {
                         **intent,
@@ -276,18 +320,18 @@ class ProactiveSendMixin:
             )
 
     def _proactive_voice_available(self, target_scope: str) -> bool:
-        config = getattr(self.config, "voice_generation", None)
-        service = getattr(getattr(self, "media", None), "voice", None)
+        config = getattr(self.context.config, "voice_generation", None)
+        service = getattr(getattr(self.context, "media", None), "voice", None)
         return bool(
             config
             and config.enabled
             and config.proactive_enabled
-            and self._voice_allowed_for_scope(target_scope)
+            and self.context._voice_allowed_for_scope(target_scope)
             and callable(getattr(service, "synthesize", None))
         )
 
     def _proactive_voice_capability(self, target_scope: str) -> str:
-        if self._proactive_voice_available(target_scope):
+        if self.context._proactive_voice_available(target_scope):
             return "可用；是否使用由本轮表达意图和收听情境决定，不代表必须发语音"
         return "不可用；expression_intent.channel 必须选择 text"
 
@@ -300,7 +344,7 @@ class ProactiveSendMixin:
         source_event: Any = None,
         source_message_id: str = "",
     ) -> bool:
-        if not self._proactive_voice_available(target_scope):
+        if not self.context._proactive_voice_available(target_scope):
             return False
         intent = payload.get("expression_intent") if isinstance(payload, dict) else None
         if not isinstance(intent, dict) or intent.get("channel") != "voice":
@@ -315,18 +359,18 @@ class ProactiveSendMixin:
         reason = str(intent.get("reason") or "").strip()
         if (
             not math.isfinite(confidence)
-            or not self._VOICE_SWITCH_MIN_NATURAL_SCORE <= confidence <= 1.0
+            or not self.context._VOICE_SWITCH_MIN_NATURAL_SCORE <= confidence <= 1.0
             or not reason
-            or self._voice_switch_structural_text_reason(reply_text)
+            or self.context._voice_switch_structural_text_reason(reply_text)
         ):
             return False
-        voice_service = self.media.voice
+        voice_service = self.context.media.voice
         emotion = str(intent.get("emotion") or "").strip()
         emotion_category = str(intent.get("emotion_category") or "").strip()
         voice_style = str(intent.get("voice_style") or "").strip().lower()
-        source_label = self._proactive_source_label(payload)
-        source_event = self._snapshot_proactive_send_event(target_scope, source_event)
-        if not self._proactive_send_is_current(source_event):
+        source_label = self.context._proactive_source_label(payload)
+        source_event = self.context._snapshot_proactive_send_event(target_scope, source_event)
+        if not self.context._proactive_send_is_current(source_event):
             return False
         try:
             voice_kwargs = {
@@ -336,16 +380,16 @@ class ProactiveSendMixin:
             if voice_style:
                 voice_kwargs["voice_style"] = voice_style
             generated = await voice_service.synthesize(reply_text, **voice_kwargs)
-            if not self._proactive_send_is_current(source_event):
+            if not self.context._proactive_send_is_current(source_event):
                 return False
-            if not await self.send_message_if_not_recalled(
+            if not await self.context.send_message_if_not_recalled(
                 target_scope,
-                self._record_message_chain(generated.path),
+                self.context._record_message_chain(generated.path),
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
                 return False
-            await self._note_voice_expression_decision(
+            await self.context._note_voice_expression_decision(
                 scope=target_scope,
                 channel="语音",
                 source=source_label,
@@ -358,10 +402,10 @@ class ProactiveSendMixin:
             )
             return True
         except Exception as exc:
-            if not self._proactive_send_is_current(source_event):
+            if not self.context._proactive_send_is_current(source_event):
                 return False
             logger.debug(f"{LOG_PREFIX} {source_label}语音发送失败，改用文字：{exc}")
-            await self._note_voice_expression_decision(
+            await self.context._note_voice_expression_decision(
                 scope=target_scope,
                 channel="文字",
                 source=source_label,

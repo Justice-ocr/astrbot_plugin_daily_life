@@ -1,11 +1,30 @@
+from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
 from ...clock import today as life_today
 from ...models import FocusSlotRecord, FocusTargetRecord
 
+from typing import Protocol
 
-class FocusArchiveMixin:
+
+class FocusArchiveComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _compose_focus_slot: Any
+    _compose_focus_target: Any
+    _conn: Any
+    _flag: Any
+    _focus_expiry_clause: Any
+    _run_db: Any
+    _text: Any
+
+
+class FocusArchiveComponent:
+    def __init__(self, context: FocusArchiveComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _focus_expiry_clause() -> str:
         return "(expires_at = '' OR expires_at >= ?)"
@@ -15,12 +34,12 @@ class FocusArchiveMixin:
             id=int(row["id"] or 0),
             scope=row["scope"],
             focus_key=row["focus_key"],
-            label=self._text(row["label"]),
+            label=self.context._text(row["label"]),
             priority=int(row["priority"] or 0),
             progress=int(row["progress"] or 0),
-            status=self._text(row["status"]) or "active",
-            reason=self._text(row["reason"]),
-            last_evidence=self._text(row["last_evidence"]),
+            status=self.context._text(row["status"]) or "active",
+            reason=self.context._text(row["reason"]),
+            last_evidence=self.context._text(row["last_evidence"]),
             last_active_at=row["last_active_at"],
             last_progress_at=row["last_progress_at"],
             expires_at=row["expires_at"],
@@ -34,11 +53,11 @@ class FocusArchiveMixin:
         )
         if not item:
             return None
-        scope = self._text(item.scope)
-        focus_key = self._text(item.focus_key) or self._text(item.label)
+        scope = self.context._text(item.scope)
+        focus_key = self.context._text(item.focus_key) or self.context._text(item.label)
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO focus_slots(
                     scope, focus_key, label, priority, progress, status, reason,
@@ -64,25 +83,25 @@ class FocusArchiveMixin:
                 (
                     scope,
                     focus_key,
-                    self._text(item.label) or focus_key,
+                    self.context._text(item.label) or focus_key,
                     max(0, min(int(item.priority or 0), 100)),
                     max(0, min(int(item.progress or 0), 100)),
-                    self._text(item.status) or "active",
-                    self._text(item.reason),
-                    self._text(item.last_evidence),
-                    self._text(item.last_active_at),
-                    self._text(item.last_progress_at),
-                    self._text(item.expires_at),
+                    self.context._text(item.status) or "active",
+                    self.context._text(item.reason),
+                    self.context._text(item.last_evidence),
+                    self.context._text(item.last_active_at),
+                    self.context._text(item.last_progress_at),
+                    self.context._text(item.expires_at),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 "SELECT * FROM focus_slots WHERE scope = ? AND focus_key = ?",
                 (scope, focus_key),
             ).fetchone()
-            return self._compose_focus_slot(row) if row else None
+            return self.context._compose_focus_slot(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_focus_slots(
         self,
@@ -97,7 +116,7 @@ class FocusArchiveMixin:
             clauses = []
             if scope:
                 clauses.append("(scope = ? OR scope = '')")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if active_only:
                 clauses.append("status = 'active'")
                 clauses.append("(expires_at = '' OR expires_at >= ?)")
@@ -108,10 +127,10 @@ class FocusArchiveMixin:
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_focus_slot(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_focus_slot(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def update_focus_slot_progress(
         self,
@@ -125,7 +144,7 @@ class FocusArchiveMixin:
         """用可追溯证据更新短期目标，不从普通决策文本猜测进度。"""
 
         allowed_statuses = {"active", "completed", "blocked", "abandoned"}
-        target_status = self._text(status).lower()
+        target_status = self.context._text(status).lower()
         if target_status not in allowed_statuses:
             return None
         try:
@@ -133,15 +152,15 @@ class FocusArchiveMixin:
             delta = max(0, min(int(progress_delta), 100))
         except (TypeError, ValueError):
             return None
-        evidence_text = self._text(evidence)[:240]
+        evidence_text = self.context._text(evidence)[:240]
         if target_id <= 0 or not evidence_text:
             return None
 
         def dbwork():
-            row = self._conn.execute(
+            row = self.context._conn.execute(
                 "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
             ).fetchone()
-            if row is None or self._text(row["status"]) != "active":
+            if row is None or self.context._text(row["status"]) != "active":
                 return None
             current_progress = max(0, min(int(row["progress"] or 0), 100))
             next_progress = min(100, current_progress + delta)
@@ -150,7 +169,7 @@ class FocusArchiveMixin:
             next_priority = int(row["priority"] or 50)
             if target_status != "active":
                 next_priority = 0
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 UPDATE focus_slots
                 SET progress = ?, status = ?, priority = ?, last_evidence = ?,
@@ -162,26 +181,26 @@ class FocusArchiveMixin:
                     target_status,
                     max(0, min(next_priority, 100)),
                     evidence_text,
-                    self._text(date),
+                    self.context._text(date),
                     target_id,
                 ),
             )
-            self._conn.commit()
-            updated = self._conn.execute(
+            self.context._conn.commit()
+            updated = self.context._conn.execute(
                 "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
             ).fetchone()
-            return self._compose_focus_slot(updated) if updated else None
+            return self.context._compose_focus_slot(updated) if updated else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     def _compose_focus_target(self, row: sqlite3.Row) -> FocusTargetRecord:
         return FocusTargetRecord(
             id=int(row["id"] or 0),
             target_type=row["target_type"],
             target_id=row["target_id"],
-            label=self._text(row["label"]),
+            label=self.context._text(row["label"]),
             priority=int(row["priority"] or 0),
-            reason=self._text(row["reason"]),
+            reason=self.context._text(row["reason"]),
             scope=row["scope"],
             enabled=bool(row["enabled"]),
             expires_at=row["expires_at"],
@@ -199,7 +218,7 @@ class FocusArchiveMixin:
             return None
 
         def dbwork():
-            self._conn.execute(
+            self.context._conn.execute(
                 """
                 INSERT INTO focus_targets(
                     target_type, target_id, label, priority, reason, scope,
@@ -215,32 +234,32 @@ class FocusArchiveMixin:
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
-                    self._text(item.target_type) or "topic",
-                    self._text(item.target_id) or self._text(item.label),
-                    self._text(item.label) or self._text(item.target_id),
+                    self.context._text(item.target_type) or "topic",
+                    self.context._text(item.target_id) or self.context._text(item.label),
+                    self.context._text(item.label) or self.context._text(item.target_id),
                     max(0, min(int(item.priority or 0), 100)),
-                    self._text(item.reason),
-                    self._text(item.scope),
-                    self._flag(item.enabled),
-                    self._text(item.expires_at),
+                    self.context._text(item.reason),
+                    self.context._text(item.scope),
+                    self.context._flag(item.enabled),
+                    self.context._text(item.expires_at),
                 ),
             )
-            self._conn.commit()
-            row = self._conn.execute(
+            self.context._conn.commit()
+            row = self.context._conn.execute(
                 """
                 SELECT *
                 FROM focus_targets
                 WHERE target_type = ? AND target_id = ? AND scope = ?
                 """,
                 (
-                    self._text(item.target_type) or "topic",
-                    self._text(item.target_id) or self._text(item.label),
-                    self._text(item.scope),
+                    self.context._text(item.target_type) or "topic",
+                    self.context._text(item.target_id) or self.context._text(item.label),
+                    self.context._text(item.scope),
                 ),
             ).fetchone()
-            return self._compose_focus_target(row) if row else None
+            return self.context._compose_focus_target(row) if row else None
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def get_focus_targets(
         self,
@@ -255,31 +274,31 @@ class FocusArchiveMixin:
             params: list[Any] = []
             clauses = []
             if not include_expired:
-                clauses.append(self._focus_expiry_clause())
+                clauses.append(self.context._focus_expiry_clause())
                 params.append(life_today().isoformat())
             if enabled_only:
                 clauses.append("enabled = 1")
             if scope:
                 clauses.append("(scope = ? OR scope = '')")
-                params.append(self._text(scope))
+                params.append(self.context._text(scope))
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY priority DESC, updated_at DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
                 params.append(limit)
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-            return [self._compose_focus_target(row) for row in rows]
+            rows = self.context._conn.execute(sql, tuple(params)).fetchall()
+            return [self.context._compose_focus_target(row) for row in rows]
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)
 
     async def set_focus_target_enabled(self, target_id: int, enabled: bool) -> bool:
         def dbwork():
-            cursor = self._conn.execute(
+            cursor = self.context._conn.execute(
                 "UPDATE focus_targets SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (self._flag(enabled), int(target_id)),
+                (self.context._flag(enabled), int(target_id)),
             )
-            self._conn.commit()
+            self.context._conn.commit()
             return cursor.rowcount > 0
 
-        return await self._run_db(dbwork)
+        return await self.context._run_db(dbwork)

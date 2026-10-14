@@ -3,8 +3,30 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from typing import Protocol
 
-class ResponseGateSenseMixin:
+
+class ResponseGateSenseComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _response_gate_attention: Any
+    _response_gate_episode_delta: Any
+    _response_gate_first_seen_at: Any
+    _response_gate_has_media: Any
+    _response_gate_int: Any
+    _response_gate_profile_ids: Any
+    _response_gate_reply_effect_delta: Any
+    _response_gate_reply_times: Any
+    _response_gate_scene_delta: Any
+    _response_gate_visible_text: Any
+    _safe_event_call: Any
+    archive: Any
+
+
+class ResponseGateSenseComponent:
+    def __init__(self, context: ResponseGateSenseComponentContext) -> None:
+        self.context = context
+
     def _response_gate_attention_delta(
         self,
         key: str,
@@ -13,9 +35,9 @@ class ResponseGateSenseMixin:
         *,
         is_group: bool,
     ) -> float:
-        attention = getattr(self, "_response_gate_attention", None)
+        attention = getattr(self.context, "_response_gate_attention", None)
         if not isinstance(attention, dict):
-            self._response_gate_attention = {}
+            self.context._response_gate_attention = {}
             return 0.0
         focus_key = str(attention.get("focus_key") or "")
         updated_at = attention.get("updated_at")
@@ -46,9 +68,9 @@ class ResponseGateSenseMixin:
         now: datetime.datetime,
         reasons: list[str],
     ) -> float:
-        reply_times = getattr(self, "_response_gate_reply_times", None)
+        reply_times = getattr(self.context, "_response_gate_reply_times", None)
         if not isinstance(reply_times, dict):
-            self._response_gate_reply_times = {}
+            self.context._response_gate_reply_times = {}
             return 0.0
         recent = [
             item
@@ -75,15 +97,15 @@ class ResponseGateSenseMixin:
         *,
         is_group: bool,
     ) -> float:
-        first_seen = getattr(self, "_response_gate_first_seen_at", {}).get(key)
+        first_seen = getattr(self.context, "_response_gate_first_seen_at", {}).get(key)
         batch_age = (
             (now - first_seen).total_seconds()
             if isinstance(first_seen, datetime.datetime)
             else 0.0
         )
-        visible_text = self._response_gate_visible_text(event)
+        visible_text = self.context._response_gate_visible_text(event)
         text_size = len("".join(visible_text.split()))
-        has_media = self._response_gate_has_media(event)
+        has_media = self.context._response_gate_has_media(event)
         delta = 0.0
         if pending_count >= 3:
             delta += 0.14
@@ -104,7 +126,7 @@ class ResponseGateSenseMixin:
         key: str,
         reasons: list[str],
     ) -> float:
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         getter = getattr(archive, "get_reply_effects", None)
         if not key or not callable(getter):
             return 0.0
@@ -124,7 +146,7 @@ class ResponseGateSenseMixin:
         total = 0.0
         weight_sum = 0.0
         for index, item in enumerate(effects[:6]):
-            item_delta = self._response_gate_reply_effect_delta(item)
+            item_delta = self.context._response_gate_reply_effect_delta(item)
             if item_delta == 0.0:
                 continue
             weight = max(0.4, 1.0 - index * 0.12)
@@ -141,9 +163,9 @@ class ResponseGateSenseMixin:
 
     def _response_gate_reply_effect_delta(self, item: Any) -> float:
         outcome = str(getattr(item, "outcome", "") or "").strip()
-        warmth = self._response_gate_int(getattr(item, "warmth", None), 50)
-        continuity = self._response_gate_int(getattr(item, "continuity", None), 50)
-        friction = self._response_gate_int(getattr(item, "friction", None), 0)
+        warmth = self.context._response_gate_int(getattr(item, "warmth", None), 50)
+        continuity = self.context._response_gate_int(getattr(item, "continuity", None), 50)
+        friction = self.context._response_gate_int(getattr(item, "friction", None), 0)
         if outcome == "positive":
             return 0.05 + max(0, warmth + continuity - 100) / 1000
         if outcome == "negative":
@@ -156,12 +178,12 @@ class ResponseGateSenseMixin:
         event: Any,
         reasons: list[str],
     ) -> float:
-        archive = getattr(self, "archive", None)
+        archive = getattr(self.context, "archive", None)
         if archive is None:
             return 0.0
         delta = 0.0
-        delta += await self._response_gate_scene_delta(archive, key, reasons)
-        delta += await self._response_gate_episode_delta(archive, event, reasons)
+        delta += await self.context._response_gate_scene_delta(archive, key, reasons)
+        delta += await self.context._response_gate_episode_delta(archive, event, reasons)
         return max(-0.14, min(delta, 0.14))
 
     async def _response_gate_scene_delta(
@@ -202,10 +224,10 @@ class ResponseGateSenseMixin:
         if not callable(getter):
             return 0.0
         people = {
-            str(self._safe_event_call(event, "get_sender_id") or "").strip(),
-            str(self._safe_event_call(event, "get_sender_name") or "").strip(),
+            str(self.context._safe_event_call(event, "get_sender_id") or "").strip(),
+            str(self.context._safe_event_call(event, "get_sender_name") or "").strip(),
         }
-        people.update(self._response_gate_profile_ids(event))
+        people.update(self.context._response_gate_profile_ids(event))
         people.discard("")
         if not people:
             return 0.0
@@ -236,10 +258,10 @@ class ResponseGateSenseMixin:
     ) -> None:
         if not key:
             return
-        attention = getattr(self, "_response_gate_attention", None)
+        attention = getattr(self.context, "_response_gate_attention", None)
         if not isinstance(attention, dict):
-            self._response_gate_attention = {}
-            attention = self._response_gate_attention
+            self.context._response_gate_attention = {}
+            attention = self.context._response_gate_attention
         if replied:
             attention["focus_key"] = key
             attention["updated_at"] = now

@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, patch
 from runtimehelpers import DailyLifeRuntime, LifeSettings, ProviderRequest
 from astrbot.core.agent.message import TextPart
 from core.facts import PersonFactContext, build_person_fact_audit_prompt
-from core.life.contract import DailyContractMixin
-from core.life.locator import DailyLocationGenerationMixin
-from core.runtime.mirror.pack import SnapshotPackMixin
-from core.telemetry import ModelCacheMetrics, cache_usage
+from componentfixtures import DailyContractComponent
+from componentfixtures import DailyLocationGenerationComponent
+from componentfixtures import SnapshotPackComponent
+from core.telemetry import ModelCacheMetrics, cache_prefix_version, cache_usage
+from core.life.planner import LifeBackgroundComposer
+from core.life.reliability import ProviderCircuit
 from core.sight import sample
 
 
@@ -47,11 +49,13 @@ class PrefixTest(unittest.TestCase):
         self.assertEqual(req.system_prompt.count("<daily_life_policy>"), 1)
         self.assertIn("其他插件新增规则", req.system_prompt)
 
-    def test_minimal_request_keeps_current_fact_without_accumulating_old_fact(self):
+    def test_minimal_request_uses_temporary_fact_without_accumulating_old_fact(self):
         req = types.SimpleNamespace(system_prompt="原规则")
         self.runtime._apply_life_request_context(req, "旧背景")
         self.runtime._apply_life_request_context(req, "新背景")
-        self.assertIn("新背景", req.system_prompt)
+        self.assertEqual([part.text for part in req.extra_user_content_parts], ["新背景"])
+        self.assertTrue(req.extra_user_content_parts[0].model_dump_for_context()["_no_save"])
+        self.assertNotIn("新背景", req.system_prompt)
         self.assertNotIn("旧背景", req.system_prompt)
 
     def test_scene_dependent_internal_rules_have_shared_prefix(self):
@@ -61,19 +65,27 @@ class PrefixTest(unittest.TestCase):
         a = build_person_fact_audit_prompt(PersonFactContext(), {}, [], subject="日程")
         b = build_person_fact_audit_prompt(PersonFactContext(), {}, [], subject="穿搭")
         self.assertEqual(prefix(a, "人物事实审计资料"), prefix(b, "人物事实审计资料"))
-        contract = DailyContractMixin()
+        contract = DailyContractComponent()
         a = contract._build_repair_prompt("{}", "时间覆盖不足", expected_coverage="full_day", issue_code="timeline_density")
         b = contract._build_repair_prompt("{}", "重复穿搭", issue_code="outfit_repeat")
         self.assertEqual(prefix(a, "日程修复"), prefix(b, "日程修复"))
         self.assertIn("重写 timeline", a)
         self.assertIn("只重写 life_decision.outfit", b)
-        a = DailyLocationGenerationMixin._daily_location_request_prompt({"expected_coverage": "full_day"})
-        b = DailyLocationGenerationMixin._daily_location_request_prompt({"expected_coverage": "partial"})
+        a = DailyLocationGenerationComponent._daily_location_request_prompt({"expected_coverage": "full_day"})
+        b = DailyLocationGenerationComponent._daily_location_request_prompt({"expected_coverage": "partial"})
         self.assertEqual(prefix(a, "日程地点预选资料"), prefix(b, "日程地点预选资料"))
         self.assertNotEqual(a, b)
 
 
 class UsageTest(unittest.TestCase):
+    def test_chat_error_counts_as_failure(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        error = types.SimpleNamespace(role="err", is_error=True, raw_completion=None)
+        runtime.note_chat_model_usage(error)
+        row = runtime.model_cache_status()["models"][0]
+        self.assertEqual(row["failed_requests"], 1)
+        self.assertEqual(row["unreported_requests"], 0)
+
     def test_vendor_usage_formats(self):
         cases = [
             ({"usage": {"prompt_tokens": 1000, "prompt_cache_hit_tokens": 768}}, 1000, 768),
@@ -81,6 +93,7 @@ class UsageTest(unittest.TestCase):
             ({"usage": {"input_tokens": 30, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 100}}, 430, 300),
             ({"usage": {"prompt_tokens": 430, "cache_read_input_tokens": 300}}, 430, 300),
             ({"usage_metadata": {"prompt_token_count": 1000, "cached_content_token_count": 500}}, 1000, 500),
+            ({"usageMetadata": {"promptTokenCount": 1000, "cachedContentTokenCount": 500}}, 1000, 500),
             ({"usage": {"prompt_tokens": 1000}}, 1000, None),
             ({"usage": {"prompt_tokens": True, "prompt_cache_hit_tokens": -1}}, None, None),
         ]
@@ -107,6 +120,111 @@ class UsageTest(unittest.TestCase):
             meter.record({}, kind="internal", model=model)
         self.assertEqual(len(meter.entries), 2)
         self.assertNotIn(("chat", "same"), meter.entries)
+
+    def test_cache_ratio_is_separated_by_fixed_prefix_version(self):
+        meter = ModelCacheMetrics()
+        fixed_a = cache_prefix_version("固定规则A\n\n【资料】\n变化一", has_dynamic_section=True)
+        fixed_a_again = cache_prefix_version("固定规则A\n\n【资料】\n变化二", has_dynamic_section=True)
+        fixed_b = cache_prefix_version("固定规则B\n\n【资料】\n变化一", has_dynamic_section=True)
+        self.assertEqual(fixed_a, fixed_a_again)
+        self.assertNotEqual(fixed_a, fixed_b)
+        for version, cached in ((fixed_a, 80), (fixed_a_again, 20), (fixed_b, 0)):
+            meter.record(
+                {"usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": cached}},
+                kind="internal", model="model", prefix_version=version,
+            )
+        rows = {row["prefix_version"]: row for row in meter.snapshot()["models"]}
+        self.assertEqual(rows[fixed_a]["requests"], 2)
+        self.assertEqual(rows[fixed_a]["cached_token_ratio"], 0.5)
+        self.assertEqual(rows[fixed_b]["cached_token_ratio"], 0.0)
+        self.assertNotIn("固定规则", str(rows))
+
+
+class InternalUsageTest(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_identity_keeps_error_and_returned_alias_in_same_group(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        provider = types.SimpleNamespace(
+            meta=lambda: types.SimpleNamespace(id="聊天分组", model="configured-model"),
+        )
+        runtime.context = types.SimpleNamespace(
+            get_provider_by_id=lambda provider_id: provider,
+            get_using_provider_async=AsyncMock(return_value=provider),
+        )
+        event = types.SimpleNamespace(
+            get_extra=lambda key: "聊天分组", unified_msg_origin="test:FriendMessage:1",
+        )
+        identity = await runtime.capture_chat_model_identity(event)
+        runtime.context.get_using_provider_async.assert_not_awaited()
+        runtime.note_chat_model_usage(types.SimpleNamespace(
+            raw_completion={"model": "returned-alias", "usage": {"prompt_tokens": 10}},
+        ), model_identity=identity)
+        runtime.note_chat_model_usage(types.SimpleNamespace(
+            role="err", is_error=True, raw_completion=None,
+        ), model_identity=identity)
+        row, = runtime.model_cache_status()["models"]
+        self.assertEqual(row["model"], "聊天分组 / configured-model")
+        self.assertEqual(row["requests"], 2)
+        self.assertEqual(row["failed_requests"], 1)
+
+    async def test_identity_lookup_does_not_hold_foreground_indefinitely(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        cancelled = asyncio.Event()
+
+        async def slow_provider(**kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        runtime.context = types.SimpleNamespace(get_using_provider_async=slow_provider)
+        event = types.SimpleNamespace(unified_msg_origin="test:FriendMessage:1")
+        identity = await asyncio.wait_for(runtime.capture_chat_model_identity(event), 0.3)
+        self.assertEqual(identity, "")
+        self.assertTrue(cancelled.is_set())
+
+    async def test_empty_internal_response_is_a_failed_request(self):
+        provider = types.SimpleNamespace(
+            meta=lambda: types.SimpleNamespace(id="configured-provider"),
+            text_chat=AsyncMock(return_value=types.SimpleNamespace(completion_text="")),
+        )
+        composer = LifeBackgroundComposer.__new__(LifeBackgroundComposer)
+        composer.config = LifeSettings.from_dict({})
+        composer._provider_circuit = ProviderCircuit()
+        composer.model_cache_metrics = ModelCacheMetrics()
+        self.assertEqual(await composer._call_llm_text(
+            provider, "审查", "test:empty", empty_retries=0,
+        ), "")
+        row, = composer.model_cache_metrics.snapshot()["models"]
+        self.assertEqual(row["failed_requests"], 1)
+        self.assertEqual(row["unreported_requests"], 0)
+
+    async def test_success_and_failure_share_provider_group(self):
+        provider = types.SimpleNamespace(
+            meta=lambda: types.SimpleNamespace(id="configured-provider"),
+            text_chat=AsyncMock(),
+        )
+        composer = LifeBackgroundComposer.__new__(LifeBackgroundComposer)
+        composer.config = LifeSettings.from_dict({})
+        composer._provider_circuit = ProviderCircuit()
+        composer.model_cache_metrics = ModelCacheMetrics()
+        provider.text_chat.return_value = types.SimpleNamespace(
+            completion_text="完成",
+            raw_completion={
+                "model": "returned-model",
+                "usage": {
+                    "prompt_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": 50},
+                },
+            },
+        )
+        await composer._call_llm_text(provider, "审查", "test:success", empty_retries=0)
+        provider.text_chat.side_effect = RuntimeError("模拟失败")
+        await composer._call_llm_text(provider, "审查", "test:failure", empty_retries=0)
+        rows = composer.model_cache_metrics.snapshot()["models"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["requests"], 2)
+        self.assertEqual(rows[0]["failed_requests"], 1)
+        self.assertEqual(rows[0]["model"], "configured-provider")
 
 
 class ResourceTest(unittest.IsolatedAsyncioTestCase):
@@ -151,7 +269,7 @@ class ResourceTest(unittest.IsolatedAsyncioTestCase):
                 runtime.close_text_session.assert_awaited_once_with(session)
 
     def test_snapshot_capacity_and_expiry_do_not_freeze_new_data(self):
-        runtime = SnapshotPackMixin()
+        runtime = SnapshotPackComponent()
         runtime._INJECTION_SNAPSHOT_CACHE_LIMIT = 2
         cache = {}
         with patch("core.runtime.mirror.pack.time.monotonic", return_value=10.0):

@@ -1,13 +1,47 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
 from .markers import LOG_PREFIX
+from ..epistemic import knowledge_label
 
 
-class RuntimeMemoryMixin:
+class MemoryRepository(Protocol):
+    """长期记忆检索需要的归档能力。"""
+
+    async def search_long_term_memories(
+        self, query: str, *, scopes: list[str], categories: list[str], limit: int
+    ) -> list[Any]: ...
+
+    async def list_recent_long_term_memories(
+        self, *, scopes: list[str], categories: list[str], limit: int
+    ) -> list[Any]: ...
+
+
+class LifeMemoryService:
+    """基于当前事件范围检索长期记忆，归档在每次操作时取得。"""
+
+    def __init__(
+        self,
+        *,
+        archive: Callable[[], MemoryRepository],
+        group_meta: Callable[[Any], tuple[str, str]],
+        session_id: Callable[[Any], str],
+        message_text: Callable[[Any], str],
+        semantic_search: Callable[..., Awaitable[list[Any] | None]] | None = None,
+        recent_messages: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+    ) -> None:
+        self._archive = archive
+        self._event_group_meta = group_meta
+        self._event_session_id = session_id
+        self._event_message_text = message_text
+        self._semantic_search = semantic_search
+        self._recent_messages = recent_messages
+
     def _event_memory_scopes(self, event: Any = None) -> list[str]:
         if event is None:
             return []
@@ -31,8 +65,9 @@ class RuntimeMemoryMixin:
                 pieces.append(text)
         return " ".join(item for item in pieces if item).strip()
 
+    @staticmethod
     def _format_memory_hits(
-        self, memories: list[Any], *, include_source: bool = True, limit: int = 5
+        memories: list[Any], *, include_source: bool = True, limit: int = 5
     ) -> str:
         lines: list[str] = []
         for item in memories[: max(1, limit)]:
@@ -49,10 +84,10 @@ class RuntimeMemoryMixin:
                 date = str(getattr(item, "date", "") or "").strip()
                 bits = [bit for bit in (f"记忆编号 {getattr(item, 'id', 0)}", date, source_table, source_id) if bit]
                 source = f"（来源：{' / '.join(bits)}）" if bits else ""
-            lines.append(f"- {label}：{content}{source}")
+            lines.append(f"- {label}：{content}{source}；{knowledge_label(item)}")
         return "\n".join(lines)
 
-    async def search_life_memory(
+    async def search(
         self,
         query: str,
         *,
@@ -60,6 +95,8 @@ class RuntimeMemoryMixin:
         mode: str = "search",
         category: str = "",
         limit: int = 5,
+        semantic_timeout_seconds: float = 2.5,
+        semantic_query: str = "",
     ) -> list[Any]:
         clean_query = str(query or "").strip()
         categories = [
@@ -70,21 +107,37 @@ class RuntimeMemoryMixin:
         scopes = self._event_memory_scopes(event)
         limit = max(1, min(int(limit or 5), 12))
         if clean_query:
-            return await self.archive.search_long_term_memories(
+            lexical = await self._archive().search_long_term_memories(
                 clean_query,
                 scopes=scopes,
                 categories=categories,
                 limit=limit,
             )
+            if self._semantic_search is not None:
+                try:
+                    # 语义增强共享前台短预算；超时后保留已有检索结果。
+                    async with asyncio.timeout(semantic_timeout_seconds):
+                        semantic = await self._semantic_search(
+                            semantic_query or clean_query, lexical=lexical, scopes=scopes,
+                            categories=categories, limit=limit,
+                        )
+                    if semantic is not None:
+                        logger.debug(f"{LOG_PREFIX} 长期记忆语义召回：{len(semantic)} 条")
+                        return semantic
+                except Exception as exc:
+                    logger.debug(
+                        f"{LOG_PREFIX} 长期记忆语义召回降级：{type(exc).__name__}"
+                    )
+            return lexical
         if str(mode or "").strip().lower() in {"recent", "time"}:
-            return await self.archive.list_recent_long_term_memories(
+            return await self._archive().list_recent_long_term_memories(
                 scopes=scopes,
                 categories=categories,
                 limit=limit,
             )
         return []
 
-    async def life_memory_search(
+    async def search_text(
         self,
         event: Any,
         query: str = "",
@@ -92,7 +145,7 @@ class RuntimeMemoryMixin:
         category: str = "",
         limit: int = 5,
     ) -> str:
-        hits = await self.search_life_memory(
+        hits = await self.search(
             query,
             event=event,
             mode=mode,
@@ -104,17 +157,37 @@ class RuntimeMemoryMixin:
         body = self._format_memory_hits(hits, include_source=True, limit=limit)
         return f"长期记忆检索结果：\n{body}"
 
-    async def build_heuristic_memory_context(
+    async def build_context(
         self, event: Any, message: str = "", limit: int = 4
     ) -> str:
+        if limit <= 0 or not self._event_memory_scopes(event):
+            return ""
         query = self._memory_query_from_event(event, message)
         if not query:
             return ""
-        hits = await self.search_life_memory(
+        semantic_query = query
+        if self._recent_messages is not None:
+            try:
+                async with asyncio.timeout(0.15):
+                    messages = await self._recent_messages(self._event_session_id(event))
+                recent = [
+                    f"{item['role']}：{str(item.get('content') or '').strip()[:240]}"
+                    for item in messages[-4:]
+                    if item.get("role") in {"user", "assistant"}
+                    and str(item.get("content") or "").strip()
+                    and str(item.get("content") or "").strip() != query
+                ]
+                if recent:
+                    semantic_query = f"本轮消息：{query}\n近期对话：\n" + "\n".join(recent)
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 记忆检索读取近期对话失败：{type(exc).__name__}")
+        hits = await self.search(
             query,
             event=event,
             mode="search",
             limit=limit,
+            semantic_timeout_seconds=1.2,
+            semantic_query=semantic_query,
         )
         if not hits:
             logger.debug(f"{LOG_PREFIX} 当前话题长期记忆召回：0 条")
@@ -128,3 +201,6 @@ class RuntimeMemoryMixin:
             "以下是根据本轮真实消息检索到的相关长期记忆，只作为内部判断依据；不要逐字复述给用户。\n"
             f"{body}\n"
         )
+
+
+__all__ = ["LifeMemoryService", "MemoryRepository"]

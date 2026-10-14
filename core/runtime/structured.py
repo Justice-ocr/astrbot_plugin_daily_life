@@ -1,6 +1,3 @@
-from __future__ import annotations
+from .weave import StructuredMessage, StructuredTarget
 
-from .weave import StructuredContextMixin, StructuredMessage, StructuredTarget
-
-
-__all__ = ["StructuredContextMixin", "StructuredMessage", "StructuredTarget"]
+__all__ = ["StructuredMessage", "StructuredTarget"]

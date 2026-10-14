@@ -6,6 +6,7 @@ import json
 import math
 import unicodedata
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from astrbot.api import logger
@@ -16,10 +17,44 @@ from ..search.cache import SingleFlight, TimedCache
 from .markers import LOG_PREFIX
 
 
-class MeaningRuntimeMixin:
+class MeaningService:
     _SEMANTIC_RANK_TIMEOUT_SECONDS = 4.0
+    _MEMORY_INDEX_BATCH_SIZE = 8
+    # 历史索引允许适配器完成较慢的请求；聊天召回使用独立的短预算。
+    _MEMORY_INDEX_TIMEOUT_SECONDS = 60.0
+    _MEMORY_INDEX_REQUEST_INTERVAL_SECONDS = 1.0
+    _MEMORY_INDEX_MAX_PASSES = 3
+    _MEMORY_INDEX_RETRY_SECONDS = 5 * 60
     _MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS = 5 * 60
     _MEANING_QUERY_VECTOR_CACHE_LIMIT = 256
+
+    def __init__(
+        self,
+        *,
+        embedding_providers: Callable[[], list[Any]],
+        memory_config: Callable[[], Any],
+        archive: Callable[[], Any],
+        memory_provider: Callable[[], Awaitable[Any]],
+        call_text_model: Callable[..., Awaitable[str]],
+        close_text_session: Callable[[str], Awaitable[None]],
+        schedule_background: Callable[..., bool],
+    ) -> None:
+        self._embedding_providers = embedding_providers
+        self._memory_config = memory_config
+        self._archive = archive
+        self._memory_provider = memory_provider
+        self._call_text_model = call_text_model
+        self._close_text_session = close_text_session
+        self._schedule_background = schedule_background
+        self._query_vector_cache = TimedCache[list[float]](
+            max_items=self._MEANING_QUERY_VECTOR_CACHE_LIMIT,
+            ttl_seconds=self._MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS,
+        )
+        self._query_vector_flight = SingleFlight[list[float]]()
+        self._closed = False
+        self._index_task: asyncio.Task | None = None
+        self._index_retry_handle: asyncio.TimerHandle | None = None
+        self._index_failure_counts: dict[int, int] = {}
 
     @staticmethod
     def _meaning_hash(text: str) -> str:
@@ -37,17 +72,14 @@ class MeaningRuntimeMixin:
         return numerator / (left_norm * right_norm)
 
     def _meaning_embedding_provider(self) -> Any | None:
-        getter = getattr(getattr(self, "context", None), "get_all_embedding_providers", None)
-        if not callable(getter):
-            return None
         try:
-            providers = list(getter() or [])
+            providers = list(self._embedding_providers() or [])
         except Exception:
             return None
         if not providers:
             return None
         configured_id = str(
-            getattr(getattr(self.config, "memory", None), "embedding_provider", "")
+            getattr(self._memory_config(), "embedding_provider", "")
             or ""
         ).strip()
         if configured_id:
@@ -55,23 +87,6 @@ class MeaningRuntimeMixin:
                 if self._meaning_provider_id(provider) == configured_id:
                     return provider
         return providers[0]
-
-    def _meaning_query_vector_cache(self) -> TimedCache[list[float]]:
-        cache = getattr(self, "_meaning_query_vector_cache_store", None)
-        if not isinstance(cache, TimedCache):
-            cache = TimedCache[list[float]](
-                max_items=self._MEANING_QUERY_VECTOR_CACHE_LIMIT,
-                ttl_seconds=self._MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS,
-            )
-            self._meaning_query_vector_cache_store = cache
-        return cache
-
-    def _meaning_query_vector_flight(self) -> SingleFlight[list[float]]:
-        flight = getattr(self, "_meaning_query_vector_singleflight", None)
-        if not isinstance(flight, SingleFlight):
-            flight = SingleFlight[list[float]]()
-            self._meaning_query_vector_singleflight = flight
-        return flight
 
     @staticmethod
     def _meaning_query_vector_key(provider_id: str, query: str) -> str:
@@ -89,7 +104,7 @@ class MeaningRuntimeMixin:
         query: str,
     ) -> list[float]:
         key = self._meaning_query_vector_key(provider_id, query)
-        cache = self._meaning_query_vector_cache()
+        cache = self._query_vector_cache
         cached = await cache.get(key)
         if cached is not None:
             return list(cached)
@@ -100,19 +115,28 @@ class MeaningRuntimeMixin:
                 return list(recent)
             raw = await provider.get_embedding(query)
             vector = [float(value) for value in list(raw or [])]
+            if not vector or not any(vector) or not all(math.isfinite(value) for value in vector):
+                raise ValueError("查询 Embedding 返回了无效向量")
             if vector:
                 await cache.set(key, vector)
             return vector
 
-        vector, shared = await self._meaning_query_vector_flight().run(key, load)
+        vector, shared = await self._query_vector_flight.run(key, load)
         if shared:
             logger.debug(f"{LOG_PREFIX} 查询向量合并了同键并发请求")
         return list(vector)
 
-    async def _close_meaning_query_vector_flight(self) -> None:
-        flight = getattr(self, "_meaning_query_vector_singleflight", None)
-        if isinstance(flight, SingleFlight):
-            await flight.close()
+    async def close(self) -> None:
+        self._closed = True
+        if self._index_retry_handle is not None:
+            self._index_retry_handle.cancel()
+            self._index_retry_handle = None
+        if self._index_task is not None:
+            self._index_task.cancel()
+            await asyncio.gather(self._index_task, return_exceptions=True)
+        self._index_failure_counts.clear()
+        await self._query_vector_flight.close()
+        await self._query_vector_cache.clear()
 
     @staticmethod
     def _meaning_provider_id(provider: Any) -> str:
@@ -130,20 +154,183 @@ class MeaningRuntimeMixin:
             model = str(getattr(meta, "model", "") or "").strip()
         except Exception:
             model = str(getattr(provider, "model_name", "") or "").strip()
+        # 部分 Embedding 适配器的 meta.model 为空，实际模型保存在 model 属性。
+        model = model or str(getattr(provider, "model", "") or getattr(provider, "model_name", "") or "").strip()
         if model and model != provider_id:
             return f"{provider_id}:{model}"
         return provider_id
 
     async def _meaning_store_vectors(self, rows: list[dict[str, Any]]) -> None:
-        saver = getattr(self.archive, "upsert_memory_vectors", None)
-        if callable(saver) and rows:
-            await saver(rows)
+        if rows and not self._closed:
+            await self._archive().upsert_memory_vectors(rows)
+
+    @classmethod
+    def _cached_vector(cls, cached: dict[str, Any], text: str, provider_id: str) -> list[float]:
+        if cached.get("content_hash") != cls._meaning_hash(text) or cached.get("provider_id") != provider_id:
+            return []
+        try:
+            vector = [float(value) for value in json.loads(cached["vector_json"])]
+            dimensions = int(cached["dimensions"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        return vector if vector and any(vector) and len(vector) == dimensions and all(math.isfinite(value) for value in vector) else []
+
+    @staticmethod
+    def _memory_vector_text(item: Any) -> str:
+        return " ".join(filter(None, (str(item.title or ""), str(item.content or ""))))
+
+    @staticmethod
+    def _memory_source_key(item: Any) -> tuple[str, ...]:
+        source_table = str(getattr(item, "source_table", "") or "")
+        source_id = str(getattr(item, "source_id", "") or "")
+        if source_table and source_id:
+            return (item.scope, str(item.category).split(":", 1)[0], source_table, source_id)
+        return (str(item.id),)
+
+    def start_memory_index(self) -> bool:
+        """后台分批补齐历史记忆向量；不占用本轮聊天的召回预算。"""
+        provider = self._meaning_embedding_provider()
+        if self._closed or provider is None or not getattr(self._memory_config(), "enabled", True):
+            return False
+        scheduled = self._schedule_background(
+            self._warm_memory_index(provider, self._meaning_provider_cache_id(provider)),
+            label="长期记忆历史索引", key="meaning_long_term_index", category="memory",
+        )
+        if scheduled and self._index_retry_handle is not None:
+            self._index_retry_handle.cancel()
+            self._index_retry_handle = None
+        return scheduled
+
+    def _schedule_memory_index_retry(self) -> None:
+        if self._closed or self._index_retry_handle is not None:
+            return
+
+        def resume() -> None:
+            self._index_retry_handle = None
+            if not self.start_memory_index() and getattr(self._memory_config(), "enabled", True):
+                self._schedule_memory_index_retry()
+
+        # 冷却期间释放后台任务名额；关闭服务时取消定时器。
+        self._index_retry_handle = asyncio.get_running_loop().call_later(
+            self._MEMORY_INDEX_RETRY_SECONDS, resume,
+        )
+
+    async def _warm_memory_index(self, provider: Any, provider_id: str) -> None:
+        if self._closed:
+            return
+        self._index_task = asyncio.current_task()
+        saved_count = 0
+        remaining_count = 0
+        try:
+            archive = self._archive()
+            stalled_passes = 0
+            failure_counts = self._index_failure_counts
+            while stalled_passes < self._MEMORY_INDEX_MAX_PASSES:
+                saved_before = saved_count
+                consecutive_failures = 0
+                interrupted = False
+                memories = await archive.list_recent_long_term_memories(limit=0)
+                active_ids = {item.id for item in memories}
+                for identifier in list(failure_counts):
+                    if identifier not in active_ids:
+                        failure_counts.pop(identifier, None)
+                # 续跑先处理尚未尝试的记录，避免队首失败项让后面的历史一直饿死。
+                memories.sort(key=lambda item: failure_counts.get(item.id, 0))
+                for offset in range(0, len(memories), self._MEMORY_INDEX_BATCH_SIZE):
+                    current = self._meaning_embedding_provider()
+                    if (
+                        self._closed or current is None
+                        or not getattr(self._memory_config(), "enabled", True)
+                        or self._meaning_provider_cache_id(current) != provider_id
+                    ):
+                        return
+                    batch = memories[offset:offset + self._MEMORY_INDEX_BATCH_SIZE]
+                    cached = await archive.get_memory_vectors("long_term_memory", [str(item.id) for item in batch])
+                    missing = [item for item in batch if not self._cached_vector(
+                        cached.get(str(item.id), {}), self._memory_vector_text(item), provider_id,
+                    )]
+                    for item in missing:
+                        if self._closed:
+                            return
+                        # 与框架模型测试使用相同的单条接口；每条完成即落盘。
+                        await asyncio.sleep(self._MEMORY_INDEX_REQUEST_INTERVAL_SECONDS)
+                        try:
+                            async with asyncio.timeout(self._MEMORY_INDEX_TIMEOUT_SECONDS):
+                                raw = await provider.get_embedding(self._memory_vector_text(item))
+                            vector = [float(value) for value in raw]
+                            if not vector or not any(vector) or not all(math.isfinite(value) for value in vector):
+                                raise ValueError("Embedding 返回了无效向量")
+                        except Exception:
+                            failure_counts[item.id] = failure_counts.get(item.id, 0) + 1
+                            consecutive_failures += 1
+                            if consecutive_failures >= 3:
+                                interrupted = True
+                                break
+                            continue
+                        consecutive_failures = 0
+                        failure_counts.pop(item.id, None)
+                        row = {
+                            "target_type": "long_term_memory", "target_id": str(item.id),
+                            "content_hash": self._meaning_hash(self._memory_vector_text(item)),
+                            "provider_id": provider_id, "dimensions": len(vector),
+                            "vector_json": json.dumps(vector, separators=(",", ":")),
+                        }
+                        if not self._closed:
+                            saved_count += await archive.upsert_memory_vectors([row])
+                            if saved_count and saved_count % 200 == 0:
+                                logger.info(f"{LOG_PREFIX} 长期记忆历史索引本轮已保存 {saved_count} 条")
+                    if interrupted:
+                        break
+
+                # 每轮重新检查有效历史，不能用成功请求数推断已经补齐。
+                memories = await archive.list_recent_long_term_memories(limit=0)
+                cached = await archive.get_memory_vectors("long_term_memory", [str(item.id) for item in memories])
+                def count_missing() -> int:
+                    return sum(not self._cached_vector(
+                        cached.get(str(item.id), {}), self._memory_vector_text(item), provider_id,
+                    ) for item in memories)
+
+                remaining_count = await asyncio.to_thread(count_missing)
+                if not remaining_count:
+                    logger.info(f"{LOG_PREFIX} 长期记忆历史索引全部补齐：{len(memories)} 条有效记忆；本轮保存 {saved_count} 条")
+                    return
+                # 有实际进度就继续补齐；仅连续多轮毫无进展时暂停。
+                # 总轮数限制会让大量历史在接口已恢复后仍提前停止。
+                stalled_passes = stalled_passes + 1 if saved_count == saved_before else 0
+                if stalled_passes < self._MEMORY_INDEX_MAX_PASSES:
+                    logger.debug(f"{LOG_PREFIX} 长期记忆历史索引剩余 {remaining_count} 条，将在后台接续")
+                    await asyncio.sleep(2 ** stalled_passes)
+            logger.warning(f"{LOG_PREFIX} 长期记忆历史索引暂未完成：剩余 {remaining_count} 条；已保存 {saved_count} 条，冷却后自动续跑")
+            self._schedule_memory_index_retry()
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} 长期记忆历史索引暂未完成：{type(exc).__name__}；已保存 {saved_count} 条")
+            self._schedule_memory_index_retry()
+        finally:
+            self._index_task = None
+
+    @classmethod
+    def _score_vectors(cls, query_vector, groups, vectors, limits, minimum_similarity):
+        ranked = {}
+        for kind, values in groups.items():
+            scored = [
+                (cls._meaning_cosine(query_vector, vectors.get((kind, target_id), [])), index, item)
+                for index, (target_id, _, item) in enumerate(values)
+            ]
+            scored.sort(key=lambda row: (-row[0], row[1]))
+            ranked[kind] = [
+                item for score, _, item in scored
+                if minimum_similarity is None or score >= minimum_similarity
+            ][:max(0, limits.get(kind, 0))]
+        return ranked
 
     async def _meaning_rank_with_embeddings(
         self,
         query: str,
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
+        *,
+        minimum_similarity: float | None = None,
+        cached_only: bool = False,
     ) -> dict[str, list[Any]] | None:
         provider = self._meaning_embedding_provider()
         if not provider or not str(query or "").strip():
@@ -158,30 +345,30 @@ class MeaningRuntimeMixin:
             return {kind: [] for kind in groups}
         provider_id = self._meaning_provider_cache_id(provider)
         cached_by_kind: dict[str, dict[str, dict[str, Any]]] = {}
+        archive = self._archive()
         for kind, values in groups.items():
-            getter = getattr(self.archive, "get_memory_vectors", None)
-            cached_by_kind[kind] = (
-                await getter(kind, [target_id for target_id, _, _ in values])
-                if callable(getter)
-                else {}
+            cached_by_kind[kind] = await archive.get_memory_vectors(
+                kind, [target_id for target_id, _, _ in values]
             )
 
-        vectors: dict[tuple[str, str], list[float]] = {}
-        missing: list[tuple[str, str, str]] = []
-        for kind, target_id, text, _ in flat:
-            cached = cached_by_kind.get(kind, {}).get(target_id) or {}
-            if (
-                cached.get("content_hash") == self._meaning_hash(text)
-                and cached.get("provider_id") == provider_id
-            ):
-                try:
-                    vector = [float(value) for value in json.loads(cached["vector_json"])]
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    vector = []
+        def read_vectors():
+            vectors = {}
+            missing = []
+            for kind, target_id, text, _ in flat:
+                vector = self._cached_vector(cached_by_kind.get(kind, {}).get(target_id) or {}, text, provider_id)
                 if vector:
                     vectors[(kind, target_id)] = vector
-                    continue
-            missing.append((kind, target_id, text))
+                else:
+                    missing.append((kind, target_id, text))
+            return vectors, missing
+
+        vectors, missing = await asyncio.to_thread(read_vectors)
+        if cached_only:
+            if missing:
+                self.start_memory_index()
+            if not vectors:
+                return {kind: [] for kind in groups}
+            missing = []
 
         async def embed_all() -> tuple[list[float], list[list[float]]]:
             query_vector = await self._meaning_query_vector(
@@ -202,7 +389,7 @@ class MeaningRuntimeMixin:
         save_rows = []
         for (kind, target_id, text), vector in zip(missing, missing_vectors):
             normalized = [float(value) for value in vector]
-            if not normalized:
+            if not normalized or not any(normalized) or not all(math.isfinite(value) for value in normalized):
                 continue
             vectors[(kind, target_id)] = normalized
             save_rows.append(
@@ -216,31 +403,77 @@ class MeaningRuntimeMixin:
                 }
             )
         if save_rows:
-            scheduler = getattr(self, "_schedule_background_task", None)
-            if callable(scheduler):
-                scheduler(
-                    self._meaning_store_vectors(save_rows),
-                    label="语义记忆索引",
-                    key=f"meaning_vectors:{self._meaning_hash(query)[:12]}",
-                    category="memory",
-                )
-            else:
-                await self._meaning_store_vectors(save_rows)
+            self._schedule_background(
+                self._meaning_store_vectors(save_rows),
+                label="语义记忆索引",
+                key=f"meaning_vectors:{self._meaning_hash(json.dumps(save_rows, sort_keys=True))}",
+                category="memory",
+            )
 
-        ranked: dict[str, list[Any]] = {}
         normalized_query = [float(value) for value in query_vector]
-        for kind, values in groups.items():
-            scored = [
+        return await asyncio.to_thread(
+            self._score_vectors, normalized_query, groups, vectors, limits, minimum_similarity,
+        )
+
+    async def search_long_term_memories(
+        self,
+        query: str,
+        *,
+        lexical: list[Any],
+        scopes: list[str],
+        categories: list[str],
+        limit: int,
+    ) -> list[Any] | None:
+        """在当前会话可见的全部有效记忆中召回，不受最近条数限制。"""
+        if limit <= 0:
+            return []
+        if self._closed or self._meaning_embedding_provider() is None:
+            return None
+        candidates = await self._archive().list_recent_long_term_memories(
+            scopes=scopes, categories=categories, limit=0,
+        )
+        seen: set[str] = set()
+        by_source = {}
+        for item in [*lexical, *candidates]:
+            identity = str(getattr(item, "id", "") or "")
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            key = self._memory_source_key(item)
+            previous = by_source.get(key)
+            if previous is None or item.id > previous.id:
+                by_source[key] = item
+        unique = list(by_source.values())
+        if not unique:
+            return lexical
+        groups = {
+            "long_term_memory": [
                 (
-                    self._meaning_cosine(normalized_query, vectors.get((kind, target_id), [])),
-                    index,
+                    str(item.id),
+                    self._memory_vector_text(item),
                     item,
                 )
-                for index, (target_id, _, item) in enumerate(values)
+                for item in unique
             ]
-            scored.sort(key=lambda row: (-row[0], row[1]))
-            ranked[kind] = [item for _, _, item in scored[: max(0, limits.get(kind, 0))]]
-        return ranked
+        }
+        try:
+            ranked = await self._meaning_rank_with_embeddings(
+                query, groups, {"long_term_memory": limit}, minimum_similarity=0.62, cached_only=True,
+            )
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 长期记忆向量检索降级：{type(exc).__name__}")
+            return None
+        result = []
+        seen.clear()
+        lexical_versions = [by_source[self._memory_source_key(item)] for item in lexical]
+        for item in [*ranked["long_term_memory"], *lexical_versions]:
+            identity = str(getattr(item, "id", "") or "")
+            if identity not in seen:
+                seen.add(identity)
+                result.append(item)
+            if len(result) >= limit:
+                break
+        return result
 
     async def _meaning_rank_with_model(
         self,
@@ -248,10 +481,9 @@ class MeaningRuntimeMixin:
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
     ) -> dict[str, list[Any]] | None:
-        getter = getattr(self, "_get_memory_provider", None)
-        if not callable(getter) or not str(query or "").strip():
+        if not str(query or "").strip():
             return None
-        provider = await getter()
+        provider = await self._memory_provider()
         if not provider:
             return None
         candidates = {
@@ -270,10 +502,10 @@ JSON 输出要求：
 每类最多选择给定数量；没有相关内容就返回空数组。按整体语义、人物、时间和事件关系判断，不做字面词语匹配。"""
         dynamic = f"当前对话：{query}\n每类上限：{json.dumps(limits, ensure_ascii=False)}\n候选：{json.dumps(candidates, ensure_ascii=False)}"
         session_id = f"daily_life_memory_rank_{uuid.uuid4().hex[:8]}"
-        provider_id = str(getattr(self.config.memory, "provider", "") or "")
+        provider_id = str(getattr(self._memory_config(), "provider", "") or "")
         try:
             raw = await asyncio.wait_for(
-                self.call_text_model(
+                self._call_text_model(
                     provider,
                     cache_friendly_prompt(fixed, dynamic),
                     session_id,
@@ -309,7 +541,7 @@ JSON 输出要求：
                 result[kind] = valid
             return result
         finally:
-            await self.close_text_session(session_id)
+            await self._close_text_session(session_id)
 
     async def rank_semantic_groups(
         self,
@@ -317,6 +549,8 @@ JSON 输出要求：
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
     ) -> dict[str, list[Any]]:
+        if self._closed:
+            raise RuntimeError("语义检索服务已关闭")
         fallback = {
             kind: [item for _, _, item in values[: max(0, limits.get(kind, 0))]]
             for kind, values in groups.items()
@@ -329,7 +563,7 @@ JSON 输出要求：
             logger.debug(f"{LOG_PREFIX} 向量记忆排序跳过：{type(exc).__name__}: {exc}")
         if not bool(
             getattr(
-                getattr(self.config, "memory", None),
+                self._memory_config(),
                 "semantic_ranking_model_enabled",
                 False,
             )
@@ -352,6 +586,8 @@ JSON 输出要求：
 
         自行负责最终模型决策的调用方使用此方法，避免准备候选项时额外消耗一次模型请求。
         """
+        if self._closed:
+            raise RuntimeError("语义检索服务已关闭")
         fallback = {
             kind: [item for _, _, item in values[: max(0, limits.get(kind, 0))]]
             for kind, values in groups.items()
@@ -367,4 +603,4 @@ JSON 输出要求：
             return fallback
 
 
-__all__ = ["MeaningRuntimeMixin"]
+__all__ = ["MeaningService"]

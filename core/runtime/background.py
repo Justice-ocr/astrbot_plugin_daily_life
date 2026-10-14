@@ -21,6 +21,7 @@ _CATEGORY_LABELS = {
     "chat": "聊天记忆",
     "video": "视频任务",
     "vision": "图片识别",
+    "durable": "媒体持久任务",
 }
 
 
@@ -32,10 +33,12 @@ class BackgroundTaskScheduler:
         chat_limit: int = 1,
         video_limit: int = 1,
         vision_limit: int = 2,
+        durable_limit: int = 1,
         normal_backlog_limit: int = 64,
         chat_backlog_limit: int = 32,
         video_backlog_limit: int = 8,
         vision_backlog_limit: int = 16,
+        durable_backlog_limit: int = 1,
         chat_label: str = "聊天记忆提炼",
         slow_task_seconds: float = 30.0,
     ):
@@ -45,17 +48,20 @@ class BackgroundTaskScheduler:
         self.chat_gate = asyncio.Semaphore(chat_limit)
         self.video_gate = asyncio.Semaphore(video_limit)
         self.vision_gate = asyncio.Semaphore(vision_limit)
+        self.durable_gate = asyncio.Semaphore(durable_limit)
         self._concurrency_limits = {
             "normal": max(1, int(normal_limit)),
             "chat": max(1, int(chat_limit)),
             "video": max(1, int(video_limit)),
             "vision": max(1, int(vision_limit)),
+            "durable": max(1, int(durable_limit)),
         }
         self._backlog_limits = {
             "normal": max(0, int(normal_backlog_limit)),
             "chat": max(0, int(chat_backlog_limit)),
             "video": max(0, int(video_backlog_limit)),
             "vision": max(0, int(vision_backlog_limit)),
+            "durable": max(0, int(durable_backlog_limit)),
         }
         self._scheduled_counts = dict.fromkeys(self._concurrency_limits, 0)
         self._dropped_counts = dict.fromkeys(self._concurrency_limits, 0)
@@ -188,6 +194,8 @@ class BackgroundTaskScheduler:
                 self._close_coro(coro)
 
     def gate(self, label: str = "", *, category: str = "") -> asyncio.Semaphore:
+        if category == "durable":
+            return self.durable_gate
         if category == "video":
             return self.video_gate
         if category == "vision":
@@ -330,40 +338,3 @@ class BackgroundTaskScheduler:
             )
         return f"{LOG_PREFIX} 后台任务完成（{task_name}），耗时 {run_seconds:.2f} 秒。"
 
-
-class BackgroundTaskMixin:
-    def _init_background_tasks(self) -> None:
-        self._background_scheduler = BackgroundTaskScheduler()
-
-    async def _cancel_background_tasks(self) -> None:
-        await self._background_scheduler_for_runtime().cancel_all()
-
-    def _schedule_background_task(
-        self,
-        coro: Awaitable,
-        label: str = "",
-        key: str = "",
-        category: str = "",
-        on_cancel: Callable[[], None] | None = None,
-    ) -> bool:
-        scheduler = self._background_scheduler_for_runtime()
-        lease_factory = getattr(self, "runtime_service_lease", None)
-        return scheduler.schedule(
-            coro,
-            label=label,
-            key=key,
-            category=category,
-            lease_factory=lease_factory if callable(lease_factory) else None,
-            on_cancel=on_cancel,
-        )
-
-    def _background_gate_for_label(self, label: str = "") -> asyncio.Semaphore:
-        return self._background_scheduler_for_runtime().gate(label)
-
-    def _background_scheduler_for_runtime(self) -> BackgroundTaskScheduler:
-        scheduler = getattr(self, "_background_scheduler", None)
-        if isinstance(scheduler, BackgroundTaskScheduler):
-            return scheduler
-        scheduler = BackgroundTaskScheduler()
-        self._background_scheduler = scheduler
-        return scheduler

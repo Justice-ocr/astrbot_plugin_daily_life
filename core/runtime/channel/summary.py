@@ -18,12 +18,68 @@ from ...sources.platforms import event_platform_names
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class RuntimeMediaCommonMixin:
+
+class RuntimeMediaCommonComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _MEDIA_CADENCE_TTL_SECONDS: Any
+    _PREPARED_VISUAL_MEDIA_ATTR: Any
+    _active_agent_runner: Any
+    _append_assistant_history: Any
+    _background_tool_existing_result: Any
+    _background_tool_request: Any
+    _deliver_background_tool: Any
+    _event_component_kind: Any
+    _event_image_prompt_text: Any
+    _event_message_id: Any
+    _event_message_items: Any
+    _event_session_id: Any
+    _event_sources: Any
+    _follow_up_module: Any
+    _forget_last_generated_life_image_path: Any
+    _generate_delivered_media_reply: Any
+    _image_reference_from_items: Any
+    _image_reference_from_items_async: Any
+    _is_llm_result_object: Any
+    _last_generated_life_image_path: Any
+    _life_image_reference_is_usable: Any
+    _life_media_cadence: Any
+    _media_cadence_store: Any
+    _media_elapsed_text: Any
+    _media_error_summary: Any
+    _media_file_size: Any
+    _media_payload_from_item_async: Any
+    _media_size_text: Any
+    _message_media_payload: Any
+    _parse_delivered_media_reply: Any
+    _prune_media_cadence: Any
+    _quote_image_reference_from_event: Any
+    _quote_image_reference_from_event_async: Any
+    _quote_image_reference_from_value: Any
+    _quote_image_reference_from_value_async: Any
+    _release_media_chat_turn: Any
+    _schedule_background_task: Any
+    call_text_model: Any
+    can_send_for_source: Any
+    cancel_tool_reaction: Any
+    complete_continuous_turn: Any
+    finish_tool_reaction: Any
+    get_persona_text: Any
+    get_text_provider: Any
+    media_request_is_current_turn: Any
+    send_background_text: Any
+
+
+class RuntimeMediaCommonComponent:
+    def __init__(self, context: RuntimeMediaCommonComponentContext) -> None:
+        self.context = context
+
     _MEDIA_CADENCE_TTL_SECONDS = 6 * 60 * 60
 
     def _background_tool_request(self, event: Any, tool_name: str) -> dict | None:
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             requests = getattr(source, "_daily_life_background_tool_requests", {})
             marker = requests.get(tool_name)
             if isinstance(marker, dict):
@@ -33,7 +89,7 @@ class RuntimeMediaCommonMixin:
     def _background_tool_existing_result(
         self, event: Any, tool_name: str
     ) -> str | None:
-        marker = self._background_tool_request(event, tool_name)
+        marker = self.context._background_tool_request(event, tool_name)
         if marker and marker.get("status") in {"pending", "sent"}:
             return json.dumps(
                 {
@@ -57,20 +113,20 @@ class RuntimeMediaCommonMixin:
         category: str,
         failure_text: str,
     ) -> str:
-        existing = self._background_tool_existing_result(source_event, tool_name)
+        existing = self.context._background_tool_existing_result(source_event, tool_name)
         if existing:
             return existing
-        scope = self._event_session_id(event)
-        source_id = self._event_message_id(source_event) or f"event:{id(source_event)}"
+        scope = self.context._event_session_id(event)
+        source_id = self.context._event_message_id(source_event) or f"event:{id(source_event)}"
         marker = {"status": "pending", "media": media}
 
         def cancel_request() -> None:
             if marker["status"] != "sent":
                 marker["status"] = "cancelled"
-                self.cancel_tool_reaction(event, tool_name)
+                self.context.cancel_tool_reaction(event, tool_name)
 
-        if not self._schedule_background_task(
-            self._deliver_background_tool(event, work, marker, tool_name, failure_text),
+        if not self.context._schedule_background_task(
+            self.context._deliver_background_tool(event, work, marker, tool_name, failure_text),
             label=label,
             key=f"background_tool:{tool_name}:{scope}:{source_id}",
             category=category,
@@ -84,13 +140,13 @@ class RuntimeMediaCommonMixin:
                 },
                 ensure_ascii=False,
             )
-        for source in [event, *self._event_sources(source_event)]:
+        for source in [event, *self.context._event_sources(source_event)]:
             requests = dict(
                 getattr(source, "_daily_life_background_tool_requests", {}) or {}
             )
             requests[tool_name] = marker
             source._daily_life_background_tool_requests = requests
-        self._release_media_chat_turn(source_event)
+        self.context._release_media_chat_turn(source_event)
         return json.dumps(
             {
                 "status": "pending",
@@ -110,26 +166,26 @@ class RuntimeMediaCommonMixin:
         failure_text: str,
     ) -> None:
         try:
-            if not self.can_send_for_source(
-                self._event_session_id(event), source_event=event
+            if not self.context.can_send_for_source(
+                self.context._event_session_id(event), source_event=event
             ):
                 marker["status"] = "cancelled"
-                self.cancel_tool_reaction(event, tool_name)
+                self.context.cancel_tool_reaction(event, tool_name)
                 return
             result = await work()
             status = str(getattr(result, "status", "") or "")
             if marker["status"] == "sent" or status == "sent":
                 marker["status"] = "sent"
-            elif status == "cancelled" or not self.can_send_for_source(
-                self._event_session_id(event), source_event=event
+            elif status == "cancelled" or not self.context.can_send_for_source(
+                self.context._event_session_id(event), source_event=event
             ):
                 marker["status"] = "cancelled"
-                self.cancel_tool_reaction(event, tool_name)
+                self.context.cancel_tool_reaction(event, tool_name)
                 return
             elif status == "ok":
                 text = str(result or "").strip()
-                sent = bool(text) and await self.send_background_text(
-                    self._event_session_id(event),
+                sent = bool(text) and await self.context.send_background_text(
+                    self.context._event_session_id(event),
                     text,
                     mode=BackgroundTextMode.DIRECT,
                     source_event=event,
@@ -137,39 +193,39 @@ class RuntimeMediaCommonMixin:
                 )
                 marker["status"] = "sent" if sent else "failed"
                 if sent:
-                    await self._append_assistant_history(
-                        self._event_session_id(event), text
+                    await self.context._append_assistant_history(
+                        self.context._event_session_id(event), text
                     )
             else:
                 marker["status"] = "failed"
-                if self.media_request_is_current_turn(event):
-                    await self.send_background_text(
-                        self._event_session_id(event),
+                if self.context.media_request_is_current_turn(event):
+                    await self.context.send_background_text(
+                        self.context._event_session_id(event),
                         str(result or failure_text),
                         mode=BackgroundTextMode.DIRECT,
                         source_event=event,
                         source="background_tool_failure",
                     )
-            await self.finish_tool_reaction(
+            await self.context.finish_tool_reaction(
                 event, tool_name, success=marker["status"] == "sent"
             )
         except asyncio.CancelledError:
             if marker["status"] != "sent":
                 marker["status"] = "cancelled"
-                self.cancel_tool_reaction(event, tool_name)
+                self.context.cancel_tool_reaction(event, tool_name)
             raise
         except Exception as exc:
             logger.warning(
-                f"{LOG_PREFIX} {tool_name} 后台处理失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} {tool_name} 后台处理失败：{self.context._media_error_summary(exc)}"
             )
             if marker["status"] == "sent":
-                await self.finish_tool_reaction(event, tool_name, success=True)
+                await self.context.finish_tool_reaction(event, tool_name, success=True)
                 return
             marker["status"] = "failed"
-            await self.finish_tool_reaction(event, tool_name, success=False)
-            if self.media_request_is_current_turn(event):
-                await self.send_background_text(
-                    self._event_session_id(event),
+            await self.context.finish_tool_reaction(event, tool_name, success=False)
+            if self.context.media_request_is_current_turn(event):
+                await self.context.send_background_text(
+                    self.context._event_session_id(event),
                     failure_text,
                     mode=BackgroundTextMode.DIRECT,
                     source_event=event,
@@ -179,11 +235,11 @@ class RuntimeMediaCommonMixin:
     def hold_background_tool_final_text(self, event: Any) -> bool:
         if not any(
             getattr(source, "_daily_life_background_tool_requests", {})
-            for source in self._event_sources(event)
+            for source in self.context._event_sources(event)
         ):
             return False
         result = getattr(event, "get_result", lambda: None)()
-        if not self._is_llm_result_object(result):
+        if not self.context._is_llm_result_object(result):
             return False
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
@@ -191,11 +247,11 @@ class RuntimeMediaCommonMixin:
         return True
 
     def _release_media_chat_turn(self, event: Any) -> None:
-        self.complete_continuous_turn(event)
-        sources = self._event_sources(event)
+        self.context.complete_continuous_turn(event)
+        sources = self.context._event_sources(event)
         original = sources[-1] if sources else event
-        runner = self._active_agent_runner(original)
-        follow_up = self._follow_up_module()
+        runner = self.context._active_agent_runner(original)
+        follow_up = self.context._follow_up_module()
         unregister = getattr(follow_up, "unregister_active_runner", None)
         if runner is None or not callable(unregister):
             return
@@ -204,10 +260,10 @@ class RuntimeMediaCommonMixin:
         release = getattr(runner, "_resolve_unconsumed_follow_ups", None)
         if callable(release):
             release()
-        unregister(self._event_session_id(original), runner)
+        unregister(self.context._event_session_id(original), runner)
 
     def _snapshot_media_event(self, event: Any) -> Any:
-        sources = self._event_sources(event)
+        sources = self.context._event_sources(event)
         original = sources[-1] if sources else event
         snapshot = copy.copy(original)
         from ...clock import now as life_now
@@ -220,9 +276,9 @@ class RuntimeMediaCommonMixin:
         snapshot._daily_life_media_scope_delivery = "webchat" in event_platform_names(
             original
         )
-        items = self._event_message_items(original)
+        items = self.context._event_message_items(original)
         copied_items = copy.deepcopy(items)
-        prepared = getattr(original, self._PREPARED_VISUAL_MEDIA_ATTR, [])
+        prepared = getattr(original, self.context._PREPARED_VISUAL_MEDIA_ATTR, [])
         snapshot._daily_life_cached_image_references = {}
         for index, item in enumerate(items):
             cached = next(
@@ -235,7 +291,7 @@ class RuntimeMediaCommonMixin:
             )
             if cached:
                 copied_items[index] = Image.fromFileSystem(str(cached))
-                payload = self._message_media_payload(item)
+                payload = self.context._message_media_payload(item)
                 for key in ("path", "file", "url", "image"):
                     if payload.get(key):
                         snapshot._daily_life_cached_image_references[payload[key]] = (
@@ -249,7 +305,7 @@ class RuntimeMediaCommonMixin:
             snapshot.message_items = copied_items
         setattr(
             snapshot,
-            self._PREPARED_VISUAL_MEDIA_ATTR,
+            self.context._PREPARED_VISUAL_MEDIA_ATTR,
             [
                 {**entry, "item": copied_items[index]}
                 for entry in prepared
@@ -257,7 +313,7 @@ class RuntimeMediaCommonMixin:
                 if entry.get("item") is item
             ],
         )
-        snapshot._daily_life_locked_image_prompt_text = self._event_image_prompt_text(
+        snapshot._daily_life_locked_image_prompt_text = self.context._event_image_prompt_text(
             event
         )
         return snapshot
@@ -293,8 +349,8 @@ class RuntimeMediaCommonMixin:
         delivery_text: str,
         guidance: str = "",
     ) -> str:
-        get_provider = getattr(self, "get_text_provider", None)
-        call_llm = getattr(self, "call_text_model", None)
+        get_provider = getattr(self.context, "get_text_provider", None)
+        call_llm = getattr(self.context, "call_text_model", None)
         if not callable(get_provider) or not callable(call_llm):
             return ""
         try:
@@ -302,7 +358,7 @@ class RuntimeMediaCommonMixin:
             if provider is None:
                 return ""
             persona = ""
-            persona_getter = getattr(self, "get_persona_text", None)
+            persona_getter = getattr(self.context, "get_persona_text", None)
             if callable(persona_getter):
                 try:
                     persona = str(await persona_getter(scope) or "").strip()
@@ -330,13 +386,13 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                 empty_retries=0,
                 primary_provider_id="",
             )
-            reply_text = self._parse_delivered_media_reply(raw)
+            reply_text = self.context._parse_delivered_media_reply(raw)
             if not reply_text:
                 logger.debug(f"{LOG_PREFIX} 媒体送达补话生成失败：返回内容不符合协议")
             return reply_text
         except Exception as exc:
             logger.debug(
-                f"{LOG_PREFIX} 媒体送达补话生成失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} 媒体送达补话生成失败：{self.context._media_error_summary(exc)}"
             )
             return ""
 
@@ -351,11 +407,11 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         source_event: Any = None,
         source: str = "media_followup",
     ) -> bool:
-        current_turn = getattr(self, "media_request_is_current_turn", None)
+        current_turn = getattr(self.context, "media_request_is_current_turn", None)
         if callable(current_turn) and not current_turn(source_event):
             logger.debug(f"{LOG_PREFIX} 跳过过期媒体补话：后续消息已经接管当前话轮。")
             return False
-        text = await self._generate_delivered_media_reply(
+        text = await self.context._generate_delivered_media_reply(
             scope,
             media_name=media_name,
             request_text=request_text,
@@ -367,7 +423,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         if callable(current_turn) and not current_turn(source_event):
             return False
         try:
-            sent = await self.send_background_text(
+            sent = await self.context.send_background_text(
                 scope,
                 text,
                 mode=BackgroundTextMode.EXPRESSIVE,
@@ -376,19 +432,19 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             )
         except Exception as exc:
             logger.warning(
-                f"{LOG_PREFIX} 媒体送达补话发送失败：{self._media_error_summary(exc)}"
+                f"{LOG_PREFIX} 媒体送达补话发送失败：{self.context._media_error_summary(exc)}"
             )
             return False
         if not sent:
             return False
-        current_turn = getattr(self, "media_request_is_current_turn", None)
+        current_turn = getattr(self.context, "media_request_is_current_turn", None)
         if not callable(current_turn) or current_turn(source_event):
             try:
-                await self._append_assistant_history(scope, text)
+                await self.context._append_assistant_history(scope, text)
             except Exception as exc:
                 logger.debug(
                     f"{LOG_PREFIX} 媒体送达补话历史记录失败："
-                    f"{self._media_error_summary(exc)}"
+                    f"{self.context._media_error_summary(exc)}"
                 )
         return True
 
@@ -444,15 +500,15 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             return None
 
     async def _media_result_summary(self, target: object, started_at: float) -> str:
-        size = await self._media_file_size(target)
-        return f"{self._media_size_text(size)}，耗时 {self._media_elapsed_text(started_at)}"
+        size = await self.context._media_file_size(target)
+        return f"{self.context._media_size_text(size)}，耗时 {self.context._media_elapsed_text(started_at)}"
 
     @staticmethod
     def _media_error_summary(exc: Exception) -> str:
         detail = str(exc).strip()
         if detail:
             if detail == type(exc).__name__:
-                return RuntimeMediaCommonMixin._localized_error_name(detail)
+                return RuntimeMediaCommonComponent._localized_error_name(detail)
             return detail
         for nested in (
             getattr(exc, "__cause__", None),
@@ -460,8 +516,8 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         ):
             nested_detail = str(nested or "").strip()
             if nested_detail:
-                return f"{RuntimeMediaCommonMixin._localized_error_name(type(exc).__name__)}：{nested_detail}"
-        return RuntimeMediaCommonMixin._localized_error_name(type(exc).__name__)
+                return f"{RuntimeMediaCommonComponent._localized_error_name(type(exc).__name__)}：{nested_detail}"
+        return RuntimeMediaCommonComponent._localized_error_name(type(exc).__name__)
 
     @staticmethod
     def _media_tool_failure_text(media_name: str, error: str) -> str:
@@ -473,27 +529,27 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         return f"{media_name}生成失败，已记录失败原因。"
 
     def _media_cadence_store(self) -> dict[str, dict[str, Any]]:
-        store = getattr(self, "_life_media_cadence", None)
+        store = getattr(self.context, "_life_media_cadence", None)
         if not isinstance(store, dict):
-            self._life_media_cadence = {}
-            store = self._life_media_cadence
+            self.context._life_media_cadence = {}
+            store = self.context._life_media_cadence
         return store
 
     def _prune_media_cadence(self, now: datetime.datetime | None = None) -> None:
         now = now or datetime.datetime.now()
-        for scope, item in list(self._media_cadence_store().items()):
+        for scope, item in list(self.context._media_cadence_store().items()):
             last_at = item.get("last_at") if isinstance(item, dict) else None
             if not isinstance(last_at, datetime.datetime):
-                self._life_media_cadence.pop(scope, None)
+                self.context._life_media_cadence.pop(scope, None)
                 continue
             try:
                 expired = (
                     now - last_at
-                ).total_seconds() > self._MEDIA_CADENCE_TTL_SECONDS
+                ).total_seconds() > self.context._MEDIA_CADENCE_TTL_SECONDS
             except Exception:
                 expired = True
             if expired:
-                self._life_media_cadence.pop(scope, None)
+                self.context._life_media_cadence.pop(scope, None)
 
     def note_life_media_sent(
         self,
@@ -505,15 +561,15 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         scope = (
             event_or_scope
             if isinstance(event_or_scope, str)
-            else self._event_session_id(event_or_scope)
+            else self.context._event_session_id(event_or_scope)
         )
         scope = str(scope or "").strip()
         media = "视频" if str(media or "").lower() in {"video", "视频"} else "图片"
         if not scope:
             return
         now = now or datetime.datetime.now()
-        self._prune_media_cadence(now)
-        store = self._media_cadence_store()
+        self.context._prune_media_cadence(now)
+        store = self.context._media_cadence_store()
         item = store.get(scope, {})
         if not isinstance(item, dict):
             item = {}
@@ -527,9 +583,9 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         store[scope] = item
 
     def _hidden_media_cadence_hint(self, event: Any = None) -> str:
-        self._prune_media_cadence()
-        scope = self._event_session_id(event) if event is not None else ""
-        item = self._media_cadence_store().get(scope, {}) if scope else {}
+        self.context._prune_media_cadence()
+        scope = self.context._event_session_id(event) if event is not None else ""
+        item = self.context._media_cadence_store().get(scope, {}) if scope else {}
         if not isinstance(item, dict) or not isinstance(
             item.get("last_at"), datetime.datetime
         ):
@@ -553,7 +609,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
 
     def _image_reference_from_items(self, items: list[Any]) -> str:
         for item in items:
-            payload = self._message_media_payload(item)
+            payload = self.context._message_media_payload(item)
             source = (
                 payload.get("path")
                 or payload.get("file")
@@ -566,7 +622,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         return ""
 
     async def _media_payload_from_item_async(self, item: Any) -> dict[str, str]:
-        payload = dict(self._message_media_payload(item))
+        payload = dict(self.context._message_media_payload(item))
         getter = getattr(item, "get_file", None)
         if callable(getter):
             try:
@@ -578,7 +634,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                     payload["path"] = text
             except Exception as exc:
                 logger.debug(
-                    f"{LOG_PREFIX} 媒体异步获取失败：{self._media_error_summary(exc)}"
+                    f"{LOG_PREFIX} 媒体异步获取失败：{self.context._media_error_summary(exc)}"
                 )
         converter = getattr(item, "convert_to_file_path", None)
         if callable(converter) and not payload.get("path"):
@@ -591,13 +647,13 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                     payload["path"] = text
             except Exception as exc:
                 logger.debug(
-                    f"{LOG_PREFIX} 媒体本地解析失败：{self._media_error_summary(exc)}"
+                    f"{LOG_PREFIX} 媒体本地解析失败：{self.context._media_error_summary(exc)}"
                 )
         return payload
 
     async def _image_reference_from_items_async(self, items: list[Any]) -> str:
         for item in items:
-            payload = await self._media_payload_from_item_async(item)
+            payload = await self.context._media_payload_from_item_async(item)
             source = (
                 payload.get("path")
                 or payload.get("file")
@@ -610,34 +666,34 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         return ""
 
     def _quote_image_reference_from_event(self, event: Any) -> str:
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             for attr in ("quote", "reply", "reply_message"):
                 value = getattr(source, attr, None)
-                reference = self._quote_image_reference_from_value(value)
+                reference = self.context._quote_image_reference_from_value(value)
                 if reference:
                     return reference
-            for item in self._event_message_items(source):
-                kind = self._event_component_kind(item)
+            for item in self.context._event_message_items(source):
+                kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
-                reference = self._quote_image_reference_from_value(item)
+                reference = self.context._quote_image_reference_from_value(item)
                 if reference:
                     return reference
         return ""
 
     async def _quote_image_reference_from_event_async(self, event: Any) -> str:
-        for source in self._event_sources(event):
+        for source in self.context._event_sources(event):
             for attr in ("quote", "reply", "reply_message"):
-                reference = await self._quote_image_reference_from_value_async(
+                reference = await self.context._quote_image_reference_from_value_async(
                     getattr(source, attr, None)
                 )
                 if reference:
                     return reference
-            for item in self._event_message_items(source):
-                kind = self._event_component_kind(item)
+            for item in self.context._event_message_items(source):
+                kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
-                reference = await self._quote_image_reference_from_value_async(item)
+                reference = await self.context._quote_image_reference_from_value_async(item)
                 if reference:
                     return reference
         return ""
@@ -656,31 +712,31 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             ):
                 raw_items = value.get(key)
                 if isinstance(raw_items, list):
-                    reference = self._image_reference_from_items(raw_items)
+                    reference = self.context._image_reference_from_items(raw_items)
                     if reference:
                         return reference
             data = value.get("data")
             if isinstance(data, dict):
-                reference = self._quote_image_reference_from_value(data)
+                reference = self.context._quote_image_reference_from_value(data)
                 if reference:
                     return reference
-            if "image" in self._event_component_kind(value):
-                return self._image_reference_from_items([value])
+            if "image" in self.context._event_component_kind(value):
+                return self.context._image_reference_from_items([value])
             return ""
 
         for attr in ("chain", "message", "messages", "items", "segments", "components"):
             raw_items = getattr(value, attr, None)
             if isinstance(raw_items, list):
-                reference = self._image_reference_from_items(raw_items)
+                reference = self.context._image_reference_from_items(raw_items)
                 if reference:
                     return reference
         data = getattr(value, "data", None)
         if isinstance(data, dict):
-            reference = self._quote_image_reference_from_value(data)
+            reference = self.context._quote_image_reference_from_value(data)
             if reference:
                 return reference
-        if "image" in self._event_component_kind(value):
-            return self._image_reference_from_items([value])
+        if "image" in self.context._event_component_kind(value):
+            return self.context._image_reference_from_items([value])
         return ""
 
     async def _quote_image_reference_from_value_async(self, value: Any) -> str:
@@ -697,31 +753,31 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             ):
                 raw_items = value.get(key)
                 if isinstance(raw_items, list):
-                    reference = await self._image_reference_from_items_async(raw_items)
+                    reference = await self.context._image_reference_from_items_async(raw_items)
                     if reference:
                         return reference
             data = value.get("data")
             if isinstance(data, dict):
-                reference = await self._quote_image_reference_from_value_async(data)
+                reference = await self.context._quote_image_reference_from_value_async(data)
                 if reference:
                     return reference
-            if "image" in self._event_component_kind(value):
-                return await self._image_reference_from_items_async([value])
+            if "image" in self.context._event_component_kind(value):
+                return await self.context._image_reference_from_items_async([value])
             return ""
 
         for attr in ("chain", "message", "messages", "items", "segments", "components"):
             raw_items = getattr(value, attr, None)
             if isinstance(raw_items, list):
-                reference = await self._image_reference_from_items_async(raw_items)
+                reference = await self.context._image_reference_from_items_async(raw_items)
                 if reference:
                     return reference
         data = getattr(value, "data", None)
         if isinstance(data, dict):
-            reference = await self._quote_image_reference_from_value_async(data)
+            reference = await self.context._quote_image_reference_from_value_async(data)
             if reference:
                 return reference
-        if "image" in self._event_component_kind(value):
-            return await self._image_reference_from_items_async([value])
+        if "image" in self.context._event_component_kind(value):
+            return await self.context._image_reference_from_items_async([value])
         return ""
 
     async def _resolve_life_image_reference_async(
@@ -734,14 +790,14 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         current_items: tuple[Any, ...] | None = None,
     ) -> str:
         explicit = str(reference_image or "").strip()
-        current = await self._image_reference_from_items_async(
+        current = await self.context._image_reference_from_items_async(
             list(current_items)
             if current_items is not None
-            else self._event_message_items(event)
+            else self.context._event_message_items(event)
         )
         if current:
             return current
-        quoted = await self._quote_image_reference_from_event_async(event)
+        quoted = await self.context._quote_image_reference_from_event_async(event)
         if quoted:
             return quoted
         extractor = None
@@ -754,12 +810,12 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         except Exception:
             extractor = None
         if callable(extractor):
-            for source in self._event_sources(event):
+            for source in self.context._event_sources(event):
                 try:
                     images = await extractor(source)
                 except Exception as exc:
                     logger.debug(
-                        f"{LOG_PREFIX} 引用图片解析失败：{self._media_error_summary(exc)}"
+                        f"{LOG_PREFIX} 引用图片解析失败：{self.context._media_error_summary(exc)}"
                     )
                     images = []
                 for image in images or []:
@@ -767,14 +823,14 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                     if text:
                         return text
 
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         last_generated = ""
         if allow_last_generated and scope:
-            cached = self._last_generated_life_image_path(scope)
-            if cached and await self._life_image_reference_is_usable(cached):
+            cached = self.context._last_generated_life_image_path(scope)
+            if cached and await self.context._life_image_reference_is_usable(cached):
                 last_generated = cached
             elif cached:
-                self._forget_last_generated_life_image_path(scope, cached)
+                self.context._forget_last_generated_life_image_path(scope, cached)
 
         if prefer_last_generated and last_generated:
             logger.debug(f"{LOG_PREFIX} 图片编辑参考：来源=上一张生成结果")
@@ -782,7 +838,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
 
         explicit_invalid = False
         if explicit:
-            if await self._life_image_reference_is_usable(explicit):
+            if await self.context._life_image_reference_is_usable(explicit):
                 return explicit
             explicit_invalid = True
 
@@ -817,6 +873,6 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         explicit = str(reference_image or "").strip()
         if explicit:
             return explicit
-        return self._image_reference_from_items(
-            self._event_message_items(event)
-        ) or self._quote_image_reference_from_event(event)
+        return self.context._image_reference_from_items(
+            self.context._event_message_items(event)
+        ) or self.context._quote_image_reference_from_event(event)

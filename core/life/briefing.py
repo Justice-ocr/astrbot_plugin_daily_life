@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 
 from astrbot.api import logger
@@ -10,8 +12,26 @@ from .surroundings import (
     select_relevant_world,
 )
 
+from typing import Any, Protocol
 
-class DailyBriefingMixin:
+
+class DailyBriefingComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _build_recent_pattern_context: Any
+    _current_residence_boundary_date: Any
+    _get_recent_chats: Any
+    _is_before_residence_boundary: Any
+    _resolve_reference_user_profile: Any
+    archive: Any
+    config: Any
+    domains: Any
+
+
+class DailyBriefingComponent:
+    def __init__(self, context: DailyBriefingComponentContext) -> None:
+        self.context = context
+
     @staticmethod
     def _format_commitment_prompt(commitments: list[CommitmentRecord]) -> str:
         if not commitments:
@@ -35,14 +55,14 @@ class DailyBriefingMixin:
 
     async def _current_residence_boundary_date(self) -> str:
         getter = getattr(
-            getattr(self, "domains", None),
+            getattr(self.context, "domains", None),
             "residence_boundary_date",
             None,
         )
         value = await getter() if callable(getter) else ""
         if not value:
             archive_getter = getattr(
-                getattr(self, "archive", None),
+                getattr(self.context, "archive", None),
                 "get_residence_context_boundary",
                 None,
             )
@@ -50,11 +70,11 @@ class DailyBriefingMixin:
         return str(value or "").strip()[:10]
 
     async def _is_before_residence_boundary(self, date_str: str) -> bool:
-        boundary = await self._current_residence_boundary_date()
+        boundary = await self.context._current_residence_boundary_date()
         return bool(boundary and str(date_str or "") < boundary)
 
     async def _build_life_inertia_context(self, date: datetime.datetime) -> str:
-        builder = getattr(self, "_build_recent_pattern_context", None)
+        builder = getattr(self.context, "_build_recent_pattern_context", None)
         text = await builder(date) if callable(builder) else ""
         if text:
             return (
@@ -71,14 +91,14 @@ class DailyBriefingMixin:
         self, date: datetime.datetime, *, include_outfit: bool = True
     ) -> str:
         previous_str = (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        previous_day = await self.archive.get_day(previous_str)
+        previous_day = await self.context.archive.get_day(previous_str)
         if not previous_day:
             return "\n\n## 🌙 昨日状态参考\n无昨日记录，可以自由决定今天的起床、睡眠和换装状态。"
         sleep = previous_day.state.sleep if previous_day.state else None
         sleep_text = ""
         if sleep:
             sleep_text = f"\n- 昨日睡眠记录：质量 {sleep.quality if sleep.quality is not None else '未知'}；{sleep.summary or '无摘要'}"
-        if await self._is_before_residence_boundary(previous_str):
+        if await self.context._is_before_residence_boundary(previous_str):
             sleep_only_text = sleep_text or "\n- 昨日睡眠记录：无"
             return (
                 "\n\n## 🌙 昨日状态参考"
@@ -106,11 +126,11 @@ class DailyBriefingMixin:
 
     async def _build_history_schedule_summary(self, date: datetime.datetime) -> str:
         history = []
-        for i in range(1, self.config.reference_history_days + 1):
+        for i in range(1, self.context.config.reference_history_days + 1):
             previous_date = (date - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-            if await self._is_before_residence_boundary(previous_date):
+            if await self.context._is_before_residence_boundary(previous_date):
                 continue
-            previous_day = await self.archive.get_day(previous_date)
+            previous_day = await self.context.archive.get_day(previous_date)
             if previous_day and previous_day.timeline:
                 meta = previous_day.meta or {}
                 first_act = previous_day.timeline[0].activity[:40]
@@ -128,13 +148,13 @@ class DailyBriefingMixin:
 
     async def _collect_recent_chat_context(self, persona: str) -> str:
         chat_logs = []
-        hours = self.config.history_hours
-        max_count = self.config.history_max_count
+        hours = self.context.config.history_hours
+        max_count = self.context.config.history_max_count
 
-        for group_id in self.config.reference_groups:
+        for group_id in self.context.config.reference_groups:
             if not group_id:
                 continue
-            content = await self._get_recent_chats(
+            content = await self.context._get_recent_chats(
                 group_id,
                 is_group=True,
                 hours=hours,
@@ -144,10 +164,10 @@ class DailyBriefingMixin:
             if content and content != "无":
                 chat_logs.append(f"【群聊 {group_id}】\n{content}")
 
-        for user_id in self.config.reference_users:
+        for user_id in self.context.config.reference_users:
             if not user_id:
                 continue
-            content = await self._get_recent_chats(
+            content = await self.context._get_recent_chats(
                 user_id,
                 is_group=False,
                 hours=hours,
@@ -155,7 +175,7 @@ class DailyBriefingMixin:
                 persona=persona,
             )
             if content and content != "无":
-                profile = await self._resolve_reference_user_profile(
+                profile = await self.context._resolve_reference_user_profile(
                     user_id, persona=persona
                 )
                 title = profile.get("name") or user_id
@@ -166,7 +186,7 @@ class DailyBriefingMixin:
                 f"[日程生成] 已成功注入 {len(chat_logs)} 个会话的聊天历史记录参考（回溯 {hours} 小时）。"
             )
             return "\n\n".join(chat_logs)
-        if self.config.reference_groups or self.config.reference_users:
+        if self.context.config.reference_groups or self.context.config.reference_users:
             logger.debug("[日程生成] 未获取到符合条件的聊天历史记录参考。")
         return "无"
 
@@ -177,13 +197,13 @@ class DailyBriefingMixin:
         weather_info: dict,
         hints: list[str],
     ) -> str:
-        relationships = await self.archive.get_recent_relationships(6)
-        saved_places = await self.archive.get_recent_places(12)
-        recent_events = await self.archive.get_recent_events(8)
-        chat_summaries = await self.archive.get_recent_chat_summaries(
-            self.config.memory.max_generation_items
+        relationships = await self.context.archive.get_recent_relationships(6)
+        saved_places = await self.context.archive.get_recent_places(12)
+        recent_events = await self.context.archive.get_recent_events(8)
+        chat_summaries = await self.context.archive.get_recent_chat_summaries(
+            self.context.config.memory.max_generation_items
         )
-        boundary = await self._current_residence_boundary_date()
+        boundary = await self.context._current_residence_boundary_date()
         if boundary:
             recent_events = [
                 item
@@ -215,7 +235,7 @@ class DailyBriefingMixin:
             relationship_limit=6,
             place_limit=8,
             event_limit=8,
-            summary_limit=getattr(self.config.memory, "max_generation_items", 8),
+            summary_limit=getattr(self.context.config.memory, "max_generation_items", 8),
         )
         world_context = format_world_prompt(
             selected_world["relationships"],
@@ -225,7 +245,7 @@ class DailyBriefingMixin:
             selected_world["summaries"],
         )
         home_city = str(
-            getattr(getattr(self, "domains", None), "home_city", "") or ""
+            getattr(getattr(self.context, "domains", None), "home_city", "") or ""
         ).strip()
         if home_city:
             residence_context = (
@@ -237,4 +257,4 @@ class DailyBriefingMixin:
         return world_context
 
 
-__all__ = ["DailyBriefingMixin"]
+__all__ = ["DailyBriefingComponent"]

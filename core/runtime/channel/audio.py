@@ -6,8 +6,34 @@ from astrbot.api import logger
 
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class RuntimeVoiceMediaMixin:
+
+class RuntimeVoiceMediaComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _append_turn_history: Any
+    _chat_style_context: Any
+    _chat_style_enabled: Any
+    _event_session_id: Any
+    _event_user_history_text: Any
+    _mark_voice_switch_channel: Any
+    _media_error_summary: Any
+    _note_voice_expression_decision: Any
+    _record_message_chain: Any
+    _voice_allowed_for_scope: Any
+    log_chat_style_trace: Any
+    mark_tool_outcome: Any
+    mark_voice_switch_used: Any
+    media: Any
+    note_structured_bot_message: Any
+    send_message_if_not_recalled: Any
+
+
+class RuntimeVoiceMediaComponent:
+    def __init__(self, context: RuntimeVoiceMediaComponentContext) -> None:
+        self.context = context
+
     async def life_voice_generate(
         self,
         event: Any,
@@ -22,7 +48,7 @@ class RuntimeVoiceMediaMixin:
         decision_reason = str(decision_reason or "").strip()
 
         def mark_outcome(outcome: str) -> None:
-            marker = getattr(self, "mark_tool_outcome", None)
+            marker = getattr(self.context, "mark_tool_outcome", None)
             if callable(marker):
                 marker(event, "life_voice_generate", outcome)
 
@@ -31,8 +57,8 @@ class RuntimeVoiceMediaMixin:
             return "没有收到语音文本。"
         if not user_requested:
             reason = "用户没有明确要求语音，普通聊天交由发送前自动判断。"
-            self._mark_voice_switch_channel(event, "文字")
-            await self._note_voice_expression_decision(
+            self.context._mark_voice_switch_channel(event, "文字")
+            await self.context._note_voice_expression_decision(
                 event=event,
                 channel="文字",
                 source="普通聊天",
@@ -46,12 +72,12 @@ class RuntimeVoiceMediaMixin:
             )
             mark_outcome("fallback")
             return "用户没有明确要求语音，请直接用文字回复。"
-        scope = self._event_session_id(event)
+        scope = self.context._event_session_id(event)
         if not scope:
             mark_outcome("fallback")
             return "当前会话不可发送语音。"
-        if not self._voice_allowed_for_scope(event):
-            await self._note_voice_expression_decision(
+        if not self.context._voice_allowed_for_scope(event):
+            await self.context._note_voice_expression_decision(
                 event=event,
                 channel="文字",
                 source="用户明确要求",
@@ -65,10 +91,10 @@ class RuntimeVoiceMediaMixin:
             )
             mark_outcome("fallback")
             return "语音生成未启用。"
-        if self._chat_style_enabled():
-            style_context = self._chat_style_context(event)
+        if self.context._chat_style_enabled():
+            style_context = self.context._chat_style_context(event)
             setattr(event, "_daily_life_chat_style_context", style_context)
-            self.log_chat_style_trace(event, text, style_context, changed=False)
+            self.context.log_chat_style_trace(event, text, style_context, changed=False)
         try:
             voice_kwargs = {
                 "emotion": emotion,
@@ -76,23 +102,23 @@ class RuntimeVoiceMediaMixin:
             }
             if voice_style:
                 voice_kwargs["voice_style"] = voice_style
-            generated = await self.media.voice.synthesize(text, **voice_kwargs)
-            if not await self.send_message_if_not_recalled(
+            generated = await self.context.media.voice.synthesize(text, **voice_kwargs)
+            if not await self.context.send_message_if_not_recalled(
                 scope,
-                self._record_message_chain(generated.path),
+                self.context._record_message_chain(generated.path),
                 source_event=event,
             ):
                 mark_outcome("fallback")
                 return "原消息已撤回，已取消语音发送。"
-            self.mark_voice_switch_used(event)
+            self.context.mark_voice_switch_used(event)
             mark_outcome("sent")
-            self.note_structured_bot_message(
+            self.context.note_structured_bot_message(
                 scope, text, source_event=event, media="语音"
             )
-            await self._append_turn_history(
-                scope, event, self._event_user_history_text(event), text
+            await self.context._append_turn_history(
+                scope, event, self.context._event_user_history_text(event), text
             )
-            await self._note_voice_expression_decision(
+            await self.context._note_voice_expression_decision(
                 event=event,
                 channel="语音",
                 source="用户明确要求",
@@ -104,14 +130,14 @@ class RuntimeVoiceMediaMixin:
                 user_requested=True,
                 confidence=1.0,
             )
-            self._mark_voice_switch_channel(event, "语音")
+            self.context._mark_voice_switch_channel(event, "语音")
             return None
         except Exception as exc:
-            error = self._media_error_summary(exc)
+            error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 语音生成或发送失败：{error}")
-            self._mark_voice_switch_channel(event, "文字")
+            self.context._mark_voice_switch_channel(event, "文字")
             mark_outcome("fallback")
-            await self._note_voice_expression_decision(
+            await self.context._note_voice_expression_decision(
                 event=event,
                 channel="文字",
                 source="用户明确要求",

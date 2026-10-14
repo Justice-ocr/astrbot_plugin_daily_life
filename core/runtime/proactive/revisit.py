@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import uuid
 from typing import Any
@@ -19,14 +21,90 @@ from ..capture.jsonclean import call_pure_json
 from ...life.presence import kernel_context
 from ..markers import LOG_PREFIX
 
+from typing import Protocol
 
-class ProactiveRevisitMixin:
+
+class ProactiveRevisitComponentContext(Protocol):
+    """此组件读取或更新的宿主接口。"""
+
+    _PROACTIVE_UTILITY_THRESHOLD: Any
+    _advance_proactive_decision_trace: Any
+    _audit_proactive_continuity: Any
+    _chat_style_enabled: Any
+    _clamp_float: Any
+    _commit_proactive_decision: Any
+    _current_proactive_persona: Any
+    _evaluate_private_revisit_payload: Any
+    _event_message_id: Any
+    _expression_review_passed: Any
+    _format_behavior_patterns_for_proactive: Any
+    _format_behavior_scenes_for_proactive: Any
+    _format_expression_profiles_for_proactive: Any
+    _format_expression_reviews_for_proactive: Any
+    _format_focus_slots_for_proactive: Any
+    _format_hidden_schedule_window: Any
+    _format_life_terms_for_proactive: Any
+    _format_mid_summaries_for_proactive: Any
+    _format_private_revisit_evidence_scope: Any
+    _format_proactive_air_state: Any
+    _format_proactive_expression_style: Any
+    _format_proactive_persona_context: Any
+    _format_recent_context_messages: Any
+    _format_reply_effects_for_proactive: Any
+    _format_temporary_expression_states_for_proactive: Any
+    _get_proactive_provider: Any
+    _get_recent_private_targets: Any
+    _normalize_proactive_utility: Any
+    _private_revisit_event: Any
+    _private_revisit_evidence_scope: Any
+    _private_revisit_expression_context: Any
+    _private_revisit_life_context: Any
+    _private_revisit_memory_context: Any
+    _private_revisit_memos_query: Any
+    _private_revisit_normalize_payload: Any
+    _private_revisit_prompt: Any
+    _private_revisit_relationship_snapshot: Any
+    _proactive_air_delay_remaining: Any
+    _proactive_bool: Any
+    _proactive_current_day: Any
+    _proactive_expression_limit_for_scope: Any
+    _proactive_lifecycle_snapshot: Any
+    _proactive_private_last_revisit_at: Any
+    _proactive_reply_text: Any
+    _proactive_voice_capability: Any
+    _read_recent_context_messages: Any
+    _relationship_friend_target_scope: Any
+    _reset_proactive_air_state: Any
+    _resolve_private_target_umo: Any
+    _save_pending_reply_effect: Any
+    _save_proactive_decision: Any
+    _save_proactive_expression_records: Any
+    _send_proactive_message: Any
+    _settle_stale_reply_effects: Any
+    _track_proactive_reply_effect: Any
+    _transition_proactive_lifecycle: Any
+    _update_proactive_air_after_decision: Any
+    archive: Any
+    build_hidden_activity_hint: Any
+    build_memos_hidden_context: Any
+    close_text_session: Any
+    composer: Any
+    config: Any
+    living_context_for_scope: Any
+    mark_page_status_changed: Any
+    resolve_interaction_context: Any
+
+
+class ProactiveRevisitComponent:
+    def __init__(self, context: ProactiveRevisitComponentContext) -> None:
+        self.context = context
+
     async def _get_recent_private_targets(self, limit: int = 5) -> list[Any]:
-        relationships = await self.archive.get_recent_relationships(20)
+        relationships = await self.context.archive.get_recent_relationships(20)
         targets = [
             item
             for item in relationships
-            if self._relationship_friend_target_scope(item)
+            if self.context._relationship_friend_target_scope(item)
             and (
                 getattr(item, "notes", None)
                 or str(getattr(item, "relationship_story", "") or "").strip()
@@ -122,10 +200,10 @@ class ProactiveRevisitMixin:
         target_name: str,
         now: datetime.datetime,
     ) -> dict[str, Any]:
-        recent_messages = await self._read_recent_context_messages(
+        recent_messages = await self.context._read_recent_context_messages(
             target_scope, limit=8
         )
-        recent_context = self._format_recent_context_messages(recent_messages, now=now)
+        recent_context = self.context._format_recent_context_messages(recent_messages, now=now)
         last_message_timestamp = 0.0
         for message in recent_messages:
             raw_timestamp = message.get("timestamp")
@@ -145,16 +223,16 @@ class ProactiveRevisitMixin:
             else None
         )
         minimum_idle_seconds = (
-            max(5, int(self.config.proactive.private_idle_minutes or 60)) * 60
+            max(5, int(self.context.config.proactive.private_idle_minutes or 60)) * 60
         )
         too_recent = (
             silence_seconds is not None and silence_seconds < minimum_idle_seconds
         )
-        memos_query = self._private_revisit_memos_query(recent_messages)
+        memos_query = self.context._private_revisit_memos_query(recent_messages)
         memos_context = ""
         if recent_messages and memos_query and not too_recent:
-            memos_context = await self.build_memos_hidden_context(
-                self._private_revisit_event(target_scope, memos_query, relationship),
+            memos_context = await self.context.build_memos_hidden_context(
+                self.context._private_revisit_event(target_scope, memos_query, relationship),
                 memos_query,
                 sender_name=target_name,
             )
@@ -188,11 +266,11 @@ class ProactiveRevisitMixin:
         Returns:
             格式化后的事实依据文本，以及是否存在权威事实依据。
         """
-        target_date_str, using_extended_night, day = await self._proactive_current_day(
+        target_date_str, using_extended_night, day = await self.context._proactive_current_day(
             now
         )
         commitments = []
-        getter = getattr(self.archive, "get_commitments", None)
+        getter = getattr(self.context.archive, "get_commitments", None)
         if callable(getter):
             try:
                 commitments = await getter(status="active", limit=8)
@@ -205,7 +283,7 @@ class ProactiveRevisitMixin:
             or str(getattr(item, "source_session", "") or "").strip() == target_scope
         ][:5]
         lines = [f"- 当前时间：{now.strftime('%Y-%m-%d %H:%M')}"]
-        interaction_context = await self.resolve_interaction_context(
+        interaction_context = await self.context.resolve_interaction_context(
             target_scope=target_scope,
             now=now,
         )
@@ -216,13 +294,13 @@ class ProactiveRevisitMixin:
                 f"（{'延续昨日' if using_extended_night else '当日'}）"
             )
             lines.append(
-                f"- 当前活动：{self.build_hidden_activity_hint(day, now, using_extended_night)[1]}"
+                f"- 当前活动：{self.context.build_hidden_activity_hint(day, now, using_extended_night)[1]}"
             )
             if getattr(day, "state", None):
                 state = normalize_state(day.state.as_dict())
                 lines.append(f"- 当前身心状态：{format_state_prompt(state)}")
             if getattr(day, "timeline", None):
-                schedule_window = self._format_hidden_schedule_window(day.timeline, now, timeline_date=day.date, meta=day.meta)
+                schedule_window = self.context._format_hidden_schedule_window(day.timeline, now, timeline_date=day.date, meta=day.meta)
                 if schedule_window:
                     lines.append(schedule_window)
         else:
@@ -236,7 +314,7 @@ class ProactiveRevisitMixin:
             )
         else:
             lines.append("- 尚未完成的承诺/约定：暂无可读取记录")
-        continuous_getter = getattr(self.archive, "get_continuous_life", None)
+        continuous_getter = getattr(self.context.archive, "get_continuous_life", None)
         continuous_world = {}
         if callable(continuous_getter):
             try:
@@ -246,7 +324,7 @@ class ProactiveRevisitMixin:
         if isinstance(continuous_world, dict) and continuous_world.get("kernel"):
             lines.append("- 与其他决策共同使用的统一生命内核：")
             lines.append(kernel_context(continuous_world))
-        living_reader = getattr(self, "living_context_for_scope", None)
+        living_reader = getattr(self.context, "living_context_for_scope", None)
         if callable(living_reader):
             lines.append(await living_reader(target_scope))
         return "\n".join(lines), bool(
@@ -262,35 +340,35 @@ class ProactiveRevisitMixin:
         relationship: Any | None,
         now: datetime.datetime,
     ) -> dict[str, Any]:
-        expression_profiles = await self.archive.get_expression_profiles(
+        expression_profiles = await self.context.archive.get_expression_profiles(
             limit=4, scope=target_scope
         )
-        await self._settle_stale_reply_effects()
+        await self.context._settle_stale_reply_effects()
         return {
-            "air_state": self._format_proactive_air_state(target_scope, now),
+            "air_state": self.context._format_proactive_air_state(target_scope, now),
             "expression_profiles": expression_profiles,
-            "behavior_patterns": await self.archive.get_behavior_patterns(
+            "behavior_patterns": await self.context.archive.get_behavior_patterns(
                 limit=4, scope=target_scope
             ),
-            "reply_effects": await self.archive.get_reply_effects(
+            "reply_effects": await self.context.archive.get_reply_effects(
                 limit=4, scope=target_scope
             ),
-            "expression_reviews": await self.archive.get_expression_reviews(
+            "expression_reviews": await self.context.archive.get_expression_reviews(
                 limit=3, scope=target_scope
             ),
-            "behavior_scenes": await self.archive.get_behavior_scenes(
+            "behavior_scenes": await self.context.archive.get_behavior_scenes(
                 limit=4, scope=target_scope
             ),
-            "focus_slots": await self.archive.get_focus_slots(
+            "focus_slots": await self.context.archive.get_focus_slots(
                 limit=4, scope=target_scope
             ),
-            "mid_summaries": await self.archive.get_session_mid_summaries(
+            "mid_summaries": await self.context.archive.get_session_mid_summaries(
                 limit=2, session_id=target_scope
             ),
-            "temporary_expression_states": await self.archive.get_temporary_expression_states(
+            "temporary_expression_states": await self.context.archive.get_temporary_expression_states(
                 limit=3, scope=target_scope
             ),
-            "life_terms": await self.archive.get_life_terms(
+            "life_terms": await self.context.archive.get_life_terms(
                 limit=5, scope=target_scope
             ),
         }
@@ -307,9 +385,9 @@ class ProactiveRevisitMixin:
         expression_context: dict[str, Any],
         life_context: str,
     ) -> str:
-        expression_style = self._format_proactive_expression_style(target_scope)
-        expression_limit = self._proactive_expression_limit_for_scope(target_scope)
-        chat_style_enabled = self._chat_style_enabled()
+        expression_style = self.context._format_proactive_expression_style(target_scope)
+        expression_limit = self.context._proactive_expression_limit_for_scope(target_scope)
+        chat_style_enabled = self.context._chat_style_enabled()
         expression_guidance = (
             "口吻跟随角色本人、称谓边界和聊天表达设置。"
             if chat_style_enabled
@@ -389,7 +467,7 @@ JSON 输出要求：
 最近印象：{relationship_snapshot["note"] or "无"}
 
 回访依据：
-{self._format_private_revisit_evidence_scope(revisit_evidence)}
+{self.context._format_private_revisit_evidence_scope(revisit_evidence)}
 
 {expression_section}
 
@@ -399,45 +477,45 @@ JSON 输出要求：
 当前生活事实：
 {life_context}
 
-主动语音消息能力：{self._proactive_voice_capability(target_scope)}
+主动语音消息能力：{self.context._proactive_voice_capability(target_scope)}
 本轮发送能力：按表达意图发送 reply_text 文字或语音。文字发送成功后若需要表情，再从现有素材中选择一张；语音成功后不重复发送文字。
 
 外部长期记忆参考：
 {memory_context["memos_context"] or "暂无外部长期记忆参考。"}
 
 会话中期摘要：
-{self._format_mid_summaries_for_proactive(expression_context["mid_summaries"])}
+{self.context._format_mid_summaries_for_proactive(expression_context["mid_summaries"])}
 
 此刻表达状态：
-{self._format_temporary_expression_states_for_proactive(expression_context["temporary_expression_states"])}
+{self.context._format_temporary_expression_states_for_proactive(expression_context["temporary_expression_states"])}
 
 表达习惯参考：
-{self._format_expression_profiles_for_proactive(expression_context["expression_profiles"])}
+{self.context._format_expression_profiles_for_proactive(expression_context["expression_profiles"])}
 
 行为模式参考：
-{self._format_behavior_patterns_for_proactive(expression_context["behavior_patterns"])}
+{self.context._format_behavior_patterns_for_proactive(expression_context["behavior_patterns"])}
 
 行为场景簇参考：
-{self._format_behavior_scenes_for_proactive(expression_context["behavior_scenes"])}
+{self.context._format_behavior_scenes_for_proactive(expression_context["behavior_scenes"])}
 
 闲时回复效果参考：
-{self._format_reply_effects_for_proactive(expression_context["reply_effects"])}
+{self.context._format_reply_effects_for_proactive(expression_context["reply_effects"])}
 
 表达自然度参考：
-{self._format_expression_reviews_for_proactive(expression_context["expression_reviews"])}
+{self.context._format_expression_reviews_for_proactive(expression_context["expression_reviews"])}
 
 语言参考：
-{self._format_life_terms_for_proactive(expression_context["life_terms"])}
+{self.context._format_life_terms_for_proactive(expression_context["life_terms"])}
 
 会话空气感：
 {expression_context["air_state"]}
 
 短期注意槽：
-{self._format_focus_slots_for_proactive(expression_context["focus_slots"])}
+{self.context._format_focus_slots_for_proactive(expression_context["focus_slots"])}
 
-闲时发言频率：{self.config.proactive.private_talk_frequency:.2f}
-回访间隔：{max(5, int(self.config.proactive.revisit_interval_minutes or 30))} 分钟
-回访置信度阈值：{self.config.proactive.revisit_min_confidence:.2f}"""
+闲时发言频率：{self.context.config.proactive.private_talk_frequency:.2f}
+回访间隔：{max(5, int(self.context.config.proactive.revisit_interval_minutes or 30))} 分钟
+回访置信度阈值：{self.context.config.proactive.revisit_min_confidence:.2f}"""
         return cache_friendly_prompt(fixed, dynamic)
 
     def _private_revisit_normalize_payload(
@@ -447,25 +525,25 @@ JSON 输出要求：
         target_scope: str,
         revisit_evidence: dict[str, Any],
     ) -> dict[str, Any]:
-        confidence = self._clamp_float(payload.get("confidence"))
-        reply_text = self._proactive_reply_text(payload.get("reply_text"))
+        confidence = self.context._clamp_float(payload.get("confidence"))
+        reply_text = self.context._proactive_reply_text(payload.get("reply_text"))
         payload["_expression_candidate_text"] = reply_text
-        requested = self._proactive_bool(payload.get("should_reply"))
-        expression_passed = self._expression_review_passed(payload)
-        utility, utility_valid = self._normalize_proactive_utility(payload)
+        requested = self.context._proactive_bool(payload.get("should_reply"))
+        expression_passed = self.context._expression_review_passed(payload)
+        utility, utility_valid = self.context._normalize_proactive_utility(payload)
         should_reply = (
             requested
-            and confidence >= self.config.proactive.revisit_min_confidence
+            and confidence >= self.context.config.proactive.revisit_min_confidence
             and expression_passed
             and bool(reply_text)
             and bool(revisit_evidence["can_revisit"])
             and utility_valid
-            and utility >= self._PROACTIVE_UTILITY_THRESHOLD
+            and utility >= self.context._PROACTIVE_UTILITY_THRESHOLD
         )
         reason_code = "proposal_approved"
         if not requested:
             reason_code = "model_declined"
-        elif confidence < self.config.proactive.revisit_min_confidence:
+        elif confidence < self.context.config.proactive.revisit_min_confidence:
             reason_code = "confidence_below_threshold"
         elif not expression_passed:
             reason_code = "expression_review_failed"
@@ -473,7 +551,7 @@ JSON 输出要求：
             reason_code = "empty_reply"
         elif not utility_valid:
             reason_code = "invalid_utility_scores"
-        elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
+        elif utility < self.context._PROACTIVE_UTILITY_THRESHOLD:
             reason_code = "utility_below_threshold"
         if requested and not expression_passed:
             payload["decision"] = "observe"
@@ -512,7 +590,7 @@ JSON 输出要求：
             or getattr(relationship, "id", "")
             or ""
         ).strip()
-        interaction_context = await self.resolve_interaction_context(
+        interaction_context = await self.context.resolve_interaction_context(
             target_scope=target_scope,
             profile_id=relationship_profile_id,
             now=now,
@@ -525,21 +603,21 @@ JSON 输出要求：
                 "reason_code": "co_present_interaction",
                 "reply_text": "",
             }
-        provider = await self._get_proactive_provider()
+        provider = await self.context._get_proactive_provider()
         if not provider:
             return {"should_reply": False, "decision": "skip", "reason": "没有可用模型"}
-        relationship_snapshot = self._private_revisit_relationship_snapshot(
+        relationship_snapshot = self.context._private_revisit_relationship_snapshot(
             target_scope, relationship
         )
-        persona = await self._current_proactive_persona(target_scope)
-        persona_context = self._format_proactive_persona_context(persona)
-        memory_context = await self._private_revisit_memory_context(
+        persona = await self.context._current_proactive_persona(target_scope)
+        persona_context = self.context._format_proactive_persona_context(persona)
+        memory_context = await self.context._private_revisit_memory_context(
             target_scope,
             relationship,
             relationship_snapshot["target_name"],
             now,
         )
-        revisit_evidence = self._private_revisit_evidence_scope(
+        revisit_evidence = self.context._private_revisit_evidence_scope(
             recent_messages=memory_context["recent_messages"],
             note=relationship_snapshot["note"],
             relationship_story=relationship_snapshot["relationship_story"],
@@ -570,11 +648,11 @@ JSON 输出要求：
         (
             life_context,
             life_evidence_available,
-        ) = await self._private_revisit_life_context(target_scope, now)
-        expression_context = await self._private_revisit_expression_context(
+        ) = await self.context._private_revisit_life_context(target_scope, now)
+        expression_context = await self.context._private_revisit_expression_context(
             target_scope, relationship, now
         )
-        prompt = self._private_revisit_prompt(
+        prompt = self.context._private_revisit_prompt(
             target_scope=target_scope,
             now=now,
             persona_context=persona_context,
@@ -586,9 +664,9 @@ JSON 输出要求：
         )
         session_id = f"daily_life_private_revisit_{uuid.uuid4().hex[:8]}"
         try:
-            provider_id = self.config.proactive.provider
+            provider_id = self.context.config.proactive.provider
             payload = await call_pure_json(
-                self,
+                self.context,
                 provider,
                 prompt,
                 session_id,
@@ -618,14 +696,14 @@ JSON 输出要求：
                     "decision": "skip",
                     "reason": "模型未返回有效裁定",
                 }
-            normalized = self._private_revisit_normalize_payload(
+            normalized = self.context._private_revisit_normalize_payload(
                 payload,
                 target_scope=target_scope,
                 revisit_evidence=revisit_evidence,
             )
             if not normalized.get("should_reply"):
                 return normalized
-            latest_messages = await self._read_recent_context_messages(
+            latest_messages = await self.context._read_recent_context_messages(
                 target_scope, limit=8
             )
             latest_marker = (
@@ -649,13 +727,13 @@ JSON 输出要求：
                     }
                 )
                 return normalized
-            latest_recent_context = self._format_recent_context_messages(
+            latest_recent_context = self.context._format_recent_context_messages(
                 latest_messages, now=now
             )
             (
                 latest_life_context,
                 latest_life_evidence,
-            ) = await self._private_revisit_life_context(target_scope, now)
+            ) = await self.context._private_revisit_life_context(target_scope, now)
             if (
                 latest_messages
                 or life_evidence_available
@@ -664,7 +742,7 @@ JSON 输出要求：
                 (
                     continuity_valid,
                     continuity_reason,
-                ) = await self._audit_proactive_continuity(
+                ) = await self.context._audit_proactive_continuity(
                     payload=normalized,
                     recent_context=latest_recent_context,
                     life_context=latest_life_context,
@@ -687,10 +765,10 @@ JSON 输出要求：
             if latest_life_evidence:
                 normalized["_revisit_life_context"] = latest_life_context
             builder = getattr(
-                getattr(self, "composer", None), "_build_person_fact_context", None
+                getattr(self.context, "composer", None), "_build_person_fact_context", None
             )
             auditor = getattr(
-                getattr(self, "composer", None), "_audit_person_payload", None
+                getattr(self.context, "composer", None), "_audit_person_payload", None
             )
             if not callable(builder) or not callable(auditor):
                 return normalized
@@ -718,7 +796,7 @@ JSON 输出要求：
                     }
                 )
                 return normalized
-            return self._private_revisit_normalize_payload(
+            return self.context._private_revisit_normalize_payload(
                 audit.payload,
                 target_scope=target_scope,
                 revisit_evidence=revisit_evidence,
@@ -731,42 +809,42 @@ JSON 输出要求：
                 "reason": f"私聊回访裁定失败：{exc}",
             }
         finally:
-            await self.close_text_session(session_id)
+            await self.context.close_text_session(session_id)
 
     async def evaluate_private_revisit_candidates(self) -> None:
-        if not self.config.proactive.private_revisit_enabled:
+        if not self.context.config.proactive.private_revisit_enabled:
             return
         now = life_now()
-        targets = await self._get_recent_private_targets(limit=5)
+        targets = await self.context._get_recent_private_targets(limit=5)
         if not targets:
             return
         for relationship in targets:
-            target_scope = self._resolve_private_target_umo(relationship)
+            target_scope = self.context._resolve_private_target_umo(relationship)
             if not target_scope:
                 continue
             key = target_scope
-            air_delay = self._proactive_air_delay_remaining(key, now, pending_count=1)
+            air_delay = self.context._proactive_air_delay_remaining(key, now, pending_count=1)
             if air_delay > 0:
                 continue
-            last_revisit_at = self._proactive_private_last_revisit_at.get(key)
+            last_revisit_at = self.context._proactive_private_last_revisit_at.get(key)
             cooldown_seconds = (
-                max(10, int(self.config.proactive.revisit_cooldown_minutes or 180)) * 60
+                max(10, int(self.context.config.proactive.revisit_cooldown_minutes or 180)) * 60
             )
             if isinstance(last_revisit_at, datetime.datetime):
                 if int((now - last_revisit_at).total_seconds()) < cooldown_seconds:
                     continue
             lifecycle_state = str(
-                self._proactive_lifecycle_snapshot(key).get("state") or ""
+                self.context._proactive_lifecycle_snapshot(key).get("state") or ""
             )
             if lifecycle_state == "engaged":
-                self._transition_proactive_lifecycle(
+                self.context._transition_proactive_lifecycle(
                     key,
                     "closing",
                     event="engagement_timeout",
                     reason="上一轮主动互动已超过回访冷却期",
                     now=now,
                 )
-                self._transition_proactive_lifecycle(
+                self.context._transition_proactive_lifecycle(
                     key,
                     "cooldown",
                     event="engagement_closed",
@@ -774,34 +852,34 @@ JSON 输出要求：
                     now=now,
                 )
             elif lifecycle_state == "sending":
-                self._transition_proactive_lifecycle(
+                self.context._transition_proactive_lifecycle(
                     key,
                     "interrupted",
                     event="stale_send_recovered",
                     reason="恢复时发现未完成的旧发送阶段",
                     now=now,
                 )
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "considering",
                 event="revisit_evaluation_started",
                 reason="开始评估私聊回访价值",
                 now=now,
             )
-            payload = await self._evaluate_private_revisit_payload(
+            payload = await self.context._evaluate_private_revisit_payload(
                 target_scope,
                 relationship=relationship,
                 now=now,
             )
             reply_text = str(payload.get("reply_text") or "").strip()
             payload["source"] = "private_revisit"
-            event = self._private_revisit_event(target_scope, reply_text, relationship)
+            event = self.context._private_revisit_event(target_scope, reply_text, relationship)
             sender_name = str(getattr(relationship, "name", "") or target_scope)
-            await self._save_proactive_expression_records(
+            await self.context._save_proactive_expression_records(
                 event, payload, reply_text, source="private_revisit"
             )
             try:
-                await self._save_proactive_decision(
+                await self.context._save_proactive_decision(
                     event=event,
                     sender_name=sender_name,
                     payload=payload,
@@ -813,7 +891,7 @@ JSON 输出要求：
             except Exception as exc:
                 logger.warning(f"{LOG_PREFIX} 私聊回访提案审计记录失败：{exc}")
             if not payload.get("should_reply") or not reply_text:
-                self._update_proactive_air_after_decision(key, payload, now, sent=False)
+                self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
                 decision_name = str(payload.get("decision") or "observe")
                 reason_code = str(payload.get("reason_code") or "")
                 target_state = (
@@ -825,14 +903,14 @@ JSON 输出要求：
                     if decision_name in {"wait", "observe", "air_delay"}
                     else "abandoned"
                 )
-                self._transition_proactive_lifecycle(
+                self.context._transition_proactive_lifecycle(
                     key,
                     target_state,
                     event="revisit_deferred",
                     reason=str(payload.get("reason") or "本轮暂不回访"),
                     now=now,
                 )
-                await self._advance_proactive_decision_trace(
+                await self.context._advance_proactive_decision_trace(
                     event,
                     payload,
                     stage=target_state,
@@ -842,7 +920,7 @@ JSON 输出要求：
                 continue
             context_marker = payload.pop("_revisit_context_marker", None)
             life_context = str(payload.pop("_revisit_life_context", "") or "")
-            current_messages = await self._read_recent_context_messages(
+            current_messages = await self.context._read_recent_context_messages(
                 target_scope, limit=8
             )
             current_marker = (
@@ -857,7 +935,7 @@ JSON 输出要求：
             )
             current_life_context = ""
             if life_context:
-                current_life_context, _ = await self._private_revisit_life_context(
+                current_life_context, _ = await self.context._private_revisit_life_context(
                     target_scope, life_now()
                 )
             if current_marker != context_marker or (
@@ -873,15 +951,15 @@ JSON 输出要求：
                         "reason_code": "context_changed_before_send",
                     }
                 )
-                self._update_proactive_air_after_decision(key, payload, now, sent=False)
-                self._transition_proactive_lifecycle(
+                self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
+                self.context._transition_proactive_lifecycle(
                     key,
                     "interrupted",
                     event="context_marker_changed",
                     reason="发送前会话或生活状态已变化",
                     now=now,
                 )
-                await self._advance_proactive_decision_trace(
+                await self.context._advance_proactive_decision_trace(
                     event,
                     payload,
                     stage="interrupted",
@@ -889,7 +967,7 @@ JSON 输出要求：
                     outcome="发送前会话或生活状态已变化",
                 )
                 continue
-            latest_interaction = await self.resolve_interaction_context(
+            latest_interaction = await self.context.resolve_interaction_context(
                 target_scope=target_scope,
                 profile_id=str(
                     getattr(relationship, "user_id", "")
@@ -909,15 +987,15 @@ JSON 输出要求：
                         "reason_code": "co_present_before_send",
                     }
                 )
-                self._update_proactive_air_after_decision(key, payload, now, sent=False)
-                self._transition_proactive_lifecycle(
+                self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
+                self.context._transition_proactive_lifecycle(
                     key,
                     "interrupted",
                     event="interaction_mode_changed",
                     reason="发送前现实互动方式已变为同处现场",
                     now=now,
                 )
-                await self._advance_proactive_decision_trace(
+                await self.context._advance_proactive_decision_trace(
                     event,
                     payload,
                     stage="interrupted",
@@ -925,21 +1003,21 @@ JSON 输出要求：
                     outcome="发送前现实互动方式已变为同处现场",
                 )
                 continue
-            self._transition_proactive_lifecycle(
+            self.context._transition_proactive_lifecycle(
                 key,
                 "sending",
                 event="proposal_approved",
                 reason=str(payload.get("reason") or "回访收益与连续性通过"),
                 now=now,
             )
-            await self._advance_proactive_decision_trace(
+            await self.context._advance_proactive_decision_trace(
                 event,
                 payload,
                 stage="sending",
                 reason_code="proposal_approved",
                 outcome="准备发送私聊回访",
             )
-            if await self._send_proactive_message(
+            if await self.context._send_proactive_message(
                 target_scope,
                 reply_text,
                 "私聊回访发送失败",
@@ -947,9 +1025,9 @@ JSON 输出要求：
                 contact_type="friend",
                 send_payload={**payload, "source": "private_revisit"},
                 source_event=event,
-                source_message_id=self._event_message_id(event),
+                source_message_id=self.context._event_message_id(event),
             ):
-                await self._commit_proactive_decision(
+                await self.context._commit_proactive_decision(
                     event,
                     sender_name,
                     payload,
@@ -957,16 +1035,16 @@ JSON 输出要求：
                     now,
                     source="private_revisit",
                 )
-                self._reset_proactive_air_state(key)
-                self._proactive_private_last_revisit_at[key] = now
-                self._transition_proactive_lifecycle(
+                self.context._reset_proactive_air_state(key)
+                self.context._proactive_private_last_revisit_at[key] = now
+                self.context._transition_proactive_lifecycle(
                     key,
                     "engaged",
                     event="send_succeeded",
                     reason="私聊回访已实际送达，开始观察互动效果",
                     now=now,
                 )
-                self._track_proactive_reply_effect(
+                self.context._track_proactive_reply_effect(
                     key,
                     event,
                     payload,
@@ -974,28 +1052,28 @@ JSON 输出要求：
                     now,
                     source="private_revisit",
                 )
-                await self._save_pending_reply_effect(key, event, payload, reply_text)
+                await self.context._save_pending_reply_effect(key, event, payload, reply_text)
                 try:
-                    await self.mark_page_status_changed("private_revisit")
+                    await self.context.mark_page_status_changed("private_revisit")
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 私聊回访面板刷新通知失败：{exc}")
                 logger.info(f"{LOG_PREFIX} 私聊回访已发送：长度={len(reply_text)}")
             else:
-                self._transition_proactive_lifecycle(
+                self.context._transition_proactive_lifecycle(
                     key,
                     "abandoned",
                     event="send_failed",
                     reason="私聊回访未能成功发送",
                     now=now,
                 )
-                await self._advance_proactive_decision_trace(
+                await self.context._advance_proactive_decision_trace(
                     event,
                     payload,
                     stage="abandoned",
                     reason_code="send_failed",
                     outcome="私聊回访发送失败",
                 )
-                self._update_proactive_air_after_decision(
+                self.context._update_proactive_air_after_decision(
                     key,
                     {
                         "decision": "observe",
