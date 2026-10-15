@@ -1106,7 +1106,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                     "nails": ["透明短甲"],
                 },
                 confidence=0.9,
-                status="pending",
+                status="disabled",
             )
         )
 
@@ -1114,7 +1114,8 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["data"]["default_generation_mode"], "text_to_image")
         self.assertEqual(listed["data"]["stats"]["total"], 1)
-        self.assertEqual(listed["data"]["stats"]["pending"], 1)
+        self.assertEqual(listed["data"]["stats"]["disabled"], 1)
+        self.assertNotIn("pending", listed["data"]["stats"])
         self.assertTrue(listed["data"]["items"][0]["has_makeup"])
         self.assertTrue(listed["data"]["items"][0]["has_nails"])
         self.assertIn(
@@ -2466,6 +2467,52 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DailyLifeDashboardStaticTest(unittest.TestCase):
+    def test_missing_day_distinguishes_generation_and_failure_on_first_load(self):
+        root = Path(__file__).resolve().parents[1]
+        script = self._dashboard_dom_mock_script() + """
+const { dailyGenerationEmptyState } = await import("./pages/dashboard/app.js");
+const today = "2026-10-15";
+for (const phase of ["queued", "waiting", "generating", "searching"]) {
+  const status = {
+    target_date: today,
+    day: null,
+    daily_generation: { date: today, phase, running: phase !== "queued" },
+  };
+  const view = dailyGenerationEmptyState(status);
+  const expected = phase === "searching" ? "正在查找今日生活灵感" : "正在生成今日生活安排";
+  if (view.activity !== expected || view.timeline !== "生成完成后显示时间轴") {
+    throw new Error(`没有显示当前生成状态：${phase}`);
+  }
+}
+const failed = dailyGenerationEmptyState({
+  target_date: today,
+  day: null,
+  daily_generation: { date: today, phase: "failed", running: false },
+});
+if (failed.activity !== "今日生活安排生成失败" || !failed.timeline.includes("重生")) {
+  throw new Error("首次打开面板没有显示失败状态与重试入口");
+}
+for (const status of [
+  { target_date: today },
+  { target_date: today, daily_generation: { date: "2026-10-14", phase: "failed" } },
+  { target_date: today, daily_generation: { date: "2026-10-14", phase: "generating", running: true } },
+]) {
+  if (dailyGenerationEmptyState(status).activity !== "今日生活安排尚未生成") {
+    throw new Error("缺失记录或其他日期的任务被当作今天的生成状态");
+  }
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_domain_actions_only_render_resolved_session_names(self):
         from pathlib import Path
 
@@ -6067,14 +6114,14 @@ await import("./pages/dashboard/app.js");
             self._dashboard_dom_mock_script()
             + """
 const mod = await import("./pages/dashboard/app.js");
-for (const status of ["active", "pending", "disabled", "rejected"]) {
+for (const status of ["active", "disabled", "rejected"]) {
   const value = mod.closetStatus({ status });
   if (value !== status) {
     throw new Error(`衣橱状态枚举不应被展示翻译改写：${status} -> ${value}`);
   }
 }
-if (mod.closetStatus({ status: "unknown" }) !== "pending") {
-  throw new Error("未知衣橱状态应回退为 pending");
+if (mod.closetStatus({ status: "unknown" }) !== "disabled") {
+  throw new Error("未知衣橱状态应保持停用");
 }
 """
         )

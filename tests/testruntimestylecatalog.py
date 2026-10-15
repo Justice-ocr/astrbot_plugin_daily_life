@@ -915,7 +915,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_low_confidence_learning_waits_for_manual_review(self):
+    async def test_low_confidence_learning_stays_disabled(self):
         payload = {
             "outfit": {
                 "present": True,
@@ -935,8 +935,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     event, str(image_path), kind="outfit"
                 )
                 items = await archive.get_style_catalog_items(status="", limit=10)
-                self.assertEqual(items[0].status, "pending")
+                self.assertEqual(items[0].status, "disabled")
                 self.assertEqual(await archive.get_style_catalog_items(limit=10), [])
+                await archive.set_style_catalog_status([items[0].id], "active")
+                self.assertEqual(len(await archive.get_style_catalog_items(limit=10)), 1)
             finally:
                 archive.close()
 

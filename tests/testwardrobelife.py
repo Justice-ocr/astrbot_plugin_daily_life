@@ -18,6 +18,7 @@ from core.life.dressing import (
 )
 from componentfixtures import StyleCatalogComponent
 from core.runtime.background import BackgroundTaskScheduler
+from core.media.picture.polling import ImageTaskFailed
 
 
 class Runtime(DailyLifeRuntime):
@@ -41,7 +42,7 @@ class Runtime(DailyLifeRuntime):
                 first_configured_character_reference_image=lambda: "/tmp/character.png",
                 can_edit_image=lambda: True,
                 resume_async_image=AsyncMock(),
-                track_async_tasks=lambda accepted: nullcontext(),
+                track_async_tasks=lambda accepted, **kwargs: nullcontext(),
             )
         )
         self._edit_life_image_with_policy_retry = AsyncMock()
@@ -330,7 +331,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
 
         @contextmanager
-        def track(listener):
+        def track(listener, *, on_failed=None):
             accepted.append(listener)
             try:
                 yield
@@ -341,7 +342,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             await accepted[-1](
                 "accepted-job",
                 SimpleNamespace(
-                    api_url="https://example.invalid/v1", model="test", protocol="openai"
+                    api_url="https://example.invalid/v1", model="test", protocol="openai", api_key="test-key"
                 ),
             )
             started.set()
@@ -403,6 +404,37 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         state = (await self.archive.get_wardrobe_snapshot())["items"][str(item.id)]
         self.assertEqual(state["ownership"], "owned")
         self.assertEqual(state["condition"], "clean")
+
+    async def test_failed_wardrobe_image_is_terminal_without_old_task_progress(self):
+        callbacks = {}
+
+        @contextmanager
+        def track(listener, *, on_failed=None):
+            callbacks.update(accepted=listener, failed=on_failed)
+            yield
+
+        async def generate(*_args, **_kwargs):
+            route = SimpleNamespace(
+                api_url="https://example.invalid/v1", model="image-test", protocol="openai", api_key="test-key"
+            )
+            await callbacks["accepted"]("failed-wardrobe-image", route)
+            failure = ImageTaskFailed("生成任务已明确失败")
+            await callbacks["failed"]("failed-wardrobe-image", route, failure)
+            raise failure
+
+        self.runtime.media.image.track_async_tasks = track
+        self.runtime._edit_life_image_with_policy_retry.side_effect = generate
+        await self.archive.enqueue_wardrobe_job(
+            "failed-job",
+            {"automatic": True, "count": 1, "requirement": "秋季衣物"},
+            at=str(self.now),
+        )
+        await self.runtime.wardrobe_life._run_wardrobe_job("failed-job")
+        job = (await self.archive.get_wardrobe_snapshot())["jobs"][0]
+        self.assertEqual(job["status"], "failed")
+        self.assertNotIn("task_id", job["progress"]["current"])
+        self.assertNotIn("route", job["progress"]["current"])
+        self.runtime.media.image.resume_async_image.assert_not_awaited()
 
     async def test_missing_character_reference_keeps_original_job_pending(self):
         self.runtime.media.image.first_configured_character_reference_image = lambda: (

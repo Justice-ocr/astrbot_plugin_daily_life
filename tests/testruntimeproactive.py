@@ -2667,10 +2667,10 @@ class RuntimeProactiveAsyncTest(
         )
         self.assertEqual(interaction.mode, "co_present")
 
-    async def test_private_idle_reply_observes_when_people_are_co_present(self):
+    async def test_private_idle_reply_evaluates_when_people_are_co_present(self):
         runtime, provider = self._make_proactive_runtime(
             [
-                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision":"reply","reply_text":"线上再问一句"}'
+                '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision":"reply","reply_text":"挪一点，给我留个位置"}'
             ]
         )
         runtime.resolve_interaction_context = lambda **kwargs: async_return(
@@ -2688,11 +2688,11 @@ class RuntimeProactiveAsyncTest(
             now=datetime.datetime(2026, 8, 13, 12, 0),
         )
 
-        self.assertFalse(decision["should_reply"])
-        self.assertEqual(decision["reason_code"], "co_present_interaction")
-        self.assertEqual(provider.prompts, [])
+        self.assertTrue(decision["should_reply"])
+        self.assertEqual(decision["_interaction_mode"], "co_present")
+        self.assertIn("现实互动方式：同处现场", provider.prompts[0])
 
-    async def test_private_revisit_skips_model_when_people_are_co_present(self):
+    async def test_private_revisit_requires_evidence_even_when_co_present(self):
         runtime, provider = self._make_proactive_runtime(
             [
                 '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.9,"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,"decision":"reply","reply_text":"再发一条"}'
@@ -2709,7 +2709,7 @@ class RuntimeProactiveAsyncTest(
         )
 
         self.assertFalse(decision["should_reply"])
-        self.assertEqual(decision["reason_code"], "co_present_interaction")
+        self.assertFalse(decision["revisit_evidence"]["can_revisit"])
         self.assertEqual(provider.prompts, [])
 
     async def test_stale_reply_effect_settlement_invokes_archive_expirer(self):
@@ -3839,8 +3839,10 @@ class RuntimeProactiveAsyncTest(
         )
         setattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
 
+        runtime.mark_structured_pending_bot_text(event, "收到啦")
         self.assertTrue(await runtime.send_semantic_emoji_if_needed(event))
         self.assertFalse(await runtime.send_semantic_emoji_if_needed(event))
+        await asyncio.gather(*list(runtime._background_scheduler.tasks))
         self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(
             event.sent_messages[0].items,

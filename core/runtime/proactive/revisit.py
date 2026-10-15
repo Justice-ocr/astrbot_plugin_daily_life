@@ -410,7 +410,7 @@ class ProactiveRevisitComponent:
             if relationship_snapshot["persona_hint"]
             else "证据不足，使用中性称呼"
         )
-        fixed = f"""我在心里掂量：此刻要不要主动给一个私聊对象发一句自然问候或轻回访。
+        fixed = f"""我在心里掂量：此刻要不要向这个人自然开口，承接共同经历或最近交流。
 这不是任务提醒文案，也不是硬性打卡；只有在关系、最近印象或此刻状态自然适合时才回复。
 
 隐藏上下文规则：
@@ -595,14 +595,6 @@ JSON 输出要求：
             profile_id=relationship_profile_id,
             now=now,
         )
-        if interaction_context.mode == "co_present":
-            return {
-                "should_reply": False,
-                "decision": "observe",
-                "reason": "双方当前同处现场，不额外发起线上私聊回访",
-                "reason_code": "co_present_interaction",
-                "reply_text": "",
-            }
         provider = await self.context._get_proactive_provider()
         if not provider:
             return {"should_reply": False, "decision": "skip", "reason": "没有可用模型"}
@@ -701,6 +693,7 @@ JSON 输出要求：
                 target_scope=target_scope,
                 revisit_evidence=revisit_evidence,
             )
+            normalized["_interaction_mode"] = interaction_context.mode
             if not normalized.get("should_reply"):
                 return normalized
             latest_messages = await self.context._read_recent_context_messages(
@@ -976,15 +969,16 @@ JSON 输出要求：
                 ).strip(),
                 now=life_now(),
             )
-            if latest_interaction.mode == "co_present":
+            planned_mode = payload.get("_interaction_mode")
+            if planned_mode is not None and latest_interaction.mode != planned_mode:
                 payload.update(
                     {
                         "should_reply": False,
                         "decision": "observe",
-                        "reason": "发送前确认双方已同处现场，不再发送线上私聊回访",
+                        "reason": "发送前现实互动方式已变化，取消旧的主动表达",
                         "reply_text": "",
                         "stage": "proposal",
-                        "reason_code": "co_present_before_send",
+                        "reason_code": "interaction_changed_before_send",
                     }
                 )
                 self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
@@ -992,15 +986,15 @@ JSON 输出要求：
                     key,
                     "interrupted",
                     event="interaction_mode_changed",
-                    reason="发送前现实互动方式已变为同处现场",
+                    reason="发送前现实互动方式已变化",
                     now=now,
                 )
                 await self.context._advance_proactive_decision_trace(
                     event,
                     payload,
                     stage="interrupted",
-                    reason_code="co_present_before_send",
-                    outcome="发送前现实互动方式已变为同处现场",
+                    reason_code="interaction_changed_before_send",
+                    outcome="发送前现实互动方式已变化",
                 )
                 continue
             self.context._transition_proactive_lifecycle(

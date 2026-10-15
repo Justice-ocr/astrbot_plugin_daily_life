@@ -618,7 +618,7 @@ class RuntimeStyleCatalogComponent:
                 "source_kind": source_kind,
                 "source_image_hash": image_hash,
                 "status": (
-                    "active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "pending"
+                    "active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "disabled"
                 ),
             }
             similar = None
@@ -850,7 +850,7 @@ class RuntimeStyleCatalogComponent:
             description=str(analyzed.get("description") or ""),
             attributes=attributes,
             confidence=confidence,
-            status=("active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "pending"),
+            status=("active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "disabled"),
         )
         if not updated:
             raise RuntimeError("衣橱素材更新失败")
@@ -879,7 +879,7 @@ class RuntimeStyleCatalogComponent:
                     "status": (
                         "active"
                         if other_confidence >= _STYLE_REVIEW_CONFIDENCE
-                        else "pending"
+                        else "disabled"
                     ),
                 }
             )
@@ -942,7 +942,7 @@ class RuntimeStyleCatalogComponent:
             media="style_catalog",
             label="视觉衣橱学习",
             category="vision",
-            failure_text="这次衣橱学习没有完成。",
+            task_name="衣橱学习",
         )
 
     async def _style_learning_images(

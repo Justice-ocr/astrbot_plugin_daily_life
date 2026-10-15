@@ -26,8 +26,8 @@ from ..life.curation import (
     upcoming_outfit_plans, validate_wardrobe_choice,
     wardrobe_choice_job_id, wardrobe_choice_text,
 )
-from ..media.base import normalize_openai_base_url
 from ..media.picture.polling import ImageTaskFailed
+from ..media.picture.routes import task_reference
 from ..outcome import ToolResultText
 from ..prompts import cache_friendly_prompt
 
@@ -564,12 +564,15 @@ class WardrobeLifeService:
                         async def accepted(task_id, route, metadata=None):
                             current.update(
                                 task_id=task_id,
-                                route={
-                                    "api_url": normalize_openai_base_url(route.api_url),
-                                    "model": route.model,
-                                    "protocol": route.protocol,
-                                },
+                                route=task_reference(route),
                             )
+                            await save("generating")
+
+                        async def failed(task_id, route, exc):
+                            if current.get("task_id") != task_id:
+                                raise RuntimeError("衣橱图片失败回执与当前任务不符")
+                            current.pop("task_id", None)
+                            current.pop("route", None)
                             await save("generating")
 
                         prompt = self._creative_prompt(
@@ -588,7 +591,7 @@ class WardrobeLifeService:
                                 ensure_ascii=False,
                             )
                         )
-                        with service.track_async_tasks(accepted):
+                        with service.track_async_tasks(accepted, on_failed=failed):
                             if mode == "image_to_image":
                                 result = await self._edit_image(
                                     None,

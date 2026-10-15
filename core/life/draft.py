@@ -159,7 +159,7 @@ class DailyDraftComponent:
       "duration_minutes": 30,
       "preconditions": [{{"field": "state.energy", "operator": "gte", "expected": 20}}],
       "effects": [{{"field": "energy", "operation": "add", "value": -5}}],
-      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据；change_outfit 必须附 scene_category（home | sleep | outdoor | public | mixed）和 outfit_components，记录换装用途与实际变化后的组成状态账本"}},
+      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据；change_outfit 必须附 catalog_reference_ids（实际采用的衣橱编号正整数数组）、scene_category（home | sleep | outdoor | public | mixed）和 outfit_components，记录换装用途与实际变化后的组成状态账本"}},
       "evidence": "对应的日程节点和生活决策依据",
       "source": "daily_plan"
     }}

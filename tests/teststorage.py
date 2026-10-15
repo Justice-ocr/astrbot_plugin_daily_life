@@ -236,24 +236,24 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
-                pending = await archive.upsert_style_catalog_item(
+                disabled = await archive.upsert_style_catalog_item(
                     {
                         "kind": "outfit",
-                        "title": "测试待确认造型",
+                        "title": "测试停用造型",
                         "description": "浅色短袖搭直筒短裤",
                         "source_image_hash": "d" * 64,
                         "attributes": {"perceptual_hash": "0000000000000000"},
                         "confidence": 0.61,
-                        "status": "pending",
+                        "status": "disabled",
                     }
                 )
                 similar = await archive.find_similar_style_catalog_item(
                     "outfit", "0000000000000001", max_distance=2
                 )
-                self.assertEqual(similar.id, pending.id)
+                self.assertEqual(similar.id, disabled.id)
 
                 merged = await archive.merge_style_catalog_item(
-                    pending.id,
+                    disabled.id,
                     {
                         "kind": "outfit",
                         "title": "测试清晰造型",
@@ -264,17 +264,17 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                         "status": "active",
                     },
                 )
-                self.assertEqual(merged.id, pending.id)
-                self.assertEqual(merged.status, "active")
+                self.assertEqual(merged.id, disabled.id)
+                self.assertEqual(merged.status, "disabled")
                 self.assertEqual(merged.title, "测试清晰造型")
                 self.assertEqual(merged.seen_count, 2)
                 self.assertEqual(
-                    await archive.set_style_catalog_status([merged.id], "disabled"),
+                    await archive.set_style_catalog_status([merged.id], "active"),
                     1,
                 )
                 self.assertEqual(
                     (await archive.get_style_catalog_item(merged.id)).status,
-                    "disabled",
+                    "active",
                 )
                 self.assertEqual(
                     await archive.delete_style_catalog_items([merged.id]), 1

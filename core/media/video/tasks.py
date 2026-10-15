@@ -122,8 +122,8 @@ async def poll_video_url(
                 timeout_seconds=min(float(settings.request_timeout_seconds), remaining),
                 operation="查询任务状态",
             )
-        except VideoRequestTimeout as exc:
-            log_debug(f"{LOG_PREFIX} 视频任务查询超时，继续等待：{exc}")
+        except (VideoRequestTimeout, aiohttp.ClientError) as exc:
+            log_debug(f"{LOG_PREFIX} 视频任务查询连接暂不可用，继续查询原任务：{exc}")
             continue
         video_url = extract_video_url(data, origin)
         status = (

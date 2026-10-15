@@ -91,6 +91,7 @@ class ChatStyleRuntimeComponentContext(Protocol):
     context: Any
     log_chat_style_trace: Any
     mark_structured_pending_bot_text: Any
+    send_semantic_emoji_if_needed: Any
     note_tool_reaction_message_sent: Any
     reply_delivery: Any
     schedule_pending_chat_state_refresh: Any
@@ -1127,6 +1128,9 @@ class ChatStyleRuntimeComponent:
             if callable(scheduler):
                 scheduler(event)
             self.context._note_chat_style_segmented_send(event)
+            emoji_sender = getattr(self.context, "send_semantic_emoji_if_needed", None)
+            if callable(emoji_sender):
+                await emoji_sender(event)
             capture = getattr(self.context, "capture_chat_memory_bot_reply", None)
             if callable(capture):
                 try:

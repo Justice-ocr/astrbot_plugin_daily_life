@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import support  # noqa: F401 - 导入运行时模块前先安装 AstrBot 测试替身。
 from core.runtime.background import BackgroundTaskScheduler
 from core.runtime.channel import image as image_module
+from core.media.picture.polling import ImageTaskError
 from core.runtime.delivery import BackgroundTextMode
+from core.outcome import ToolResultText
 from core.sight.clip import SightClip, SightInsight
 from runtimehelpers import (
     Context,
@@ -404,6 +406,206 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(first._daily_life_image_request["status"], "failed")
         self.assertEqual(first.sent_messages, [])
 
+    def prepare_failure_reply(self, reply="这张没拍成，有点可惜。"):
+        self.runtime.get_text_provider = AsyncMock(return_value=object())
+        self.runtime.get_persona_text = AsyncMock(return_value="我是李知恬，说话轻松自然。")
+        self.runtime.call_text_model = AsyncMock(
+            return_value=json.dumps({"reply_text": reply}, ensure_ascii=False)
+        )
+        self.runtime._append_assistant_history = AsyncMock()
+        self.runtime.__dict__.pop("send_background_text", None)
+        self.runtime.send_background_text = AsyncMock(
+            wraps=self.runtime.send_background_text
+        )
+
+    async def test_image_failure_uses_role_reply_and_records_actual_sent_text(self):
+        self.prepare_failure_reply()
+        self.runtime.media.image.generate_image = AsyncMock(
+            side_effect=RuntimeError("HTTP 500：测试失败正文")
+        )
+        first = self.event(text="拍张窗边的照片")
+        await self.begin_turn(first)
+        result = await self.runtime.life_image_generate(first, "窗边照片")
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+
+        self.assertEqual(first._daily_life_image_request["status"], "failed")
+        self.assertEqual(first.sent_messages[0].items, ["这张没拍成，有点可惜。"])
+        self.runtime.call_text_model.assert_awaited_once()
+        prompt = self.runtime.call_text_model.call_args.args[1]
+        self.assertIn("拍张窗边的照片", prompt)
+        self.assertIn("李知恬", prompt)
+        self.assertEqual(
+            self.runtime.send_background_text.call_args.kwargs["mode"],
+            BackgroundTextMode.EXPRESSIVE,
+        )
+        self.runtime._append_assistant_history.assert_awaited_once_with(
+            first.unified_msg_origin, "这张没拍成，有点可惜。"
+        )
+
+    async def test_background_tool_returned_and_raised_failures_use_natural_reply(self):
+        for task_name, tool_name, raises in (
+            ("视频理解", "life_video_understand", False),
+            ("视频总结", "life_video_note", True),
+            ("衣橱学习", "life_style_learn", False),
+        ):
+            with self.subTest(task_name=task_name):
+                self.prepare_failure_reply("这次没弄好，有点可惜。")
+                first = self.event(text="帮我看看这个")
+                marker = {"status": "pending", "media": "test"}
+                self.runtime.finish_tool_reaction = AsyncMock()
+                work = AsyncMock(
+                    side_effect=RuntimeError("测试内部异常") if raises else None,
+                    return_value=ToolResultText("测试内部失败", status="failed"),
+                )
+                await self.runtime._deliver_background_tool(
+                    first, work, marker, tool_name, task_name
+                )
+                self.assertEqual(marker["status"], "failed")
+                self.assertEqual(first.sent_messages[0].items, ["这次没弄好，有点可惜。"])
+                self.assertIn(task_name, self.runtime.call_text_model.call_args.args[1])
+                self.runtime.finish_tool_reaction.assert_awaited_once_with(
+                    first, tool_name, success=False
+                )
+
+    async def test_image_needs_parameters_asks_in_role_instead_of_sending_json(self):
+        self.prepare_failure_reply("你今天穿什么呀？我还不知道呢。")
+        first = self.event(text="拍张我们的合影")
+        result = json.dumps(
+            {"status": "needs_parameters", "missing": ["friend_outfit", "friend_hair"]}
+        )
+        await self.runtime._background_image_delivery(
+            first,
+            AsyncMock(return_value=result),
+            {"status": "pending", "action": "generate"},
+            "life_image_generate",
+        )
+        self.assertEqual(first.sent_messages[0].items, ["你今天穿什么呀？我还不知道呢。"])
+        self.assertIn("friend_outfit", self.runtime.call_text_model.call_args.args[1])
+
+    async def test_failure_reply_does_not_block_new_chat_or_send_after_new_message(self):
+        self.prepare_failure_reply()
+
+        async def reply(*args, **kwargs):
+            self.started.set()
+            await self.release.wait()
+            return '{"reply_text":"这张没拍好。"}'
+
+        self.runtime.call_text_model.side_effect = reply
+        self.runtime.media.image.generate_image = AsyncMock(side_effect=RuntimeError("测试失败"))
+        first = self.event()
+        await self.begin_turn(first)
+        await self.runtime.life_image_generate(first, "窗边照片")
+        await asyncio.wait_for(self.started.wait(), 0.5)
+        await asyncio.wait_for(self.begin_turn(self.event("43", "继续聊")), 0.5)
+        await self.finish_tasks()
+        self.assertEqual(first.sent_messages, [])
+        self.runtime._append_assistant_history.assert_not_awaited()
+
+    async def test_failure_reply_recall_during_model_wait_cancels_send(self):
+        self.prepare_failure_reply()
+        first = self.event()
+
+        async def reply(*args, **kwargs):
+            self.runtime.can_send_for_source = lambda *args, **kwargs: False
+            return '{"reply_text":"这次没拍成。"}'
+
+        self.runtime.call_text_model.side_effect = reply
+        sent = await self.runtime._send_background_failure_reply(
+            first.unified_msg_origin, first, task_name="图片生成", failure_reason="测试失败"
+        )
+        self.assertFalse(sent)
+        self.assertEqual(first.sent_messages, [])
+
+    async def test_failure_reply_model_unavailable_keeps_internal_error_out_of_fallback(self):
+        for raw in ("", "不是协议格式", '{"reply_text":"","reason":"内部分析"}'):
+            with self.subTest(raw=raw):
+                self.prepare_failure_reply()
+                self.runtime.call_text_model.return_value = raw
+                first = self.event()
+                await self.runtime._send_background_failure_reply(
+                    first.unified_msg_origin,
+                    first,
+                    task_name="图片生成",
+                    failure_reason="https://provider.invalid：HTTP 500",
+                )
+                self.assertEqual(first.sent_messages[0].items, ["这次没弄成，有点可惜。"])
+        self.prepare_failure_reply()
+        self.runtime.get_text_provider.return_value = None
+        first = self.event()
+        await self.runtime._send_background_failure_reply(
+            first.unified_msg_origin, first, task_name="衣橱学习", failure_reason="测试失败"
+        )
+        self.runtime.call_text_model.assert_not_awaited()
+        self.assertEqual(first.sent_messages[0].items, ["这次没弄成，有点可惜。"])
+
+    async def test_failure_reply_timeout_cancels_model_without_holding_background_slot(self):
+        self.prepare_failure_reply()
+        cancelled = asyncio.Event()
+
+        async def hang(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        self.runtime.call_text_model.side_effect = hang
+        timeout = asyncio.timeout
+        with patch("core.runtime.channel.summary.asyncio.timeout", side_effect=lambda _: timeout(0.01)):
+            first = self.event()
+            await asyncio.wait_for(
+                self.runtime._send_background_failure_reply(
+                    first.unified_msg_origin, first, task_name="视频总结", failure_reason="测试失败"
+                ),
+                0.5,
+            )
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(first.sent_messages[0].items, ["这次没弄成，有点可惜。"])
+
+    async def test_failure_reply_task_cancel_does_not_send_fallback(self):
+        self.prepare_failure_reply()
+        self.runtime.call_text_model.side_effect = asyncio.CancelledError()
+        first = self.event()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.runtime._send_background_failure_reply(
+                first.unified_msg_origin, first, task_name="图片生成", failure_reason="测试失败"
+            )
+        self.assertEqual(first.sent_messages, [])
+
+    async def test_failure_reply_delivery_error_does_not_retry_or_append_history(self):
+        self.prepare_failure_reply()
+        self.runtime.send_background_text.side_effect = RuntimeError("测试发送失败")
+        first = self.event()
+        sent = await self.runtime._send_background_failure_reply(
+            first.unified_msg_origin, first, task_name="图片编辑", failure_reason="测试失败"
+        )
+        self.assertFalse(sent)
+        self.runtime.send_background_text.assert_awaited_once()
+        self.runtime._append_assistant_history.assert_not_awaited()
+
+    async def test_sight_failure_is_discarded_if_new_chat_arrives_during_segmentation(self):
+        from core.runtime.reply import SegmentPart, SemanticSegmentPlan
+
+        self.prepare_failure_reply("这段我没看清，没法给你总结。")
+        self.runtime._semantic_segment_enabled = lambda: True
+        first = self.event()
+        await self.begin_turn(first)
+
+        async def segment(*args, **kwargs):
+            await self.begin_turn(self.event("43", "继续聊"))
+            return SemanticSegmentPlan((SegmentPart("这段我没看清，没法给你总结。"),), valid=True)
+
+        self.runtime._semantic_segment_plan_text = segment
+        sent = await self.runtime._send_background_failure_reply(
+            first.unified_msg_origin,
+            first,
+            task_name="B站视频总结",
+            failure_reason="没有抽取到可用画面",
+            source="sight_failure",
+        )
+        self.assertFalse(sent)
+        self.assertEqual(first.sent_messages, [])
+
     async def test_background_cancellation_is_clean(self):
         first = self.event()
         await self.runtime.life_image_generate(first, "窗边照片")
@@ -531,6 +733,127 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.runtime.get_persona_text = AsyncMock(return_value="自然简短地接话。")
         self.runtime._photo_suite_send_followup = AsyncMock(return_value=True)
 
+    async def test_suite_unconfirmed_submissions_finish_and_record_truthful_outcome(self):
+        self.prepare_suite_planner()
+        calls = []
+
+        async def uncertain(*args, **kwargs):
+            calls.append(args)
+            raise ImageTaskError("提交结果未确认", request_id=f"trace-{len(calls)}", phase="提交")
+
+        self.runtime.media.image.generate_image = uncertain
+        self.runtime.finish_tool_reaction = AsyncMock()
+        event = self.event("suite-unknown", "拍套图看看")
+        await self.begin_turn(event)
+        result = await self.runtime.life_photo_suite_generate(event, "窗边生活抓拍")
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+        path, manifest = await self.runtime._photo_suite_latest_manifest(event.unified_msg_origin)
+        self.assertEqual(manifest["status"], "unconfirmed")
+        self.assertEqual([s["status"] for s in manifest["shots"]], ["unconfirmed"] * 3)
+        self.assertEqual([s["attempts"] for s in manifest["shots"]], [1] * 3)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(event.sent_messages, [])
+        self.runtime._photo_suite_send_followup.assert_awaited_once()
+        kwargs = self.runtime._photo_suite_send_followup.await_args.kwargs
+        self.assertEqual((kwargs["pending_count"], kwargs["unconfirmed_count"]), (0, 3))
+        self.runtime.finish_tool_reaction.assert_awaited_once()
+        reaction = self.runtime.finish_tool_reaction.await_args
+        self.assertEqual(reaction.args[0].message_id, event.message_id)
+        self.assertEqual(reaction.args[1], "life_photo_suite_generate")
+        self.assertFalse(reaction.kwargs["success"])
+        facts = "\n".join(m.content for m in self.runtime._structured_scope_messages(event.unified_msg_origin))
+        self.assertIn("已登记原任务查询 0 张", facts)
+        self.assertIn("提交结果未确认且无自动恢复 3 张", facts)
+
+        copied = self.event("suite-unknown", "拍套图看看")
+        repeated = await self.runtime.life_photo_suite_generate(copied, "窗边生活抓拍")
+        self.assertEqual(json.loads(repeated)["status"], "unconfirmed")
+        self.assertEqual(len(calls), 3)
+
+    async def test_suite_partial_success_preserves_unconfirmed_slots_and_sends_only_new_images(self):
+        self.prepare_suite_planner()
+        original = self.runtime.media.image.generate_image
+        attempts = 0
+
+        async def generate(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise ImageTaskError("提交回执未取得", request_id="trace-2")
+            return await original(*args, **kwargs)
+
+        self.runtime.media.image.generate_image = generate
+        event = self.event("suite-partial", "拍套图看看")
+        await self.begin_turn(event)
+        await self.runtime.life_photo_suite_generate(event, "窗边生活抓拍")
+        await self.finish_tasks()
+        _, manifest = await self.runtime._photo_suite_latest_manifest(event.unified_msg_origin)
+        self.assertEqual(manifest["status"], "partial")
+        self.assertEqual([s["status"] for s in manifest["shots"]], ["sent", "unconfirmed", "sent"])
+        self.assertEqual(len(event.sent_messages), 2)
+        self.assertEqual(attempts, 3)
+        self.assertEqual(self.runtime._photo_suite_send_followup.await_args.kwargs["unconfirmed_count"], 1)
+
+    async def test_suite_retry_does_not_resubmit_positions_still_under_original_query(self):
+        self.prepare_suite_planner()
+        event = self.event("suite-original", "拍套图看看")
+        await self.runtime.life_photo_suite_generate(event, "窗边生活抓拍")
+        await self.finish_tasks()
+        path, manifest = await self.runtime._photo_suite_latest_manifest(event.unified_msg_origin)
+        manifest["status"] = "partial"
+        manifest["shots"][1].update(status="pending", path="", task_id="original-task")
+        await self.runtime._photo_suite_write_manifest(path, manifest)
+        result = await self.runtime.life_photo_suite_generate(self.event("suite-retry", "重试第二张"), retry_indexes=[2])
+        self.assertEqual(json.loads(result)["pending_indexes"], [2])
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 3)
+
+    async def test_suite_unconfirmed_outcome_reaches_model_and_natural_reply(self):
+        self.prepare_suite_planner()
+        del self.runtime._photo_suite_send_followup
+        self.runtime.get_text_provider = AsyncMock(return_value=object())
+        self.runtime.call_text_model = AsyncMock(return_value='{"reply_text":"这次照片没拿到，先不吊你胃口啦"}')
+        self.runtime.send_background_text = AsyncMock(return_value=True)
+        self.runtime._append_assistant_history = AsyncMock()
+        event = self.event("suite-reply", "拍套图看看")
+        await self.begin_turn(event)
+        sent = await self.runtime._photo_suite_send_followup(
+            event.unified_msg_origin, event, prompt="窗边生活抓拍", sent_count=0,
+            requested_count=3, total_count=3, failed_indexes=[1, 2, 3],
+            is_retry=False, unconfirmed_count=3,
+        )
+        self.assertTrue(sent)
+        prompt = self.runtime.call_text_model.await_args.args[1]
+        self.assertIn("提交结果未确认且没有自动恢复：3 张", prompt)
+        self.runtime.send_background_text.assert_awaited_once()
+        self.assertEqual(self.runtime.send_background_text.await_args.args[1], "这次照片没拿到，先不吊你胃口啦")
+
+    async def test_suite_failure_during_later_chat_records_result_without_interrupting_chat(self):
+        self.prepare_suite_planner()
+        del self.runtime._photo_suite_send_followup
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def uncertain(*args, **kwargs):
+            started.set()
+            await release.wait()
+            raise ImageTaskError("提交结果未确认", phase="提交")
+
+        self.runtime.media.image.generate_image = uncertain
+        self.runtime.send_background_text = AsyncMock(return_value=True)
+        first = self.event("suite-first", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "窗边生活抓拍")
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        later = self.event("suite-later", "我们接着聊电影")
+        await asyncio.wait_for(self.begin_turn(later), timeout=0.5)
+        release.set()
+        await self.finish_tasks()
+        self.runtime.send_background_text.assert_not_awaited()
+        _, manifest = await self.runtime._photo_suite_latest_manifest(first.unified_msg_origin)
+        self.assertEqual(manifest["status"], "unconfirmed")
+        self.assertEqual(later.sent_messages, [])
+
     async def test_later_affection_does_not_create_another_suite(self):
         self.prepare_suite_planner()
         first = self.event("suite-first", "拍套图看看")
@@ -539,37 +862,18 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         await asyncio.wait_for(self.started.wait(), timeout=0.5)
         later = self.event("suite-later", "就知道你最好了，mua")
         await self.begin_turn(later)
-        captured = []
-
-        async def decide(prompt, **kwargs):
-            captured.append(prompt)
-            return {"create_new": False, "reply_text": "收到你的亲亲啦"}
-
-        self.runtime._media_director_call = decide
-        self.runtime.send_background_text = AsyncMock(return_value=True)
-        self.runtime._append_assistant_history = AsyncMock()
-        result = await asyncio.wait_for(
-            self.runtime.life_photo_suite_generate(later, "同一卧室亲吻镜头的三张照片"),
-            timeout=0.5,
-        )
-        self.assertEqual(json.loads(result)["status"], "pending")
+        later.set_result(later.chain_result(["收到你的亲亲啦"]))
+        self.assertFalse(self.runtime.hold_life_photo_suite_final_text(later))
+        self.assertIsNotNone(later.get_result())
         await self.finish_tasks()
 
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(len(first.sent_messages), 3)
         self.assertEqual(later.sent_messages, [])
-        self.assertEqual(len(captured), 1)
-        self.assertIn("就知道你最好了，mua", captured[0])
-        self.assertIn("suite-first", captured[0])
-        self.assertIn("suite-later", captured[0])
-        self.runtime.send_background_text.assert_awaited_once()
-        self.assertEqual(
-            self.runtime.send_background_text.await_args.args[1], "收到你的亲亲啦"
-        )
         root = self.path.parent / "generated" / "images" / "suites"
         manifests = [json.loads(p.read_text()) for p in root.glob("*/manifest.json")]
         self.assertEqual(
-            sorted(m["status"] for m in manifests), ["completed", "not_requested"]
+            [m["status"] for m in manifests], ["completed"]
         )
         _, latest = await self.runtime._photo_suite_latest_manifest(
             first.unified_msg_origin
@@ -592,82 +896,130 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(len(self.calls), 6)
         self.assertEqual(len(first.sent_messages), 3)
         self.assertEqual(len(later.sent_messages), 3)
-        self.runtime._media_director_call.assert_awaited_once()
+        self.runtime._media_director_call.assert_not_awaited()
 
-    async def test_suite_authorization_cannot_reuse_old_message_or_invalid_decision(
-        self,
-    ):
+    async def test_same_words_in_new_message_generate_suite_without_second_decision(self):
         self.prepare_suite_planner()
-        event = self.event("suite-current", "mua")
-        manifest = {
-            "source_message_id": "suite-current",
-            "source_request": "mua",
-            "previous_suite": {"source_message_id": "suite-old", "status": "completed"},
-        }
-        for result in (
-            {"create_new": True, "evidence_message_id": "suite-old"},
-            {"create_new": "true", "evidence_message_id": "suite-current"},
-            {},
-        ):
-            with self.subTest(result=result):
-                self.runtime._media_director_call = AsyncMock(return_value=result)
-                decision = await self.runtime._photo_suite_new_request_decision(
-                    event, manifest
-                )
-                self.assertFalse(decision["create_new"])
-        self.runtime._media_director_call = AsyncMock(side_effect=TimeoutError())
-        self.assertFalse(
-            (await self.runtime._photo_suite_new_request_decision(event, manifest))[
-                "create_new"
-            ]
-        )
-        self.assertEqual(self.calls, [])
-
-    async def test_suite_validation_wait_does_not_block_chat_or_send_stale_reply(self):
-        self.prepare_suite_planner()
-        first = self.event("suite-first", "拍套图看看")
+        first = self.event("suite-old", "拍套图看看")
         await self.begin_turn(first)
         await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
         await self.finish_tasks()
-        later = self.event("suite-later", "mua")
+        path, manifest = await self.runtime._photo_suite_latest_manifest(first.unified_msg_origin)
+        manifest["status"] = "partial"
+        manifest["shots"][-1].update(status="failed", path="", error="生成失败")
+        await self.runtime._photo_suite_write_manifest(path, manifest)
+        self.runtime._media_director_call = AsyncMock(side_effect=TimeoutError())
+        later = self.event("suite-current", "拍套图看看")
         await self.begin_turn(later)
-        deciding = asyncio.Event()
-        decided = asyncio.Event()
-
-        async def decide(prompt, **kwargs):
-            deciding.set()
-            await decided.wait()
-            return {"create_new": False, "reply_text": "收到亲亲啦"}
-
-        self.runtime._media_director_call = decide
-        self.runtime.send_background_text = AsyncMock(return_value=True)
-        await asyncio.wait_for(
-            self.runtime.life_photo_suite_generate(later, "亲吻镜头的三张照片"),
+        result = await asyncio.wait_for(
+            self.runtime.life_photo_suite_generate(later, "暖光卧室生活抓拍"),
             timeout=0.5,
         )
-        await asyncio.wait_for(deciding.wait(), timeout=0.5)
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(len(later.sent_messages), 3)
+        self.runtime._media_director_call.assert_not_awaited()
+
+    async def test_suite_planning_wait_does_not_block_later_chat(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-first", "拍套图看看")
+        await self.begin_turn(first)
+        planning = asyncio.Event()
+        planned = asyncio.Event()
+
+        async def plan(event, prompt, count, **kwargs):
+            planning.set()
+            await planned.wait()
+            return self.runtime._photo_suite_fallback_plan(prompt, count, "free")
+
+        self.runtime._photo_suite_plan = plan
+        await asyncio.wait_for(
+            self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍"),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(planning.wait(), timeout=0.5)
         newest = self.event("suite-chat", "我们接着说刚才那件事")
         request = await asyncio.wait_for(self.begin_turn(newest), timeout=0.5)
         self.assertEqual(request.prompt, newest.message_str)
-        decided.set()
+        newest.set_result(newest.chain_result(["好呀 接着说"]))
+        self.assertFalse(self.runtime.hold_life_photo_suite_final_text(newest))
+        self.assertEqual(self.calls, [])
+        planned.set()
         await self.finish_tasks()
         self.assertEqual(len(self.calls), 3)
-        self.runtime.send_background_text.assert_not_awaited()
+        self.assertEqual(len(first.sent_messages), 3)
+        self.assertEqual(newest.sent_messages, [])
 
-    async def test_copied_original_message_does_not_authorize_new_suite(self):
+    async def test_copied_original_message_does_not_generate_again_after_cache_reset(self):
         self.prepare_suite_planner()
-        self.runtime._media_director_call = AsyncMock(
-            return_value={"create_new": True, "evidence_message_id": "suite-original"}
+        first = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        self.runtime._life_photo_suite_last_tasks = {}
+        copied = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(copied)
+        result = await self.runtime.life_photo_suite_generate(copied, "暖光卧室生活抓拍")
+        self.assertEqual(json.loads(result)["status"], "completed")
+        self.assertTrue(json.loads(result)["deduplicated"])
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(copied.sent_messages, [])
+
+    async def test_failed_duplicate_reports_failure_without_submitting_again(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        path, manifest = await self.runtime._photo_suite_latest_manifest(first.unified_msg_origin)
+        manifest["status"] = "failed"
+        for shot in manifest["shots"]:
+            shot.update(status="failed", path="", error="生成失败")
+        await self.runtime._photo_suite_write_manifest(path, manifest)
+        copied = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(copied)
+        result = await self.runtime.life_photo_suite_generate(copied, "暖光卧室生活抓拍")
+        self.assertEqual(json.loads(result)["status"], "failed")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(copied.sent_messages, [])
+
+    async def test_older_message_duplicate_does_not_replace_latest_suite(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        newer = self.event("suite-new", "再拍一套")
+        await self.begin_turn(newer)
+        await self.runtime.life_photo_suite_generate(newer, "窗边生活抓拍")
+        await self.finish_tasks()
+        copied = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(copied)
+        result = await self.runtime.life_photo_suite_generate(copied, "暖光卧室生活抓拍")
+        self.assertTrue(json.loads(result)["deduplicated"])
+        _, latest = await self.runtime._photo_suite_latest_manifest(first.unified_msg_origin)
+        self.assertEqual(latest["source_message_id"], "suite-new")
+        self.assertEqual(len(self.calls), 6)
+
+    async def test_concurrent_copies_of_same_message_submit_only_one_suite(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-original", "拍套图看看")
+        copied = self.event("suite-original", "拍套图看看")
+        await self.begin_turn(first)
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍"),
+                self.runtime.life_photo_suite_generate(copied, "暖光卧室生活抓拍"),
+            ),
+            timeout=0.5,
         )
-        decision = await self.runtime._photo_suite_new_request_decision(
-            self.event("suite-original", "拍套图看看"),
-            {
-                "source_message_id": "suite-original",
-                "previous_suite": {"source_message_id": "suite-original"},
-            },
-        )
-        self.assertFalse(decision["create_new"])
-        self.runtime._media_director_call.assert_not_awaited()
+        self.assertEqual([json.loads(value)["status"] for value in results], ["pending", "pending"])
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(first.sent_messages) + len(copied.sent_messages), 3)
 
     async def test_text_followup_invalidates_media_reply_even_in_same_revision(self):
         first = self.event()

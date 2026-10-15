@@ -26,6 +26,7 @@ class _AssetRuntime(RuntimeActionReceiptComponent):
     def __init__(self, archive):
         self.archive = archive
         self.listener = None
+        self.failure_listener = None
         self.calls = 0
         self.media = types.SimpleNamespace(
             image=types.SimpleNamespace(
@@ -46,12 +47,14 @@ class _AssetRuntime(RuntimeActionReceiptComponent):
         self.stage_durable_media_delivery = AsyncMock()
 
     @contextmanager
-    def track(self, listener):
+    def track(self, listener, *, on_failed=None):
         self.listener = listener
+        self.failure_listener = on_failed
         try:
             yield
         finally:
             self.listener = None
+            self.failure_listener = None
 
     async def generate_life_image_asset(self, *args, **kwargs):
         self.calls += 1
@@ -80,6 +83,55 @@ class _AssetRuntime(RuntimeActionReceiptComponent):
 
 
 class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_share_terminal_media_task_is_failed_and_same_key_never_resubmits(self):
+        for kind in ("image", "video"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                archive = LifeArchive(Path(folder) / "life.db")
+                try:
+                    runtime = _AssetRuntime(archive)
+                    failure_type = ImageTaskFailed if kind == "image" else VideoTaskFailed
+                    setattr(getattr(runtime.media, kind), f"resume_async_{kind}", AsyncMock(side_effect=failure_type("明确失败")))
+                    generate = getattr(runtime, f"generate_share_{kind}_task")
+                    await generate(None, "生活素材", task_key="share-failed")
+                    record = (await archive.get_durable_tasks(kind=f"share_{kind}_generation"))[0]
+                    self.assertEqual(record.status, "pending")
+                    await archive.reschedule_durable_task(record.task_key, archive._cognition_now())
+                    task = (await archive.lease_durable_tasks("terminal"))[0]
+                    with self.assertRaises(failure_type):
+                        await getattr(runtime, f"resume_share_{kind}_generation")(task)
+                    await archive.fail_durable_task(task.id, "明确失败", owner="terminal", permanent=True)
+                    result = await generate(None, "重复请求", task_key="share-failed")
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(runtime.calls, 1)
+                finally:
+                    archive.close()
+
+    async def test_failed_image_channel_clears_progress_before_fallback(self):
+        for pending_backup in (False, True):
+            with self.subTest(pending_backup=pending_backup), tempfile.TemporaryDirectory() as folder:
+                archive = LifeArchive(Path(folder) / "life.db")
+                try:
+                    runtime = _AssetRuntime(archive)
+                    route = types.SimpleNamespace(api_url="https://image.example/v1", model="image-test", protocol="openai", api_key="test-key")
+
+                    async def generate(*_args, **_kwargs):
+                        await runtime.listener("failed-image", route)
+                        await runtime.failure_listener("failed-image", route, ImageTaskFailed("任务失败"))
+                        if pending_backup:
+                            await runtime.listener("backup-image", route)
+                            raise ImageTaskError("备选任务结果尚未确认")
+                        raise ImageTaskFailed("所有任务失败")
+
+                    runtime.generate_life_image_asset = generate
+                    result = await runtime.generate_share_image_task(None, "生活照片", task_key="share-a")
+                    self.assertEqual(result["status"], "pending" if pending_backup else "failed")
+                    record = (await archive.get_durable_tasks(kind="share_image_generation"))[0]
+                    progress = record.result.get("progress", {})
+                    self.assertEqual(progress.get("task_id"), "backup-image" if pending_backup else None)
+                    runtime.stage_durable_media_delivery.assert_not_awaited()
+                finally:
+                    archive.close()
+
     async def test_external_assets_resume_original_and_never_send_to_chat(self):
         for kind in ("image", "video"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:

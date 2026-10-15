@@ -20,7 +20,6 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Image, Plain
 from astrbot.core.agent.message import TextPart
 
-from ..runtime.delivery import BackgroundTextMode
 from ..runtime.markers import LOG_PREFIX
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief
@@ -163,6 +162,7 @@ class SightComponentContext(Protocol):
     _schedule_background_task: Any
     _send_bili_summary_background: Any
     _send_bili_summary_failure: Any
+    _send_background_failure_reply: Any
     _send_sight_note: Any
     _sight_apply_group_upload_id: Any
     _sight_brief: Any
@@ -1040,15 +1040,11 @@ class SightComponent:
         scope: str,
         message_id: str,
     ) -> bool:
-        detail = str(detail or "").strip()
-        message = f"B站视频自动总结失败：{detail}" if detail else "B站视频自动总结失败"
-        if not scope:
-            return False
-        return await self.context.send_background_text(
+        return await self.context._send_background_failure_reply(
             scope,
-            message,
-            mode=BackgroundTextMode.DIRECT,
-            source_event=event,
+            event,
+            task_name="B站视频总结",
+            failure_reason=str(detail or "").strip(),
             source_message_id=message_id,
             source="sight_failure",
         )
@@ -1102,7 +1098,7 @@ class SightComponent:
             media="video_note",
             label="视频专业总结",
             category="video",
-            failure_text="这次视频总结没有完成。",
+            task_name="视频总结",
         )
 
     async def _lock_video_note_source(self, clip: SightClip) -> SightClip:

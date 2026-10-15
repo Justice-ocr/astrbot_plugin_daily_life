@@ -652,6 +652,27 @@ function dailyGeneration(status = {}) {
   return generation && typeof generation === "object" ? generation : {};
 }
 
+export function dailyGenerationEmptyState(status = {}) {
+  const generation = dailyGeneration(status);
+  const matchesDate = !generation.date || generation.date === status.target_date;
+  if (matchesDate && (generation.running === true || generation.phase === "queued")) {
+    return {
+      activity: generation.phase === "searching" ? "正在查找今日生活灵感" : "正在生成今日生活安排",
+      timeline: "生成完成后显示时间轴",
+    };
+  }
+  if (matchesDate && generation.phase === "failed") {
+    return {
+      activity: "今日生活安排生成失败",
+      timeline: "生成失败，可点击“重生”重试",
+    };
+  }
+  return {
+    activity: "今日生活安排尚未生成",
+    timeline: "暂无时间轴，可点击“重生”生成",
+  };
+}
+
 function syncDailyGenerationButton(status = {}) {
   const button = el.resetDayButton;
   if (!button) return;
@@ -1378,10 +1399,11 @@ function renderDay(status) {
   el.nowText.hidden = true;
   renderTargetDateTime();
   if (!day) {
-    el.currentActivity.textContent = "暂无日常生活数据";
+    const emptyState = dailyGenerationEmptyState(status);
+    el.currentActivity.textContent = emptyState.activity;
     renderEmptyTodayFacts();
     renderMemo(status);
-    el.timelineList.replaceChildren(empty("暂无时间轴"));
+    el.timelineList.replaceChildren(empty(emptyState.timeline));
     setTimelineButtons(false);
     renderMeters({}, status);
     renderStateLogs({});
@@ -3014,7 +3036,6 @@ const CLOSET_KIND_ORDER = [
 ];
 const CLOSET_STATUS_LABELS = {
   active: "已启用",
-  pending: "待确认",
   disabled: "已停用",
   rejected: "不采用",
 };
@@ -3098,7 +3119,7 @@ function filteredClosetItems() {
   const filter = normalizeClosetFilter(state.closetFilter);
   const items = objectItems(state.closetItems);
   if (filter === "all") return items;
-  if (["active", "pending", "disabled"].includes(filter)) {
+  if (["active", "disabled"].includes(filter)) {
     return items.filter((item) => closetStatus(item) === filter);
   }
   if (Object.hasOwn(CLOSET_KIND_LABELS, filter)) return items.filter((item) => item.kind === filter);
@@ -3162,7 +3183,6 @@ function renderClosetStats() {
   const stats = closetComputedStats();
   const entries = [
     ["已启用", stats.active],
-    ["待确认", stats.pending],
     ["创意生成", stats.generated],
     ["套装", stats.outfit],
     ["上装", stats.top],
@@ -3189,7 +3209,6 @@ function closetComputedStats() {
     total: items.length,
     generated: 0,
     active: 0,
-    pending: 0,
     disabled: 0,
     outfit: 0,
     top: 0,
@@ -3219,15 +3238,15 @@ function closetBadges(item = {}) {
   const status = closetStatus(item);
   const values = [
     [CLOSET_KIND_LABELS[item.kind] || "造型", ""],
-    [CLOSET_STATUS_LABELS[status] || "待确认", `is-${status}`],
+    [CLOSET_STATUS_LABELS[status], `is-${status}`],
   ];
   if (Number(item.preference_score || 0) > 0) values.push(["喜欢", ""]);
   return values;
 }
 
 export function closetStatus(item = {}) {
-  const status = text(item.status, "pending").trim().toLowerCase();
-  return Object.hasOwn(CLOSET_STATUS_LABELS, status) ? status : "pending";
+  const status = text(item.status, "disabled").trim().toLowerCase();
+  return Object.hasOwn(CLOSET_STATUS_LABELS, status) ? status : "disabled";
 }
 
 function closetSourceText(item = {}) {
@@ -3244,7 +3263,7 @@ function closetGroupBadges(items = []) {
   });
   const badges = [];
   counts.forEach((count, status) => {
-    const label = CLOSET_STATUS_LABELS[status] || "待确认";
+    const label = CLOSET_STATUS_LABELS[status];
     badges.push([
       count === items.length ? label : `${label} ${count}`,
       `is-${status}`,

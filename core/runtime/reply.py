@@ -1400,6 +1400,7 @@ class SemanticSegmentRuntimeComponent:
             "photo_suite_followup",
             "commitment_photo_followup",
             "background_tool_failure",
+            "sight_failure",
         } and callable(current_media_turn)
         if media_followup and not current_media_turn(source_event):
             return False

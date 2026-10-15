@@ -233,13 +233,18 @@ class GeminiImageService:
         self._task_listener = ContextVar(
             f"image_task_listener_{id(self)}", default=None
         )
+        self._task_failure_listener = ContextVar(
+            f"image_task_failure_listener_{id(self)}", default=None
+        )
 
     @contextmanager
-    def track_async_tasks(self, listener):
+    def track_async_tasks(self, listener, *, on_failed=None):
         token = self._task_listener.set(listener)
+        failure_token = self._task_failure_listener.set(on_failed)
         try:
             yield
         finally:
+            self._task_failure_listener.reset(failure_token)
             self._task_listener.reset(token)
 
     async def resume_async_image(
@@ -250,22 +255,25 @@ class GeminiImageService:
         candidates = await self._request_routes("text") + await self._request_routes(
             "edit"
         )
-        route = next(
-            (
-                item
-                for item in candidates
-                if (
-                    normalize_openai_base_url(item.api_url) == reference.get("api_url")
-                    and item.model == reference.get("model")
-                    and item.protocol == reference.get("protocol")
-                )
-            ),
-            None,
-        )
-        if route is None:
+        matches = [
+            item
+            for item in candidates
+            if normalize_openai_base_url(item.api_url) == reference.get("api_url")
+            and item.model == reference.get("model")
+            and item.protocol == reference.get("protocol")
+        ]
+        credential_id = reference.get("credential_id")
+        if credential_id:
+            matches = [
+                item for item in matches
+                if routes.task_reference(item)["credential_id"] == credential_id
+            ]
+        # 已受理记录缺少指纹时，仅在查询凭据唯一的情况下恢复。
+        if not matches or len({item.api_key for item in matches}) != 1:
             raise polling.ImageTaskError(
-                "原图片任务的接口通道尚不可用，保留原任务等待恢复"
+                "原图片任务的接口凭据尚不能唯一确认，保留原任务等待恢复"
             )
+        route = matches[0]
         session = await self._get_session()
         from .pipe import ImageRequest
 
@@ -310,8 +318,11 @@ class GeminiImageService:
         async def accepted(task_id, route):
             await listener(task_id, route, metadata)
 
-        with self.track_async_tasks(accepted):
+        token = self._task_listener.set(accepted)
+        try:
             yield
+        finally:
+            self._task_listener.reset(token)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -910,6 +921,7 @@ class GeminiImageService:
         if requested_resolution and requested_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
         errors: list[str] = []
+        last_error: Exception | None = None
         protocol = routes.normalize_image_provider(protocol)
         request_routes = await self._request_routes(
             mode, protocol=protocol, model=model
@@ -930,6 +942,7 @@ class GeminiImageService:
                 route_label = f"{route.origin} / {route.label}"
                 message = f"{route_label}：Grok 图片接口只支持 1K 或 2K 分辨率"
                 errors.append(message)
+                last_error = ValueError(message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道不支持本轮参数，"
                     f"尝试下一条：{message}"
@@ -958,13 +971,16 @@ class GeminiImageService:
                     require_reference=str(mode or "").strip().lower() == "edit",
                 )
             except Exception as exc:
+                last_error = exc
                 message = (
                     f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
                 )
                 errors.append(message)
                 if self._is_policy_violation_error(exc):
                     raise RuntimeError(f"图片生成触发安全拒绝：{message}") from exc
-                if isinstance(exc, polling.ImageTaskError):
+                if isinstance(exc, polling.ImageTaskError) and not isinstance(
+                    exc, polling.ImageTaskFailed
+                ):
                     raise
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
@@ -973,6 +989,7 @@ class GeminiImageService:
 
             if not isinstance(data, dict):
                 message = f"{route_label}：图片接口返回格式不是对象"
+                last_error = ValueError(message)
                 errors.append(message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
@@ -985,10 +1002,14 @@ class GeminiImageService:
                     timeout=timeout,
                 )
             except Exception as exc:
+                last_error = exc
                 if isinstance(data, polling.ImageTaskResult):
                     raise polling.ImageTaskError(
                         f"图片任务 {data.task_id} 已完成，获取成品失败：{exc}；"
-                        "已停止自动切换通道，避免重复生成"
+                        "已停止自动切换通道，避免重复生成",
+                        task_id=data.task_id,
+                        request_id=data.request_id,
+                        phase="下载成品",
                     ) from exc
                 message = (
                     f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
@@ -1035,10 +1056,14 @@ class GeminiImageService:
                     )
                 return image_bytes, route
             message = f"{route_label}：图片接口未返回图片：{upstream_error_text(data)}"
+            last_error = RuntimeError(message)
             if isinstance(data, polling.ImageTaskResult):
                 raise polling.ImageTaskError(
                     f"图片任务 {data.task_id} 已完成但没有可用图片；"
-                    "已停止自动切换通道，避免重复生成"
+                    "已停止自动切换通道，避免重复生成",
+                    task_id=data.task_id,
+                    request_id=data.request_id,
+                    phase="读取成品",
                 )
             errors.append(message)
             if self._is_policy_violation_text(message):
@@ -1047,9 +1072,15 @@ class GeminiImageService:
                 f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
             )
 
-        raise RuntimeError(
-            f"图片生成全部{self._mode_label(mode)}接口均失败：{'；'.join(errors[-8:])}"
-        )
+        message = f"图片生成全部{self._mode_label(mode)}接口均失败：{'；'.join(errors[-8:])}"
+        if isinstance(last_error, polling.ImageTaskFailed):
+            raise polling.ImageTaskFailed(
+                message,
+                task_id=last_error.task_id,
+                request_id=last_error.request_id,
+                phase=last_error.phase,
+            ) from last_error
+        raise RuntimeError(message) from last_error
 
     async def _request_image_data(
         self,
@@ -1069,6 +1100,7 @@ class GeminiImageService:
             raise ValueError("图生图请求没有可上传的参考图，已终止请求")
         if openai.uses_async_tasks(route):
             listener = getattr(self, "_task_listener", None)
+            failure_listener = getattr(self, "_task_failure_listener", None)
             result = await polling.request_image_task(
                 session,
                 route,
@@ -1076,6 +1108,11 @@ class GeminiImageService:
                 **(
                     {"on_accepted": listener.get()}
                     if listener is not None and listener.get() is not None
+                    else {}
+                ),
+                **(
+                    {"on_failed": failure_listener.get()}
+                    if failure_listener is not None and failure_listener.get() is not None
                     else {}
                 ),
             )

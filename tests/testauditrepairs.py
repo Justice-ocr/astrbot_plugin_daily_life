@@ -1,6 +1,7 @@
 """体检发现问题的回归场景，隔离数据库与外部服务。"""
 
 import asyncio
+import base64
 import collections
 import datetime
 import json
@@ -349,6 +350,54 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_image_failover_closes_failed_record_and_preserves_only_live_task(self):
+        for outcome in ("sync", "completed", "pending", "failed"):
+            with self.subTest(outcome=outcome):
+                route, backup = _route(), _route()
+                if outcome == "sync":
+                    backup.api_url = "https://backup.example/v1"
+                failed_id, backup_id = f"failed-{outcome}", f"backup-{outcome}"
+                image = {"data": [{"b64_json": base64.b64encode(b"image").decode()}]}
+                failure = _Response(payload={"status": "failed", "http_status": 400})
+                posts = [_accepted(task_id=failed_id)]
+                gets = [failure]
+                if outcome == "sync":
+                    posts.append(_Response(payload=image))
+                else:
+                    posts.append(_accepted(task_id=backup_id))
+                    gets.append(
+                        _Response(404) if outcome == "pending" else failure
+                        if outcome == "failed" else _Response(payload={
+                            "status": "completed", "result": image,
+                        })
+                    )
+                session = _Session(posts, gets)
+                service = GeminiImageService(self.runtime.config.image_generation, Path(self.directory.name))
+                service._request_routes = AsyncMock(return_value=[route, backup])
+                service._get_session = AsyncMock(return_value=session)
+                self.runtime.media = types.SimpleNamespace(image=service)
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:audit", sender_id="audit")
+                work = service._generate_image_result(
+                    lambda *_args: [{"text": "生活照片"}], prompt="生活照片"
+                )
+                with patch.object(polling.asyncio, "sleep", new_callable=AsyncMock):
+                    if outcome in {"pending", "failed"}:
+                        with self.assertRaises(polling.ImageTaskError) as error:
+                            await self.runtime.track_image_generation(event, work)
+                        pending = await self.runtime.pending_image_generation_result(event, error.exception)
+                        self.assertEqual(bool(pending), outcome == "pending")
+                    else:
+                        result = await self.runtime.track_image_generation(event, work)
+                        self.assertEqual(result[0], b"image")
+                records = await self.archive.get_durable_tasks(kind="image_generation")
+                relevant = {r.payload["task_id"]: r for r in records if r.payload["task_id"] in {failed_id, backup_id}}
+                self.assertEqual(relevant[failed_id].status, "dead")
+                expected_pending = [backup_id] if outcome in {"pending", "completed"} else []
+                self.assertEqual([r.payload["task_id"] for r in event._daily_life_async_image_tasks], expected_pending)
+                if outcome != "sync":
+                    self.assertEqual(relevant[backup_id].status, "dead" if outcome == "failed" else "pending")
+                self.assertEqual(sum(c[0] == "POST" for c in session.calls), 2)
+
     async def test_accepted_image_is_persisted_before_timeout_then_recovered_without_post(
         self,
     ):
@@ -594,6 +643,50 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
             record.payload["photo_suite"],
             {"manifest_path": str(manifest_path), "slot_index": 1},
         )
+
+    async def test_photo_suite_missing_id_or_failed_registration_is_not_pending(self):
+        for outcome in ("no_id", "registration_failed"):
+            with self.subTest(outcome=outcome):
+                service = GeminiImageService(self.runtime.config.image_generation, Path(self.directory.name))
+                self.runtime.media = types.SimpleNamespace(image=service)
+                self.runtime._photo_suite_write_manifest = AsyncMock()
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:suite", sender_id="suite")
+                session = _Session([asyncio.TimeoutError() if outcome == "no_id" else _accepted()])
+
+                async def generate(*args):
+                    return await polling.request_image_task(
+                        session, _route(), _request(_route()), on_accepted=service._task_listener.get()
+                    )
+
+                self.runtime._photo_suite_generate_asset = generate
+                manifest = {"shots": [{"index": 1, "prompt": "照片", "status": "pending"}]}
+                with patch.object(self.archive, "enqueue_durable_task", new_callable=AsyncMock, side_effect=RuntimeError("无法保存")):
+                    await self.runtime.track_image_generation(
+                        event,
+                        self.runtime._photo_suite_generate_slot(event, Path(self.directory.name)/"manifest.json", manifest, 1, asyncio.Lock()),
+                    )
+                self.assertEqual(manifest["shots"][0]["status"], "unconfirmed")
+                self.assertEqual(manifest["shots"][0]["attempts"], 1)
+                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(event._daily_life_async_image_tasks, [])
+
+    async def test_suite_original_task_terminal_failure_updates_manifest(self):
+        path = Path(self.directory.name)/"manifest.json"
+        await self.runtime._photo_suite_write_manifest(path, {
+            "count": 2, "status": "pending", "shots": [
+                {"index": 1, "status": "pending", "path": "", "task_id": "original"},
+                {"index": 2, "status": "unconfirmed", "path": ""},
+            ],
+        })
+        self.runtime.media = types.SimpleNamespace(image=types.SimpleNamespace(
+            resume_async_image=AsyncMock(side_effect=polling.ImageTaskFailed("原任务已确认失败"))
+        ))
+        task = types.SimpleNamespace(payload={"task_id": "original", "route": {}, "photo_suite": {"manifest_path": str(path), "slot_index": 1}}, result={})
+        with self.assertRaises(polling.ImageTaskFailed):
+            await self.runtime.resume_durable_image_generation(task)
+        manifest = await self.runtime._photo_suite_read_manifest(path)
+        self.assertEqual(manifest["shots"][0]["status"], "failed")
+        self.assertEqual(manifest["status"], "unconfirmed")
 
     async def test_photo_suite_handoff_preserves_still_processing_slots(self):
         ready = await self.archive.enqueue_durable_task(

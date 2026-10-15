@@ -15,6 +15,7 @@ from astrbot.api import logger
 
 from ..clock import now as life_now
 from ..sources.dispatch import send_message_to_scope
+from .locks import operation_lock
 
 from typing import Protocol
 
@@ -29,6 +30,7 @@ class RuntimeActionReceiptComponentContext(Protocol):
     _generate_share_asset_task: Any
     _get_share_asset_task: Any
     _photo_suite_read_manifest: Any
+    _photo_suite_finalize_manifest: Any
     _photo_suite_write_manifest: Any
     _record_recovered_photo_suite_slot: Any
     _resume_share_asset_generation: Any
@@ -97,7 +99,7 @@ class RuntimeActionReceiptComponent:
                     or ""
                 ),
             }
-        if task.status in {"failed", "cancelled"}:
+        if task.status in {"dead", "cancelled"}:
             return {"status": "failed", "task_key": task_key, "error": task.last_error}
         return {"status": "pending", "task_key": task_key}
 
@@ -160,14 +162,10 @@ class RuntimeActionReceiptComponent:
         progress = {}
 
         async def accepted(task_id, route, metadata=None):
-            from ..media.base import normalize_openai_base_url
+            from ..media.picture.routes import task_reference
 
             reference = (
-                {
-                    "api_url": normalize_openai_base_url(route.api_url),
-                    "model": route.model,
-                    "protocol": route.protocol,
-                }
+                task_reference(route)
                 if kind == "image"
                 else {key: route[key] for key in ("endpoint", "model")}
             )
@@ -183,8 +181,21 @@ class RuntimeActionReceiptComponent:
         from ..media.picture.polling import ImageTaskError, ImageTaskFailed
         from ..media.video.errors import VideoTaskError, VideoTaskFailed
 
+        async def failed(task_id, route, exc):
+            if progress.get("task_id") != task_id:
+                raise RuntimeError("分享图片失败回执与当前任务不符")
+            if not await self.context.archive.update_durable_task_progress(
+                record.id, owner, {}
+            ):
+                raise RuntimeError("分享图片任务已失去租约，不继续切换通道")
+            progress.clear()
+
         try:
-            with tracker(accepted) if callable(tracker) else nullcontext():
+            tracking = (
+                tracker(accepted, **({"on_failed": failed} if kind == "image" else {}))
+                if callable(tracker) else nullcontext()
+            )
+            with tracking:
                 if kind == "image":
                     result = await self.context.generate_life_image_asset(
                         event,
@@ -313,9 +324,10 @@ class RuntimeActionReceiptComponent:
         event._daily_life_media_requested_at = requested_at
 
         async def accepted(task_id, route, metadata=None):
-            from ..media.base import normalize_openai_base_url
+            from ..media.picture.routes import task_reference
 
-            api_url = normalize_openai_base_url(route.api_url)
+            reference = task_reference(route)
+            api_url = reference["api_url"]
             digest = hashlib.sha256(f"{api_url}:{task_id}".encode()).hexdigest()[:24]
             owner = f"image:{uuid.uuid4().hex}"
             action_date = str(getattr(event, "_daily_life_action_date", "") or "")
@@ -326,11 +338,7 @@ class RuntimeActionReceiptComponent:
                 "image_generation",
                 {
                     "task_id": task_id,
-                    "route": {
-                        "api_url": api_url,
-                        "model": route.model,
-                        "protocol": route.protocol,
-                    },
+                    "route": reference,
                     "scope": self.context._event_session_id(event),
                     "source_message_id": self.context._event_message_id(event),
                     "commitment_id": int(
@@ -348,8 +356,24 @@ class RuntimeActionReceiptComponent:
             )
             pending.append(record)
 
+        async def failed(task_id, route, exc):
+            from ..media.picture.routes import task_reference
+
+            reference = task_reference(route)
+            for task in list(pending):
+                if (
+                    task.payload.get("task_id") != task_id
+                    or task.payload.get("route") != reference
+                ):
+                    continue
+                if not await self.context.archive.fail_durable_task(
+                    task.id, str(exc), owner=task.lease_owner, permanent=True
+                ):
+                    raise RuntimeError("图片任务已失去租约，不继续切换通道")
+                pending.remove(task)
+
         try:
-            with tracker(accepted):
+            with tracker(accepted, on_failed=failed):
                 return await work
         finally:
             retry_at = (
@@ -414,7 +438,10 @@ class RuntimeActionReceiptComponent:
                     task.id, task.lease_owner, progress
                 ):
                     raise RuntimeError("图片恢复任务已失去租约，暂不投递")
-        except ImageTaskFailed:
+        except ImageTaskFailed as exc:
+            await self.context._record_recovered_photo_suite_slot(
+                payload.get("photo_suite", {}), "", sent=False, error=str(exc)
+            )
             raise
         except ImageTaskError as exc:
             return {
@@ -456,26 +483,24 @@ class RuntimeActionReceiptComponent:
         return {"delivery_task_id": delivery.id, "artifact_path": path}
 
     async def _record_recovered_photo_suite_slot(
-        self, metadata: dict[str, Any], path: str, *, sent: bool
+        self, metadata: dict[str, Any], path: str, *, sent: bool, error: str = ""
     ) -> None:
         if not metadata:
             return
         manifest_path = Path(metadata["manifest_path"])
-        manifest = await self.context._photo_suite_read_manifest(manifest_path)
-        if manifest is None:
-            return
-        for shot in manifest.get("shots", []):
-            if int(shot.get("index") or 0) == int(metadata["slot_index"]):
-                shot.update(path=path, status="sent" if sent else "generated", error="")
-        if sent:
-            manifest["status"] = (
-                "completed"
-                if all(
-                    shot.get("status") == "sent" for shot in manifest.get("shots", [])
-                )
-                else "partial"
+        async with operation_lock(self.context, f"photo_suite_manifest:{manifest_path}"):
+            manifest = await self.context._photo_suite_read_manifest(manifest_path)
+            if manifest is None:
+                return
+            for shot in manifest.get("shots", []):
+                if int(shot.get("index") or 0) == int(metadata["slot_index"]):
+                    if error:
+                        shot.update(status="failed", error=error)
+                    else:
+                        shot.update(path=path, status="sent" if sent else "generated", error="")
+            await self.context._photo_suite_finalize_manifest(
+                manifest_path, manifest, [], len(manifest.get("shots", [])), set()
             )
-        await self.context._photo_suite_write_manifest(manifest_path, manifest)
 
     async def record_current_life_action_receipt(
         self,

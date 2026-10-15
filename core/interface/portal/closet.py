@@ -146,7 +146,7 @@ class PortalClosetComponent:
             if not ids:
                 raise ValueError("请选择要更新的衣橱素材")
             status = self.context._page_closet_text(body.get("status"), 24).lower()
-            if status not in {"active", "pending", "rejected", "disabled"}:
+            if status not in {"active", "rejected", "disabled"}:
                 raise ValueError("衣橱素材状态无效")
             updated = await self.context.runtime.archive.set_style_catalog_status(ids, status)
             if updated <= 0:
@@ -320,7 +320,6 @@ class PortalClosetComponent:
                     item["source_kind"] == "generated_style_image" for item in payload
                 ),
                 "active": sum(item["status"] == "active" for item in payload),
-                "pending": sum(item["status"] == "pending" for item in payload),
                 "disabled": sum(item["status"] == "disabled" for item in payload),
                 "rejected": sum(item["status"] == "rejected" for item in payload),
                 "outfit": sum(item["kind"] == "outfit" for item in payload),
@@ -358,8 +357,8 @@ class PortalClosetComponent:
         data = item.as_dict()
         attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
         status = self.context._page_closet_text(data.get("status"), 24).lower()
-        if status not in {"active", "pending", "disabled", "rejected"}:
-            status = "pending"
+        if status not in {"active", "disabled", "rejected"}:
+            status = "disabled"
         data["status"] = status
         try:
             used_count = max(0, int(attributes.get("used_count") or 0))

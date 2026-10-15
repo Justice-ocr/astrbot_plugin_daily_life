@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+
 from ...config.options import ImageGenerationSettings
+from ..base import normalize_openai_base_url
 from . import gemini, imagine, openai
 from .pipe import ImageRoute
+
+
+def task_reference(route: ImageRoute) -> dict[str, str]:
+    """保存原任务的通道身份，凭据只保存不可逆指纹。"""
+    return {
+        "api_url": normalize_openai_base_url(route.api_url),
+        "model": route.model,
+        "protocol": route.protocol,
+        "credential_id": hashlib.sha256(route.api_key.encode("utf-8")).hexdigest(),
+    }
 
 
 def normalize_image_provider(value: str) -> str:

@@ -733,7 +733,8 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             await service.generate_image("rainy life photo")
 
         self.assertEqual(
-            calls, ["https://main.example/v1beta/models/gemini-main:generateContent"]
+            calls,
+            ["https://main.example/v1beta/models/gemini-main:generateContent"],
         )
 
     async def test_generate_image_can_use_single_channel(self):
@@ -2872,6 +2873,48 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "接口地址须使用 /v1/videos"):
             await service.generate_video("下雨的街道")
+
+    async def test_video_query_connection_failure_keeps_original_task_without_resubmit(self):
+        settings = LifeSettings.from_dict({"video_generation_config": {
+            "enabled": True, "base_url": "https://relay.example", "api_key": "key-a",
+            "timeout_seconds": 120, "poll_interval_seconds": 1,
+        }}).video_generation
+        service = GrokVideoService(settings)
+        calls = []
+
+        class ConnectionFailureOnce(_Session):
+            def request(self, method, url, **kwargs):
+                if method == "GET" and not any(c[0] == "GET" for c in calls):
+                    calls.append((method, url))
+                    raise video_module.aiohttp.ClientError("连接中断")
+                return super().request(method, url, **kwargs)
+
+        with patch.object(video_module.asyncio, "sleep", new_callable=AsyncMock):
+            result = await service._generate_video_task(ConnectionFailureOnce(calls), service._headers(), "生活视频", None)
+        self.assertEqual(result.url, "https://cdn.example/video.mp4")
+        self.assertEqual([c[0] for c in calls], ["POST", "GET", "GET"])
+        self.assertEqual(calls[1][1], calls[2][1])
+
+    async def test_video_http_502_does_not_retry_submission_or_status_query(self):
+        settings = LifeSettings.from_dict({"video_generation_config": {
+            "enabled": True, "base_url": "https://relay.example", "api_key": "key-a",
+            "timeout_seconds": 120, "poll_interval_seconds": 1,
+        }}).video_generation
+        for failed_method in ("POST", "GET"):
+            with self.subTest(failed_method=failed_method):
+                calls = []
+
+                class HTTPFailure(_Session):
+                    def request(self, method, url, **kwargs):
+                        if method == failed_method:
+                            calls.append((method, url))
+                            return _Response(502, text="temporary error")
+                        return super().request(method, url, **kwargs)
+
+                with patch.object(video_module.asyncio, "sleep", new_callable=AsyncMock):
+                    with self.assertRaisesRegex(RuntimeError, "HTTP 502"):
+                        await GrokVideoService(settings)._generate_video_task(HTTPFailure(calls), {"Authorization": "Bearer test"}, "生活视频", None)
+                self.assertEqual([c[0] for c in calls], ["POST"] if failed_method == "POST" else ["POST", "GET"])
 
     async def test_poll_timeout_continues_until_next_success(self):
         settings = LifeSettings.from_dict(

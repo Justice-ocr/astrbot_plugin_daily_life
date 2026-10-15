@@ -240,12 +240,6 @@
   background: rgba(158, 230, 209, 0.3);
 }
 
-.closet-component.is-pending {
-  border-color: rgba(222, 172, 60, 0.42);
-  color: #8b6825;
-  background: rgba(255, 226, 122, 0.24);
-}
-
 .closet-component.is-disabled,
 .closet-component.is-rejected {
   border-color: var(--diary-line);
@@ -287,11 +281,6 @@
   font-weight: 850;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.closet-badge.is-pending {
-  background: rgba(255, 226, 122, 0.28);
-  color: #8b6825;
 }
 
 .closet-badge.is-disabled,

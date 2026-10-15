@@ -8,6 +8,7 @@ from unittest.mock import ANY, AsyncMock, patch
 from core.archive import DayRevisionConflict
 from core.facts import PersonFact, PersonFactContext, apply_string_replacements
 from core.life import LifeBackgroundComposer
+from core.life.engine import _resolve_planned_outfit_catalog
 from componentfixtures import DailyLocationAuditComponent
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.life.reliability import NonRetryableProviderError
@@ -43,6 +44,48 @@ from support import (
 
 
 class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_planned_outfit_accepts_catalog_display_reference_and_preserves_id(self):
+        composer, _, _, archive = make_composer([])
+        outfit = await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "棉质睡裙",
+                "description": "浅粉棉质吊带睡裙",
+                "source_image_hash": "d" * 64,
+            }
+        )
+        action = {
+            "action_type": "change_outfit",
+            "target": "模型另写的穿搭",
+            "timeline_index": 0,
+            "payload": {
+                "scene_category": "sleep",
+                "catalog_reference_ids": [f"#{outfit.id}"],
+            },
+        }
+        issue = await _resolve_planned_outfit_catalog(
+            composer,
+            {
+                "timeline": [{"time": "22:00", "place_kind": "home"}],
+                "planned_actions": [action],
+            },
+            manual_extra=False,
+        )
+
+        self.assertEqual(issue, "")
+        self.assertEqual(action["payload"]["catalog_reference_ids"], [outfit.id])
+        self.assertIn("浅粉棉质吊带睡裙", action["target"])
+        self.assertNotIn("模型另写", action["target"])
+
+    def test_catalog_display_reference_only_normalizes_explicit_ids(self):
+        composer, _, _, _ = make_composer([])
+        self.assertEqual(
+            composer._style_catalog_reference_ids(
+                ["#1", " #102 ", 1, "102", "#1foo", "编号1", "##2", "#0"]
+            ),
+            [1, 102],
+        )
+
     async def test_planned_outfit_without_catalog_reference_requires_repair(self):
         composer, _, _, archive = make_composer([])
         await archive.upsert_style_catalog_item(

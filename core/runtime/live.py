@@ -3025,10 +3025,6 @@ class DailyLifeRuntime:
 
     _photo_suite_finish_request = ComponentCall("_part_runtime_photo_suite_media_component", _part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent, "_photo_suite_finish_request")
 
-    _photo_suite_new_request_decision = ComponentCall("_part_runtime_photo_suite_media_component", _part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent, "_photo_suite_new_request_decision")
-
-    _photo_suite_skip_unrequested_generation = ComponentCall("_part_runtime_photo_suite_media_component", _part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent, "_photo_suite_skip_unrequested_generation")
-
     hold_life_photo_suite_final_text = ComponentCall("_part_runtime_photo_suite_media_component", _part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent, "hold_life_photo_suite_final_text")
 
     suppress_photo_suite_agent_error = ComponentCall("_part_runtime_photo_suite_media_component", _part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent, "suppress_photo_suite_agent_error")
@@ -3282,6 +3278,10 @@ class DailyLifeRuntime:
     _snapshot_media_event = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_snapshot_media_event")
 
     _parse_delivered_media_reply = staticmethod(RuntimeMediaCommonComponent._parse_delivered_media_reply)
+
+    _generate_background_failure_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_generate_background_failure_reply")
+
+    _send_background_failure_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_send_background_failure_reply")
 
     _generate_delivered_media_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_generate_delivered_media_reply")
 

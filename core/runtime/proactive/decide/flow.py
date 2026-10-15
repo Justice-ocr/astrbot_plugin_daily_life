@@ -136,8 +136,11 @@ class ProactiveFlowComponent:
             and bool(payload.get("should_reply"))
             and bool(payload.get("reply_text"))
             and available
+            and payload.get("_interaction_mode") != "co_present"
         )
-        if requested and not available:
+        if requested and payload.get("_interaction_mode") == "co_present":
+            reason = "双方当前同处现场，不发起线上通话邀请"
+        elif requested and not available:
             reason = "实时通话当前不可用，暂不主动邀请"
         elif requested and not payload.get("should_reply"):
             reason = "没有自然的主动回复承接，暂不主动邀请"
@@ -331,19 +334,13 @@ class ProactiveFlowComponent:
         ):
             return self.context._proactive_skip("未启用或不适合闲时回复")
         now = now or life_now()
+        interaction_mode = ""
         if not self.context._event_is_group_message(event):
             interaction_context = await self.context.resolve_interaction_context(
                 event=event,
                 now=now,
             )
-            if interaction_context.mode == "co_present":
-                return {
-                    "should_reply": False,
-                    "handled": True,
-                    "decision": "observe",
-                    "reason": "双方当前同处现场，不额外发起线上闲时回复",
-                    "reason_code": "co_present_interaction",
-                }
+            interaction_mode = interaction_context.mode
         remaining = self.context._proactive_cooldown_remaining(event, now)
         if remaining > 0:
             return {
@@ -406,6 +403,7 @@ class ProactiveFlowComponent:
             payload = extract_json_from_text(text)
             if not isinstance(payload, dict):
                 return self.context._proactive_skip("模型未返回有效裁定")
+            payload["_interaction_mode"] = interaction_mode
             payload, reply_text = self.context._normalize_proactive_payload(
                 event, readiness, payload
             )
@@ -580,13 +578,14 @@ class ProactiveFlowComponent:
             )
             if not is_current():
                 return
-            if latest_interaction.mode == "co_present":
+            planned_mode = decision.get("_interaction_mode")
+            if planned_mode is not None and latest_interaction.mode != planned_mode:
                 decision.update(
                     {
                         "should_reply": False,
                         "decision": "observe",
-                        "reason": "发送前确认双方已同处现场，不再发送线上闲时回复",
-                        "reason_code": "co_present_before_send",
+                        "reason": "发送前现实互动方式已变化，取消旧的主动表达",
+                        "reason_code": "interaction_changed_before_send",
                         "reply_text": "",
                     }
                 )
@@ -596,7 +595,7 @@ class ProactiveFlowComponent:
                         {
                             "should_invite": False,
                             "greeting": "",
-                            "reason": "双方当前同处现场，不发起线上通话邀请",
+                            "reason": "现实互动方式已变化，取消旧通话邀请",
                         }
                     )
                 reply_text = ""

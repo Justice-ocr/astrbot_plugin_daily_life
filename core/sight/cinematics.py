@@ -360,5 +360,5 @@ class NativeSightComponent:
             media="video_understanding",
             label="Gemini 原生视频理解",
             category="video",
-            failure_text="这次视频理解没有完成。",
+            task_name="视频理解",
         )

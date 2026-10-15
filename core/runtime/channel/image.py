@@ -33,7 +33,6 @@ from ...media.picture.routes import (
 )
 from ...paths import runtime_data_root
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
-from ..delivery import BackgroundTextMode
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 from ..stage.error import MediaPromptExtractionError
@@ -141,6 +140,7 @@ class RuntimeImageMediaComponentContext(Protocol):
     _media_result_summary: Any
     _media_rewrite_prompt_from_response: Any
     _media_tool_failure_text: Any
+    _send_background_failure_reply: Any
     _normalize_friend_look: Any
     _normalize_image_participants: Any
     _normalize_image_subject_route: Any
@@ -1764,20 +1764,14 @@ JSON 字段：
             else:
                 marker["status"] = "failed"
                 await self.context.finish_tool_reaction(event, tool_name, success=False)
-                failure_text = str(result or "这次图片没有拍成。")
-                if (
-                    isinstance(payload, dict)
-                    and payload.get("status") == "needs_parameters"
-                ):
-                    failure_text = "这次合影还缺少好友的穿搭或发型，暂时没有拍成。"
-                if self.context.media_request_is_current_turn(event):
-                    await self.context.send_background_text(
-                        self.context._event_session_id(event),
-                        failure_text,
-                        mode=BackgroundTextMode.DIRECT,
-                        source_event=event,
-                        source="image_failure",
-                    )
+                await self.context._send_background_failure_reply(
+                    self.context._event_session_id(event),
+                    event,
+                    task_name="图片生成" if marker.get("action") == "generate" else "图片编辑",
+                    request_text=self.context._event_current_image_request_text(event),
+                    failure_reason=str(result or "这次图片没有拍成。"),
+                    source="image_failure",
+                )
         except asyncio.CancelledError:
             marker["status"] = "cancelled"
             self.context.cancel_tool_reaction(event, tool_name)
@@ -1793,14 +1787,14 @@ JSON 字段：
             logger.warning(
                 f"{LOG_PREFIX} 图片后台任务失败：{self.context._media_error_summary(exc)}"
             )
-            if self.context.media_request_is_current_turn(event):
-                await self.context.send_background_text(
-                    self.context._event_session_id(event),
-                    "这次图片没有拍成。",
-                    mode=BackgroundTextMode.DIRECT,
-                    source_event=event,
-                    source="image_failure",
-                )
+            await self.context._send_background_failure_reply(
+                self.context._event_session_id(event),
+                event,
+                task_name="图片生成" if marker.get("action") == "generate" else "图片编辑",
+                request_text=self.context._event_current_image_request_text(event),
+                failure_reason=self.context._media_error_summary(exc),
+                source="image_failure",
+            )
 
     def hold_life_image_final_text(self, event: Any) -> bool:
         marker = next(

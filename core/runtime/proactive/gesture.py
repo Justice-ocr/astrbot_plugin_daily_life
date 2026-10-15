@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import copy
 import datetime
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -15,6 +18,7 @@ from ...models import EmojiAssetRecord, ExpressionIntentRecord
 from ...models.phrasing import emoji_category_tag
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
+from ..locks import operation_lock
 
 from typing import Protocol
 
@@ -58,13 +62,15 @@ class ProactiveGestureComponentContext(Protocol):
     _note_emoji_sent: Any
     _proactive_bool: Any
     _proactive_scope_key: Any
+    _proactive_send_is_current: Any
     _recent_sent_emoji_ids: Any
     _schedule_background_task: Any
     _select_emoji_asset_for_intent: Any
     _semantic_emoji_candidates: Any
-    _semantic_expression_plan_from_event: Any
+    _structured_result_text: Any
     archive: Any
     call_text_model: Any
+    can_send_for_source: Any
     close_text_session: Any
     config: Any
     mark_tool_outcome: Any
@@ -80,6 +86,7 @@ class ProactiveGestureComponent:
     _EMOJI_MODEL_CANDIDATE_LIMIT = 8
     _EMOJI_RECENT_SENT_EXCLUSION_LIMIT = 5
     _SEMANTIC_EMOJI_ATTEMPTED_ATTR = "_daily_life_semantic_emoji_attempted"
+    _AUTO_EMOJI_TIMEOUT_SECONDS = 15.0
 
     def _emoji_config_value(self, name: str, default: Any) -> Any:
         settings = getattr(getattr(self.context, "config", None), "emoji", None)
@@ -171,6 +178,9 @@ class ProactiveGestureComponent:
             return False
         for record in records:
             if not bool(getattr(record, "send_emoji", False)):
+                continue
+            # 表达提案不代表已经投递，只有实际发送回执才进入冷却。
+            if int(getattr(record, "emoji_id", 0) or 0) <= 0:
                 continue
             created_at = self.context._emoji_timestamp(getattr(record, "created_at", ""))
             if created_at and (now - created_at).total_seconds() < cooldown:
@@ -410,75 +420,77 @@ class ProactiveGestureComponent:
         )
 
     async def send_semantic_emoji_if_needed(self, event: Any) -> bool:
-        """在普通聊天文字成功投递后，按语义裁定附加一张表情。"""
+        """文字投递后安排独立的后台表情判断；返回是否成功安排。"""
         if (
             event is None
             or not self.context._emoji_auto_send_allowed("regular_reply")
             or getattr(event, self.context._SEMANTIC_EMOJI_ATTEMPTED_ATTR, False)
         ):
             return False
-        plan_getter = getattr(self.context, "_semantic_expression_plan_from_event", None)
-        plan = plan_getter(event) if callable(plan_getter) else None
-        if plan is None or not bool(getattr(plan, "send_emoji", False)):
+        reply_text, media = self.context._structured_result_text(event)
+        if not reply_text or media:
             return False
         setattr(event, self.context._SEMANTIC_EMOJI_ATTEMPTED_ATTR, True)
-
         scope = self.context._emoji_scope(event)
         if not scope:
-            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：当前会话不可发送表情。")
-            return False
-        if await self.context._emoji_send_cooldown_active(scope):
-            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：当前会话仍在冷却期。")
             return False
         source_message_id = self.context._event_message_id(event)
-        previous = self.context._emoji_sent_store().get(scope)
-        if source_message_id and isinstance(previous, dict):
-            if previous.get("last_source_message_id") == source_message_id:
-                logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：同一轮已经发送过表情。")
-                return False
+        # 固定当前话轮身份与实际发送文本，后续对话不能改写本次判断依据。
+        snapshot = copy.copy(event)
         intent = {
-            "send_emoji": True,
-            "emotion": str(getattr(plan, "emotion", "") or "").strip(),
-            "emotion_category": str(
-                getattr(plan, "emotion_category", "") or ""
-            ).strip(),
-            "emoji_intent": str(getattr(plan, "emoji_intent", "") or "").strip(),
-            "action_intent": str(getattr(plan, "emoji_intent", "") or "").strip(),
-            "reason": str(getattr(plan, "reason", "") or "").strip(),
+            "_reply_text": reply_text,
+            "_source_message": str(getattr(event, "message_str", "") or "").strip(),
         }
+        return self.context._schedule_background_task(
+            self._regular_reply_emoji_job(snapshot, scope, source_message_id, intent, time.monotonic()),
+            label="普通回复表情判断",
+            key=f"regular_emoji:{scope}:{source_message_id or id(event)}",
+        )
+
+    async def _regular_reply_emoji_job(
+        self, event: Any, scope: str, message_id: str, intent: dict[str, Any], queued_at: float
+    ) -> None:
+        remaining = self._AUTO_EMOJI_TIMEOUT_SECONDS - (time.monotonic() - queued_at)
+        if remaining <= 0:
+            return
         try:
-            emoji = await self.context._select_emoji_asset_for_intent(intent, scope=scope)
+            async with asyncio.timeout(remaining):
+                await self._deliver_regular_reply_emoji(event, scope, message_id, intent)
+        except TimeoutError:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情判断超时，保留已发送文字。")
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 普通回复表情选择失败，保留文字回复：{exc}")
-            return False
+            logger.debug(f"{LOG_PREFIX} 普通回复表情处理失败，保留已发送文字：{exc}")
+
+    async def _deliver_regular_reply_emoji(
+        self, event: Any, scope: str, message_id: str, intent: dict[str, Any]
+    ) -> None:
+        if not await self._automatic_emoji_allowed(scope, "regular_reply", event, message_id):
+            return
+        emoji = await self.context._select_emoji_asset_for_intent(intent, scope=scope)
         if emoji is None:
-            logger.debug(f"{LOG_PREFIX} 普通回复表情裁定通过，但没有合适的可发送素材。")
-            return False
+            logger.debug(f"{LOG_PREFIX} 普通回复表情判断：此刻保留文字更合适，或没有匹配素材。")
+            return
+        intent = {
+            **intent,
+            "emoji_intent": str(getattr(emoji, "label", "") or getattr(emoji, "description", "") or "附加表情"),
+        }
         chain = self.context._emoji_message_chain(emoji)
         if not chain:
-            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：候选素材不可发送。")
-            return False
-        if not await self.context.send_message_if_not_recalled(
-            scope,
-            chain,
-            source_event=event,
-            source_message_id=source_message_id,
-        ):
-            logger.debug(f"{LOG_PREFIX} 普通回复表情发送取消：原消息已撤回或会话不可达。")
-            return False
-
-        try:
-            await self.context._mark_emoji_used(
-                event,
-                emoji,
-                intent,
-                scope=scope,
-                reply_text=str(getattr(plan, "text", "") or "").strip(),
-                message_id=source_message_id,
-                source="regular_reply",
-            )
-        except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 普通回复表情已发送，但记录使用结果失败：{exc}")
+            return
+        async with operation_lock(self.context, f"auto_emoji:{scope}"):
+            if not await self._automatic_emoji_allowed(scope, "regular_reply", event, message_id):
+                return
+            if not await self.context.send_message_if_not_recalled(
+                scope, chain, source_event=event, source_message_id=message_id,
+            ):
+                return
+            try:
+                await self.context._mark_emoji_used(
+                    event, emoji, intent, scope=scope,
+                    reply_text=intent["_reply_text"], message_id=message_id, source="regular_reply",
+                )
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 普通回复表情已发送，但记录使用结果失败：{exc}")
         note = getattr(self.context, "note_structured_bot_message", None)
         if callable(note):
             note(
@@ -489,7 +501,20 @@ class ProactiveGestureComponent:
             )
         label = str(getattr(emoji, "label", "") or "").strip()
         logger.debug(f"{LOG_PREFIX} 普通回复已附加表情：{label or getattr(emoji, 'file_hash', '')}")
-        return True
+
+    async def _automatic_emoji_allowed(
+        self, scope: str, source: str, event: Any, message_id: str
+    ) -> bool:
+        if not self.context._emoji_auto_send_allowed(source):
+            return False
+        if await self.context._emoji_send_cooldown_active(scope):
+            return False
+        if self.context._emoji_already_sent_for_source(scope, source_message_id=message_id):
+            return False
+        # 冷却查询也可能让出执行权，因此最后再核对话轮。
+        return self.context._proactive_send_is_current(event) and self.context.can_send_for_source(
+            scope, source_event=event, source_message_id=message_id,
+        )
 
     async def _send_proactive_emoji_if_needed(
         self,
@@ -508,23 +533,19 @@ class ProactiveGestureComponent:
         if not source_message_id and source_event is not None:
             source_message_id = self.context._event_message_id(source_event)
         source = str(payload.get("source") or "proactive_reply").strip()
-        if not self.context._emoji_auto_send_allowed(source):
-            return
-        if await self.context._emoji_send_cooldown_active(target_scope):
-            logger.debug(f"{LOG_PREFIX} {source}表情跳过：当前会话仍在冷却期。")
-            return
-        if self.context._emoji_already_sent_for_source(
-            target_scope, source_message_id=source_message_id
-        ):
-            logger.debug(f"{LOG_PREFIX} {source}表情跳过：同一轮已经发送过表情。")
-            return
         intent = payload.get("expression_intent")
         if not isinstance(intent, dict) or not self.context._proactive_bool(
             intent.get("send_emoji")
         ):
             return
+        intent = {**intent, "_reply_text": str(payload.get("reply_text") or "").strip()}
+        if not await self._automatic_emoji_allowed(target_scope, source, source_event, source_message_id):
+            return
         try:
-            emoji = await self.context._select_emoji_asset_for_intent(intent, scope=target_scope)
+            emoji = await asyncio.wait_for(
+                self.context._select_emoji_asset_for_intent(intent, scope=target_scope),
+                timeout=self._AUTO_EMOJI_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} {source}表情选择失败，保留文字结果：{exc}")
             return
@@ -542,22 +563,25 @@ class ProactiveGestureComponent:
             logger.debug(f"{LOG_PREFIX} {source}表情跳过：候选素材不可发送。")
             return
         try:
-            if not await self.context.send_message_if_not_recalled(
-                target_scope,
-                chain,
-                source_event=source_event,
-                source_message_id=source_message_id,
-            ):
-                return
-            await self.context._mark_emoji_used(
-                source_event,
-                emoji,
-                intent,
-                scope=target_scope,
-                reply_text=str(payload.get("reply_text") or "").strip(),
-                message_id=source_message_id,
-                source=source,
-            )
+            async with operation_lock(self.context, f"auto_emoji:{target_scope}"):
+                if not await self._automatic_emoji_allowed(target_scope, source, source_event, source_message_id):
+                    return
+                if not await self.context.send_message_if_not_recalled(
+                    target_scope,
+                    chain,
+                    source_event=source_event,
+                    source_message_id=source_message_id,
+                ):
+                    return
+                await self.context._mark_emoji_used(
+                    source_event,
+                    emoji,
+                    intent,
+                    scope=target_scope,
+                    reply_text=str(payload.get("reply_text") or "").strip(),
+                    message_id=source_message_id,
+                    source=source,
+                )
             label = str(getattr(emoji, "label", "") or "").strip()
             logger.debug(f"{LOG_PREFIX} {source}已附加表情：{label or getattr(emoji, 'file_hash', '')}")
         except Exception as exc:
@@ -666,6 +690,7 @@ class ProactiveGestureComponent:
                 "action_intent": intent.get("action_intent"),
                 "reason": intent.get("reason"),
                 "source_message": intent.get("_source_message"),
+                "reply_text": intent.get("_reply_text"),
                 "recent_intents": intent.get("_recent_intents") or [],
             },
             ensure_ascii=False,
@@ -782,7 +807,7 @@ class ProactiveGestureComponent:
             }
             for item in candidate_assets
         ]
-        fixed = f"""我想判断是否有一个表情适合当前闲时回复的表达意图。
+        fixed = f"""我想判断当前交流是否适合附加一张表情，并从已有素材中选择。
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
@@ -799,6 +824,7 @@ JSON 输出要求：
 动作意图：{intent.get("action_intent") or "无"}
 理由：{intent.get("reason") or "无"}
 用户当前消息：{intent.get("_source_message") or "无"}
+已经发送的回复：{intent.get("_reply_text") or "无"}
 
 候选表情：
 {json.dumps(candidates, ensure_ascii=False)}"""
@@ -827,7 +853,7 @@ JSON 输出要求：
                 None,
             )
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 闲时回复表情选择跳过：{exc}")
+            logger.debug(f"{LOG_PREFIX} 表情选择跳过：{exc}")
             return None
         finally:
             await self.context.close_text_session(session_id)

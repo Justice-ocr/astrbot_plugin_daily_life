@@ -2864,14 +2864,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertIn("# 真实标题", html_renderer.calls[0]["text"])
         self.assertNotIn("未知作者", html_renderer.calls[0]["text"])
 
-    async def test_bili_auto_summary_failure_notifies_retry(self):
+    async def test_bili_auto_summary_failure_uses_natural_role_reply(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         provider = Provider(
             [
-                '{"segments":[{"text":"B站视频自动总结失败：",'
-                '"relation":"lead","pause":"short"},'
-                '{"text":"没有抽取到可用视频画面",'
-                '"relation":"continue","pause":"normal"}]}'
+                '{"reply_text":"这段我没看清，没法给你总结。"}'
             ]
         )
         runtime.context = Context(provider)
@@ -2884,6 +2881,16 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime._semantic_segment_init_state()
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
+
+        async def call_text(provider_arg, prompt, session_id, **kwargs):
+            return (await provider_arg.text_chat(prompt, session_id)).completion_text
+
+        runtime.composer = types.SimpleNamespace(
+            _get_provider=lambda provider_id="": async_return(provider),
+            _get_persona=lambda scope="": async_return("我是李知恬，说话轻松自然。"),
+            _call_llm_text=call_text,
+        )
+        runtime._semantic_segment_enabled = lambda: False
         event = Event(
             sender_name="阿林",
             sender_id="10001",
@@ -2915,16 +2922,17 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(len(event.sent_messages), 1)
-        self.assertEqual(provider.prompts, [])
+        self.assertEqual(len(provider.prompts), 1)
+        self.assertIn("B站视频总结", provider.prompts[0])
         self.assertIn(
-            "B站视频自动总结失败：没有抽取到可用视频画面",
+            "这段我没看清，没法给你总结。",
             str(event.sent_messages[0].items[0]),
         )
         messages = list(runtime._structured_scope_messages(event.unified_msg_origin))
         self.assertEqual(len(messages), 1)
         self.assertTrue(messages[0].is_bot)
         self.assertIn(
-            "B站视频自动总结失败：没有抽取到可用视频画面", messages[0].content
+            "这段我没看清，没法给你总结。", messages[0].content
         )
 
     async def test_bili_auto_summary_uses_visual_evidence_without_transcript(self):
@@ -3019,7 +3027,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_bili_auto_summary_empty_media_defaults_to_failed_and_retryable(self):
         provider = Provider(
             [
-                '{"summary":"该视频未包含任何可确认的音频、字幕或画面内容，无法获取具体信息。","details":["未检测到音频主线信息"]}',
+                '{"reply_text":"这段我没看清，没法给你总结。"}',
                 json.dumps(
                     {
                         "sections": [
@@ -3071,6 +3079,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             unified_msg_origin="aiocqhttp:FriendMessage:10001",
             message_id="m-bili-empty-media",
         )
+        runtime._semantic_segment_enabled = lambda: False
         event.message_str = "https://www.bilibili.com/video/BV1aa411c7mD"
         html_renderer.calls.clear()
         prepared_path = Path(tempfile.mkdtemp()) / "bili-empty.mp4"
@@ -3116,11 +3125,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
-            "B站视频自动总结失败：没有抽取到可用视频画面",
+            "这段我没看清，没法给你总结。",
             str(event.sent_messages[0].items[0]),
         )
         self.assertEqual(html_renderer.calls, [])
-        self.assertEqual(provider.prompts, [])
+        self.assertEqual(len(provider.prompts), 1)
         self.assertEqual(recent[0].status, "failed")
         self.assertIn("没有抽取到可用视频画面", recent[0].error)
         self.assertIsNone(

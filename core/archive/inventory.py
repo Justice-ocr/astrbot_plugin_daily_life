@@ -80,6 +80,8 @@ class StyleCatalogArchiveComponent:
         item = StyleCatalogItemRecord.from_value(record)
         if item is None:
             return None
+        if self.context._style_catalog_status(item.status) not in {"active", "disabled", "rejected"}:
+            return None
 
         def write() -> StyleCatalogItemRecord | None:
             self.context._conn.execute(
@@ -100,12 +102,6 @@ class StyleCatalogArchiveComponent:
                     source_kind = excluded.source_kind,
                     attributes_json = excluded.attributes_json,
                     confidence = MAX(style_catalog_items.confidence, excluded.confidence),
-                    status = CASE
-                        WHEN style_catalog_items.status = 'pending'
-                         AND excluded.status = 'active'
-                        THEN 'active'
-                        ELSE style_catalog_items.status
-                    END,
                     seen_count = style_catalog_items.seen_count + 1,
                     updated_at = CURRENT_TIMESTAMP
                 """,
@@ -300,11 +296,6 @@ class StyleCatalogArchiveComponent:
             current_status = self.context._style_catalog_status(
                 existing["status"] or "active"
             )
-            next_status = (
-                incoming.status
-                if current_status == "pending" and incoming.status == "active"
-                else current_status
-            )
             self.context._conn.execute(
                 """
                 UPDATE style_catalog_items
@@ -334,7 +325,7 @@ class StyleCatalogArchiveComponent:
                         self.context._style_attributes(incoming.attributes), ensure_ascii=False
                     ),
                     max(0.0, min(float(incoming.confidence or 0.0), 1.0)),
-                    next_status,
+                    current_status,
                     normalized_id,
                 ),
             )
@@ -363,7 +354,6 @@ class StyleCatalogArchiveComponent:
         normalized_status = self.context._style_catalog_status(status)
         if normalized_id <= 0 or normalized_status not in {
             "active",
-            "pending",
             "rejected",
             "disabled",
         }:
@@ -402,7 +392,7 @@ class StyleCatalogArchiveComponent:
         status: str,
     ) -> int:
         normalized_status = self.context._style_catalog_status(status)
-        if normalized_status not in {"active", "pending", "rejected", "disabled"}:
+        if normalized_status not in {"active", "rejected", "disabled"}:
             return 0
         normalized = self.context._style_catalog_ids(item_ids)
         if not normalized:
@@ -501,7 +491,7 @@ class StyleCatalogArchiveComponent:
             delta = 0.0
         delta = max(-1.0, min(delta, 1.0))
         normalized_status = self.context._style_catalog_status(status)
-        if normalized_status not in {"active", "pending", "rejected", "disabled"}:
+        if normalized_status not in {"active", "rejected", "disabled"}:
             normalized_status = ""
 
         def write() -> StyleCatalogItemRecord | None:
