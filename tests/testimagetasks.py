@@ -447,6 +447,117 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(session.calls, [])
                 service._get_session.assert_not_awaited()
 
+    async def test_recovery_after_restart_continues_remaining_routes_with_frozen_references(self):
+        from dataclasses import replace
+
+        for mode in ("text", "edit"):
+            with self.subTest(mode=mode):
+                session = _Session([_accepted()], [_Response(404)])
+                service = self._service(session, mode=mode, async_backup=True)
+                service._load_reference_image = AsyncMock(return_value=(b"original-reference", "image/png"))
+                original_routes = await service._request_routes(mode)
+                third = replace(original_routes[1], api_url="https://third.example/v1", api_key="third-key")
+                service._request_routes = AsyncMock(return_value=[*original_routes, third])
+                work = (
+                    service.edit_image("保留提交时的穿搭", "reference.png")
+                    if mode == "edit" else service.generate_image("保留提交时的穿搭")
+                )
+                with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                    with self.assertRaises(tasks.ImageTaskError):
+                        await work
+                reference = routes.task_reference(original_routes[0])
+                snapshots = list((service.output_dir / "tasks").glob("*.json"))
+                for path in snapshots:
+                    self.assertNotIn('"api_key"', path.read_text())
+                    self.assertNotIn("test-key", path.read_text())
+                    self.assertNotIn("backup-key", path.read_text())
+                # 模拟重启，配置重新排序；第二通道继续等待时必须持久保存新任务。
+                fresh = GeminiImageService(service.settings, service.data_dir)
+                fresh._request_routes = AsyncMock(return_value=[third, *reversed(original_routes)])
+                failed = _Response(payload={"status": "failed", "http_status": 502, "error": {"message": "暂时不可用"}})
+                second = _Session([_accepted(task_id="second-task")], [failed, _Response(404)])
+                fresh._get_session = AsyncMock(return_value=second)
+                with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                    with self.assertRaises(tasks.ImageTaskError):
+                        await fresh.resume_async_image("imgtask_test", reference)
+                self.assertEqual([c[0] for c in second.calls], ["GET", "POST", "GET"])
+                self.assertEqual(second.calls[1][2]["headers"]["Authorization"], "Bearer backup-key")
+                if mode == "edit":
+                    self.assertEqual(session.calls[0][2]["json"]["images"], second.calls[1][2]["json"]["images"])
+                # 再次重启，仅查询第二通道，失败后使用第三通道；不重提第一、第二通道。
+                again = GeminiImageService(service.settings, service.data_dir)
+                again._request_routes = fresh._request_routes
+                image = {"data": [{"b64_json": base64.b64encode(b"final-image").decode()}]}
+                final = _Session([_Response(payload=image)], [failed])
+                again._get_session = AsyncMock(return_value=final)
+                with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                    result = await again.resume_async_image("imgtask_test", reference)
+                self.assertTrue(final.calls[0][1].endswith("/second-task"))
+                self.assertEqual(final.calls[1][2]["headers"]["Authorization"], "Bearer third-key")
+                self.assertEqual(result.path.read_bytes(), b"final-image")
+                self.assertEqual((await again.resume_async_image("imgtask_test", reference)).path, result.path)
+                self.assertEqual(len(final.calls), 2)
+                if mode == "edit":
+                    uploaded = [value for name, value, _ in final.calls[1][2]["data"].fields if name.startswith("image")]
+                    self.assertEqual(uploaded, [b"original-reference"])
+
+    async def test_recovery_exhaustion_does_not_restart_channel_cycle(self):
+        session = _Session([_accepted()], [_Response(404)])
+        service = self._service(session)
+        reference = routes.task_reference((await service._request_routes("text"))[0])
+        with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+            with self.assertRaises(tasks.ImageTaskError):
+                await service.generate_image("苹果")
+        failed = _Response(payload={"status": "failed", "http_status": 502})
+        recovering = _Session([_Response(500)], [failed])
+        service._get_session = AsyncMock(return_value=recovering)
+        with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+            for _ in range(2):
+                with self.assertRaises(tasks.ImageTaskFailed):
+                    await service.resume_async_image("imgtask_test", reference)
+        self.assertEqual([c[0] for c in recovering.calls], ["GET", "POST"])
+
+    async def test_recovery_pending_or_download_failure_never_submits_backup(self):
+        for status in ("pending", "download"):
+            with self.subTest(status=status):
+                service = self._service(_Session([_accepted()], [_Response(404)]))
+                reference = routes.task_reference((await service._request_routes("text"))[0])
+                with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                    with self.assertRaises(tasks.ImageTaskError):
+                        await service.generate_image("苹果")
+                response = _Response(404) if status == "pending" else _Response(payload={
+                    "status": "completed", "result": {"data": [{"url": "https://example.test/result.png"}]}
+                })
+                recovering = _Session([], [response])
+                service._get_session = AsyncMock(return_value=recovering)
+                service._download_generated_image = AsyncMock(side_effect=OSError("下载失败"))
+                with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                    with self.assertRaises(tasks.ImageTaskError):
+                        await service.resume_async_image("imgtask_test", reference)
+                self.assertEqual([c[0] for c in recovering.calls], ["GET"])
+
+    async def test_frame_waiter_keeps_original_identity_and_propagates_terminal_failure(self):
+        from types import SimpleNamespace
+        from core.media.picture.recovery import wait_for_image
+
+        for outcome in ("success", "failed"):
+            error = tasks.ImageTaskError("等待原任务", task_id="original")
+            error.route_reference = routes.task_reference(_route())
+            expected = SimpleNamespace(path=Path("frame.png"))
+            service = SimpleNamespace(resume_async_image=AsyncMock(side_effect=[
+                tasks.ImageTaskError("仍在等待"),
+                tasks.ImageTaskFailed("所有通道失败") if outcome == "failed" else expected,
+            ]))
+            work = AsyncMock(side_effect=error)
+            with patch.object(tasks.asyncio, "sleep", new_callable=AsyncMock):
+                if outcome == "failed":
+                    with self.assertRaises(tasks.ImageTaskFailed):
+                        await wait_for_image(service, work())
+                else:
+                    self.assertIs(await wait_for_image(service, work()), expected)
+            self.assertEqual(service.resume_async_image.await_count, 2)
+            service.resume_async_image.assert_awaited_with("original", error.route_reference)
+
     async def test_pending_task_does_not_generate_again_using_backup_channel(self):
         session = _Session([_accepted()], [_Response(404)])
         service = self._service(session)

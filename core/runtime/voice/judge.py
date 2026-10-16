@@ -43,7 +43,13 @@ class VoiceSwitchJudgeComponent:
 
         plan_getter = getattr(self.context, "_semantic_expression_plan_from_event", None)
         plan = plan_getter(event) if callable(plan_getter) else None
-        if plan is None or str(getattr(plan, "channel", "text")) != "voice":
+        if plan is None:
+            return self.context._voice_switch_text_decision(
+                str(getattr(event, "_daily_life_expression_unavailable_reason", "")
+                    or "本轮没有语义表达计划，未进入语音概率判断。"),
+                0.0,
+            )
+        if str(getattr(plan, "channel", "text")) != "voice":
             return self.context._voice_switch_text_decision(
                 str(getattr(plan, "reason", "") or "这轮没有明确的语音表达需要，保留文字更自然。"),
                 float(getattr(plan, "confidence", 0.0) or 0.0),

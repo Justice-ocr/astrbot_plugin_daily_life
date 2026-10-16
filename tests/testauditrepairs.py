@@ -388,7 +388,7 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(bool(pending), outcome == "pending")
                     else:
                         result = await self.runtime.track_image_generation(event, work)
-                        self.assertEqual(result[0], b"image")
+                        self.assertEqual(result[0].read_bytes(), b"image")
                 records = await self.archive.get_durable_tasks(kind="image_generation")
                 relevant = {r.payload["task_id"]: r for r in records if r.payload["task_id"] in {failed_id, backup_id}}
                 self.assertEqual(relevant[failed_id].status, "dead")
@@ -464,6 +464,63 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
         deliveries = await self.archive.get_durable_tasks(kind="media_delivery")
         self.assertEqual(deliveries[0].status, "pending")
         self.assertEqual(deliveries[0].payload["scope"], event.unified_msg_origin)
+
+    async def test_durable_recovery_failover_delivers_suite_and_reports_exhaustion(self):
+        from testimagetasks import ImageTaskTests
+
+        for outcome in ("suite", "failure", "share"):
+            with self.subTest(outcome=outcome):
+                session = _Session([_accepted(task_id=outcome)], [_Response(404)])
+                service = ImageTaskTests()._service(session)
+                self.runtime.media = types.SimpleNamespace(image=service)
+                self.runtime._send_background_failure_reply = AsyncMock(return_value=True)
+                self.runtime.generate_life_image_asset = lambda *args, **kwargs: service.generate_image("提交时的画面")
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:audit", sender_id="audit")
+                event._daily_life_media_chat_token = (event.unified_msg_origin, "audit", outcome)
+                manifest = Path(self.directory.name) / "recovery-suite.json"
+                await self.runtime._photo_suite_write_manifest(manifest, {
+                    "count": 1, "shots": [{"index": 1, "status": "pending", "path": ""}]
+                })
+                with patch.object(polling.asyncio, "sleep", new_callable=AsyncMock):
+                    if outcome == "share":
+                        result = await self.runtime.generate_share_image_task(event, "照片", task_key="recovery-share")
+                        self.assertEqual(result["status"], "pending")
+                        task = (await self.archive.get_durable_tasks(kind="share_image_generation"))[0]
+                    else:
+                        async def generate():
+                            with service.async_task_metadata({"manifest_path": str(manifest), "slot_index": 1} if outcome == "suite" else {}):
+                                return await service.generate_image("提交时的画面")
+                        with self.assertRaises(polling.ImageTaskError):
+                            await self.runtime.track_image_generation(event, generate())
+                        task = next(t for t in await self.archive.get_durable_tasks(kind="image_generation") if t.payload["task_id"] == outcome)
+                if outcome != "share":
+                    await self.archive.reschedule_durable_task(task.task_key, self.archive._cognition_now())
+                leased = await self.archive.lease_durable_tasks("recovery", limit=20)
+                task = next(t for t in leased if t.id == task.id)
+                image = {"data": [{"b64_json": base64.b64encode(b"recovered-image").decode()}]}
+                session = _Session([_Response(500) if outcome == "failure" else _Response(payload=image)], [
+                    _Response(payload={"status": "failed", "http_status": 502})
+                ])
+                service._get_session = AsyncMock(return_value=session)
+                with patch.object(polling.asyncio, "sleep", new_callable=AsyncMock):
+                    if outcome == "failure":
+                        with self.assertRaises(polling.ImageTaskFailed):
+                            await self.runtime.resume_durable_image_generation(task)
+                        self.runtime._send_background_failure_reply.assert_awaited_once()
+                        origin = self.runtime._send_background_failure_reply.await_args.args[1]
+                        self.assertEqual(origin._daily_life_media_chat_token, event._daily_life_media_chat_token)
+                    elif outcome == "share":
+                        result = await self.runtime.resume_share_image_generation(task)
+                        self.assertEqual(Path(result["artifact_path"]).read_bytes(), b"recovered-image")
+                        self.runtime._send_background_failure_reply.assert_not_awaited()
+                    else:
+                        result = await self.runtime.resume_durable_image_generation(task)
+                        self.assertEqual(Path(result["artifact_path"]).read_bytes(), b"recovered-image")
+                        saved = await self.runtime._photo_suite_read_manifest(manifest)
+                        self.assertEqual(saved["shots"][0]["status"], "generated")
+                        delivery = next(t for t in await self.archive.get_durable_tasks(kind="media_delivery") if t.id == result["delivery_task_id"])
+                        self.assertEqual(delivery.payload["chat_token"], list(event._daily_life_media_chat_token))
+                self.assertEqual([c[0] for c in session.calls], ["GET", "POST"])
 
     async def test_deferred_image_query_does_not_starve_other_due_tasks(self):
         await self.archive.enqueue_durable_task(

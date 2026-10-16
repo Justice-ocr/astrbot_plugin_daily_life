@@ -49,7 +49,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                     event.set_result(event.chain_result([
                         types.SimpleNamespace(text="少贫嘴，你又逗我开心啦。"),
                     ]))
-                    runtime._SEMANTIC_FOREGROUND_BUDGET_SECONDS = 0.01
+                    event._daily_life_enrichment_seconds = 7.99
 
                     async def slow_plan(*args, **kwargs):
                         await asyncio.Event().wait()

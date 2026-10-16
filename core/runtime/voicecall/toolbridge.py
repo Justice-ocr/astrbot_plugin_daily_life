@@ -265,7 +265,9 @@ class VoiceCallToolBridge:
                     "type": "function",
                     "name": name,
                     "description": description,
-                    "parameters": _clean_schema(tool_argument_parameters(tool)),
+                    "parameters": _clean_schema(
+                        tool_argument_parameters(tool, include_preface=False)
+                    ),
                 }
             )
         return schemas
@@ -301,7 +303,9 @@ class VoiceCallToolBridge:
                 return f"未找到可用工具：{str(name or '').strip()[:80]}"
             args = {} if arguments is None else arguments
             if error := validate_tool_arguments(
-                tool.name, tool_argument_parameters(tool), args
+                tool.name,
+                tool_argument_parameters(tool, include_preface=False),
+                args,
             ):
                 return error
             event = VoiceCallToolEvent(self.invite, self.runtime)

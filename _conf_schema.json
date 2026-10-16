@@ -2585,6 +2585,7 @@
         "description": "高德地图 Web 服务 Key",
         "type": "string",
         "default": "",
+        "multiline": false,
         "hint": "在高德开放平台创建 Web 服务类型的 Key，用于地点解析、搜索、详情和路线查询。"
       },
       "default_travel_minutes": {

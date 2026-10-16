@@ -484,6 +484,44 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
 
+    async def test_wardrobe_recovery_uses_next_channel_and_learns_finished_image(self):
+        import base64
+        from unittest.mock import patch
+        from testimagetasks import ImageTaskTests, _Session, _Response, _accepted
+        from core.media.picture import polling
+        from core.media.picture.routes import task_reference
+
+        session = _Session([_accepted()], [_Response(404)])
+        service = ImageTaskTests()._service(session, mode="edit")
+        service._load_reference_image = AsyncMock(return_value=(b"original-look", "image/png"))
+        route = (await service._request_routes("edit"))[0]
+        with patch.object(polling.asyncio, "sleep", new_callable=AsyncMock):
+            with self.assertRaises(polling.ImageTaskError):
+                await service.edit_image("秋季衣物", "reference.png")
+        self.runtime.media.image = service
+        self.runtime._learn_style_catalog_image.return_value = [await self.item()]
+        await self.archive.enqueue_wardrobe_job(
+            "resume-fallback", {"automatic": False, "count": 1, "requirement": "秋季衣物"}, at=str(self.now)
+        )
+        await self.archive.claim_wardrobe_job("resume-fallback", "old", now=self.now)
+        await self.archive.update_wardrobe_job(
+            "resume-fallback", "old", status="pending", release=True,
+            progress={"current": {"task_id": "imgtask_test", "route": task_reference(route)}}, at=str(self.now)
+        )
+        result = {"data": [{"b64_json": base64.b64encode(b"new-look").decode()}]}
+        recovering = _Session([_Response(payload=result)], [
+            _Response(payload={"status": "failed", "http_status": 502})
+        ])
+        service._get_session = AsyncMock(return_value=recovering)
+        self.runtime.now += datetime.timedelta(minutes=3)
+        with patch.object(polling.asyncio, "sleep", new_callable=AsyncMock):
+            await self.runtime.wardrobe_life._run_wardrobe_job("resume-fallback")
+        job = (await self.archive.get_wardrobe_snapshot())["recent_jobs"][0]
+        self.assertEqual(job["status"], "completed")
+        self.runtime._learn_style_catalog_image.assert_awaited_once()
+        self.assertEqual([c[0] for c in recovering.calls], ["GET", "POST"])
+        self.runtime._edit_life_image_with_policy_retry.assert_not_awaited()
+
     async def test_request_without_recoverable_id_is_not_resubmitted(self):
         await self.archive.enqueue_wardrobe_job(
             "uncertain", {"automatic": True, "count": 1}, at=str(self.now)

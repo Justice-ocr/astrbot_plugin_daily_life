@@ -1577,7 +1577,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(provider.prompts, [])
         item = runtime._voice_switch_round_store()[event.unified_msg_origin]
         self.assertTrue(item["pre_send_checked"])
-        self.assertIn("没有明确的语音表达需要", item["text_reason"])
+        self.assertIn("没有语义表达计划", item["text_reason"])
 
     async def test_voice_switch_before_send_can_replace_text_with_voice(self):
         provider = Provider([])
@@ -2069,6 +2069,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(voice_calls, [])
         item = runtime._voice_switch_round_store()[event.unified_msg_origin]
         self.assertIn("语音留到更需要", item["text_reason"])
+        self.assertEqual(item["probability_result"], "20%，未通过")
 
     async def test_voice_switch_can_continue_short_voice_chain_after_recent_voice(self):
         provider = Provider([])

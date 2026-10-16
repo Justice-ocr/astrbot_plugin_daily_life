@@ -122,12 +122,11 @@ class VoiceSwitchComponent:
                 "emotion": emotion,
                 "emotion_category": emotion_category,
                 "confidence": confidence,
+                "probability_result": item.get("probability_result", "已通过"),
             }
             return True
         except Exception as exc:
-            item["text_reason"] = (
-                f"{reason or '我原本想直接说出来'}；但语音生成失败，改用文字发送：{exc}"
-            )
+            item["text_reason"] = f"语音生成失败，改用文字发送：{type(exc).__name__}"
             logger.debug(f"{LOG_PREFIX} 发送前语音智能切换失败，保留文字发送：{exc}")
             return False
 
@@ -146,8 +145,9 @@ class VoiceSwitchComponent:
             event=event,
             channel="语音",
             source="普通聊天",
-            result="已发送",
-            **{key: value for key, value in receipt.items() if key != "scope"},
+            result=f"已发送；概率：{receipt.get('probability_result', '已通过')}",
+            **{key: value for key, value in receipt.items()
+               if key not in {"scope", "probability_result"}},
         )
         self.context._mark_voice_switch_channel(event, "语音")
         return True

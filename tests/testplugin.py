@@ -85,7 +85,9 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         await plugin.on_llm_tool_respond(event, tool, {"reason": "视频"}, "参数错误")
         self.assertEqual(calls, [])
         self.assertFalse(getattr(event, plugin._VIDEO_TOOL_USED_ATTR, False))
-        await plugin.on_using_llm_tool(event, tool, {"prompt": "当前居家视频"})
+        await plugin.on_using_llm_tool(event, tool, {
+            "prompt": "当前居家视频", "preface": "我拍一小段给你看。"
+        })
         self.assertTrue(getattr(event, plugin._VIDEO_TOOL_USED_ATTR, False))
         self.assertEqual(calls[0], "reference")
 
@@ -1388,6 +1390,11 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         tool = ExpressiveSendMessageTool(OriginalTool(), runtime)
         await tool.call(context, **tool_args)
         self.assertEqual(event.sent_messages, ["行，按这版出。\n等会儿。"])
+        await runtime.handle_llm_tool_start(
+            event, types.SimpleNamespace(name="life_image_generate"),
+            {"preface": source_text},
+        )
+        self.assertEqual(event.sent_messages, ["行，按这版出。\n等会儿。"])
 
     async def test_runtime_skips_send_tool_after_other_tool_sent_identical_preface(
         self,
@@ -1653,6 +1660,68 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(state["preface_channel"], "聊天表达")
 
         self.assertEqual(len(runtime.expression_calls), 6)
+
+    async def test_runtime_delivers_direct_tool_prefaces_and_deduplicates_in_parallel(self):
+        class Runtime(VoiceSwitchComponent):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(self, scope, text, **kwargs):
+                self.last_mode = kwargs["mode"]
+                await asyncio.sleep(0)
+                await kwargs["source_event"].send(text)
+                return True
+
+        runtime = Runtime()
+        for name in sorted(fixture_voice_preface_module.TOOL_PREFACE_REQUIRED_NAMES):
+            with self.subTest(tool=name):
+                event = Event(message_id=name)
+                await asyncio.gather(*(
+                    runtime.handle_llm_tool_start(
+                        event, types.SimpleNamespace(name=name),
+                        {"preface": "我来看看这件事。"},
+                    ) for _ in range(2)
+                ))
+                self.assertEqual(event.sent_messages, ["我来看看这件事。"])
+                self.assertEqual(runtime.last_mode.value, "expressive")
+                await runtime.handle_llm_tool_start(
+                    event, types.SimpleNamespace(name="life_web_fetch"),
+                    {"preface": "找到原文了，我再核对一下。"},
+                )
+                self.assertEqual(event.sent_messages, [
+                    "我来看看这件事。", "找到原文了，我再核对一下。"
+                ])
+
+    async def test_runtime_uses_buffered_preface_once_and_can_retry_failed_send(self):
+        class Runtime(VoiceSwitchComponent):
+            send_ok = True
+
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(self, scope, text, **kwargs):
+                if not self.send_ok:
+                    return False
+                await kwargs["source_event"].send(text)
+                return True
+
+        runtime = Runtime()
+        event = Event(message_id="buffered-preface")
+        runtime._remember_tool_preface(event, event.chain_result(["我先看看路线。 "]))
+        tool = types.SimpleNamespace(name="life_route_plan")
+        await runtime.handle_llm_tool_start(event, tool, {"preface": "我看看怎么走。"})
+        self.assertEqual(event.sent_messages, ["我先看看路线。"])
+        runtime.send_ok = False
+        await runtime.handle_llm_tool_start(event, tool, {"preface": "再看看坐车要多久。"})
+        self.assertEqual(len(event.sent_messages), 1)
+        runtime.send_ok = True
+        await runtime.handle_llm_tool_start(event, tool, {"preface": "再看看坐车要多久。"})
+        self.assertEqual(event.sent_messages[-1], "再看看坐车要多久。")
+        next_event = Event(message_id="next-preface")
+        await runtime.handle_llm_tool_start(next_event, tool, {"preface": "我先看看路线。"})
+        self.assertEqual(next_event.sent_messages, ["我先看看路线。"])
 
     async def test_runtime_keeps_mixed_tool_preface_as_original_message_chain(self):
         class Runtime(VoiceSwitchComponent):
@@ -2709,7 +2778,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("真实视频发送后再自然补一句", video_doc)
         self.assertIn("target(string)", video_understand_doc)
         self.assertIn(
-            "调用前可以根据聊天语境先用角色口吻自然回应一句", video_understand_doc
+            "调用前必须根据聊天语境先用角色口吻自然回应一句", video_understand_doc
         )
         self.assertNotIn("不要先输出", video_understand_doc)
         self.assertIn("target(string)", video_note_doc)

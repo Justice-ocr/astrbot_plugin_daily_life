@@ -13,9 +13,12 @@ from support import Event  # noqa: F401
 from astrbot.core.agent.tool import FunctionTool
 from core.runtime.tooling import (
     ArgumentCheckedTool,
+    TOOL_PREFACE_REQUIRED_NAMES,
     guard_tool_arguments,
     install_tool_argument_checks,
     prepare_tool_argument_checks,
+    tool_argument_parameters,
+    tool_needs_preface,
     validate_tool_arguments,
 )
 from core.runtime.voicecall.toolbridge import VoiceCallToolBridge
@@ -41,6 +44,96 @@ class ImageTool(FunctionTool):
 
 
 class ToolContractTest(unittest.IsolatedAsyncioTestCase):
+    def test_every_registered_tool_has_a_preface_policy(self):
+        source = Path(__file__).resolve().parents[1] / "main.py"
+        names = set()
+        for node in ast.walk(ast.parse(source.read_text())):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for decorator in node.decorator_list:
+                if (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and decorator.func.attr == "llm_tool"
+                ):
+                    names.update(
+                        kw.value.value for kw in decorator.keywords if kw.arg == "name"
+                    )
+        self.assertEqual(len(names), 39)
+        self.assertEqual(names - TOOL_PREFACE_REQUIRED_NAMES, {
+            "life_query", "life_memory_search", "life_style_catalog",
+            "life_web_research_status", "life_voice_generate", "life_emoji_send",
+        })
+        self.assertTrue(TOOL_PREFACE_REQUIRED_NAMES <= names)
+
+    def test_actions_require_nonblank_preface_but_reads_do_not(self):
+        async def handler(event, **kwargs):
+            raise AssertionError("校验不能执行实际操作")
+
+        read_actions = {
+            "life_shared_activity": ("action", ["list"], "start"),
+            "life_object": ("action", ["list", "get", "history"], "record"),
+            "life_commitment": ("action", ["list"], "add"),
+            "life_wardrobe_manage": ("operation", ["query"], "washing"),
+            "life_review": ("action", ["show"], "generate"),
+        }
+        for name in sorted(TOOL_PREFACE_REQUIRED_NAMES):
+            with self.subTest(tool=name):
+                tool = FunctionTool(name=name, description="执行操作", handler=handler,
+                    parameters={"type": "object", "properties": {
+                        "action": {"type": "string"},
+                        "operation": {"type": "string"},
+                    }})
+                checked = ArgumentCheckedTool(tool)
+                self.assertNotIn("preface", tool.parameters["properties"])
+                self.assertNotIn("preface", tool_argument_parameters(
+                    tool, include_preface=False)["properties"])
+                args = {}
+                if name in read_actions:
+                    field, reads, write = read_actions[name]
+                    for read in ["", *reads]:
+                        self.assertIsNone(checked.argument_error({field: read}))
+                        self.assertFalse(tool_needs_preface(name, {field: read}))
+                    self.assertIsNone(checked.argument_error({}))
+                    args[field] = write
+                self.assertTrue(tool_needs_preface(name, args))
+                for blank in [None, "", " \n\t"]:
+                    candidate = dict(args)
+                    if blank is not None:
+                        candidate["preface"] = blank
+                    error = json.loads(checked.argument_error(candidate))
+                    self.assertFalse(error["executed"])
+                self.assertIsNone(checked.argument_error(
+                    {**args, "preface": "等我看看这件事。"}))
+
+    async def test_preface_is_consumed_before_business_executor(self):
+        async def handler(event, prompt=""):
+            raise AssertionError("隔离测试不执行真实工具")
+
+        tool = FunctionTool(name="life_image_generate", description="生成图片",
+            handler=handler, parameters={"type": "object", "properties": {
+                "prompt": {"type": "string"}
+            }})
+        checked = ArgumentCheckedTool(tool)
+        calls = []
+        module = types.ModuleType("astrbot.core.astr_agent_tool_exec")
+
+        class Executor:
+            @classmethod
+            async def execute(cls, original, context, **kwargs):
+                calls.append((original, kwargs))
+                yield "已受理"
+
+        module.FunctionToolExecutor = Executor
+        with patch.dict(sys.modules, {module.__name__: module}):
+            invalid = [value async for value in checked.call(None, prompt="自拍")]
+            self.assertFalse(json.loads(invalid[0])["executed"])
+            self.assertEqual(calls, [])
+            valid = [value async for value in checked.call(
+                None, prompt="自拍", preface="我拍给你看。")]
+        self.assertEqual(valid, ["已受理"])
+        self.assertEqual(calls, [(tool, {"prompt": "自拍"})])
+
     def test_rejects_reason_only_without_exposing_value(self):
         original = ImageTool()
         checked = ArgumentCheckedTool(original)
@@ -105,6 +198,36 @@ class ToolContractTest(unittest.IsolatedAsyncioTestCase):
             checked = ArgumentCheckedTool(original)
             self.assertIsNone(checked.argument_error({"dynamic": "value"}))
             self.assertEqual(checked.parameters, original.parameters)
+
+    def test_group_media_scene_enum_rejects_invalid_value_before_execution(self):
+        for name in (
+            "life_image_generate",
+            "life_photo_suite_generate",
+            "life_video_generate",
+        ):
+            with self.subTest(tool=name):
+                original = ImageTool()
+                original.name = name
+                original.parameters["properties"]["friend_scene_category"] = {
+                    "type": "string"
+                }
+                checked = ArgumentCheckedTool(original)
+                error = checked.argument_error(
+                    {"prompt": "两个人在街边合影", "friend_scene_category": "street_walk"}
+                )
+                result = json.loads(error)
+                self.assertFalse(result["executed"])
+                self.assertEqual(result["issues"][0]["path"], ["friend_scene_category"])
+                self.assertEqual(result["issues"][0]["rule"], "enum")
+                self.assertEqual(
+                    result["issues"][0]["allowed_values"],
+                    ["", "home", "sleep", "outdoor", "public", "mixed"],
+                )
+                self.assertNotIn("enum", original.parameters["properties"]["friend_scene_category"])
+                for category in result["issues"][0]["allowed_values"]:
+                    self.assertIsNone(checked.argument_error(
+                        {"prompt": "两个人在街边合影", "friend_scene_category": category}
+                    ))
 
     async def test_invalid_call_never_reaches_executor_and_valid_retry_does(self):
         calls = []

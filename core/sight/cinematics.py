@@ -316,7 +316,7 @@ class NativeSightComponent:
         if existing:
             return existing
         snapshot = self.context._snapshot_media_event(event)
-        clips = self.context._sight_clips_from_event(snapshot, target)
+        clips = await self.context._sight_clips_from_event_async(snapshot, target)
         if not clips:
             recent = await self.context._sight_recent_for_event(snapshot, limit=1)
             if recent:
@@ -324,6 +324,12 @@ class NativeSightComponent:
                 clip.message_id = self.context._event_message_id(snapshot)
                 clip.text = str(getattr(snapshot, "message_str", "") or "")
                 clips = [clip]
+        if not clips:
+            return ToolResultText(
+                "没有找到可理解的视频，请发送或引用视频。",
+                status="failed",
+                media="video_understanding",
+            )
         # 保留当前附件，避免原事件结束后框架清理临时文件。
         locked = copy.deepcopy(clips[0]) if clips else None
         if locked is not None:

@@ -259,11 +259,17 @@ class VoiceSwitchGateComponent:
                 return False, "我已经连续发了几条语音，这轮先打字缓一下会更自然。"
             return False, "我刚刚才发过语音，这轮不在自然连发的节奏里，先用文字更合适。"
         probability = float(cadence["probability"])
+        item = self.context._voice_switch_round_store().get(
+            self.context._voice_switch_scope_key(event), {}
+        )
         if probability <= 0:
+            item["probability_result"] = "0%，未通过"
             return False, "我现在把普通聊天的自动语音收住了，这轮用文字更合适。"
         if cadence.get("voice_chain_open"):
             probability = max(probability, 70.0)
-        if probability < 100 and random.random() * 100 >= probability:
+        passed = probability >= 100 or random.random() * 100 < probability
+        item["probability_result"] = f"{probability:g}%，{'通过' if passed else '未通过'}"
+        if not passed:
             return (
                 False,
                 "我这轮虽然可以说出来，但按当前聊天节奏更适合把语音留到更需要的片刻。",

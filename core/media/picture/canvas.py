@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from math import gcd
 from pathlib import Path
 from typing import Any
+from weakref import WeakValueDictionary
 
 import aiohttp
 
@@ -34,6 +35,7 @@ from ..base import (
 )
 from . import gemini, imagine, openai, polling, routes
 from .pipe import ImageRoute
+from .recovery import ImageRecovery
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
     ratio: int(ratio.split(":", 1)[0]) / int(ratio.split(":", 1)[1])
@@ -230,6 +232,7 @@ class GeminiImageService:
         self.data_dir = data_dir
         self.output_dir = data_dir / "generated" / "images"
         self._session: aiohttp.ClientSession | None = None
+        self._recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._task_listener = ContextVar(
             f"image_task_listener_{id(self)}", default=None
         )
@@ -248,6 +251,49 @@ class GeminiImageService:
             self._task_listener.reset(token)
 
     async def resume_async_image(
+        self, task_id: str, reference: dict[str, Any]
+    ) -> GeneratedImage:
+        directory = self.output_dir / "tasks"
+        recovery = await ImageRecovery.load(directory, task_id, reference)
+        if recovery is None:
+            return await self._resume_original_image(task_id, reference)
+        lock = self._recovery_locks.setdefault(recovery.data["id"], asyncio.Lock())
+        async with lock:
+            # 等待同一任务的其他恢复调用后，重新读取最新游标。
+            recovery = await ImageRecovery.load(directory, task_id, reference)
+            if recovery is None:
+                raise polling.ImageTaskError("图片恢复快照已不可用，停止重复提交")
+            state = recovery.data
+            if state["status"] == "completed":
+                path = Path(state["path"])
+                if not await asyncio.to_thread(path.is_file):
+                    raise polling.ImageTaskError("图片成品文件暂不可用，停止重新生成")
+                return GeneratedImage(path)
+            if state["status"] == "exhausted":
+                raise polling.ImageTaskFailed(state["error"])
+            if state["status"] == "submitting":
+                raise polling.ImageTaskError("图片请求已提交但尚无任务编号，停止重复提交")
+            if state["status"] == "processing":
+                entry = state["entries"][state["index"]]
+                try:
+                    result = await self._resume_original_image(
+                        state["task_id"], entry["route"]["reference"]
+                    )
+                except polling.ImageTaskFailed as exc:
+                    await recovery.failed(state["index"], str(exc))
+                    logger.info(
+                        f"{LOG_PREFIX} 图片原任务已确认失败，继续后续通道："
+                        f"{state['task_id']}"
+                    )
+                else:
+                    await recovery.finish(path=str(result.path))
+                    return result
+            path, _ = await self._generate_image_result(
+                None, prompt="", mode=state["mode"], recovery=recovery
+            )
+            return GeneratedImage(path)
+
+    async def _resume_original_image(
         self, task_id: str, reference: dict[str, Any]
     ) -> GeneratedImage:
         from ..base import normalize_openai_base_url
@@ -415,7 +461,7 @@ class GeminiImageService:
                 )
             raise RuntimeError("图片生成缺少可用文生图接口通道")
 
-        image_bytes, route = await self._generate_image_result(
+        path, route = await self._generate_image_result(
             lambda route, current_prompt: self._text_to_image_parts(
                 current_prompt,
                 route,
@@ -429,7 +475,6 @@ class GeminiImageService:
             protocol=protocol,
             model=model,
         )
-        path = await self._save_image(image_bytes, prefix=route.protocol)
         logger.debug(f"{LOG_PREFIX} 图片生成文件已保存：{path.name}")
         return GeneratedImage(path)
 
@@ -495,7 +540,7 @@ class GeminiImageService:
                 },
             ]
 
-        output_bytes, route = await self._generate_image_result(
+        path, route = await self._generate_image_result(
             lambda route, current_prompt: self._group_image_parts(
                 current_prompt,
                 route,
@@ -511,7 +556,6 @@ class GeminiImageService:
             mode="edit",
             protocol=protocol,
         )
-        path = await self._save_image(output_bytes, prefix=route.protocol)
         context = str(reference_context or "").strip()
         if context:
             friend_name = str(
@@ -570,7 +614,7 @@ class GeminiImageService:
             if include_character_reference is not False
             else []
         )
-        output_bytes, route = await self._generate_image_result(
+        path, route = await self._generate_image_result(
             lambda route, current_prompt: [
                 {
                     "text": self._image_to_image_prompt(
@@ -598,7 +642,6 @@ class GeminiImageService:
             protocol=protocol,
             model=model,
         )
-        path = await self._save_image(output_bytes, prefix=route.protocol)
         logger.debug(f"{LOG_PREFIX} 图片编辑文件已保存：{path.name}")
         return GeneratedImage(path)
 
@@ -908,7 +951,7 @@ class GeminiImageService:
 
     async def _generate_image_result(
         self,
-        parts_for_route: Callable[[ImageRoute, str], Any],
+        parts_for_route: Callable[[ImageRoute, str], Any] | None,
         *,
         prompt: str,
         aspect_ratio: str = "",
@@ -916,7 +959,8 @@ class GeminiImageService:
         mode: str = "text",
         protocol: str = "",
         model: str = "",
-    ) -> tuple[bytes, ImageRoute]:
+        recovery: ImageRecovery | None = None,
+    ) -> tuple[Path, ImageRoute]:
         requested_resolution = str(resolution or "").strip().upper()
         if requested_resolution and requested_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
@@ -926,6 +970,31 @@ class GeminiImageService:
         request_routes = await self._request_routes(
             mode, protocol=protocol, model=model
         )
+        resuming = recovery is not None
+        if resuming:
+            candidates = request_routes
+            request_routes = []
+            for entry in recovery.data["entries"]:
+                try:
+                    route = ImageRecovery.restore_route(entry["route"], candidates)
+                except ValueError:
+                    route = ImageRoute(
+                        **{key: value for key, value in entry["route"].items() if key != "reference"},
+                        api_key="",
+                    )
+                request_routes.append(route)
+        elif any(openai.uses_async_tasks(route) for route in request_routes):
+            entries = []
+            for route in request_routes:
+                try:
+                    prepared_route = self._route_with_options(route, aspect_ratio, requested_resolution)
+                    parts = parts_for_route(prepared_route, str(prompt or "").strip())
+                    if inspect.isawaitable(parts):
+                        parts = await parts
+                    entries.append({"route": ImageRecovery.route_data(prepared_route), "parts": parts})
+                except Exception as exc:
+                    entries.append({"route": ImageRecovery.route_data(route), "preparation_error": str(exc)})
+            recovery = ImageRecovery.create(self.output_dir / "tasks", entries, mode)
         if not request_routes:
             if protocol:
                 raise RuntimeError(
@@ -934,7 +1003,11 @@ class GeminiImageService:
                 )
             raise RuntimeError(f"图片生成缺少{self._mode_label(mode)}接口地址")
         prompt = str(prompt or "").strip()
-        for route in request_routes:
+        for index, route in enumerate(request_routes):
+            if resuming and index <= recovery.data["index"]:
+                if recovery.data["entries"][index].get("error"):
+                    errors.append(recovery.data["entries"][index]["error"])
+                continue
             route_resolution = (
                 requested_resolution or str(route.resolution or "").strip().upper()
             )
@@ -962,13 +1035,24 @@ class GeminiImageService:
                 f"比例={route.aspect_ratio}；请求尺寸={requested_size}"
             )
             try:
+                request_parts = parts_for_route
+                if recovery is not None:
+                    entry = recovery.data["entries"][index]
+                    if entry.get("preparation_error"):
+                        raise ValueError(entry["preparation_error"])
+                    if not route.api_key:
+                        raise ValueError("原请求的通道已移除或凭据已更换，跳过该通道")
+                    def request_parts(*_args):
+                        return entry["parts"]
+                    await recovery.start(index)
                 data = await self._request_image_data(
                     session,
                     route,
                     timeout,
-                    parts_for_route,
+                    request_parts,
                     prompt,
                     require_reference=str(mode or "").strip().lower() == "edit",
+                    recovery=recovery,
                 )
             except Exception as exc:
                 last_error = exc
@@ -977,11 +1061,18 @@ class GeminiImageService:
                 )
                 errors.append(message)
                 if self._is_policy_violation_error(exc):
+                    if recovery is not None:
+                        await recovery.finish(error=message)
+                    if resuming:
+                        raise polling.ImageTaskFailed(message) from exc
                     raise RuntimeError(f"图片生成触发安全拒绝：{message}") from exc
                 if isinstance(exc, polling.ImageTaskError) and not isinstance(
                     exc, polling.ImageTaskFailed
                 ):
+                    exc.route_reference = routes.task_reference(route)
                     raise
+                if recovery is not None:
+                    await recovery.failed(index, message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
                 )
@@ -991,6 +1082,8 @@ class GeminiImageService:
                 message = f"{route_label}：图片接口返回格式不是对象"
                 last_error = ValueError(message)
                 errors.append(message)
+                if recovery is not None:
+                    await recovery.failed(index, message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
                 )
@@ -1004,13 +1097,15 @@ class GeminiImageService:
             except Exception as exc:
                 last_error = exc
                 if isinstance(data, polling.ImageTaskResult):
-                    raise polling.ImageTaskError(
+                    pending = polling.ImageTaskError(
                         f"图片任务 {data.task_id} 已完成，获取成品失败：{exc}；"
                         "已停止自动切换通道，避免重复生成",
                         task_id=data.task_id,
                         request_id=data.request_id,
                         phase="下载成品",
-                    ) from exc
+                    )
+                    pending.route_reference = routes.task_reference(route)
+                    raise pending from exc
                 message = (
                     f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
                 )
@@ -1054,17 +1149,22 @@ class GeminiImageService:
                         f"通道={route_label}；"
                         f"请求={requested_size}；实际={actual_size}"
                     )
-                return image_bytes, route
+                path = await self._save_image(image_bytes, prefix=route.protocol)
+                if recovery is not None:
+                    await recovery.finish(path=str(path))
+                return path, route
             message = f"{route_label}：图片接口未返回图片：{upstream_error_text(data)}"
             last_error = RuntimeError(message)
             if isinstance(data, polling.ImageTaskResult):
-                raise polling.ImageTaskError(
+                pending = polling.ImageTaskError(
                     f"图片任务 {data.task_id} 已完成但没有可用图片；"
                     "已停止自动切换通道，避免重复生成",
                     task_id=data.task_id,
                     request_id=data.request_id,
                     phase="读取成品",
                 )
+                pending.route_reference = routes.task_reference(route)
+                raise pending
             errors.append(message)
             if self._is_policy_violation_text(message):
                 raise RuntimeError(f"图片生成触发安全拒绝：{message}")
@@ -1073,6 +1173,10 @@ class GeminiImageService:
             )
 
         message = f"图片生成全部{self._mode_label(mode)}接口均失败：{'；'.join(errors[-8:])}"
+        if recovery is not None:
+            await recovery.finish(error=message)
+        if resuming:
+            raise polling.ImageTaskFailed(message) from last_error
         if isinstance(last_error, polling.ImageTaskFailed):
             raise polling.ImageTaskFailed(
                 message,
@@ -1091,6 +1195,7 @@ class GeminiImageService:
         prompt: str,
         *,
         require_reference: bool = False,
+        recovery: ImageRecovery | None = None,
     ) -> dict[str, Any] | Any:
         parts = parts_for_route(route, prompt)
         if inspect.isawaitable(parts):
@@ -1101,20 +1206,18 @@ class GeminiImageService:
         if openai.uses_async_tasks(route):
             listener = getattr(self, "_task_listener", None)
             failure_listener = getattr(self, "_task_failure_listener", None)
+            async def accepted(task_id, accepted_route):
+                if recovery is not None:
+                    await recovery.accepted(task_id, accepted_route)
+                if listener is not None and listener.get() is not None:
+                    await listener.get()(task_id, accepted_route)
+
             result = await polling.request_image_task(
                 session,
                 route,
                 request,
-                **(
-                    {"on_accepted": listener.get()}
-                    if listener is not None and listener.get() is not None
-                    else {}
-                ),
-                **(
-                    {"on_failed": failure_listener.get()}
-                    if failure_listener is not None and failure_listener.get() is not None
-                    else {}
-                ),
+                on_accepted=accepted,
+                on_failed=failure_listener.get() if failure_listener is not None else None,
             )
             if result is not None:
                 return result

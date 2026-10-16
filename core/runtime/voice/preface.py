@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +9,7 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
 
 from ..delivery import BackgroundTextMode
+from ..tooling import TOOL_PREFACE_REQUIRED_NAMES
 
 try:
     from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
@@ -80,11 +82,7 @@ class SilentToolPrefaceComponentContext(Protocol):
 
 
 class SilentToolPrefaceComponent:
-    """屏蔽指定媒体工具调用前的模型旁白。
-
-    只覆盖会由插件自己完成表达的工具，避免模型先把
-    "我要发语音/表情" 这类说明当成普通消息发出去。
-    """
+    """统一投递工具前置回应，语音和表情自身完成表达时保持静默。"""
 
     def __init__(self, context: SilentToolPrefaceComponentContext) -> None:
         self.context = context
@@ -268,18 +266,62 @@ class SilentToolPrefaceComponent:
             return True, "原始消息链"
         return False, "原始消息链"
 
+    @staticmethod
+    def _preface_chain(text: str) -> Any:
+        """把工具参数里的自然前置语转换成可发送的文本消息链。"""
+
+        chain = MessageChain()
+        target = getattr(chain, "chain", None)
+        if isinstance(target, list) and text:
+            target.append(Plain(text))
+        return chain
+
     async def handle_llm_tool_start(
         self, event: Any, tool: Any, tool_args: dict[str, Any] | None = None
     ) -> None:
-        """在 AstrBot 确认工具后释放或丢弃已经暂存的中间回复。"""
+        """同一消息并行调用工具时，串行发送前置回应并去重。"""
+
+        lock = getattr(event, "_daily_life_tool_preface_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(event, "_daily_life_tool_preface_lock", lock)
+        async with lock:
+            await self._handle_llm_tool_start(event, tool, tool_args)
+
+    async def _handle_llm_tool_start(
+        self, event: Any, tool: Any, tool_args: dict[str, Any] | None
+    ) -> None:
+        """已有中间回复优先；模型直接调用时使用工具参数中的前置语。"""
 
         scope = self.context._tool_preface_scope_key(event)
         if not scope:
             return
         state = self.context._tool_reply_state_for_event(event)
+        name = self.context._tool_name(tool)
+        argument_preface = str((tool_args or {}).get("preface") or "").strip()
+        preface_text = argument_preface
+        if name in TOOL_PREFACE_REQUIRED_NAMES and preface_text:
+            scope_store = self.context._tool_reply_round_store()
+            if state is None:
+                state = scope_store.setdefault(
+                    scope,
+                    {
+                        "event_key": self.context._tool_preface_event_key(event),
+                        "preface": None,
+                        "preface_text": "",
+                        "tool_name": "",
+                        "outcome": "",
+                        "preface_sent": False,
+                        "preface_suppressed": False,
+                        "tool_completed": False,
+                        "final_response_pending": False,
+                    },
+                )
+            if state.get("preface") is None:
+                state["preface"] = self._preface_chain(preface_text)
+                state["preface_text"] = preface_text
         if state is None:
             return
-        name = self.context._tool_name(tool)
         policy = tool_reply_policy(name)
         state["tool_name"] = name
         state["reply_policy"] = policy
@@ -304,10 +346,29 @@ class SilentToolPrefaceComponent:
             return
         if chain is None:
             return
+        normalized = self._normalize_visible_text(preface_text)
+        sent_texts = getattr(event, "_daily_life_tool_prefaces_sent", None)
+        if sent_texts is None:
+            sent_texts = set()
+            setattr(event, "_daily_life_tool_prefaces_sent", sent_texts)
+        getter = getattr(event, "get_extra", None)
+        direct_texts = (
+            getter("_send_message_to_user_current_session_plain_texts", [])
+            if callable(getter) else []
+        )
+        if isinstance(direct_texts, list):
+            sent_texts.update(self._normalize_visible_text(text) for text in direct_texts)
+        if normalized and normalized in sent_texts:
+            state["preface_sent"] = True
+            return
         sent, channel = await self.context._send_visible_tool_preface(scope, chain, event)
         state["preface_sent"] = bool(sent)
         state["preface_channel"] = channel
         if sent:
+            if normalized:
+                sent_texts.add(normalized)
+            if argument_preface:
+                sent_texts.add(self._normalize_visible_text(argument_preface))
             if channel == "原始消息链":
                 noter = getattr(self.context, "note_structured_bot_message", None)
                 if callable(noter):

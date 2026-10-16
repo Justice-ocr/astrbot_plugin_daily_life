@@ -13,6 +13,68 @@ from jsonschema import Draft202012Validator
 
 from astrbot.core.agent.tool import FunctionTool
 
+from ..life.wardrobe import OUTFIT_SCENE_CATEGORY_ENUM
+
+
+# 会等待、修改状态或发送内容的工具，在相应调用前要给出自然的聊天表达。
+# 查询和直接表达工具保持安静，避免每次读取状态都增加无意义的消息。
+TOOL_PREFACE_REQUIRED_NAMES = frozenset(
+    {
+        "accept_user_invite",
+        "add_memo_for_tomorrow",
+        "life_shared_activity",
+        "life_object",
+        "life_memory_correct",
+        "life_adjust",
+        "life_rest_timing",
+        "life_commitment",
+        "life_weather",
+        "life_place_search",
+        "life_route_plan",
+        "life_place_detail",
+        "life_outing_plan",
+        "life_web_search",
+        "life_web_fetch",
+        "life_web_map",
+        "life_web_crawl",
+        "life_web_research",
+        "life_image_generate",
+        "life_photo_suite_generate",
+        "edit_life_image",
+        "life_image_reverse_prompt",
+        "life_style_learn",
+        "life_style_generate",
+        "life_wardrobe_manage",
+        "life_style_feedback",
+        "life_video_generate",
+        "life_video_understand",
+        "life_video_note",
+        "life_text_forward",
+        "life_review",
+        "life_voice_call_invite",
+        "life_video_call_invite",
+    }
+)
+PREFACE_READ_ONLY_ACTIONS = {
+    "life_shared_activity": ("action", frozenset({"", "list"})),
+    "life_object": ("action", frozenset({"", "list", "get", "history"})),
+    "life_commitment": ("action", frozenset({"", "list"})),
+    "life_wardrobe_manage": ("operation", frozenset({"", "query"})),
+    "life_review": ("action", frozenset({"", "show"})),
+}
+
+
+def tool_needs_preface(name: str, arguments: dict) -> bool:
+    """只对真正需要等待或会产生动作的调用要求前置回复。"""
+
+    if name not in TOOL_PREFACE_REQUIRED_NAMES:
+        return False
+    read_only = PREFACE_READ_ONLY_ACTIONS.get(name)
+    if read_only is None:
+        return True
+    field, actions = read_only
+    return str(arguments.get(field) or "").strip() not in actions
+
 
 def _argument_error(name: str, parameters: dict, issues: list[dict]) -> str:
     """只反馈参数结构，不把传入正文或敏感值写入错误结果。"""
@@ -57,6 +119,8 @@ def _validate_arguments(name, parameters, arguments, validator) -> str | None:
             ]
         elif error.validator == "type":
             issue["expected_type"] = error.validator_value
+        elif error.validator == "enum":
+            issue["allowed_values"] = error.validator_value
         issues.append(issue)
         if len(issues) >= 6:
             break
@@ -116,8 +180,44 @@ def guard_tool_arguments(func):
     return guarded
 
 
-def tool_argument_parameters(tool: FunctionTool) -> dict:
+def tool_argument_parameters(
+    tool: FunctionTool, *, include_preface: bool = True
+) -> dict:
     parameters = deepcopy(tool.parameters)
+    if include_preface and tool.name in TOOL_PREFACE_REQUIRED_NAMES:
+        properties = parameters.setdefault("properties", {})
+        preface = properties.setdefault(
+            "preface",
+            {
+                "type": "string",
+                "description": (
+                    "调用前实际发给用户的一句简短、自然的角色口吻表达。"
+                    "贴合当前话题，不提工具或后台过程，不提前声称结果已完成。"
+                ),
+            },
+        )
+        if isinstance(preface, dict):
+            preface.setdefault("type", "string")
+            preface.setdefault(
+                "description",
+                "调用工具前的一句简短、自然的角色口吻表达，不提前声称结果已完成。",
+            )
+        required = parameters.setdefault("required", [])
+        if (
+            isinstance(preface, dict)
+            and tool.name not in PREFACE_READ_ONLY_ACTIONS
+            and "preface" not in required
+        ):
+            required.append("preface")
+    # 框架从 docstring 生成的 Schema 只有字符串类型，需要补充实际场景枚举。
+    if tool.name in {
+        "life_image_generate",
+        "life_photo_suite_generate",
+        "life_video_generate",
+    }:
+        scene = parameters.get("properties", {}).get("friend_scene_category")
+        if isinstance(scene, dict):
+            scene["enum"] = ["", *OUTFIT_SCENE_CATEGORY_ENUM.split(" | ")]
     local_handler = tool.handler is not None or bool(tool.handler_module_path)
     call_parameters = inspect.signature(tool.call).parameters.values()
     fixed_call = not any(
@@ -137,9 +237,26 @@ class ArgumentCheckedTool(FunctionTool):
     """只校验参数，执行仍委托给原工具与 AstrBot 执行器。"""
 
     def __init__(self, wrapped: FunctionTool) -> None:
-        parameters = tool_argument_parameters(wrapped)
+        parameters = tool_argument_parameters(
+            wrapped,
+            include_preface=(
+                wrapped.handler is not None or bool(wrapped.handler_module_path)
+            ),
+        )
+        description = str(wrapped.description or "")
+        if wrapped.name in TOOL_PREFACE_REQUIRED_NAMES:
+            if wrapped.name in PREFACE_READ_ONLY_ACTIONS:
+                description += (
+                    "\n修改状态时先填写 preface：一句贴合当前话题的自然回应，"
+                    "不提前声称结果已完成；只读操作留空。"
+                )
+            else:
+                description += (
+                    "\n调用前必须填写 preface：一句贴合当前话题的自然回应，"
+                    "不提前声称结果已完成。"
+                )
         super().__init__(
-            name=wrapped.name, description=wrapped.description, parameters=parameters
+            name=wrapped.name, description=description, parameters=parameters
         )
         self._wrapped = wrapped
         self._validator = Draft202012Validator(parameters)
@@ -149,9 +266,22 @@ class ArgumentCheckedTool(FunctionTool):
         self.is_background_task = False
 
     def argument_error(self, arguments: Any) -> str | None:
-        return _validate_arguments(
+        error = _validate_arguments(
             self.name, self.parameters, arguments, self._validator
         )
+        if error or not isinstance(arguments, dict):
+            return error
+        if (
+            "preface" in self.parameters.get("properties", {})
+            and tool_needs_preface(self.name, arguments)
+            and not str(arguments.get("preface") or "").strip()
+        ):
+            return _argument_error(
+                self.name,
+                self.parameters,
+                [{"path": ["preface"], "rule": "required", "missing_parameters": ["preface"]}],
+            )
+        return None
 
     async def call(self, context, **kwargs):
         if error := self.argument_error(kwargs):
@@ -159,7 +289,11 @@ class ArgumentCheckedTool(FunctionTool):
             return
         from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 
-        iterator = FunctionToolExecutor.execute(self._wrapped, context, **kwargs)
+        # 前置语只供 on_using_llm_tool 消费，不传入业务执行器。
+        call_kwargs = dict(kwargs)
+        if self.name in TOOL_PREFACE_REQUIRED_NAMES:
+            call_kwargs.pop("preface", None)
+        iterator = FunctionToolExecutor.execute(self._wrapped, context, **call_kwargs)
         try:
             async for result in iterator:
                 yield result

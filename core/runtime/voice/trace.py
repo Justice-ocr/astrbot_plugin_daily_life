@@ -88,6 +88,13 @@ class VoiceSwitchRecordComponent:
         if not isinstance(item, dict) or item.get("used_voice"):
             return False
         self.context._mark_voice_switch_channel(event, "文字")
+        if item.get("pre_send_checked"):
+            self.context._log_voice_expression_decision(
+                channel="文字",
+                source="普通聊天",
+                result=f"已发送；概率：{item.get('probability_result', '未进入')}",
+                reason=str(item.get("text_reason") or "保留文字发送。"),
+            )
         return True
 
     @staticmethod
@@ -106,7 +113,8 @@ class VoiceSwitchRecordComponent:
         reason: str,
         result: str,
     ) -> None:
-        logger.debug(
+        log = logger.info if source == "普通聊天" else logger.debug
+        log(
             f"{LOG_PREFIX} {self.context._voice_expression_log_title(channel, source)}；"
             f"结果：{result or '已裁定'}；原因：{reason or '未提供额外原因'}"
         )
@@ -126,10 +134,9 @@ class VoiceSwitchRecordComponent:
         user_requested: bool = False,
         confidence: float = 1.0,
     ) -> None:
-        if not (channel == "语音" and source == "普通聊天" and result == "已发送"):
-            self.context._log_voice_expression_decision(
-                channel=channel,
-                source=source,
-                reason=reason,
-                result=result,
-            )
+        self.context._log_voice_expression_decision(
+            channel=channel,
+            source=source,
+            reason=reason,
+            result=result,
+        )

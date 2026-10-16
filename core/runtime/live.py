@@ -2145,8 +2145,6 @@ class DailyLifeRuntime:
 
     _SEMANTIC_SEGMENT_ATTEMPTED_ATTR = SemanticSegmentRuntimeComponent._SEMANTIC_SEGMENT_ATTEMPTED_ATTR
 
-    _SEMANTIC_FOREGROUND_BUDGET_SECONDS = SemanticSegmentRuntimeComponent._SEMANTIC_FOREGROUND_BUDGET_SECONDS
-
     _semantic_segment_init_state = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_init_state")
 
     _semantic_segment_enabled = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_enabled")

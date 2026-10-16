@@ -163,6 +163,141 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         release.set()
         await self.finish_tasks()
 
+    async def test_group_image_repairable_parameters_are_checked_before_background_acceptance(self):
+        first = self.event(text="拍个合影看看")
+        await self.begin_turn(first)
+        self.runtime._current_life_appearance_snapshot = AsyncMock(return_value="")
+        options = {
+            "subject_route": "group",
+            "participants": ["profile:friend"],
+            "friend_outfit": "白色短袖搭配深灰工装长裤",
+            "friend_hair": "黑色自然短发",
+            "friend_scene_category": "outdoor",
+        }
+        for changed, expected in (
+            ({"friend_scene_category": "street_walk"}, ["friend_scene_category"]),
+            ({"friend_scene_category": ""}, ["friend_scene_category"]),
+            ({"friend_outfit": ""}, ["friend_outfit"]),
+            ({"friend_hair": ""}, ["friend_hair"]),
+        ):
+            with self.subTest(changed=changed):
+                result = json.loads(await self.runtime.life_image_generate(
+                    first, "人物 A 和人物 B 在街边随手自拍", **(options | changed)
+                ))
+                self.assertEqual(result["status"], "needs_parameters")
+                self.assertEqual(result["required_parameters"], expected)
+                self.assertFalse(hasattr(first, "_daily_life_image_request"))
+                self.assertEqual(self.calls, [])
+        self.runtime._current_life_appearance_snapshot.assert_not_awaited()
+
+        async def group_image(prompt, participants, aspect_ratio="", **kwargs):
+            self.calls.append(("group", prompt, participants))
+            self.started.set()
+            await self.release.wait()
+            return types.SimpleNamespace(path=self.path)
+
+        self.runtime.media.image.generate_group_image = group_image
+        self.runtime._resolve_life_identity_profiles = AsyncMock(return_value={})
+        self.runtime._build_person_fact_injection_context = AsyncMock(return_value="")
+        prepare_look = AsyncMock(wraps=self.runtime._prepare_friend_daily_look)
+        self.runtime._prepare_friend_daily_look = prepare_look
+        accepted = json.loads(await self.runtime.life_image_generate(
+            first, "人物 A 和人物 B 在街边随手自拍", **options
+        ))
+        self.assertEqual(accepted["status"], "pending")
+        await asyncio.wait_for(self.started.wait(), 0.5)
+        await asyncio.wait_for(self.begin_turn(self.event("43", "123 茄子")), 0.5)
+        await self.finish_tasks()
+        self.assertEqual(first._daily_life_image_request["status"], "sent")
+        self.assertEqual(len(first.sent_messages), 1)
+        self.assertEqual(self.calls[0][0], "group")
+        self.assertIn(options["friend_outfit"], self.calls[0][1])
+        self.assertEqual(self.calls[0][2], options["participants"])
+        prepare_look.assert_awaited_once()
+
+    async def test_group_image_missing_participant_does_not_start_background_task(self):
+        first = self.event(text="拍张合影")
+        for participants in ([], ["friend:1", "friend:2"]):
+            result = await self.runtime.life_image_generate(
+                first, "街边合影", subject_route="group", participants=participants
+            )
+            self.assertIn("选择一位", result)
+            self.assertFalse(hasattr(first, "_daily_life_image_request"))
+        self.assertEqual(self.calls, [])
+
+    async def test_image_invalid_request_never_returns_pending_or_releases_chat(self):
+        self.runtime._release_media_chat_turn = Mock()
+        self.runtime._historical_life_appearance_snapshot = AsyncMock(return_value="")
+        self.runtime._resolve_last_reverse_image_prompt_async = AsyncMock(return_value=("", ""))
+        for options, expected in (
+            ({"subject_route": "current_character", "historical_target": "昨天"}, "历史造型"),
+            ({"current_outfit_change": True}, "subject_route"),
+            ({"current_outfit_change": True, "subject_route": "current_character",
+              "historical_target": "昨天"}, "历史回现不会改变"),
+            ({"use_last_reverse_prompt": True}, "反推提示词"),
+        ):
+            with self.subTest(options=options):
+                event = self.event()
+                result = await self.runtime.life_image_generate(event, "窗边生活照", **options)
+                self.assertIn(expected, result)
+                self.assertFalse(hasattr(event, "_daily_life_image_request"))
+        empty = self.event(text="")
+        self.assertIn("没有收到", await self.runtime.life_image_generate(empty, ""))
+        self.runtime._release_media_chat_turn.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    async def test_historical_image_uses_accepted_snapshot_after_background_wait(self):
+        first = self.event(text="看看昨天的穿搭")
+        self.runtime._historical_life_appearance_snapshot = AsyncMock(
+            side_effect=["昨天记录的浅灰棉质睡裙", "后来才写入的其他穿搭"]
+        )
+        self.runtime._execute_image_generation_plan = AsyncMock(
+            return_value=image_module.ImageGenerationExecution(
+                generated=types.SimpleNamespace(path=self.path), directed_prompt="昨天的照片"
+            )
+        )
+        result = await self.runtime.life_image_generate(
+            first, "客厅生活照", subject_route="current_character", historical_target="昨天"
+        )
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+        plan = self.runtime._execute_image_generation_plan.call_args.args[1]
+        self.assertIn("昨天记录的浅灰棉质睡裙", plan.prompt)
+        self.assertNotIn("后来才写入", plan.prompt)
+        self.runtime._historical_life_appearance_snapshot.assert_awaited_once()
+        self.assertEqual(first._daily_life_image_request["status"], "sent")
+
+    async def test_edit_missing_reference_is_repairable_before_acceptance(self):
+        first = self.event(text="把这张调亮一点")
+        for options, expected in (
+            ({}, "请先发送"),
+            ({"continue_last_result": True}, "没有可继续修改"),
+            ({"reference_image": "missing.png"}, "没有可继续修改"),
+            ({"generate_without_reference": True, "participants": ["profile:friend"]},
+             "life_image_generate"),
+            ({"participants": ["profile:friend", "profile:other"]}, "选择一位"),
+        ):
+            with self.subTest(options=options):
+                result = await self.runtime.edit_life_image(first, "柔和一点", **options)
+                self.assertIn(expected, result)
+                self.assertFalse(hasattr(first, "_daily_life_image_request"))
+                self.assertEqual(self.calls, [])
+        first.message_items.append({"type": "image", "file": str(self.path)})
+        result = await self.runtime.edit_life_image(first, "柔和一点")
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+        self.assertEqual(first._daily_life_image_request["status"], "sent")
+
+    async def test_native_video_without_source_is_rejected_before_acceptance(self):
+        first = self.event(text="看看视频里是什么")
+        self.runtime._sight_clips_from_event_async = AsyncMock(return_value=[])
+        self.runtime._sight_recent_for_event = AsyncMock(return_value=[])
+        self.runtime._submit_background_tool = Mock()
+        result = await self.runtime._submit_native_video_tool(first, "")
+        self.assertEqual(result.status, "failed")
+        self.assertIn("没有找到", result)
+        self.runtime._submit_background_tool.assert_not_called()
+
     async def test_edit_keeps_original_reference_while_later_sticker_is_processed(self):
         first = self.event(text="把这张调亮一点", image=str(self.path))
         await self.begin_turn(first)

@@ -724,6 +724,7 @@ class LifeSettingsTest(unittest.TestCase):
         items = schema["life_domain_config"]["items"]
 
         self.assertEqual(items["home_address"]["description"], "居住地")
+        self.assertEqual(items["amap_api_key"]["hint"], "填写高德 Web 服务 Key。")
         self.assertNotIn("weather_city", schema["weather_awareness"]["items"])
         self.assertIn("amap_api_key", items)
         self.assertNotIn("map_provider", items)
@@ -1603,10 +1604,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.4.6", metadata)
+        self.assertIn("version: 1.4.7", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.4.6", readme)
-        self.assertIn("v1.4.6 重点更新", readme)
+        self.assertIn("version-1.4.7", readme)
+        self.assertIn("v1.4.7 重点更新", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1618,6 +1619,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.4.7 · 2026-10-16", changelog)
         self.assertIn("v1.4.6 · 2026-10-16", changelog)
         self.assertIn("v1.4.5 · 2026-10-15", changelog)
         self.assertIn("v1.4.4 · 2026-10-11", changelog)
@@ -1670,6 +1672,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.4.7"), changelog.index("v1.4.6"))
         self.assertLess(changelog.index("v1.4.6"), changelog.index("v1.4.5"))
         self.assertLess(changelog.index("v1.4.5"), changelog.index("v1.4.4"))
         self.assertLess(changelog.index("v1.4.4"), changelog.index("v1.4.3"))

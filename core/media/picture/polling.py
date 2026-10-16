@@ -25,6 +25,7 @@ class ImageTaskError(RuntimeError):
         self.task_id = task_id
         self.request_id = request_id
         self.phase = phase
+        self.route_reference: dict[str, str] = {}
 
 
 class ImageTaskFailed(ImageTaskError):

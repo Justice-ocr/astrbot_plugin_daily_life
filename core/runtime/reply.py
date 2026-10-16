@@ -48,10 +48,16 @@ class SemanticSegmentPlan:
         return "".join(segment.text for segment in self.segments)
 
 
+def _semantic_timeout_seconds(settings: Any) -> float:
+    return max(
+        1.0,
+        min(float(getattr(settings, "semantic_timeout_seconds", 3.0) or 3.0), 20.0),
+    )
+
+
 class SemanticSegmentRuntimeComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _SEMANTIC_FOREGROUND_BUDGET_SECONDS: Any
     _SEMANTIC_SEGMENT_ATTEMPTED_ATTR: Any
     _SEMANTIC_SEGMENT_PENDING_ATTR: Any
     _SEMANTIC_SEGMENT_PLAN_ATTR: Any
@@ -129,7 +135,6 @@ class SemanticSegmentRuntimeComponent:
     _SEMANTIC_SEGMENT_PLAN_ATTR = "_daily_life_semantic_segment_plan"
     _SEMANTIC_SEGMENT_SCOPE_ATTR = "_daily_life_semantic_segment_scope"
     _SEMANTIC_SEGMENT_ATTEMPTED_ATTR = "_daily_life_semantic_segment_attempted"
-    _SEMANTIC_FOREGROUND_BUDGET_SECONDS = 3.0
 
     def _semantic_segment_init_state(self) -> None:
         self.context._semantic_segment_revisions: dict[str, int] = {}
@@ -202,7 +207,10 @@ class SemanticSegmentRuntimeComponent:
     def _semantic_expression_plan_from_event(
         self, event: Any
     ) -> SemanticSegmentPlan | None:
-        plan = getattr(event, self.context._SEMANTIC_SEGMENT_PLAN_ATTR, None)
+        # 自然分段可能接管文字投递，已经完成的语义表达判断仍然有效。
+        plan = getattr(event, "_daily_life_expression_plan", None)
+        if not isinstance(plan, SemanticSegmentPlan):
+            plan = getattr(event, self.context._SEMANTIC_SEGMENT_PLAN_ATTR, None)
         return plan if isinstance(plan, SemanticSegmentPlan) and plan.valid else None
 
     @staticmethod
@@ -704,13 +712,7 @@ class SemanticSegmentRuntimeComponent:
                 dynamic,
                 dynamic_title="待分段回复",
             )
-            configured_timeout = max(
-                1.0,
-                min(
-                    float(getattr(settings, "semantic_timeout_seconds", 3.0) or 3.0),
-                    20.0,
-                ),
-            )
+            configured_timeout = _semantic_timeout_seconds(settings)
             started_at = time.monotonic()
             logger.debug(
                 f"{LOG_PREFIX} 模型语义分段开始：超时={configured_timeout:g}秒；长度={len(source_text)}"
@@ -763,6 +765,8 @@ class SemanticSegmentRuntimeComponent:
     def _semantic_segment_mark_pending(
         self, event: Any, plan: SemanticSegmentPlan, scope: str
     ) -> None:
+        if plan.valid and plan.source == "semantic":
+            setattr(event, "_daily_life_expression_plan", plan)
         setattr(event, self.context._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
         setattr(event, self.context._SEMANTIC_SEGMENT_SCOPE_ATTR, scope)
         setattr(
@@ -940,7 +944,8 @@ class SemanticSegmentRuntimeComponent:
                 plan = existing_plan
             else:
                 async with foreground_budget(
-                    event, maximum=self.context._SEMANTIC_FOREGROUND_BUDGET_SECONDS
+                    event,
+                    maximum=_semantic_timeout_seconds(self.context.config.chat_style),
                 ):
                     plan = await self.context._semantic_segment_plan_text(
                         source_text,
@@ -953,6 +958,11 @@ class SemanticSegmentRuntimeComponent:
             self.context._semantic_segment_metrics["planning_failed"] += 1
             plan = SemanticSegmentPlan((), source="foreground_timeout", valid=False)
         if not plan.valid or not plan.segments:
+            setattr(event, "_daily_life_expression_unavailable_reason", (
+                "表达判断超过本轮等待预算，保留文字。"
+                if plan.source == "foreground_timeout"
+                else "表达判断未取得有效结果，保留文字。"
+            ))
             if self.context._semantic_segment_try_natural_fallback(event, source_text):
                 self.context._semantic_segment_metrics["fallback_natural"] = (
                     self.context._semantic_segment_metrics.get("fallback_natural", 0) + 1

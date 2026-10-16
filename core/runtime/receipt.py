@@ -36,6 +36,7 @@ class RuntimeActionReceiptComponentContext(Protocol):
     _resume_share_asset_generation: Any
     _runtime_now: Any
     _send_delivered_media_followup: Any
+    _send_background_failure_reply: Any
     _settle_direct_media_commitment: Any
     _share_asset_key: Any
     archive: Any
@@ -347,6 +348,7 @@ class RuntimeActionReceiptComponent:
                     "action_id": str(getattr(event, "_daily_life_action_id", "") or ""),
                     "action_date": action_date,
                     "request_text": str(getattr(event, "message_str", "") or "")[:1000],
+                    "chat_token": list(getattr(event, "_daily_life_media_chat_token", ()) or ()),
                     "photo_suite": dict(metadata or {}),
                 },
                 priority=85,
@@ -421,14 +423,23 @@ class RuntimeActionReceiptComponent:
         )
 
     async def resume_durable_image_generation(self, task: Any) -> dict[str, Any]:
-        """恢复只查询原任务，再将成品交给媒体投递队列。"""
+        """恢复原图片请求，确认失败后继续剩余通道，成品交给媒体投递队列。"""
         from ..media.picture.polling import ImageTaskError, ImageTaskFailed
 
         payload = task.payload
+        origin = SimpleNamespace(
+            unified_msg_origin=payload.get("scope", ""),
+            message_str=payload.get("request_text", ""),
+            message_id=payload.get("source_message_id", ""),
+            _daily_life_action_id=payload.get("action_id", ""),
+            _daily_life_action_date=payload.get("action_date", ""),
+            _daily_life_photo_suite_slot=payload.get("photo_suite", {}),
+            _daily_life_media_chat_token=tuple(payload.get("chat_token") or ()),
+        )
         progress = task.result.get("progress", {})
         path = str(progress.get("artifact_path") or "")
         try:
-            if not path or not Path(path).is_file():
+            if not path or not await asyncio.to_thread(Path(path).is_file):
                 generated = await self.context.media.image.resume_async_image(
                     payload["task_id"], payload["route"]
                 )
@@ -442,6 +453,22 @@ class RuntimeActionReceiptComponent:
             await self.context._record_recovered_photo_suite_slot(
                 payload.get("photo_suite", {}), "", sent=False, error=str(exc)
             )
+            should_reply = bool(payload.get("scope"))
+            metadata = payload.get("photo_suite", {})
+            if metadata:
+                manifest = await self.context._photo_suite_read_manifest(Path(metadata["manifest_path"]))
+                should_reply = should_reply and bool(manifest) and not any(
+                    shot.get("status") == "pending" for shot in manifest.get("shots", [])
+                )
+            if should_reply:
+                await self.context._send_background_failure_reply(
+                    payload["scope"], origin,
+                    task_name="套图生成" if metadata else "图片生成",
+                    failure_reason=str(exc),
+                    request_text=payload.get("request_text", ""),
+                    source_message_id=payload.get("source_message_id", ""),
+                    source="image_recovery_failure",
+                )
             raise
         except ImageTaskError as exc:
             return {
@@ -451,11 +478,6 @@ class RuntimeActionReceiptComponent:
                 "reason": str(exc),
                 "progress": progress,
             }
-        origin = SimpleNamespace(
-            _daily_life_action_id=payload.get("action_id", ""),
-            _daily_life_action_date=payload.get("action_date", ""),
-            _daily_life_photo_suite_slot=payload.get("photo_suite", {}),
-        )
         await self.context._record_recovered_photo_suite_slot(
             payload.get("photo_suite", {}), path, sent=False
         )
@@ -464,7 +486,7 @@ class RuntimeActionReceiptComponent:
             "image",
             [path],
             action_type="photo",
-            evidence="原图片异步任务已完成，等待投递确认",
+            evidence="图片请求已完成，等待投递确认",
             source_event=origin,
             commitment_id=int(payload.get("commitment_id") or 0),
             source_message_id=payload.get("source_message_id", ""),
@@ -665,6 +687,7 @@ class RuntimeActionReceiptComponent:
                     "evidence": str(evidence or "").strip()[:500],
                     "commitment_id": max(0, int(commitment_id or 0)),
                     "source_message_id": str(source_message_id or "").strip(),
+                    "chat_token": list(getattr(source_event, "_daily_life_media_chat_token", ()) or ()),
                     "reply_context": {
                         str(key): str(value or "").strip()[:1000]
                         for key, value in dict(reply_context or {}).items()
@@ -883,6 +906,9 @@ class RuntimeActionReceiptComponent:
                     reply_context.get("delivery_text") or "媒体已恢复并成功送达"
                 ),
                 guidance=str(reply_context.get("guidance") or ""),
+                source_event=SimpleNamespace(
+                    _daily_life_media_chat_token=tuple(payload.get("chat_token") or ()),
+                ),
                 source="media_recovery_followup",
             )
         return {

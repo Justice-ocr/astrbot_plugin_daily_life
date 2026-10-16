@@ -62,13 +62,13 @@ class SemanticSegmentTest(unittest.TestCase):
     def test_foreground_segmentation_stops_at_budget(self):
         runtime = self._runtime("{}")
         runtime.context = Context(Provider([]), config={"t2i": False})
-        runtime._SEMANTIC_FOREGROUND_BUDGET_SECONDS = 0.01
 
         async def slow_plan(*args, **kwargs):
             await asyncio.Event().wait()
 
         runtime._semantic_segment_plan_text = slow_plan
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+        event._daily_life_enrichment_seconds = 7.99
         event.message_str = "聊聊今天"
         event.set_result(
             event.chain_result([types.SimpleNamespace(text="今天先休息一下。晚点再出门。")])
@@ -98,13 +98,13 @@ class SemanticSegmentTest(unittest.TestCase):
                     runtime.context = Context(
                         Provider([]), config={"t2i": True, "t2i_word_threshold": 300}
                     )
-                    runtime._SEMANTIC_FOREGROUND_BUDGET_SECONDS = 0.01
 
                     async def slow_plan(*args, **kwargs):
                         await asyncio.Event().wait()
 
                     runtime._semantic_segment_plan_text = slow_plan
                     event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+                    event._daily_life_enrichment_seconds = 7.99
                     event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
 
                     async def decorate():
@@ -116,6 +116,62 @@ class SemanticSegmentTest(unittest.TestCase):
                     self.assertEqual(event.get_result().chain[0].text, expected)
                     self.assertIsNone(getattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, None))
                     self.assertEqual(runtime.semantic_segment_status()["metrics"]["planning_failed"], 1)
+
+    def test_configured_timeout_allows_voice_plan_after_three_seconds(self):
+        from core.runtime.reply import SemanticSegmentPlan, SegmentPart
+
+        runtime = self._runtime("{}")
+        runtime.context = Context(Provider([]), config={"t2i": False})
+        runtime.config.chat_style.semantic_timeout_seconds = 8
+        runtime.config.voice_generation.enabled = True
+        runtime.config.voice_generation.smart_switch_probability = 100
+        source = "我有点想你啦"
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+        synthesize = unittest.mock.AsyncMock(return_value=types.SimpleNamespace(path="voice.mp3"))
+        runtime.media = types.SimpleNamespace(voice=types.SimpleNamespace(synthesize=synthesize))
+
+        async def plan(*args, **kwargs):
+            await asyncio.sleep(3.05)
+            return SemanticSegmentPlan(
+                (SegmentPart(source),), channel="voice", confidence=0.9,
+                reason="亲近的语气适合直接说出来",
+            )
+
+        runtime._semantic_segment_plan_text = plan
+
+        async def decorate():
+            heartbeat = asyncio.create_task(asyncio.sleep(0.02))
+            runtime.mark_voice_switch_available(event)
+            await runtime.apply_semantic_segment_before_send(event)
+            self.assertTrue(heartbeat.done())
+            self.assertTrue(await runtime.apply_voice_switch_before_send(event))
+
+        asyncio.run(asyncio.wait_for(decorate(), 4))
+        synthesize.assert_awaited_once()
+        self.assertEqual(runtime.semantic_segment_status()["metrics"]["planning_failed"], 0)
+
+    def test_natural_delivery_keeps_completed_voice_expression_plan(self):
+        source = "今天有点累了。让我先靠一会儿。"
+        runtime = self._runtime(json.dumps({
+            "segments": [{"text": source}], "channel": "voice",
+            "confidence": 0.9, "reason": "语气适合说出来",
+        }, ensure_ascii=False))
+        runtime.config.chat_style.private_casual_max_chars = 10
+        runtime.context = Context(Provider([]), config={"t2i": False})
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:1")
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        asyncio.run(runtime.apply_semantic_segment_before_send(event))
+
+        self.assertTrue(getattr(event, "_daily_life_natural_fallback_active", False))
+        self.assertIsNone(getattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, None))
+        plan = runtime._semantic_expression_plan_from_event(event)
+        self.assertEqual(plan.channel, "voice")
+        decision = runtime._judge_voice_switch_channel(
+            event, runtime._voice_switch_reply_text_from_event(event)
+        )
+        self.assertEqual(decision["channel"], "voice")
 
     def test_empty_plan_cannot_bypass_single_reply_cleanup(self):
         from core.runtime.reply import SemanticSegmentPlan

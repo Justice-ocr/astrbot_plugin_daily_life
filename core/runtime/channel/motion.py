@@ -11,6 +11,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
+from ...media.picture.recovery import wait_for_image
 from ...paths import expand_path, path_is_file
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
@@ -792,24 +793,24 @@ class RuntimeVideoMediaComponent:
             logger.debug(
                 f"{LOG_PREFIX} 视频首帧判定需要角色参考图，已自动切换到图生图。"
             )
-            generated = await self.context._edit_life_image_with_policy_retry(
+            generated = await wait_for_image(image_service, self.context._edit_life_image_with_policy_retry(
                 event,
                 image_prompt,
                 character_reference,
                 aspect_ratio,
                 preserve_reference_ratio=False,
                 identity_profile=identity_profile,
-            )
+            ))
         else:
             generate_image = getattr(image_service, "generate_image", None)
             if not callable(generate_image):
                 raise RuntimeError("未配置图片生成服务，无法自动生成视频首帧。")
-            generated = await self.context._generate_life_image_with_policy_retry(
+            generated = await wait_for_image(image_service, self.context._generate_life_image_with_policy_retry(
                 event,
                 image_prompt,
                 aspect_ratio,
                 identity_profile=identity_profile,
-            )
+            ))
         path = str(getattr(generated, "path", "") or "").strip()
         if not path:
             raise RuntimeError("首帧图片生成完成但没有返回图片路径。")
@@ -845,9 +846,9 @@ class RuntimeVideoMediaComponent:
         current_profiles = self.context._current_character_identity_profiles(identity_profiles)
         if current_profiles:
             options["identity_profiles"] = current_profiles
-        generated = await generator(
+        generated = await wait_for_image(image_service, generator(
             image_prompt, participant_ids, aspect_ratio, **options
-        )
+        ))
         path = str(getattr(generated, "path", "") or "").strip()
         if not path:
             raise RuntimeError("合影首帧生成完成但没有返回图片路径。")

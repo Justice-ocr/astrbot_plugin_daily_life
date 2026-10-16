@@ -1649,6 +1649,40 @@ JSON 字段：
             )
         return ImageGenerationExecution(generated, directed_prompt)
 
+    async def _prepare_group_image_look(
+        self, event: Any, prompt: str, **options: Any
+    ) -> str | None:
+        """在交给后台前完成可修正的参数检查，并锁定本次好友造型。"""
+        route = self.context._normalize_image_subject_route(
+            options.get("subject_route", "free")
+        )
+        if route != "group" or options.get("use_last_reverse_prompt"):
+            return None
+        if getattr(event, "_daily_life_locked_friend_look", None) is not None:
+            return None
+        participant_ids = self.context._normalize_image_participants(
+            options.get("participants")
+        )
+        if len(participant_ids) != 1:
+            return "请明确选择一位已配置参考图的好友再生成合影。"
+        look, source, missing = await self.context._prepare_friend_daily_look(
+            event,
+            participant_ids[0],
+            outfit=options.get("friend_outfit", ""),
+            hair=options.get("friend_hair", ""),
+            scene=prompt,
+            scene_category=options.get("friend_scene_category", ""),
+            style_pool=options.get("friend_style_pool", ""),
+            decision=options.get("friend_outfit_decision", ""),
+        )
+        if missing:
+            logger.debug(
+                f"{LOG_PREFIX} 合影尚未受理：请补齐造型参数；参数={','.join(missing)}"
+            )
+            return self.context._friend_look_parameters_result(missing)
+        event._daily_life_locked_friend_look = (look, source)
+        return None
+
     async def life_image_generate(
         self, event: Any, prompt: str, **options: Any
     ) -> str | None:
@@ -1669,13 +1703,46 @@ JSON 字段：
                 )
         snapshot = self.context._snapshot_media_event(event)
         snapshot._daily_life_image_tool_name = "life_image_generate"
+        if not self.context._event_session_id(snapshot):
+            return "当前会话不可发送图片。"
+        route = self.context._normalize_image_subject_route(
+            options.get("subject_route", "free")
+        )
+        historical_request = route in {"current_character", "group"} and bool(
+            options.get("historical_target")
+        )
+        if options.get("current_outfit_change"):
+            if historical_request:
+                return "历史回现不会改变当前穿搭。请取消 current_outfit_change 后重试；若要实际换回，请先明确换装要求。"
+            if options.get("use_last_reverse_prompt"):
+                return "真实换装不能与上一条反推提示词同时使用。"
+            if route not in {"current_character", "group"}:
+                return "真实换装生图请将 subject_route 设为 current_character 或 group。"
+            if not str(options.get("current_outfit_instruction") or "").strip() and not (
+                self.context._event_current_image_request_text(snapshot)
+            ):
+                return "没有收到当前角色的换装要求。"
         if options.get("use_last_reverse_prompt"):
             snapshot._daily_life_locked_reverse_prompt = (
                 await self.context._resolve_last_reverse_image_prompt_async(snapshot)
             )
-        route = self.context._normalize_image_subject_route(
-            options.get("subject_route", "free")
-        )
+            if not snapshot._daily_life_locked_reverse_prompt[0]:
+                return "没有可用的上一条反推提示词，请提供本次画面要求。"
+        elif not options.get("current_outfit_change") and not historical_request:
+            if not self.context._resolve_image_prompt(snapshot, prompt)[0]:
+                return "没有收到图片提示词。"
+        if historical_request:
+            snapshot._daily_life_locked_historical_appearance = (
+                await self.context._historical_life_appearance_snapshot(
+                    options["historical_target"],
+                    period=options.get("historical_period", ""),
+                    time=options.get("historical_time", ""),
+                )
+            )
+            if not snapshot._daily_life_locked_historical_appearance:
+                return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成图片。"
+        if error := await self._prepare_group_image_look(snapshot, prompt, **options):
+            return error
         if not options.get("current_outfit_change") and not options.get(
             "historical_target"
         ):
@@ -1763,6 +1830,14 @@ JSON 字段：
                     )
             else:
                 marker["status"] = "failed"
+                result_status = (
+                    payload.get("status", "未提供")
+                    if isinstance(payload, dict)
+                    else "未提供"
+                )
+                logger.warning(
+                    f"{LOG_PREFIX} 图片后台任务未完成：返回状态={result_status}"
+                )
                 await self.context.finish_tool_reaction(event, tool_name, success=False)
                 await self.context._send_background_failure_reply(
                     self.context._event_session_id(event),
@@ -1840,6 +1915,23 @@ JSON 字段：
             logger.debug(f"{LOG_PREFIX} 图片工具跳过重复调用：本轮已经发送过单张图片。")
             return self.context._duplicate_direct_image_result()
         route = self.context._normalize_image_subject_route(subject_route)
+        if error := await self._prepare_group_image_look(
+            event,
+            prompt,
+            subject_route=route,
+            use_last_reverse_prompt=use_last_reverse_prompt,
+            participants=participants,
+            friend_outfit=friend_outfit,
+            friend_hair=friend_hair,
+            friend_scene_category=friend_scene_category,
+            friend_style_pool=friend_style_pool,
+            friend_outfit_decision=friend_outfit_decision,
+        ):
+            return error
+        # 快照只在本次后台请求中消费一次，后续同一事件再次换装仍重新校验。
+        prepared_friend_look = getattr(event, "_daily_life_locked_friend_look", None)
+        if prepared_friend_look is not None:
+            delattr(event, "_daily_life_locked_friend_look")
         current_appearance = ""
         historical_request = route in {"current_character", "group"} and bool(
             historical_target
@@ -1913,8 +2005,13 @@ JSON 字段：
             await self.context.mark_page_status_changed("outfit_update")
 
         if historical_request:
-            historical_appearance = await self.context._historical_life_appearance_snapshot(
-                historical_target, period=historical_period, time=historical_time
+            locked_history = getattr(event, "_daily_life_locked_historical_appearance", None)
+            historical_appearance = (
+                str(locked_history)
+                if locked_history is not None
+                else await self.context._historical_life_appearance_snapshot(
+                    historical_target, period=historical_period, time=historical_time
+                )
             )
             if not historical_appearance:
                 return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成图片。"
@@ -1959,23 +2056,7 @@ JSON 字段：
         friend_look: dict[str, str] = {}
         friend_look_persist = False
         if plan.group_request and len(plan.participant_ids) == 1:
-            friend_look, look_source, missing = await self.context._prepare_friend_daily_look(
-                event,
-                plan.participant_ids[0],
-                outfit=friend_outfit,
-                hair=friend_hair,
-                scene=plan.prompt,
-                scene_category=friend_scene_category,
-                style_pool=friend_style_pool,
-                decision=friend_outfit_decision,
-            )
-            if missing:
-                required = self.context._friend_look_required_parameters(look_source, missing)
-                logger.debug(
-                    f"{LOG_PREFIX} 好友合影暂未生成：缺少好友当天穿搭或发型；"
-                    f"参数={','.join(missing)}"
-                )
-                return self.context._friend_look_parameters_result(required)
+            friend_look, look_source = prepared_friend_look
             self.context._log_friend_daily_look(
                 plan.participant_ids[0], friend_look, look_source
             )
@@ -2270,6 +2351,13 @@ JSON 字段：
                 )
         snapshot = self.context._snapshot_media_event(event)
         snapshot._daily_life_image_tool_name = "edit_life_image"
+        if not self.context._event_session_id(snapshot):
+            return "当前会话不可发送图片。"
+        if not self.context._resolve_image_prompt(snapshot, prompt)[0]:
+            return "没有收到图片编辑提示词。"
+        participant_ids = self.context._normalize_image_participants(options.get("participants"))
+        if len(participant_ids) > 1:
+            return "请明确选择一位已配置参考图的好友再修改合影。"
         snapshot._daily_life_locked_edit_reference = (
             await self.context._resolve_life_image_reference_async(
                 snapshot,
@@ -2278,6 +2366,13 @@ JSON 字段：
                 prefer_last_generated=bool(options.get("continue_last_result")),
             )
         )
+        if not snapshot._daily_life_locked_edit_reference:
+            if options.get("continue_last_result") or str(reference_image or "").strip():
+                return "当前会话没有可继续修改的图片，请重新发送或引用原图。"
+            if not options.get("generate_without_reference"):
+                return "请先发送或引用一张要参考的图片。"
+            if participant_ids:
+                return "没有参考图时，请改用 life_image_generate，subject_route=group，并填写好友场景及造型参数。"
         return self.context._submit_background_image(
             snapshot,
             event,

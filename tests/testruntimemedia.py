@@ -299,7 +299,7 @@ class RuntimeMediaTest(unittest.TestCase):
         cadence = runtime._voice_switch_cadence_store()[event.unified_msg_origin]
         self.assertEqual(cadence["last_channel"], "文字")
 
-    def test_voice_switch_text_result_consumes_internal_reason_silently(self):
+    def test_voice_switch_text_result_logs_checked_decision_once(self):
         messages = []
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
@@ -322,13 +322,20 @@ class RuntimeMediaTest(unittest.TestCase):
         try:
             self.assertTrue(runtime.mark_voice_switch_available(event))
             runtime._voice_switch_round_store()[event.unified_msg_origin][
+                "pre_send_checked"
+            ] = True
+            runtime._voice_switch_round_store()[event.unified_msg_origin][
                 "text_reason"
             ] = "我这轮内容有几句铺垫，文字更容易读清楚。"
             self.assertTrue(runtime.note_voice_switch_text_result(event))
+            self.assertFalse(runtime.note_voice_switch_text_result(event))
         finally:
             logger.info = old_info
 
-        self.assertEqual(messages, [])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("语音智能切换裁定：文字", messages[0])
+        self.assertIn("概率：未进入", messages[0])
+        self.assertIn("文字更容易读清楚", messages[0])
         self.assertEqual(runtime.archive.action_decisions, {})
 
     def test_voice_switch_used_by_tool_does_not_emit_text_result(self):
