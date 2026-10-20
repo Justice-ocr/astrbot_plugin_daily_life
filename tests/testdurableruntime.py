@@ -1329,7 +1329,7 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             sent.append((scope, text, failure_label, kwargs))
             return True
 
-        self.runtime._evaluate_proactive_commitment = evaluate
+        self.runtime._part_proactive_followup_component._evaluate_proactive_commitment = evaluate
         self.runtime._send_proactive_message = send
         task = SimpleNamespace(
             payload={

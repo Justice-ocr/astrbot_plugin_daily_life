@@ -1,11 +1,28 @@
+import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from support import Context, DailyLifeRuntime, Event, LifeSettings, Provider
 
 
 class ShareExpressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_share_uses_voice_model_and_timeout(self):
+        runtime = self.runtime(semantic_provider="segment-model")
+        runtime.config.voice_generation.expression_provider = "voice-model"
+        runtime.config.voice_generation.expression_timeout_seconds = 9
+        runtime.get_text_provider.return_value = object()
+        runtime.call_text_model = AsyncMock(return_value=json.dumps({
+            "text": "不能改写正文", "emotion_category": "happy", "voice_style": "light",
+        }))
+        with patch("core.runtime.integration.asyncio.timeout", wraps=asyncio.timeout) as timeout:
+            result = await runtime.prepare_share_expression("今天天气真舒服", scene="share_voice")
+        runtime.get_text_provider.assert_awaited_once_with("voice-model")
+        self.assertEqual(runtime.call_text_model.await_args.kwargs["primary_provider_id"], "voice-model")
+        timeout.assert_called_once_with(9)
+        self.assertEqual(result["text"], "今天天气真舒服")
+        self.assertEqual(result["voice_style"], "light")
+
     def runtime(self, **settings):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({"chat_style_config": settings})

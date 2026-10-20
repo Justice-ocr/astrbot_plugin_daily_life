@@ -17,7 +17,6 @@ from typing import Any, Protocol
 class SpinePulseComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _consolidate_proactive_behavior_scenes: Any
     _proactive_idle_enabled: Any
     _settle_stale_reply_effects: Any
     _target_datetime_for_command: Any
@@ -94,7 +93,7 @@ class SpinePulseComponent:
         corrections = await self.context.archive.get_memory_corrections(limit=100)
         reply_effects = await self.context.archive.get_reply_effects(limit=100)
         emoji_assets = await self.context.archive.get_emoji_assets(limit=100)
-        proactive_scene_count = await self.context._consolidate_proactive_behavior_scenes(
+        proactive_scene_count = await self._consolidate_proactive_behavior_scenes(
             today_str
         )
         applied_count = sum(

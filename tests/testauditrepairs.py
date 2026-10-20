@@ -18,14 +18,13 @@ from runtimehelpers import (
     LifeArchive,
     LifeSettings,
     Provider,
-    SegmentPart,
-    SemanticSegmentPlan,
     DayRecord,
     TimelineItem,
 )
 from core.life.future import future_outfit_timing_issue
 from core.life.planner import LifeBackgroundComposer
 from core.runtime.spine.boot import RuntimeServices
+from core.runtime.voice.modality import VoiceExpressionPlan
 from core.media import GeminiImageService
 from core.media.picture import polling
 from testimagetasks import _Session, _Response, _route, _request, _accepted
@@ -284,10 +283,8 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
         runtime._continuous_turn_revisions[event.unified_msg_origin] = {"audit": 1}
         setattr(
             event,
-            runtime._SEMANTIC_SEGMENT_PLAN_ATTR,
-            SemanticSegmentPlan(
-                (SegmentPart("我在呢"),), channel="voice", confidence=0.9
-            ),
+            "_daily_life_expression_plan",
+            VoiceExpressionPlan(channel="voice", confidence=0.9),
         )
         runtime.mark_voice_switch_available(event)
         runtime._append_turn_history = AsyncMock()
@@ -319,7 +316,7 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
             outfit="外出运动服",
             timeline=[TimelineItem(time="23:00", activity="穿着" + outfit + "看电影")],
         )
-        result = await composer._apply_outfit_update_result(
+        result = await composer._part_outfit_component._apply_outfit_update_result(
             {
                 "outfit_decision": "sleepwear",
                 "outfit": outfit,

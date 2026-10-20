@@ -116,18 +116,6 @@ class ExpressionLearningComponent:
                     for item in reply_ids
                 ):
                     continue
-                # 每次回应只计一次后续反馈，不能用同一轮的连发消息凑次数。
-                paired = {
-                    max(
-                        (
-                            by_id[item][0]
-                            for item in reply_ids
-                            if by_id[item][0] < by_id[user][0]
-                        ),
-                        default=-1,
-                    )
-                    for user in user_ids
-                } - {-1}
                 effect_ids = references(raw, "reply_effect_ids")
                 valid_effects = [
                     effects[item] for item in effect_ids if item in effects
@@ -143,11 +131,19 @@ class ExpressionLearningComponent:
                             record.profile_id,
                         )
                     ]
-                effect_targets = {
+                # 继续聊天只证明对话延续。稳定习惯需要独立、已判定的反馈，
+                # 不能把三次普通接话或同一轮连发当作对某种语气的认可。
+                positive = {
                     str(item.get("target_message_id") or item["id"])
                     for item in valid_effects
+                    if item["outcome"] == "positive" and item.get("friction", 0) < 30
                 }
-                if max(len(paired), len(effect_targets)) < 3:
+                negative = {
+                    str(item.get("target_message_id") or item["id"])
+                    for item in valid_effects if item["outcome"] == "negative"
+                }
+                avoidance = len(negative) >= 3 and record.avoid and not record.habits
+                if not avoidance and (len(positive) < 3 or negative):
                     continue
             elif basis != "explicit":
                 continue

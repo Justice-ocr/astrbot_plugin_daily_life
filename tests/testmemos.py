@@ -58,7 +58,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         event = Event(sender_name="消息已有昵称")
         self.assertEqual(
             await asyncio.wait_for(
-                runtime._build_injection_memos_context(event), 0.4
+                runtime._part_layer_chain_component._build_injection_memos_context(event), 0.4
             ),
             "",
         )

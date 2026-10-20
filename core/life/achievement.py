@@ -150,7 +150,11 @@ def apply_reviews(
         }
         step.setdefault("reviews", []).append(review)
         step["reviews"] = step["reviews"][-20:]
-        step["status"] = "completed" if verdict == "passed" else "needs_practice"
+        step["status"] = {
+            "passed": "completed", "needs_practice": "needs_practice",
+            "uncertain": "awaiting_review",
+        }[verdict]
+        step["review_state"] = reason
         step["next_step"] = review["next_step"]
         skill_name = str(goal.get("skill") or "").strip()
         if skill_name:
@@ -170,3 +174,23 @@ def apply_reviews(
             summary=f"阶段成果复核：{step['title']}；{verdict}；{reason}",
             evidence_ids=[item["action_id"] for item in valid],
         )
+
+
+def refresh_review_state(world: dict[str, Any]) -> None:
+    """显式保留停滞原因，让缺成果、待复核与未通过各自延续。"""
+    offered = {(row["goal_id"], row["step_id"]) for row in review_candidates(world)}
+    for goal in world.get("goals", []):
+        if goal.get("status") != "active":
+            continue
+        for step in goal.get("steps", []):
+            if step.get("status") != "awaiting_review":
+                step.pop("review_pending", None)
+                continue
+            reviews = step.get("reviews") or []
+            step["review_pending"] = (goal["id"], step["id"]) in offered
+            if reviews and reviews[-1].get("verdict") == "uncertain":
+                step["review_state"] = reviews[-1].get("reason") or "验收依据仍不充分"
+            elif (goal["id"], step["id"]) in offered:
+                step["review_state"] = "已有执行成果，等待独立复核；不要以重复计时替代验收"
+            else:
+                step["review_state"] = "已有练习投入，但缺少可验收的成果；下一次需补足具体成果"

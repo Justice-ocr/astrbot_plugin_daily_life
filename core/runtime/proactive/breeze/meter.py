@@ -25,24 +25,16 @@ class AirMeterComponentContext(Protocol):
     _AIR_MAX_RECENT_MESSAGES: Any
     _AIR_WAIT_SECONDS: Any
     _air_backoff_seconds: Any
-    _air_label: Any
     _event_has_quote: Any
     _event_is_directed: Any
     _event_is_group_message: Any
     _event_message_id: Any
     _event_session_id: Any
     _get_proactive_air_state: Any
-    _proactive_air_delta: Any
     _proactive_air_state: Any
-    _proactive_air_states: Any
-    _proactive_context_score: Any
     _proactive_idle_seconds: Any
-    _proactive_message_score: Any
-    _proactive_observe_result: Any
     _proactive_scope_key: Any
-    _proactive_state_score: Any
     _proactive_target_payload: Any
-    _proactive_timing_delta: Any
     _reset_proactive_air_state: Any
     _response_gate_current_state: Any
     _response_gate_experience_delta: Any
@@ -51,7 +43,6 @@ class AirMeterComponentContext(Protocol):
     _response_gate_relationship_delta: Any
     _response_gate_state_delta: Any
     _safe_event_call: Any
-    _select_proactive_reply_target: Any
     config: Any
 
 
@@ -74,7 +65,7 @@ class AirMeterComponent:
         return states
 
     def _get_proactive_air_state(self, key: str) -> dict[str, Any]:
-        return self.context._proactive_air_states().setdefault(
+        return self._proactive_air_states().setdefault(
             key,
             {
                 "quiet_count": 0,
@@ -90,7 +81,7 @@ class AirMeterComponent:
 
     def _reset_proactive_air_state(self, key: str) -> None:
         if key:
-            self.context._proactive_air_states().pop(key, None)
+            self._proactive_air_states().pop(key, None)
 
     def _air_label(self, state: dict[str, Any] | None = None) -> str:
         state = state or {}
@@ -113,7 +104,7 @@ class AirMeterComponent:
 
     def _format_proactive_air_state(self, key: str, now: datetime.datetime) -> str:
         state = self.context._get_proactive_air_state(key)
-        parts = [self.context._air_label(state)]
+        parts = [self._air_label(state)]
         quiet_count = int(state.get("quiet_count") or 0)
         if quiet_count:
             parts.append(f"连续克制 {quiet_count} 次")
@@ -330,18 +321,18 @@ class AirMeterComponent:
         key = self.context._proactive_scope_key(event)
         is_group = self.context._event_is_group_message(event)
         reasons: list[str] = []
-        local_target = self.context._select_proactive_reply_target(event)
-        score, interrupt = self.context._proactive_message_score(
+        local_target = self._select_proactive_reply_target(event)
+        score, interrupt = self._proactive_message_score(
             event,
             pending_count=pending_count,
             is_group=is_group,
             reasons=reasons,
         )
-        score += self.context._proactive_timing_delta(event, now, reasons)
+        score += self._proactive_timing_delta(event, now, reasons)
 
         if key:
-            score += self.context._proactive_air_delta(key, reasons)
-        state_score, blocked = await self.context._proactive_state_score(
+            score += self._proactive_air_delta(key, reasons)
+        state_score, blocked = await self._proactive_state_score(
             now,
             is_group=is_group,
             pending_count=pending_count,
@@ -350,7 +341,7 @@ class AirMeterComponent:
         )
         score += state_score
         if blocked:
-            return self.context._proactive_observe_result(
+            return self._proactive_observe_result(
                 score,
                 reasons,
                 interrupt,
@@ -358,14 +349,14 @@ class AirMeterComponent:
                 can_interrupt=False,
                 confidence=1.0,
             )
-        score += await self.context._proactive_context_score(event, now, key, reasons)
+        score += await self._proactive_context_score(event, now, key, reasons)
 
         score = max(0.0, min(score, 1.0))
         threshold = 0.16 if not is_group else 0.2
         if pending_count >= self.context._AIR_BYPASS_PENDING_COUNT:
             threshold = min(threshold, 0.1)
         if score < threshold:
-            return self.context._proactive_observe_result(
+            return self._proactive_observe_result(
                 score, reasons, interrupt, local_target, can_interrupt=True
             )
         result = {

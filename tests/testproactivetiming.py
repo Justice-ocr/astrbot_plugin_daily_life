@@ -21,7 +21,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
     async def test_normal_reply_replaces_timer_and_evaluates_once(self):
         runtime, _ = self._make_proactive_runtime([])
         runtime._runtime_initialized = True
-        runtime._proactive_candidate_delay_seconds = lambda *args: 0.02
+        runtime._part_proactive_scope_component._proactive_candidate_delay_seconds = lambda *args: 0.02
         evaluated = asyncio.Event()
         observed = []
 
@@ -64,7 +64,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(candidate["recent_messages"][-1]["content"], "嗯")
         self.assertEqual(candidate["last_bot_reply_at"], base + datetime.timedelta(minutes=1))
         self.assertEqual(candidate["next_evaluation_at"], base + datetime.timedelta(minutes=90))
-        self.assertFalse(runtime._idle_candidate_ready(candidate, base + datetime.timedelta(minutes=70)))
+        self.assertFalse(runtime._part_proactive_flow_component._idle_candidate_ready(candidate, base + datetime.timedelta(minutes=70)))
         self.assertTrue(runtime._proactive_allowed_for_event(runtime._proactive_candidate_event(candidate), continuing=True))
 
     async def test_normal_reply_invalidates_inflight_idle_decision(self):
@@ -168,7 +168,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         runtime.call_text_model = model
         runtime.close_text_session = AsyncMock()
         with patch("core.runtime.choice.apply.RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS", 0.02):
-            result = await runtime._response_gate_semantic_decision(
+            result = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
                 self.private_event(), score=0.9, reasons=[], pending_count=1, wait_state=None,
             )
         self.assertIsNone(result)
@@ -182,11 +182,11 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         runtime.apply_interaction_turn_decision = AsyncMock()
 
         async def model(*args, **kwargs):
-            runtime._response_gate_superseded_decision = lambda event: {"superseded": True}
+            runtime._part_response_gate_apply_component._response_gate_superseded_decision = lambda event: {"superseded": True}
             return '{"action":"reply","confidence":0.95,"interaction":{"decision":"set","mode":"co_present","confidence":0.95}}'
 
         runtime.call_text_model = model
-        result = await runtime._response_gate_semantic_decision(
+        result = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
             self.private_event(), score=0.9, reasons=[], pending_count=1, wait_state=None,
         )
         self.assertIsNone(result)
@@ -199,7 +199,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             {"role": "assistant", "name": "角色", "content": "那我们晚上再聊", "message_id": "a1"},
             {"role": "user", "content": "好", "message_id": "m1"},
         ]
-        await runtime._response_gate_semantic_decision(
+        await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
             self.private_event("好"), score=0.9, reasons=[], pending_count=1, wait_state=None,
         )
         self.assertIn('"role": "assistant"', provider.prompts[0])

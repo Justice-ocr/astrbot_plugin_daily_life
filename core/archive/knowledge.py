@@ -1404,6 +1404,30 @@ class CognitionArchiveComponent:
 
         return await self.context._run_db(dbwork)
 
+    async def recover_provider_blocked_task(self, task_id: int, fingerprint: str) -> bool:
+        """只有配置确实变化的受阻主动承诺可以重新取得执行机会。"""
+        def write() -> bool:
+            row = self.context._conn.execute(
+                "SELECT result_json FROM durable_tasks WHERE id=? AND status='dead' "
+                "AND kind='proactive_commitment'", (task_id,),
+            ).fetchone()
+            if not row or not fingerprint:
+                return False
+            result = json.loads(row["result_json"] or "{}")
+            block = (result.get("progress") or {}).get("provider_block") or {}
+            if not block.get("fingerprint") or block["fingerprint"] == fingerprint:
+                return False
+            result["recovered_from"] = {"fingerprint": block["fingerprint"], "at": self.context._cognition_now()}
+            result.get("progress", {}).pop("provider_block", None)
+            cursor = self.context._conn.execute(
+                "UPDATE durable_tasks SET status='pending',attempts=0,available_at=?,last_error='',"
+                "result_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='dead'",
+                (self.context._cognition_now(), self.context._cognition_json(result, default={}), task_id),
+            )
+            self.context._conn.commit()
+            return bool(cursor.rowcount)
+        return await self.context._run_db(write)
+
     async def fail_durable_task(
         self,
         task_id: int,

@@ -144,17 +144,13 @@ class LifeBackgroundComposer:
         return None, ""
 
     async def _temporary_provider_for_call(
-        self, primary_provider_id: str, reason: str = ""
+        self, primary_provider_id: str, reason: str = "", *, call_id: str = "",
     ):
         provider, temporary_id = await self._system_default_provider(
             primary_provider_id
         )
         if not provider:
             return None, ""
-        suffix = f"：{reason}" if reason else ""
-        logger.info(
-            f"[日常生活] 指定大语言模型本次调用不可用，临时使用当前默认模型（{temporary_id}）{suffix}"
-        )
         return provider, temporary_id
 
     def _generation_provider_id(self) -> str:
@@ -169,10 +165,9 @@ class LifeBackgroundComposer:
         if provider_id:
             try:
                 provider = await self._provider_by_id(provider_id)
-            except Exception as e:
-                logger.warning(
-                    f"[日常生活] 获取指定大语言模型供应商失败（{provider_id}）：{e}"
-                )
+            except Exception:
+                # 指定模型不可用时由调用层选择当前默认模型；不把供应商正文写入日志。
+                pass
         return provider or self.context.get_using_provider()
 
     @staticmethod
@@ -277,6 +272,7 @@ class LifeBackgroundComposer:
         timeout_seconds: float | None = None,
     ) -> str:
         primary_provider_id = str(primary_provider_id or "").strip()
+        call_id = " ".join(str(session_id or "内部任务").split())[:120]
         current_provider = provider
         provider_meta_id = self._provider_meta_id(provider)
         current_provider_id = provider_meta_id or primary_provider_id
@@ -294,7 +290,7 @@ class LifeBackgroundComposer:
             if not primary_provider_id or current_provider_id != primary_provider_id:
                 return False
             temporary_provider, temporary_id = await self._temporary_provider_for_call(
-                primary_provider_id, reason
+                primary_provider_id, reason, call_id=call_id,
             )
             if not temporary_provider:
                 return False
@@ -304,9 +300,6 @@ class LifeBackgroundComposer:
 
         if self._provider_circuit.is_open(current_provider_id):
             if not await switch_to_temporary_provider("连续失败熔断"):
-                logger.warning(
-                    f"[日常生活] 大语言模型服务暂时熔断：提供商={current_provider_id or '默认'}"
-                )
                 return ""
 
         attempt = 0
@@ -328,21 +321,26 @@ class LifeBackgroundComposer:
                     ),
                     timeout=request_timeout,
                 )
+            except asyncio.CancelledError:
+                self.model_cache_metrics.record(
+                    None, kind="internal", model=metric_identity,
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    failed=True, cancelled=True, prefix_version=prefix_version,
+                )
+                raise
             except Exception as exc:
+                elapsed_ms = (time.perf_counter() - started) * 1000
                 self.model_cache_metrics.record(None, kind="internal", model=metric_identity,
-                    elapsed_ms=(time.perf_counter() - started) * 1000, failed=True,
+                    elapsed_ms=elapsed_ms, failed=True,
                     prefix_version=prefix_version)
                 err_text = str(exc).strip() or type(exc).__name__
                 if isinstance(exc, TimeoutError):
                     err_text = f"TimeoutError：模型请求超时（上限 {request_timeout:g} 秒）"
                 status = exception_status(exc)
+                non_retryable = is_non_retryable_provider_error(exc)
                 if status == 401 and await switch_to_temporary_provider("401"):
                     continue
-                if is_non_retryable_provider_error(exc):
-                    logger.warning(
-                        f"[日常生活] 大语言模型请求不可重试：状态={status or '未知'}；"
-                        f"提供商={current_provider_id or '默认'}；错误={err_text[:300]}"
-                    )
+                if non_retryable:
                     if propagate_non_retryable:
                         raise NonRetryableProviderError(
                             err_text,
@@ -352,26 +350,13 @@ class LifeBackgroundComposer:
                     return ""
                 transient = is_transient_provider_error(exc)
                 if transient:
-                    opened = self._provider_circuit.record_failure(current_provider_id)
-                else:
-                    opened = False
+                    self._provider_circuit.record_failure(current_provider_id)
                 if attempt < empty_retries:
-                    logger.warning(
-                        f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次；"
-                        f"{'瞬时故障' if transient else '未知故障'}）：{err_text[:300]}"
-                    )
                     await asyncio.sleep(retry_delay(attempt))
                     attempt += 1
                     continue
-                if opened:
-                    logger.warning(
-                        f"[日常生活] 大语言模型服务已短暂熔断：提供商={current_provider_id or '默认'}"
-                    )
                 if await switch_to_temporary_provider("调用异常"):
                     continue
-                logger.warning(
-                    f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次）：{err_text[:300]}"
-                )
                 return ""
 
             text = self._extract_completion_text(resp)
@@ -384,7 +369,6 @@ class LifeBackgroundComposer:
                 self._provider_circuit.record_success(current_provider_id)
                 return text
             if attempt < empty_retries:
-                logger.warning("[日常生活] 大语言模型返回为空，准备重试一次")
                 attempt += 1
                 continue
             if await switch_to_temporary_provider("返回空响应"):
@@ -434,13 +418,11 @@ class LifeBackgroundComposer:
 
     _get_persona = ComponentCall("_part_reference_component", ReferenceComponent, "_get_persona")
 
-    _get_default_persona = ComponentCall("_part_reference_component", ReferenceComponent, "_get_default_persona")
 
     _extract_persona_prompt = staticmethod(ReferenceComponent._extract_persona_prompt)
 
     _cleanup_conversation = ComponentCall("_part_reference_component", ReferenceComponent, "_cleanup_conversation")
 
-    _resolve_reference_user_name = ComponentCall("_part_reference_component", ReferenceComponent, "_resolve_reference_user_name")
 
     _resolve_reference_user_profile = ComponentCall("_part_reference_component", ReferenceComponent, "_resolve_reference_user_profile")
 
@@ -452,17 +434,12 @@ class LifeBackgroundComposer:
 
     _clean_reference_name_candidate = staticmethod(ReferenceComponent._clean_reference_name_candidate)
 
-    _fetch_deep_history = ComponentCall("_part_reference_component", ReferenceComponent, "_fetch_deep_history")
 
     _get_recent_chats = ComponentCall("_part_reference_component", ReferenceComponent, "_get_recent_chats")
 
-    _get_onebot_recent_chats = ComponentCall("_part_reference_component", ReferenceComponent, "_get_onebot_recent_chats")
 
-    _format_saved_recent_chats = ComponentCall("_part_reference_component", ReferenceComponent, "_format_saved_recent_chats")
 
-    _saved_private_chat_name = ComponentCall("_part_reference_component", ReferenceComponent, "_saved_private_chat_name")
 
-    _get_persona_user_name = ComponentCall("_part_reference_component", ReferenceComponent, "_get_persona_user_name")
 
     _build_person_fact_context = ComponentCall("_part_person_fact_component", PersonFactComponent, "_build_person_fact_context")
 
@@ -472,13 +449,9 @@ class LifeBackgroundComposer:
 
     _build_recent_pattern_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_recent_pattern_context")
 
-    _build_short_term_life_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_short_term_life_context")
 
-    _build_emotion_arc_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_emotion_arc_context")
 
-    _build_recent_life_decision_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_recent_life_decision_context")
 
-    _build_execution_review_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_execution_review_context")
 
     _build_autonomous_life_context = ComponentCall("_part_life_autonomy_component", LifeAutonomyComponent, "_build_autonomous_life_context")
 
@@ -496,7 +469,6 @@ class LifeBackgroundComposer:
 
     generate_week_plan = ComponentCall("_part_week_component", WeekComponent, "generate_week_plan")
 
-    _generate_week_plan_unlocked = ComponentCall("_part_week_component", WeekComponent, "_generate_week_plan_unlocked")
 
     _set_validation_issue = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_set_validation_issue")
 
@@ -524,41 +496,29 @@ class LifeBackgroundComposer:
 
     _validate_outfit_style = staticmethod(DailyContractComponent._validate_outfit_style)
 
-    _validate_generation_contract = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_validate_generation_contract")
 
     _timeline_minutes = staticmethod(DailyContractComponent._timeline_minutes)
 
     _minutes_text = staticmethod(DailyContractComponent._minutes_text)
 
-    _timeline_raw_minutes = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_raw_minutes")
 
-    _timeline_unwrapped_minutes = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_unwrapped_minutes")
 
     _timeline_item_duration = staticmethod(DailyContractComponent._timeline_item_duration)
 
-    _timeline_covered_end_minutes = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_covered_end_minutes")
 
-    _timeline_cadence_issue = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_cadence_issue")
 
-    _timeline_density_issue = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_density_issue")
 
-    _timeline_coverage = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_coverage")
 
-    _timeline_bounds = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_timeline_bounds")
 
     _full_day_coverage_profile = staticmethod(DailyContractComponent._full_day_coverage_profile)
 
-    _declared_life_window = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_declared_life_window")
 
     _full_day_coverage_thresholds = staticmethod(DailyContractComponent._full_day_coverage_thresholds)
 
     _full_day_coverage_ok = classmethod(DailyContractComponent._full_day_coverage_ok.__func__)
 
-    _derive_timeline_audit = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_derive_timeline_audit")
 
-    _apply_derived_timeline_audit = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_apply_derived_timeline_audit")
 
-    _validate_timeline_rhythm = ComponentCall("_part_daily_contract_component", DailyContractComponent, "_validate_timeline_rhythm")
 
     _coverage_contract = staticmethod(DailyContractComponent._coverage_contract)
 
@@ -574,15 +534,12 @@ class LifeBackgroundComposer:
 
     _timeline_prompt_week_section = staticmethod(DailyDraftComponent._timeline_prompt_week_section)
 
-    _timeline_prompt_chat_section = ComponentCall("_part_daily_draft_component", DailyDraftComponent, "_timeline_prompt_chat_section")
 
     _timeline_prompt_memo_section = staticmethod(DailyDraftComponent._timeline_prompt_memo_section)
 
     _timeline_prompt_repeat_section = staticmethod(DailyDraftComponent._timeline_prompt_repeat_section)
 
-    _timeline_prompt_fixed_contract = ComponentCall("_part_daily_draft_component", DailyDraftComponent, "_timeline_prompt_fixed_contract")
 
-    _timeline_prompt_dynamic_sections = ComponentCall("_part_daily_draft_component", DailyDraftComponent, "_timeline_prompt_dynamic_sections")
 
     _build_timeline_prompt = ComponentCall("_part_daily_draft_component", DailyDraftComponent, "_build_timeline_prompt")
 
@@ -620,9 +577,7 @@ class LifeBackgroundComposer:
 
     _persist_generated_day = ComponentCall("_part_daily_record_component", DailyRecordComponent, "_persist_generated_day")
 
-    _persist_physiological_rhythm_log = ComponentCall("_part_daily_record_component", DailyRecordComponent, "_persist_physiological_rhythm_log")
 
-    _persist_daily_experience = ComponentCall("_part_daily_record_component", DailyRecordComponent, "_persist_daily_experience")
 
     _daily_location_request_prompt = staticmethod(DailyLocationGenerationComponent._daily_location_request_prompt)
 
@@ -634,23 +589,17 @@ class LifeBackgroundComposer:
 
     _normalize_extra = staticmethod(DailyEngineComponent._normalize_extra)
 
-    _daily_generation_check_time = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "_daily_generation_check_time")
 
-    _daily_generation_context = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "_daily_generation_context")
 
     _build_daily_replacement_context = staticmethod(DailyEngineComponent._build_daily_replacement_context)
 
-    _daily_generation_memo_text = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "_daily_generation_memo_text")
 
-    _persist_daily_generation_success = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "_persist_daily_generation_success")
 
-    _ground_generated_current_appearance = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "_ground_generated_current_appearance")
 
     generate_daily = ComponentCall("_part_daily_engine_component", DailyEngineComponent, "generate_daily")
 
     _meta_float = staticmethod(LifecycleComponent._meta_float)
 
-    _build_preference_consistency_prompt = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_build_preference_consistency_prompt")
 
     maintain_preference_consistency = ComponentCall("_part_lifecycle_component", LifecycleComponent, "maintain_preference_consistency")
 
@@ -662,21 +611,14 @@ class LifeBackgroundComposer:
 
     _format_physiological_rhythm_trend_context = staticmethod(LifecycleComponent._format_physiological_rhythm_trend_context)
 
-    _build_daily_review_prompt = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_build_daily_review_prompt")
 
-    _fallback_daily_review = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_fallback_daily_review")
 
     compose_daily_review = ComponentCall("_part_lifecycle_component", LifecycleComponent, "compose_daily_review")
 
-    _mark_daily_review_completed = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_mark_daily_review_completed")
 
-    _apply_focus_review_updates = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_apply_focus_review_updates")
 
-    _apply_timeline_review_updates = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_apply_timeline_review_updates")
 
-    _apply_life_decision_review_outcomes = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_apply_life_decision_review_outcomes")
 
-    _apply_life_event_review_updates = ComponentCall("_part_lifecycle_component", LifecycleComponent, "_apply_life_event_review_updates")
 
     learn_preferences_from_payload = ComponentCall("_part_lifecycle_component", LifecycleComponent, "learn_preferences_from_payload")
 
@@ -744,7 +686,6 @@ class LifeBackgroundComposer:
 
     _merge_audited_places = classmethod(InviteComponent._merge_audited_places.__func__)
 
-    _audit_future_timeline = ComponentCall("_part_invite_component", InviteComponent, "_audit_future_timeline")
 
     handle_invite = ComponentCall("_part_invite_component", InviteComponent, "handle_invite")
 
@@ -770,19 +711,12 @@ class LifeBackgroundComposer:
 
     _outfit_scene_context_text = staticmethod(OutfitComponent._outfit_scene_context_text)
 
-    _outfit_update_context = ComponentCall("_part_outfit_component", OutfitComponent, "_outfit_update_context")
 
-    _outfit_appearance_context = ComponentCall("_part_outfit_component", OutfitComponent, "_outfit_appearance_context")
 
-    _build_outfit_update_prompt = ComponentCall("_part_outfit_component", OutfitComponent, "_build_outfit_update_prompt")
 
-    _resolve_outfit_catalog_appearance = ComponentCall("_part_outfit_component", OutfitComponent, "_resolve_outfit_catalog_appearance")
 
-    _record_outfit_update_decision = ComponentCall("_part_outfit_component", OutfitComponent, "_record_outfit_update_decision")
 
-    _persist_outfit_commit = ComponentCall("_part_outfit_component", OutfitComponent, "_persist_outfit_commit")
 
-    _apply_outfit_update_result = ComponentCall("_part_outfit_component", OutfitComponent, "_apply_outfit_update_result")
 
     update_outfit = ComponentCall("_part_outfit_component", OutfitComponent, "update_outfit")
 

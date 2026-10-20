@@ -26,7 +26,6 @@ class WeekComponentContext(Protocol):
     _cleanup_conversation: Any
     _current_residence_boundary_date: Any
     _gen_lock: Any
-    _generate_week_plan_unlocked: Any
     _generation_provider_id: Any
     _get_persona: Any
     _get_provider: Any
@@ -78,14 +77,14 @@ class WeekComponent:
         plan = await self.context.archive.get_week_plan(get_week_id())
         if plan and plan.generated:
             return plan
-        generated = await self.context._generate_week_plan_unlocked(
+        generated = await self._generate_week_plan_unlocked(
             goals=goals, web_inspiration=web_inspiration
         )
         return generated or await self.context._get_week_plan()
 
     async def generate_week_plan(self, goals: str = "", web_inspiration: str = ""):
         async with self.context._gen_lock:
-            return await self.context._generate_week_plan_unlocked(
+            return await self._generate_week_plan_unlocked(
                 goals=goals, web_inspiration=web_inspiration
             )
 

@@ -18,6 +18,7 @@ def ready_steps(goal: dict[str, Any]) -> list[dict[str, Any]]:
         step
         for step in steps
         if step.get("status") in {"pending", "awaiting_review", "needs_practice"}
+        and not (step.get("status") == "awaiting_review" and step.get("review_pending"))
         and set(step.get("depends_on", [])) <= completed
     ]
 

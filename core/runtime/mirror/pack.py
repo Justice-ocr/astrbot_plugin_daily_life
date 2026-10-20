@@ -21,12 +21,9 @@ class SnapshotPackComponentContext(Protocol):
     _event_group_meta: Any
     _event_session_id: Any
     _injection_snapshot_cache: Any
-    _injection_snapshot_flight: Any
     _injection_snapshot_singleflight: Any
     _page_status_version: Any
-    _read_life_context_snapshot: Any
     _settle_stale_reply_effects: Any
-    _store_injection_snapshot: Any
     archive: Any
     config: Any
     context_snapshot: Any
@@ -108,7 +105,7 @@ class SnapshotPackComponent:
         )
 
         if int(getattr(self.context, "_page_status_version", 0) or 0) == snapshot_version:
-            self.context._store_injection_snapshot(cache, cache_key, snapshot)
+            self._store_injection_snapshot(cache, cache_key, snapshot)
         return dict(snapshot)
 
     async def _close_injection_snapshot_flight(self) -> None:
@@ -144,9 +141,9 @@ class SnapshotPackComponent:
             cached = self.context._cached_injection_snapshot(cache, cache_key)
             if cached is not None:
                 return cached
-            snapshot, shared = await self.context._injection_snapshot_flight().run(
+            snapshot, shared = await self._injection_snapshot_flight().run(
                 cache_key,
-                lambda: self.context._read_life_context_snapshot(
+                lambda: self._read_life_context_snapshot(
                     cache=cache,
                     cache_key=cache_key,
                     max_summaries=max_summaries,
@@ -159,7 +156,7 @@ class SnapshotPackComponent:
                 logger.debug(f"{LOG_PREFIX} 上下文快照合并了同键并发读取")
             return dict(snapshot)
 
-        return await self.context._read_life_context_snapshot(
+        return await self._read_life_context_snapshot(
             cache=cache,
             cache_key=cache_key,
             max_summaries=max_summaries,

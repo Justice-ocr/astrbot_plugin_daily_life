@@ -42,13 +42,10 @@ class ResponseGateApplyComponentContext(Protocol):
     _response_gate_record_seen: Any
     _response_gate_relationship_delta: Any
     _response_gate_reply: Any
-    _response_gate_scope_enabled: Any
     _response_gate_scope_key: Any
     _response_gate_score: Any
-    _response_gate_semantic_decision: Any
     _response_gate_semantic_metrics: Any
     _response_gate_should_skip: Any
-    _response_gate_superseded_decision: Any
     _response_gate_visible_text: Any
     _response_gate_wait_state: Any
     _suppress_default_llm: Any
@@ -264,7 +261,7 @@ JSON 输出要求：
             if not isinstance(payload, dict):
                 self.context._response_gate_semantic_metrics["invalid"] += 1
                 return None
-            if self.context._response_gate_superseded_decision(event):
+            if self._response_gate_superseded_decision(event):
                 return None
             interaction_applier = getattr(self.context, "apply_interaction_turn_decision", None)
             if callable(interaction_applier):
@@ -315,7 +312,7 @@ JSON 输出要求：
         *,
         now: datetime.datetime | None = None,
     ) -> dict[str, Any]:
-        superseded = self.context._response_gate_superseded_decision(event)
+        superseded = self._response_gate_superseded_decision(event)
         if superseded:
             return superseded
         follow_up_checker = getattr(
@@ -331,7 +328,7 @@ JSON 输出要求：
                 "命令、插件处理、自身消息或已停止事件不进入门控"
             )
         is_group = self.context._event_is_group_message(event)
-        if not self.context._response_gate_scope_enabled(event):
+        if not self._response_gate_scope_enabled(event):
             scope = "群聊" if is_group else "私聊"
             return self.context._response_gate_reply(f"未启用{scope}随心回复")
 
@@ -377,7 +374,7 @@ JSON 输出要求：
             self.context._response_gate_feedback_delta(key, feedback_reasons),
             self.context._response_gate_experience_delta(key, event, experience_reasons),
         )
-        superseded = self.context._response_gate_superseded_decision(event)
+        superseded = self._response_gate_superseded_decision(event)
         if superseded:
             return superseded
         score, reasons = self.context._response_gate_score(event, state, pending_count, now)
@@ -390,14 +387,14 @@ JSON 输出要求：
             score += 0.08
         score = max(0.0, min(score, 1.0))
 
-        semantic = await self.context._response_gate_semantic_decision(
+        semantic = await self._response_gate_semantic_decision(
             event,
             score=score,
             reasons=reasons,
             pending_count=pending_count,
             wait_state=wait_state,
         )
-        superseded = self.context._response_gate_superseded_decision(event)
+        superseded = self._response_gate_superseded_decision(event)
         if superseded:
             return superseded
         if semantic:

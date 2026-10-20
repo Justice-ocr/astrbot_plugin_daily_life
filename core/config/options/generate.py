@@ -264,6 +264,8 @@ class VideoGenerationSettings:
 class VoiceGenerationSettings:
     enabled: bool = False
     smart_switch_enabled: bool = True
+    expression_provider: str = ""
+    expression_timeout_seconds: float = 8.0
     smart_switch_probability: float = 35.0
     proactive_enabled: bool = False
     api_key: str = ""
@@ -281,6 +283,10 @@ class VoiceGenerationSettings:
         return VoiceGenerationSettings(
             enabled=as_bool(data.get("enabled", False), False),
             smart_switch_enabled=as_bool(data.get("smart_switch_enabled", True), True),
+            expression_provider=as_str(data.get("expression_provider", "")).strip(),
+            expression_timeout_seconds=as_float(
+                data.get("expression_timeout_seconds", 8.0), 8.0, 1.0, 20.0
+            ),
             smart_switch_probability=as_float(
                 data.get("smart_switch_probability", 35.0), 35.0, 0.0, 100.0
             ),

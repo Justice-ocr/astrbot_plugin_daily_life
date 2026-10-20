@@ -22,6 +22,7 @@ _CATEGORY_LABELS = {
     "video": "视频任务",
     "vision": "图片识别",
     "durable": "媒体持久任务",
+    "reply": "回复表达加工",
 }
 
 
@@ -34,11 +35,13 @@ class BackgroundTaskScheduler:
         video_limit: int = 1,
         vision_limit: int = 2,
         durable_limit: int = 1,
+        reply_limit: int = 4,
         normal_backlog_limit: int = 64,
         chat_backlog_limit: int = 32,
         video_backlog_limit: int = 8,
         vision_backlog_limit: int = 16,
         durable_backlog_limit: int = 1,
+        reply_backlog_limit: int = 16,
         chat_label: str = "聊天记忆提炼",
         slow_task_seconds: float = 30.0,
     ):
@@ -49,12 +52,14 @@ class BackgroundTaskScheduler:
         self.video_gate = asyncio.Semaphore(video_limit)
         self.vision_gate = asyncio.Semaphore(vision_limit)
         self.durable_gate = asyncio.Semaphore(durable_limit)
+        self.reply_gate = asyncio.Semaphore(reply_limit)
         self._concurrency_limits = {
             "normal": max(1, int(normal_limit)),
             "chat": max(1, int(chat_limit)),
             "video": max(1, int(video_limit)),
             "vision": max(1, int(vision_limit)),
             "durable": max(1, int(durable_limit)),
+            "reply": max(1, int(reply_limit)),
         }
         self._backlog_limits = {
             "normal": max(0, int(normal_backlog_limit)),
@@ -62,6 +67,7 @@ class BackgroundTaskScheduler:
             "video": max(0, int(video_backlog_limit)),
             "vision": max(0, int(vision_backlog_limit)),
             "durable": max(0, int(durable_backlog_limit)),
+            "reply": max(0, int(reply_backlog_limit)),
         }
         self._scheduled_counts = dict.fromkeys(self._concurrency_limits, 0)
         self._dropped_counts = dict.fromkeys(self._concurrency_limits, 0)
@@ -194,6 +200,8 @@ class BackgroundTaskScheduler:
                 self._close_coro(coro)
 
     def gate(self, label: str = "", *, category: str = "") -> asyncio.Semaphore:
+        if category == "reply":
+            return self.reply_gate
         if category == "durable":
             return self.durable_gate
         if category == "video":

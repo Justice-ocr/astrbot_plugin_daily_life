@@ -45,7 +45,6 @@ _CREATIVE_STYLE_GENERATION_MODES = {"text_to_image", "image_to_image"}
 class RuntimeStyleCatalogComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _analyze_style_catalog_image: Any
     _background_tool_existing_result: Any
     _completion_text: Any
     _creative_style_prompt: Any
@@ -59,11 +58,8 @@ class RuntimeStyleCatalogComponentContext(Protocol):
     _learn_style_catalog_image: Any
     _life_character_reference_image: Any
     _life_image_reference_is_usable: Any
-    _life_style_learn_inline: Any
     _media_error_summary: Any
-    _persist_style_catalog_image: Any
     _prepare_style_catalog_image_bytes: Any
-    _remove_unused_style_catalog_image: Any
     _requested_style_kinds: Any
     _resolve_life_image_reference_async: Any
     _reverse_prompt_call_provider: Any
@@ -71,12 +67,8 @@ class RuntimeStyleCatalogComponentContext(Protocol):
     _snapshot_media_event: Any
     _style_analysis_item: Any
     _style_attributes: Any
-    _style_catalog_call_provider: Any
-    _style_catalog_contract: Any
     _style_catalog_result_text: Any
-    _style_feedback_decision: Any
     _style_item_ids: Any
-    _style_learning_images: Any
     _style_perceptual_hash: Any
     _style_text: Any
     _submit_background_tool: Any
@@ -87,6 +79,7 @@ class RuntimeStyleCatalogComponentContext(Protocol):
     data_path: Any
     get_text_provider: Any
     get_text_provider_candidates: Any
+    get_persona_text: Any
     media: Any
     queue_wardrobe_generation: Any
 
@@ -488,7 +481,7 @@ class RuntimeStyleCatalogComponent:
         sessions: list[str] = []
         last_error: Exception = RuntimeError("视觉模型不可用")
         try:
-            prompt = self.context._style_catalog_contract(note, kind)
+            prompt = self._style_catalog_contract(note, kind)
             index = 0
             async for provider in self.context.get_text_provider_candidates(
                 configured_provider_id
@@ -501,7 +494,7 @@ class RuntimeStyleCatalogComponent:
                     )
                 sessions.append(session_id)
                 try:
-                    return await self.context._style_catalog_call_provider(
+                    return await self._style_catalog_call_provider(
                         provider,
                         prompt,
                         image,
@@ -557,13 +550,13 @@ class RuntimeStyleCatalogComponent:
         kind: str = "auto",
         require_complete_clothing: bool = False,
     ) -> list[StyleCatalogItemRecord]:
-        cached_image, image_hash = await self.context._persist_style_catalog_image(
+        cached_image, image_hash = await self._persist_style_catalog_image(
             image,
             source_url=source_url,
         )
         if not image_hash:
             image_hash = hashlib.sha256(image.encode("utf-8")).hexdigest()
-        payload = await self.context._analyze_style_catalog_image(
+        payload = await self._analyze_style_catalog_image(
             cached_image or image, note=note, kind=kind
         )
         analyzed_by_kind = {
@@ -574,7 +567,7 @@ class RuntimeStyleCatalogComponent:
             analyzed_by_kind.get("outfit")
             or (analyzed_by_kind.get("top") and analyzed_by_kind.get("bottom"))
         ):
-            await self.context._remove_unused_style_catalog_image(cached_image or image)
+            await self._remove_unused_style_catalog_image(cached_image or image)
             return []
         perceptual_hash = await asyncio.to_thread(
             self.context._style_perceptual_hash, cached_image or image
@@ -639,7 +632,7 @@ class RuntimeStyleCatalogComponent:
         if saved and all(
             str(item.image_path or "") != str(cached_image or image) for item in saved
         ):
-            await self.context._remove_unused_style_catalog_image(cached_image or image)
+            await self._remove_unused_style_catalog_image(cached_image or image)
         return saved
 
     def _creative_style_prompt(
@@ -647,14 +640,22 @@ class RuntimeStyleCatalogComponent:
         requirement: str,
         *,
         generation_mode: str,
+        persona: str = "",
         sequence: int = 1,
         total: int = 1,
     ) -> str:
         identity_rule = (
-            "参考图仅用于保持同一角色的脸部气质、体态和身份辨识度；"
-            "忽略参考图已有的服装、鞋袜、配饰、发型、妆容和美甲，本次造型完全以以下要求为准。"
+            "参考图用于保持同一角色的身份与未要求改变的外观；"
+            "忽略参考图已有的服装，按以下需求重新搭配。"
             if generation_mode == "image_to_image"
             else "人物不绑定任何现有角色或身份，不使用任何角色形象参考图。"
+        )
+        persona_context = (
+            "\n角色设定（只用于当前角色的身份和造型适配）：\n"
+            + str(persona or "").strip()
+            + "\n"
+            if generation_mode == "image_to_image" and str(persona or "").strip()
+            else ""
         )
         request_text = (
             self.context._style_text(requirement, 1000)
@@ -668,11 +669,12 @@ class RuntimeStyleCatalogComponent:
         )
         return (
             "生成一张真实、自然、生活化的单人完整造型照片。"
-            "竖幅 2:3，全身从头到鞋完整入镜，脸部、双手、指甲、发型、鞋袜和可见配饰都清晰可辨；"
+            "竖幅 2:3，全身从头到鞋完整入镜，脸部、发型、实际穿戴的鞋袜和配饰清晰可辨；"
             "人物穿着一套可在真实日常中使用的完整搭配，不使用拼贴、分屏、商品陈列、文字、品牌标识或水印。"
             f"{identity_rule}"
+            f"{persona_context}"
             f"用户本次生成需求（最高优先级）：{request_text}。"
-            "请同时清楚呈现套装或上装与下装、鞋袜、配饰、发型、妆容和美甲；"
+            "服装应搭配完整，其余造型细节依据角色设定与本次要求选用。"
             "所有细节必须与生活场景一致，居家场景不要加入仅适合外出的携带物品。"
             f"{variation}"
         )
@@ -747,6 +749,11 @@ class RuntimeStyleCatalogComponent:
                 )
 
         batch_id = f"creative_{uuid.uuid4().hex[:12]}"
+        persona = (
+            await self.context.get_persona_text()
+            if selected_mode == "image_to_image"
+            else ""
+        )
         saved: list[StyleCatalogItemRecord] = []
         failures: list[str] = []
         for index in range(target_count):
@@ -754,6 +761,7 @@ class RuntimeStyleCatalogComponent:
             prompt = self.context._creative_style_prompt(
                 user_requirement,
                 generation_mode=selected_mode,
+                persona=persona,
                 sequence=index + 1,
                 total=target_count,
             )
@@ -828,7 +836,7 @@ class RuntimeStyleCatalogComponent:
         image_path = self.context._style_text(item.image_path, 1500)
         if not image_path or not await asyncio.to_thread(path_exists, image_path):
             raise ValueError("衣橱素材图片不存在")
-        payload = await self.context._analyze_style_catalog_image(
+        payload = await self._analyze_style_catalog_image(
             image_path,
             note=note,
             kind="auto",
@@ -922,7 +930,7 @@ class RuntimeStyleCatalogComponent:
         if existing:
             return existing
         snapshot = self.context._snapshot_media_event(event)
-        images = await self.context._style_learning_images(
+        images = await self._style_learning_images(
             snapshot, reference_image, reference_images
         )
         if not images:
@@ -935,7 +943,7 @@ class RuntimeStyleCatalogComponent:
         return self.context._submit_background_tool(
             snapshot,
             event,
-            lambda: self.context._life_style_learn_inline(
+            lambda: self._life_style_learn_inline(
                 snapshot, source_url=source_url, note=note, kind=kind
             ),
             tool_name="life_style_learn",
@@ -997,7 +1005,7 @@ class RuntimeStyleCatalogComponent:
         images = (
             list(locked)
             if locked is not None
-            else await self.context._style_learning_images(
+            else await self._style_learning_images(
                 event, reference_image, reference_images
             )
         )
@@ -1166,7 +1174,7 @@ class RuntimeStyleCatalogComponent:
                 media="style_catalog",
             )
         try:
-            payload = await self.context._style_feedback_decision(items, feedback)
+            payload = await self._style_feedback_decision(items, feedback)
         except Exception as exc:
             return ToolResultText(
                 f"视觉衣橱反馈处理失败：{self.context._media_error_summary(exc)}",

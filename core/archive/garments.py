@@ -46,6 +46,9 @@ class GarmentArchiveComponentContext(Protocol):
     _wardrobe_bootstrap_unlocked: Any
     _wardrobe_event_unlocked: Any
     _wardrobe_item_state_unlocked: Any
+    _wardrobe_action_issue_unlocked: Any
+    _prepare_outfit_action_unlocked: Any
+    _style_catalog_ids: Any
 
 
 class GarmentArchiveComponent:
@@ -179,7 +182,7 @@ class GarmentArchiveComponent:
             "revision": sum(row["revision"] for row in rows),
         }
 
-    def _wardrobe_action_issue_unlocked(self, raw_ids) -> str:
+    def _wardrobe_action_issue_unlocked(self, raw_ids, *, retained_ids=()) -> str:
         """在世界结算事务内复核衣物，防止判断后被送洗。"""
         self.context._wardrobe_bootstrap_unlocked()
         if not self.context._conn.execute("SELECT 1 FROM wardrobe_links LIMIT 1").fetchone():
@@ -189,11 +192,84 @@ class GarmentArchiveComponent:
             if isinstance(raw_ids, (list, tuple))
             else []
         )
-        states = [self.context._wardrobe_item_state_unlocked(i) for i in ids]
-        clothes = [state for state in states if state]
-        if not clothes or any(not state.get("available") for state in clothes):
+        retained_units = {
+            row[0]
+            for item_id in retained_ids
+            for row in self.context._conn.execute(
+                "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?", (item_id,)
+            )
+        }
+        units = {
+            row["unit_id"]: row
+            for item_id in ids
+            for row in self.context._conn.execute(
+                "SELECT u.* FROM wardrobe_units u JOIN wardrobe_links l "
+                "ON l.unit_id=u.unit_id WHERE l.catalog_id=?", (item_id,)
+            )
+        }
+        # 待洗但仍穿在身上的衣物可以继续穿；换鞋或拿包不等于重新穿回它。
+        # 正在清洗、晾晒或尚未拥有的物品仍不能进入新的穿着回执。
+        def can_wear(unit):
+            if unit["ownership"] != "owned":
+                return False
+            if unit["condition"] in {"clean", "worn", "stored"}:
+                return True
+            return (
+                unit["condition"] == "dirty"
+                and unit["unit_id"] in retained_units
+                and bool(unpack(unit["payload_json"]).get("wearing"))
+            )
+
+        if not units or any(not can_wear(unit) for unit in units.values()):
             return "所选衣物尚未拥有或正在洗护，换装回执未生效"
         return ""
+
+    def _prepare_outfit_action_unlocked(self, day, action):
+        """按最新穿着合并动作引用，并在事务内复核可穿性。"""
+        from ..life.wardrobe import (
+            merge_outfit_catalog_references,
+            outfit_action_components,
+        )
+
+        if action.action_type != "change_outfit":
+            return action, ""
+        # 已结算的动作只重放回执，不因之后送洗而重新拒绝原动作。
+        if isinstance(unpack(day.meta.get("life_action_settlements")).get(action.action_id), dict):
+            return action, ""
+        prepared = copy.deepcopy(action)
+        previous = self.context._style_catalog_ids(
+            str(day.meta.get("style_catalog_reference_ids") or "").split(",")
+        )
+        raw = prepared.payload.get("catalog_reference_ids") or []
+        values = raw if isinstance(raw, (list, tuple)) else [raw]
+        selected = self.context._style_catalog_ids(values)
+        lookup_ids = list(dict.fromkeys(previous + selected))
+        kinds = {}
+        if lookup_ids:
+            placeholders = ",".join("?" for _ in lookup_ids)
+            kinds = dict(self.context._conn.execute(
+                f"SELECT id,kind FROM style_catalog_items WHERE id IN ({placeholders})",
+                lookup_ids,
+            ))
+        components, full_change = outfit_action_components(
+            day.meta.get("outfit_components"),
+            prepared.payload.get("outfit_components"),
+            prepared.target,
+        )
+        references = merge_outfit_catalog_references(
+            previous, selected, kinds, components, partial=not full_change,
+        )
+        prepared.payload["catalog_reference_ids"] = references
+        issue = self.context._wardrobe_action_issue_unlocked(
+            references, retained_ids=previous
+        )
+        return prepared, issue
+
+    async def prepare_outfit_action(self, day, action):
+        """在线程中检查动作；最终提交仍须在事务内重新复核。"""
+        return await self.context._run_db(
+            lambda: self.context._prepare_outfit_action_unlocked(day, action)
+        )
 
     async def get_wardrobe_snapshot(self) -> dict:
         def read():

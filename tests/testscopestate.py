@@ -125,12 +125,12 @@ class MessageDedupStateTest(unittest.TestCase):
         runtime._init_response_gate_state()
         runtime._MESSAGE_DEDUP_LIMIT = 2
 
-        self.assertTrue(runtime._remember_observed_history_key("one"))
-        self.assertTrue(runtime._remember_observed_history_key("two"))
-        self.assertTrue(runtime._remember_observed_history_key("three"))
+        self.assertTrue(runtime._part_history_watch_component._remember_observed_history_key("one"))
+        self.assertTrue(runtime._part_history_watch_component._remember_observed_history_key("two"))
+        self.assertTrue(runtime._part_history_watch_component._remember_observed_history_key("three"))
 
         self.assertEqual(runtime._observed_user_history_keys, {"two", "three"})
-        self.assertTrue(runtime._remember_observed_history_key("one"))
+        self.assertTrue(runtime._part_history_watch_component._remember_observed_history_key("one"))
 
     def test_recalled_skip_log_is_bounded(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

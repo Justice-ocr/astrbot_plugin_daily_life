@@ -13,6 +13,7 @@ from componentfixtures import DailyLocationGenerationComponent
 from componentfixtures import SnapshotPackComponent
 from core.telemetry import ModelCacheMetrics, cache_prefix_version, cache_usage
 from core.life.planner import LifeBackgroundComposer
+from core.life.covenant import build_daily_plan_contract
 from core.life.reliability import ProviderCircuit
 from core.sight import sample
 
@@ -75,6 +76,34 @@ class PrefixTest(unittest.TestCase):
         b = DailyLocationGenerationComponent._daily_location_request_prompt({"expected_coverage": "partial"})
         self.assertEqual(prefix(a, "日程地点预选资料"), prefix(b, "日程地点预选资料"))
         self.assertNotEqual(a, b)
+
+    def test_daily_contract_cache_reuses_prefix_and_respects_setting_changes(self):
+        composer = LifeBackgroundComposer.__new__(LifeBackgroundComposer)
+        composer.config = LifeSettings.from_dict({})
+        build_daily_plan_contract.cache_clear()
+        draft = composer._part_daily_draft_component
+        first = draft._timeline_prompt_fixed_contract("full_day")
+        self.assertIs(first, draft._timeline_prompt_fixed_contract("full_day"))
+        self.assertEqual(build_daily_plan_contract.cache_info().hits, 1)
+        composer.config.state_prompt = "独立配置的身体状态要求"
+        changed = draft._timeline_prompt_fixed_contract("full_day")
+        self.assertNotEqual(first, changed)
+        self.assertIn(composer.config.state_prompt, changed)
+        self.assertNotEqual(changed, draft._timeline_prompt_fixed_contract("target_period"))
+
+    def test_daily_contract_preserves_narrative_continuity_with_custom_rules(self):
+        prompt = build_daily_plan_contract(
+            "契约",
+            "示例",
+            "状态规则",
+            "自定义时间轴规则",
+            "地点规则",
+        )
+
+        self.assertIn("自定义时间轴规则", prompt)
+        self.assertIn("按事情真实发生的顺序连贯呈现主要动作", prompt)
+        self.assertIn("不得为氛围补造事实", prompt)
+        self.assertIn("status 记录状态，不代替过程描写", prompt)
 
 
 class UsageTest(unittest.TestCase):
@@ -274,9 +303,9 @@ class ResourceTest(unittest.IsolatedAsyncioTestCase):
         cache = {}
         with patch("core.runtime.mirror.pack.time.monotonic", return_value=10.0):
             for key in ("a", "b", "c"):
-                runtime._store_injection_snapshot(cache, key, {"outfit": key})
+                runtime._part_snapshot_pack_component._store_injection_snapshot(cache, key, {"outfit": key})
         self.assertEqual(list(cache), ["b", "c"])
         with patch("core.runtime.mirror.pack.time.monotonic", return_value=19.0):
-            runtime._store_injection_snapshot(cache, "new", {"outfit": "睡衣"})
+            runtime._part_snapshot_pack_component._store_injection_snapshot(cache, "new", {"outfit": "睡衣"})
             self.assertEqual(list(cache), ["new"])
             self.assertEqual(runtime._cached_injection_snapshot(cache, "new"), {"outfit": "睡衣"})

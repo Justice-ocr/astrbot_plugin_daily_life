@@ -31,18 +31,12 @@ class ReferenceComponentContext(Protocol):
     _clean_reference_name_candidate: Any
     _extract_persona_prompt: Any
     _extract_reference_persona: Any
-    _fetch_deep_history: Any
     _format_reference_profile: Any
-    _format_saved_recent_chats: Any
-    _get_default_persona: Any
-    _get_onebot_recent_chats: Any
     _history_batch_progress: Any
     _history_next_cursor: Any
     _history_response_messages: Any
     _reference_name_cache: Any
-    _resolve_reference_user_name: Any
     _resolve_reference_user_profile: Any
-    _saved_private_chat_name: Any
     contact_resolver: Any
     context: Any
     saved_history: Any
@@ -105,7 +99,7 @@ class ReferenceComponent:
     async def _get_persona(self, umo: str = ""):
         manager = getattr(self.context.context, "persona_manager", None)
         if manager:
-            persona = await self.context._get_default_persona(manager, umo=umo)
+            persona = await self._get_default_persona(manager, umo=umo)
             prompt = self.context._extract_persona_prompt(persona)
             if prompt:
                 return prompt
@@ -193,7 +187,7 @@ class ReferenceComponent:
         target_s = str(target_id or "").strip()
         if not target_s:
             return {}
-        name = await self.context._resolve_reference_user_name(target_s)
+        name = await self._resolve_reference_user_name(target_s)
         if not name:
             name = self.context._clean_reference_name_candidate(candidate_name)
         if not name:
@@ -359,7 +353,7 @@ class ReferenceComponent:
         _, real_id = parse_unified_origin(target_s)
         probe_id = real_id or target_s
         if probe_id.isdigit():
-            return await self.context._get_onebot_recent_chats(
+            return await self._get_onebot_recent_chats(
                 target_s, is_group, hours, max_count, persona=persona
             )
 
@@ -373,7 +367,7 @@ class ReferenceComponent:
             )
             if not messages:
                 return "无"
-            return await self.context._format_saved_recent_chats(
+            return await self._format_saved_recent_chats(
                 messages, target_s, is_group, persona=persona
             )
         except Exception as e:
@@ -393,7 +387,7 @@ class ReferenceComponent:
                 return "无"
             _, real_id = parse_unified_origin(target_id)
             tid = int(real_id or target_id)
-            raw_msgs = await self.context._fetch_deep_history(tid, is_group, hours, max_count)
+            raw_msgs = await self._fetch_deep_history(tid, is_group, hours, max_count)
             if not raw_msgs:
                 return "无"
 
@@ -462,7 +456,7 @@ class ReferenceComponent:
         target_profile = {}
         target_display_name = ""
         if not is_group:
-            candidate_name = self.context._saved_private_chat_name(messages, target_id)
+            candidate_name = self._saved_private_chat_name(messages, target_id)
             target_profile = await self.context._resolve_reference_user_profile(
                 target_id,
                 persona=persona,

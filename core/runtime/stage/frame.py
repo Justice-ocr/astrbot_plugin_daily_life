@@ -31,7 +31,6 @@ class StageFrameComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _event_session_id: Any
-    _media_director_current_user_message: Any
     _media_director_format_emotion_arcs: Any
     _media_director_format_recent_messages: Any
     _safe_event_attr: Any
@@ -61,12 +60,40 @@ class StageFrameComponent:
             if getattr(self.context, "archive", None)
             else None
         )
-        if day:
-            return day, now, using_extended_night
         today = now.strftime("%Y-%m-%d")
-        if target_date != today and getattr(self.context, "archive", None):
+        if day is None and target_date != today and getattr(self.context, "archive", None):
             day = await self.context.archive.get_day(today)
-        return day, now, False
+        if day and getattr(self.context, "archive", None):
+            # 媒体上下文需要知道生命内核此刻实际执行到哪一步；时间轴本身只是计划，
+            # 不能在计划节点尚未执行时把它当成已经发生的取景地点。
+            try:
+                world = await self.context.archive.get_continuous_life()
+            except Exception:
+                world = {}
+            kernel = world.get("kernel") if isinstance(world, dict) else {}
+            environment = kernel.get("environment") if isinstance(kernel, dict) else {}
+            run = world.get("run") if isinstance(world, dict) else {}
+            if not isinstance(run, dict) or str(run.get("date") or "") != str(day.date):
+                run = {}
+            actual_place = str(
+                (getattr(day, "meta", {}) or {}).get("current_place")
+                or (environment or {}).get("place")
+                or ""
+            ).strip()
+            actual_action = run.get("action") if isinstance(run, dict) else {}
+            if not isinstance(actual_action, dict):
+                actual_action = {}
+            day.meta = dict(getattr(day, "meta", {}) or {})
+            day.meta["_media_director_actual_place"] = actual_place
+            day.meta["_media_director_actual_action"] = {
+                "status": str(run.get("status") or "").strip()
+                if isinstance(run, dict)
+                else "",
+                "action_type": str(actual_action.get("action_type") or "").strip(),
+                "target": str(actual_action.get("target") or "").strip(),
+                "timeline_index": actual_action.get("timeline_index"),
+            }
+        return day, now, using_extended_night if target_date != today else False
 
     def _media_director_context_text(
         self, day: Any | None, now: datetime.datetime, using_extended_night: bool
@@ -79,11 +106,6 @@ class StageFrameComponent:
             getattr(day, "date", None),
             meta=getattr(day, "meta", None),
         )
-        current_place_kind = (
-            getattr(current_item, "place_kind", "")
-            if hasattr(current_item, "place_kind")
-            else (current_item or {}).get("place_kind", "")
-        )
         state = getattr(day, "state", None)
         state_dict = (
             state.as_dict()
@@ -93,9 +115,57 @@ class StageFrameComponent:
             else {}
         )
         meta = getattr(day, "meta", {}) or {}
+        actual_place = str(meta.get("_media_director_actual_place") or "").strip()
+        if not actual_place:
+            actual_place = str(meta.get("current_place") or "").strip()
+        actual_action = meta.get("_media_director_actual_action")
+        if not isinstance(actual_action, dict):
+            actual_action = {}
+        timeline_items = getattr(day, "timeline", []) or []
+        actual_item = None
+        actual_index = actual_action.get("timeline_index")
+        if (
+            actual_action.get("status") in {"running", "paused", "ready", "settling"}
+            and isinstance(actual_index, int)
+            and 0 <= actual_index < len(timeline_items)
+        ):
+            actual_item = timeline_items[actual_index]
+        elif actual_place:
+            for item in reversed(timeline_items):
+                item_time = timeline_item_datetime(item, day.date, meta=day.meta)
+                item_state = (
+                    getattr(item, "execution_state", "")
+                    if hasattr(item, "execution_state")
+                    else item.get("execution_state", "")
+                )
+                if item_state not in {"active", "completed"} or item_time is None or item_time > now:
+                    continue
+                item_place = (
+                    getattr(item, "place", "")
+                    if hasattr(item, "place")
+                    else item.get("place", "")
+                )
+                if str(item_place or "").strip() == actual_place:
+                    actual_item = item
+                    break
         weather = str(getattr(day, "weather", "") or "").strip()
         appearance = current_appearance_values(day)
-        scene_category = scene_category_for_place_kind(current_place_kind, default="")
+        scene_category = ""
+        if actual_item is not None:
+            item_place = (
+                getattr(actual_item, "place", "")
+                if hasattr(actual_item, "place")
+                else actual_item.get("place", "")
+            )
+            if not actual_place or str(item_place or "").strip() == actual_place:
+                item_kind = (
+                    getattr(actual_item, "place_kind", "")
+                    if hasattr(actual_item, "place_kind")
+                    else actual_item.get("place_kind", "")
+                )
+                scene_category = scene_category_for_place_kind(item_kind, default="")
+            if not scene_category and actual_place == "家":
+                scene_category = scene_category_for_place_kind("home", default="")
         projected_components = project_outfit_components_for_scene(
             meta.get("outfit_components"), scene_category
         )
@@ -127,9 +197,16 @@ class StageFrameComponent:
             f"心情色彩：{meta.get('mood') or '未知'}",
             f"日程类型：{meta.get('theme') or meta.get('schedule_intent') or '未知'}",
             f"日程基调：{meta.get('life_mode') or '未知'}",
-            "当前实际场景以当前时间轴节点的地点为准；社交状态和日程基调只影响情绪与互动，不代表一定在外出。",
+            "计划节点只作后续安排参考；没有实际地点或执行记录时，不把计划当成已经发生。",
         ]
-        if current_item:
+        if actual_place:
+            parts.append(f"当前实际地点：{actual_place}")
+        if actual_action.get("status") in {"running", "paused", "ready", "settling"}:
+            action_target = str(actual_action.get("target") or "").strip()
+            if action_target:
+                parts.append(f"正在执行的实际行动：{action_target}")
+        if actual_item:
+            current_item = actual_item
             place = (
                 getattr(current_item, "place", "")
                 if hasattr(current_item, "place")
@@ -147,9 +224,14 @@ class StageFrameComponent:
                 if hasattr(current_item, "status")
                 else current_item.get("status", "")
             )
-            parts.append(
-                f"当前活动：{activity or '未知'}{f'（{status}）' if status else ''}"
+            parts.append(f"当前活动：{activity or '未知'}{f'（{status}）' if status else ''}")
+        elif current_item:
+            planned_activity = (
+                getattr(current_item, "activity", "")
+                if hasattr(current_item, "activity")
+                else current_item.get("activity", "")
             )
+            parts.append(f"当前活动：{planned_activity or '未知'}（计划，尚未确认已发生）")
         if next_item:
             next_time = timeline_item_datetime(next_item, day.date, meta=day.meta)
             time_text = next_time.strftime("%m-%d %H:%M") if next_time else "待定"
@@ -266,7 +348,7 @@ class StageFrameComponent:
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 读取媒体生成最近对话片段失败：{exc}")
                 messages = []
-        current_message = self.context._media_director_current_user_message(event)
+        current_message = self._media_director_current_user_message(event)
         if current_message and not any(
             str(item.get("role") or "").strip() == "user"
             and str(item.get("content") or "").strip() == current_message

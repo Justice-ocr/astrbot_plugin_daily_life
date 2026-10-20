@@ -29,6 +29,7 @@ from .core.logguard import ProviderLogGuard
 from .core.sources.location import enrich_location_message
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
+from .core.runtime.preparation import ReplyPreparationService
 from .core.runtime.sender import install_expressive_send_message_tool
 from .core.runtime.tooling import (
     ArgumentCheckedTool,
@@ -1442,7 +1443,7 @@ class DailyLifePlugin(Star):
         根据当前角色生活场景生成并发送一张图片。
         适合用户想看当前状态、穿搭、环境、自拍/生活照，或普通聊天里用画面展示此刻更自然的时候。
         普通聊天里角色自己自然产生“想让对方看看这个瞬间”的分享意愿时，用户没有先索要也可以主动调用；画面应能传达文字之外的状态、气氛、细节或情绪，不能为了展示工具而生成，也不要先询问用户是否想看。
-        用户已经明确要图片时，调用前必须先用角色口吻说一句简短、自然的行动确认；不能提前声称图片已经完成，
+        用户明确要图片时默认调用本工具，并先用角色口吻说一句简短、自然的行动确认；只有真实限制才说明或改约，不因轻微不便反复拒绝，也不能提前声称图片已经完成，
         也不要提及模型、任务、缓存、图片导演、文生图或图生图等内部过程。图片发送后再根据结果自然补一句，也可以不补。
         返回 pending 表示已受理，尚未送达；结束本次工具轮次，后续消息正常聊天，不要等待、重复调用或提前声称照片已发送。
         如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
@@ -1469,7 +1470,7 @@ class DailyLifePlugin(Star):
             participants(list[string]): 合影参与者的关系档案 ID；subject_route=group 时必须且只能填写一位已配置好友，其他路线留空。
             friend_outfit(string): 人物 B 本次完整穿搭；首次合影必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
             friend_hair(string): 人物 B 本次发型；首次合影必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
-            friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写。
+            friend_scene_category(string): 人物 B 当前画面场景，可填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写，其他路线省略此参数。
             current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实外观变化写入生活状态；实际换装、改发型、化妆/卸妆或更换美甲时设为 true，仅看效果图时必须为 false。
             current_outfit_instruction(string): 当前角色真实外观变化要求；current_outfit_change=true 时填写用户原始要求，选择视觉衣橱整组造型时可以附带同图识别出的相关妆发、美甲和配饰，但不得覆盖人设明确的稳定外观事实；其他情况留空。
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
@@ -1583,7 +1584,7 @@ class DailyLifePlugin(Star):
             participants(list[string]): 合影好友的关系档案 ID；subject_route=group 时必须且只能填写一位，其他路线留空。
             friend_outfit(string): 人物 B 本次完整穿搭；首次合影套图必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
             friend_hair(string): 人物 B 本次发型；首次合影套图必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
-            friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；新合影套图每次填写，重拍沿用清单无需填写。
+            friend_scene_category(string): 人物 B 当前画面场景，可填 home、sleep、outdoor、public 或 mixed；新合影套图每次填写，非合影或重拍沿用清单时省略此参数。
             retry_indexes(list[int]): 可选重拍位置，使用从 1 开始的序号，例如 [2, 4]；普通新套图留空。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求整组照片的输出分辨率时填写，“高清”等模糊描述不要推断。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
@@ -1909,7 +1910,7 @@ class DailyLifePlugin(Star):
         """
         根据当前角色生活场景生成并发送一段短视频。
         视频生成较慢且成本更高，只适合用户明确要视频、引用图转视频，或动作/镜头变化非常强的场景。
-        用户已经明确要视频时，调用前必须先用角色口吻说一句简短、自然的行动确认；不能提前声称视频已经完成，
+        用户明确要视频时默认调用本工具，并先用角色口吻说一句简短、自然的行动确认；只有真实限制才说明或改约，不因轻微不便反复拒绝，也不能提前声称视频已经完成，
         也不要播报生成任务、首帧、模型或等待进度。工具调用后保持安静，真实视频发送后再自然补一句。
         原始视频请求或引用消息里带图片时会自动作为视频首帧/参考图；拍摄开始后的闲聊图片、表情包不会替换首帧。
         结合完整对话语义判断后补图片的用途。只有用户明确要求更换视频参考图或用新图重新制作视频时，才设置 replace_reference_image=true。
@@ -1933,7 +1934,7 @@ class DailyLifePlugin(Star):
             participants(list[string]): 合影好友的关系档案 ID；subject_route=group 且没有现成合影首帧时必须且只能填写一位，其他路线留空。
             friend_outfit(string): 人物 B 本次完整穿搭；新生成首帧且没有当天造型时必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写，现成首帧时留空。
             friend_hair(string): 人物 B 本次发型；新生成首帧且没有当天造型时必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写，现成首帧时留空。
-            friend_scene_category(string): 新生成首帧时人物 B 的当前场景，只能填 home、sleep、outdoor、public 或 mixed；使用现成首帧时留空。
+            friend_scene_category(string): 新生成合影首帧时人物 B 的当前场景，可填 home、sleep、outdoor、public 或 mixed；非合影或使用现成首帧时省略此参数。
             continue_last_result(bool): 本轮没有新图片且用户明确要求沿用上一张时，是否使用当前会话上一张成功生成的图片作为视频首帧；不能仅因上一轮刚发送过图片就设为 true。
             replace_reference_image(bool): 根据完整对话语义确认用户明确要用后补图片替换首帧或重新制作视频时才填 true；默认 false，保留原视频请求的参考来源，普通聊天图片和表情包不能替换。
             historical_target(string): 历史回现日期 YYYY-MM-DD 或 last；普通视频留空。
@@ -2064,7 +2065,7 @@ class DailyLifePlugin(Star):
             text(string): 本轮最终要说出口的回复文本。
             emotion(string): 可选自然情绪描述，用于记录表达意图，不参与语音风格推断。
             emotion_category(string): 可选情绪分类，只能是 neutral、happy、sad、angry 之一。
-            voice_style(string): 可选语音风格枚举，只能是 neutral、happy、light、sad、angry 之一。
+            voice_style(string): 可选语音风格枚举，只能是 neutral、happy、light、soft（轻柔低声）、sad、angry 之一。
             user_requested(bool): 用户明确要求发送语音时必须填 true；false 会保持文字回复。
             decision_reason(string): 简要说明用户本轮为什么需要语音；用于后台裁定记录，不会发给用户。
         """
@@ -2592,6 +2593,10 @@ class DailyLifePlugin(Star):
 
     async def _send_pipeline_apply(self, event: AstrMessageEvent) -> None:
         for name, is_async in self._SEND_PIPELINE_APPLY_HOOKS:
+            current = getattr(event, "_daily_life_reply_is_current", None)
+            if callable(current) and not current():
+                event.clear_result()
+                return
             if (
                 name in self._NATURAL_SEGMENTATION_HOOKS
                 and not self._reply_segmentation_enabled()
@@ -2602,6 +2607,38 @@ class DailyLifePlugin(Star):
                 return
             if self._send_pipeline_should_stop(event):
                 return
+
+    def _defer_reply_preparation(self, event: AstrMessageEvent) -> bool:
+        # WebChat 在当前流水线结束时关闭请求队列，须在请求内完成投递。
+        if event.get_platform_name() == "webchat":
+            return False
+        schedule = getattr(self.runtime, "_schedule_background_task", None)
+        if not callable(schedule):
+            return False
+        result = event.get_result()
+        chain = getattr(result, "chain", None)
+        if not chain or not all(str(getattr(item, "text", "") or "").strip() for item in chain):
+            return False
+        keeper = getattr(self.runtime, "_chat_style_should_keep_default_send", None)
+        if callable(keeper) and keeper(event, "\n".join(item.text for item in chain)):
+            return False
+        runtime = self.runtime
+
+        def current(snapshot):
+            return (
+                not snapshot.is_stopped()
+                and not runtime.event_was_recalled(snapshot)
+                and runtime.continuous_turn_event_is_current(snapshot)
+                and runtime.media_request_is_current_turn(snapshot)
+            )
+
+        ReplyPreparationService(
+            schedule=schedule, prepare=self._send_pipeline_apply,
+            delivered=self._record_reply_delivery, is_current=current,
+            complete=runtime.complete_continuous_turn,
+        ).defer(event)
+        # 队列满时保留原文字交给框架发送，不在前台等待模型或 TTS。
+        return True
 
     @filter.on_decorating_result(priority=-900)
     @_runtime_guard
@@ -2616,6 +2653,8 @@ class DailyLifePlugin(Star):
         if not self._result_is_normal_llm_reply(event):
             logger.debug(f"{LOG_PREFIX} 非聊天模型结果保持原样发送，跳过表达加工。")
             return
+        if self._defer_reply_preparation(event):
+            return
         await self._send_pipeline_apply(event)
         if getattr(event, "get_result", lambda: None)() is None:
             self._runtime_hook_call("complete_continuous_turn", event)
@@ -2623,6 +2662,11 @@ class DailyLifePlugin(Star):
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
+        if getattr(event, "_daily_life_reply_deferred", False):
+            return
+        await self._record_reply_delivery(event)
+
+    async def _record_reply_delivery(self, event: AstrMessageEvent):
         outbound_logger = getattr(self.runtime, "log_outbound_result_async", None)
         if not callable(outbound_logger):
             outbound_logger = getattr(self.runtime, "log_outbound_result", None)

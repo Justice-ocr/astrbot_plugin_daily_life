@@ -19,11 +19,9 @@ from typing import Protocol
 class ProfileComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _build_relationship_calibration_prompt: Any
     _get_memory_provider: Any
     _list_payload: Any
     _relationship_calibration_cache: Any
-    _relationship_calibration_signature: Any
     _str_payload: Any
     archive: Any
     call_text_model: Any
@@ -127,7 +125,7 @@ JSON 输出要求：
         relationship = await self.context.archive.get_relationship(profile_id)
         if not relationship:
             return
-        signature = self.context._relationship_calibration_signature(relationship, persona_hint)
+        signature = self._relationship_calibration_signature(relationship, persona_hint)
         cache = getattr(self.context, "_relationship_calibration_cache", None)
         if cache is None:
             cache = {}
@@ -142,7 +140,7 @@ JSON 输出要求：
         if not provider:
             return
         session_id = f"daily_life_relation_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self.context._build_relationship_calibration_prompt(relationship, persona_hint)
+        prompt = self._build_relationship_calibration_prompt(relationship, persona_hint)
         try:
             provider_id = self.context.config.memory.provider
             text = await self.context.call_text_model(
@@ -184,7 +182,7 @@ JSON 输出要求：
             )
             revised = await self.context.archive.get_relationship(profile_id)
             cache[profile_id] = (
-                self.context._relationship_calibration_signature(revised, persona_hint)
+                self._relationship_calibration_signature(revised, persona_hint)
                 if revised
                 else signature
             )

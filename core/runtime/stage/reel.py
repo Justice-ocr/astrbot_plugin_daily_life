@@ -38,15 +38,11 @@ class StageReelComponentContext(Protocol):
     _media_director_recent_context_text: Any
     _media_director_text_call: Any
     _media_image_contains_character: Any
-    _media_image_director_prompt: Any
     _media_image_director_provider_id: Any
     _media_image_identity_route: Any
     _media_image_needs_character_reference: Any
     _media_image_preserve_user_request: Any
-    _media_image_prompt_from_payload: Any
-    _media_image_route_prompt: Any
     _media_image_subject_kind: Any
-    _media_rewrite_prompt_from_payload: Any
     _media_rewrite_prompt_from_response: Any
     _remember_character_appearance_profile: Any
     _strip_media_code_fence: Any
@@ -298,26 +294,26 @@ JSON 字段：
             if value:
                 return value
         try:
-            return self.context._media_image_prompt_from_payload(payload)
+            return self._media_image_prompt_from_payload(payload)
         except MediaPromptExtractionError:
             return ""
 
     def _media_rewrite_prompt_from_response(self, response: Any) -> str:
         if isinstance(response, dict):
-            return self.context._media_rewrite_prompt_from_payload(response)
+            return self._media_rewrite_prompt_from_payload(response)
         raw = self.context._strip_media_code_fence(str(response or ""))
         if not raw:
             return ""
         payload = extract_json_from_text(raw)
         if isinstance(payload, dict):
-            return self.context._media_rewrite_prompt_from_payload(payload)
+            return self._media_rewrite_prompt_from_payload(payload)
         for parser in (json.loads, ast.literal_eval):
             try:
                 parsed = parser(raw)
             except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
                 continue
             if isinstance(parsed, dict):
-                return self.context._media_rewrite_prompt_from_payload(parsed)
+                return self._media_rewrite_prompt_from_payload(parsed)
             if isinstance(parsed, str):
                 return clean_director_text(parsed, 600)
         if raw.startswith(("{", "[")) and raw.endswith(("}", "]")):
@@ -354,7 +350,7 @@ JSON 字段：
             recent_context = await self.context._media_director_recent_context_text(event)
             if judge_only:
                 route_payload = await self.context._media_director_call(
-                    self.context._media_image_route_prompt(
+                    self._media_image_route_prompt(
                         context=context,
                         recent_context=recent_context,
                         original_prompt=original_prompt,
@@ -387,7 +383,7 @@ JSON 字段：
                     event, schedule_extract=False
                 )
             payload = await self.context._media_director_call(
-                self.context._media_image_director_prompt(
+                self._media_image_director_prompt(
                     context=context,
                     recent_context=recent_context,
                     original_prompt=original_prompt,
@@ -424,7 +420,7 @@ JSON 字段：
                 )
                 if callable(remember_profile):
                     remember_profile(persona, payload.get("appearance_profile"))
-            prompt = self.context._media_image_prompt_from_payload(
+            prompt = self._media_image_prompt_from_payload(
                 payload,
                 identity_route=identity_route,
             )

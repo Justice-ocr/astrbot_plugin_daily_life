@@ -60,6 +60,32 @@ class MemoryContinuityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated[0].memory_count, 2)
         self.assertIn("看到结尾", updated[0].summary)
 
+    async def test_continuous_life_memory_revision_merges_into_one_record(self):
+        first = await self.save(
+            scope="global",
+            category="autobiography",
+            title="散步",
+            content="傍晚沿树影走了一小段",
+            source_table="continuous_life_entries",
+            source_id="action:walk:1",
+        )
+        second = await self.save(
+            scope="global",
+            category="autobiography",
+            title="散步完成",
+            content="傍晚沿树影走了一小段，后来在树荫下喝了水",
+            source_table="continuous_life_entries",
+            source_id="action:walk:1",
+        )
+        self.assertEqual(first.id, second.id)
+        rows = self.archive._conn.execute(
+            """SELECT id, content FROM long_term_memories
+               WHERE source_table='continuous_life_entries' AND source_id=?""",
+            ("action:walk:1",),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("喝了水", rows[0]["content"])
+
     async def test_vector_lookup_scales_past_sqlite_parameter_limit(self):
         identifiers = [str(identifier) for identifier in range(1300)]
         await self.archive.upsert_memory_vectors([{

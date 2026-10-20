@@ -12,17 +12,12 @@ class HistorySceneComponentContext(Protocol):
 
     _ASTRBOT_WEEKDAY_NAMES: Any
     _astrbot_now_for_scope: Any
-    _conversation_user_content: Any
-    _conversation_user_content_from_event: Any
-    _event_group_name: Any
     _event_is_group_message: Any
-    _event_sender_id_name: Any
     _event_session_id: Any
     _event_sources: Any
     _history_display_url: Any
     _history_media_parts_from_event: Any
     _safe_event_call: Any
-    _system_reminder_text: Any
     context: Any
     is_internal_llm_session: Any
 
@@ -78,11 +73,11 @@ class HistorySceneComponent:
 
     def _system_reminder_text(self, scope: str, event: Any) -> str:
         parts: list[str] = []
-        sender_id, sender_name = self.context._event_sender_id_name(event)
+        sender_id, sender_name = self._event_sender_id_name(event)
         if sender_id or sender_name:
             parts.append(f"User ID: {sender_id}, Nickname: {sender_name}")
         if self.context._event_is_group_message(event):
-            group_name = self.context._event_group_name(event)
+            group_name = self._event_group_name(event)
             if group_name:
                 parts.append(f"Group name: {group_name}")
         now = self.context._astrbot_now_for_scope(scope)
@@ -105,7 +100,7 @@ class HistorySceneComponent:
         if callable(internal_session) and internal_session(req):
             return False
         scope = self.context._event_session_id(event)
-        reminder = self.context._system_reminder_text(scope, event)
+        reminder = self._system_reminder_text(scope, event)
         if not reminder:
             return False
         parts = getattr(req, "extra_user_content_parts", None)
@@ -129,7 +124,7 @@ class HistorySceneComponent:
     def _conversation_user_content(
         self, scope: str, event: Any, text: str
     ) -> str | list[dict[str, Any]]:
-        reminder = self.context._system_reminder_text(scope, event)
+        reminder = self._system_reminder_text(scope, event)
         if not reminder:
             return text
         return [
@@ -146,9 +141,9 @@ class HistorySceneComponent:
     ) -> str | list[dict[str, Any]]:
         text = str(text or "").strip()
         media_parts = await self.context._history_media_parts_from_event(event)
-        reminder = self.context._system_reminder_text(scope, event)
+        reminder = self._system_reminder_text(scope, event)
         if not media_parts:
-            return self.context._conversation_user_content(
+            return self._conversation_user_content(
                 scope, event, text or f"（发送了{media_label}）"
             )
 
@@ -195,7 +190,7 @@ class HistorySceneComponent:
     def _user_history_item(self, scope: str, event: Any, text: str) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": self.context._conversation_user_content(scope, event, text),
+            "content": self._conversation_user_content(scope, event, text),
         }
 
     async def _user_history_item_from_event(
@@ -207,7 +202,7 @@ class HistorySceneComponent:
     ) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": await self.context._conversation_user_content_from_event(
+            "content": await self._conversation_user_content_from_event(
                 scope, event, text, media_label
             ),
         }

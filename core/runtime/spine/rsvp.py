@@ -21,18 +21,14 @@ from typing import Protocol
 class SpineInviteComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _accept_invite_timeline_update: Any
     _commitment_reconcile_marker_value: Any
     _commitment_reconcile_markers: Any
     _commitment_reconcile_signature: Any
-    _decline_invite_timeline_update: Any
     _event_context_meta: Any
     _get_curr_period: Any
     _outfit_instruction_is_due: Any
-    _save_invite_day: Any
     _schedule_background_task: Any
     _store_commitment_reconcile_marker: Any
-    _sync_outfit_after_invite_background: Any
     apply_commitment_to_current_day: Any
     archive: Any
     composer: Any
@@ -116,7 +112,7 @@ class SpineInviteComponent:
             str(instruction or "").strip().encode("utf-8")
         ).hexdigest()[:12]
         return self.context._schedule_background_task(
-            self.context._sync_outfit_after_invite_background(
+            self._sync_outfit_after_invite_background(
                 date_str, current_time, instruction
             ),
             label="邀约穿搭判断",
@@ -426,7 +422,7 @@ class SpineInviteComponent:
             )
         # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
         # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
-        await self.context._save_invite_day(data, today_str)
+        await self._save_invite_day(data, today_str)
         schedule_contact = getattr(self.context, "schedule_invite_contact", None)
         if accepted_commitment.id and callable(schedule_contact):
             await schedule_contact(
@@ -526,7 +522,7 @@ class SpineInviteComponent:
                 )
         if not alternative:
             data.meta.pop("pending_invite_alternative", None)
-        await self.context._save_invite_day(data, today_str)
+        await self._save_invite_day(data, today_str)
         memos_invite_items = [
             f"邀约结果：暂未接受【{sender_name}】的邀约：{invite_details}",
             f"原因：{reason}",
@@ -620,7 +616,7 @@ class SpineInviteComponent:
             )
 
             if new_timeline:
-                return await self.context._accept_invite_timeline_update(
+                return await self._accept_invite_timeline_update(
                     data=data,
                     new_timeline=new_timeline,
                     today_str=today_str,
@@ -633,7 +629,7 @@ class SpineInviteComponent:
                     raw_message=raw_message,
                 )
 
-            return await self.context._decline_invite_timeline_update(
+            return await self._decline_invite_timeline_update(
                 data=data,
                 today_str=today_str,
                 now=now,

@@ -19,7 +19,6 @@ from typing import Protocol
 class SpineAdaptComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _apply_config: Any
     _build_runtime_services: Any
     _current_runtime_services: Any
     _injection_snapshot_cache: Any
@@ -29,14 +28,11 @@ class SpineAdaptComponentContext(Protocol):
     _prune_disabled_proactive_candidates: Any
     _refresh_after_residence_change: Any
     _residence_address: Any
-    _restore_runtime_config: Any
     _retire_runtime_services: Any
     _rhythm_running: Any
     _runtime_service_binding: Any
     _schedule_background_task: Any
     _schedule_proactive_idle_evaluation: Any
-    _swap_runtime_services: Any
-    _write_runtime_config: Any
     archive: Any
     config: Any
     domains: Any
@@ -206,7 +202,7 @@ class SpineAdaptComponent:
         binding = self.context._runtime_service_binding()
         token = binding.set(None)
         try:
-            return await self.context._apply_config(next_config)
+            return await self._apply_config(next_config)
         finally:
             binding.reset(token)
 
@@ -227,8 +223,8 @@ class SpineAdaptComponent:
             previous_rhythm_running = self.context._rhythm_running(previous_services)
             candidate = self.context._build_runtime_services(parsed, payload)
             try:
-                await self.context._write_runtime_config(payload)
-                await self.context._swap_runtime_services(
+                await self._write_runtime_config(payload)
+                await self._swap_runtime_services(
                     candidate,
                     previous_services,
                     previous_rhythm_running=previous_rhythm_running,
@@ -236,7 +232,7 @@ class SpineAdaptComponent:
             # 写配置或服务替换被取消时，保持配置与运行服务一致。
             except BaseException:
                 candidate.rhythm.stop()
-                await self.context._restore_runtime_config(previous_config)
+                await self._restore_runtime_config(previous_config)
                 await self.context._retire_runtime_services(candidate)
                 raise
 

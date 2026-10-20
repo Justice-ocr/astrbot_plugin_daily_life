@@ -32,13 +32,11 @@ class ProactiveFollowupComponentContext(Protocol):
     _commitment_requests_photo: Any
     _commitment_requests_video: Any
     _current_proactive_persona: Any
-    _evaluate_proactive_commitment: Any
     _follow_up_execute_at: Any
     _format_recent_context_messages: Any
     _get_proactive_provider: Any
     _photo_commitment_execute_at: Any
     _photo_commitment_owner_allowed: Any
-    _proactive_commitment_life_context: Any
     _proactive_commitment_relationship: Any
     _proactive_current_day: Any
     _proactive_voice_capability: Any
@@ -611,7 +609,7 @@ class ProactiveFollowupComponent:
         persona = await self.context._current_proactive_persona(scope)
         recent_messages = await self.context._read_recent_context_messages(scope, limit=10)
         recent_context = self.context._format_recent_context_messages(recent_messages, now=now)
-        life_context = await self.context._proactive_commitment_life_context(now)
+        life_context = await self._proactive_commitment_life_context(now)
         target_name = str(getattr(relationship, "name", "") or "对方").strip()
         interaction_context = {
             "mode": str(getattr(interaction, "mode", "") or "unknown"),
@@ -724,7 +722,7 @@ class ProactiveFollowupComponent:
         )
         settle_commitment = payload.get("settle_commitment") is not False
         relationship = await self.context._proactive_commitment_relationship(scope)
-        decision = await self.context._evaluate_proactive_commitment(
+        decision = await self._evaluate_proactive_commitment(
             scope=scope,
             commitment=commitment,
             task_payload=payload,

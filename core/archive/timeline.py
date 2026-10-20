@@ -33,6 +33,13 @@ def rebind_planned_actions(
         candidates = [
             i for i, item in enumerate(current) if identity(item) == identity(original)
         ]
+        # 相同活动可能先取消再重做；已执行状态与检查点用于区分真实记录。
+        observed = [
+            i for i in candidates
+            if current[i].execution_state == original.execution_state
+            and current[i].execution_updated_at == original.execution_updated_at
+        ]
+        candidates = observed or candidates
         exact = [i for i in candidates if current[i].time == original.time]
         candidates = exact or candidates
         # 活动已被移除或归属不明确时，不得转而绑定其他节点。

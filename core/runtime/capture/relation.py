@@ -16,7 +16,6 @@ class CaptureRelationComponentContext(Protocol):
     _list_payload: Any
     _relationship_contact_payload: Any
     _str_payload: Any
-    _subjective_impression_data: Any
     archive: Any
 
 
@@ -60,7 +59,7 @@ class CaptureRelationComponent:
         if level in {"unseen", "missed"}:
             return
 
-        impression_data = self.context._subjective_impression_data(payload)
+        impression_data = self._subjective_impression_data(payload)
         note = impression_data["note"] or note_fallback
         if not any(
             [

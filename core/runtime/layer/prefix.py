@@ -12,7 +12,6 @@ from typing import Protocol
 class RequestPrefixComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _life_request_policy: Any
     build_hidden_chat_style_hint: Any
 
 
@@ -37,7 +36,7 @@ class RequestPrefixComponent:
         )
 
     def _apply_life_request_context(self, req: Any, context: str) -> None:
-        policy = self.context._life_request_policy()
+        policy = self._life_request_policy()
         previous = str(getattr(req, "_daily_life_owned_system_context", "") or "")
         system = str(getattr(req, "system_prompt", "") or "")
         if previous:

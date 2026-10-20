@@ -12,9 +12,11 @@ from typing import Any
 from astrbot.api import logger
 
 from ..life.body import ContinuousBody, instant, project_body
+from ..life.actionchain import actions as ordered_actions, ready as action_ready
 from ..life.achievement import apply_reviews
 from ..life.interests import apply_interest_updates, bind_interest
 from ..life.learning import expectation
+from ..life.planalignment import prepare_updates, synchronize_run
 from ..life.resources import reserve as reserve_resources, settle as settle_resources
 from ..life.goals import apply_goal_decisions, credit_goal, ready_steps
 from ..life.presence import (
@@ -38,20 +40,7 @@ _TERMINAL_STATES = frozenset({"completed", "skipped", "cancelled", "expired"})
 
 
 def planned_actions(day) -> dict[str, LifeActionIntent]:
-    try:
-        values = json.loads(day.meta.get("planned_life_actions") or "[]")
-    except (ValueError, TypeError):
-        return {}
-    return (
-        {
-            action.action_id: action
-            for raw in values
-            if isinstance(raw, dict)
-            if (action := LifeActionIntent.from_value(raw)).action_id
-        }
-        if isinstance(values, list)
-        else {}
-    )
+    return {action.action_id: action for action in ordered_actions(day) if action.action_id}
 
 
 def attached_action(day, run: dict[str, Any]) -> LifeActionIntent | None:
@@ -123,6 +112,7 @@ class ContinuousLifeService:
         notify_status: Callable[[str], Awaitable[Any]],
         decide: Callable[..., Awaitable[dict[str, Any]]],
         validate_action: Callable[..., Awaitable[Any]],
+        prepare_actions: Callable[..., Awaitable[str]],
         outfit_superseded: Callable[..., bool],
         settle_action: Callable[..., Any],
         save_receipt: Callable[..., Awaitable[Any]],
@@ -142,6 +132,7 @@ class ContinuousLifeService:
         self._notify_status = notify_status
         self._decide = decide
         self._validate_action = validate_action
+        self._prepare_actions = prepare_actions
         self._outfit_superseded = outfit_superseded
         self._settle_action = settle_action
         self._save_receipt = save_receipt
@@ -197,6 +188,9 @@ class ContinuousLifeService:
         await self._archive().mutate_continuous_life(day.date, sync)
 
     def _advance_continuous_world(self, day, world, now) -> None:
+        from ..life.achievement import refresh_review_state
+
+        refresh_review_state(world)
         body = ContinuousBody.from_value(world.get("body"), day)
         body.sync_condition(day)
         previous = instant(body.updated_at)
@@ -247,10 +241,14 @@ class ContinuousLifeService:
                 )
                 and until > now
             )
-            if cancelled or delayed:
+            from ..life.locationfacts import place_issue
+
+            scene_issue = place_issue(day, action) if action is not None else ""
+            if cancelled or delayed or scene_issue:
+                reason = scene_issue or "原行动已调整或休息已顺延"
                 run.update(
                     status="cancelled" if cancelled else "paused",
-                    reason="原行动已调整或休息已顺延",
+                    reason=reason,
                     changed_at=now.isoformat(),
                 )
                 world.pop("next_decision_at", None)
@@ -259,7 +257,7 @@ class ContinuousLifeService:
                     kind="action_cancel" if cancelled else "action_pause",
                     source_id=f"{run['action']['action_id']}:plan_change:{now.isoformat()}",
                     at=now,
-                    summary="原行动已调整或休息已顺延",
+                    summary=reason,
                     evidence_ids=[run["action"]["action_id"]],
                 )
             else:
@@ -325,7 +323,7 @@ class ContinuousLifeService:
         reason = f"自主执行器已记录开始和 {run['active_seconds'] / 60:.1f} 分钟执行过程：{run['reason']}"
         completed_at = instant(run.get("finished_at")) or now
         valid, validation_reason = (
-            await self._validate_action(action)
+            await self._validate_action(action, day=day)
             if run["status"] != "settling"
             else (True, "")
         )
@@ -365,6 +363,10 @@ class ContinuousLifeService:
                     status="cancelled", reason="实际穿搭已由新的聊天决定更新"
                 )
                 return
+            prepared, wardrobe_issue = self._archive()._prepare_outfit_action_unlocked(latest, rebound)
+            if wardrobe_issue:
+                current.update(status="failed", reason=wardrobe_issue)
+                return
             inventory_reason = (
                 self._archive().consume_continuous_ingredients_unlocked(rebound)
                 if self._config().domains.pantry_enabled
@@ -378,7 +380,7 @@ class ContinuousLifeService:
                 current.update(status="failed", reason=resource_reason)
                 return
             outcome = self._settle_action(
-                latest, rebound, now=completed_at
+                latest, prepared, now=completed_at
             )
             if outcome.status != "committed":
                 current.update(status="failed", reason=outcome.reason)
@@ -638,26 +640,71 @@ class ContinuousLifeService:
             "wait",
         }:
             return
+        proposed = prepare_updates(day, snapshot, payload, now)
+        if proposed is None:
+            def retry(latest, world):
+                if world.get("revision") != snapshot.get("revision") or latest.revision != day.revision:
+                    return False
+                world["plan_alignment_blocked"] = "日程调整未通过事实与约定校验，请保留受保护节点，重新选择可执行的安排"
+                world["next_decision_at"] = (now + datetime.timedelta(minutes=5)).isoformat()
+
+            await self._archive().mutate_continuous_life(day.date, retry)
+            return
+        day = proposed
         action = None
+        new_steps = []
         if decision == "start" and not snapshot.get("run"):
             candidate = next(
                 (
                     item
                     for item in payload.get("_candidates", [])
                     if item["action_id"] == payload.get("action_id")
+                    and item["action_id"] in planned_actions(day)
                 ),
                 None,
             )
             if candidate:
-                action = LifeActionIntent.from_value(candidate)
+                action = planned_actions(day)[candidate["action_id"]]
+                if not action.duration_minutes and action.timeline_index is not None:
+                    action.duration_minutes = day.timeline[action.timeline_index].duration_minutes
+                if not action_ready(day, action):
+                    action = None
             else:
-                raw = payload.get("new_action")
-                if isinstance(raw, dict) and raw.get("owner") == "self":
-                    action = LifeActionIntent.from_value(raw)
-                    action.action_id = f"self:{uuid.uuid4().hex}"
-                    action.timeline_index = None
-                    if action.action_type in {"move", "travel", "change_outfit"}:
-                        action = None
+                raw_steps = payload.get("new_actions")
+                if isinstance(raw_steps, list) and 1 <= len(raw_steps) <= 12:
+                    chain_id = uuid.uuid4().hex
+                    for raw in raw_steps:
+                        if not isinstance(raw, dict) or raw.get("owner") != "self":
+                            new_steps = []
+                            break
+                        step = LifeActionIntent.from_value(raw)
+                        if (step.action_type not in INTERNAL_SIMULATED_ACTION_TYPES
+                                or step.action_type in {"move", "travel"}
+                                or not step.target or not step.duration_minutes):
+                            new_steps = []
+                            break
+                        if step.timeline_index is not None:
+                            if not 0 <= step.timeline_index < len(day.timeline):
+                                new_steps = []
+                                break
+                            item = day.timeline[step.timeline_index]
+                            if any(existing.timeline_index == step.timeline_index for existing in ordered_actions(day)):
+                                new_steps = []
+                                break
+                            at = timeline_item_datetime(item, day.date, meta=day.meta)
+                            deferred = timeline_deferred_until(item, day.date, day.meta)
+                            if (item.execution_state in _TERMINAL_STATES or at is None
+                                    or at > now or (deferred and deferred > now)):
+                                new_steps = []
+                                break
+                        step.action_id = f"self:{uuid.uuid4().hex}"
+                        step.requested_at = now.isoformat(sep=" ")
+                        step.payload["execution_chain_id"] = chain_id
+                        step.payload["execution_chain_unbound"] = step.timeline_index is None
+                        step.source = "continuous_plan"
+                        new_steps.append(step)
+                    if new_steps and not await self._prepare_actions(day, new_steps):
+                        action = new_steps[0]
             if action and (
                 action.action_type not in INTERNAL_SIMULATED_ACTION_TYPES
                 or not action.duration_minutes
@@ -665,7 +712,7 @@ class ContinuousLifeService:
             ):
                 action = None
             if action:
-                valid, _ = await self._validate_action(action)
+                valid, _ = await self._validate_action(action, day=day)
                 if not valid:
                     action = None
         expected_revision = int(snapshot.get("revision") or 0)
@@ -673,15 +720,23 @@ class ContinuousLifeService:
         if decision == "resume" and snapshot.get("run"):
             resumed = attached_action(day, snapshot["run"])
             resume_valid = (
-                resumed is not None and (await self._validate_action(resumed))[0]
+                resumed is not None and (await self._validate_action(resumed, day=day))[0]
             )
+        if decision == "start" and not snapshot.get("run") and action is None:
+            return
+
+        blocked_reason = ""
 
         def apply(latest, world):
+            nonlocal blocked_reason
             if (
                 int(world.get("revision") or 0) != expected_revision
                 or latest.revision != day.revision
             ):
                 return False
+            latest.timeline = copy.deepcopy(day.timeline)
+            latest.meta = copy.deepcopy(day.meta)
+            world.pop("plan_alignment_blocked", None)
             self._advance_continuous_world(latest, world, now)
             world["next_decision_at"] = next_decision_time(latest, {}, now).isoformat()
             goal_payload = (
@@ -709,6 +764,11 @@ class ContinuousLifeService:
                 allowed_action_ids=payload.get("_reflection_action_ids", set()),
                 now=now,
             )
+            if payload.get("_achievement_candidates"):
+                world["achievement_review_at"] = now.isoformat()
+                world["achievement_review_revisions"] = [
+                    item["revision"] for item in payload["_achievement_candidates"]
+                ]
             apply_reviews(
                 world, payload.get("achievement_reviews"),
                 offered=payload.get("_achievement_candidates", []), now=now,
@@ -754,6 +814,8 @@ class ContinuousLifeService:
                     ):
                         current.update(status="running", reason=reason)
                         transition_event = "resume"
+                    else:
+                        return False
                 if transition_event:
                     current["changed_at"] = now.isoformat()
                     record_event(
@@ -765,22 +827,23 @@ class ContinuousLifeService:
                         evidence_ids=[reason],
                     )
             elif decision == "start" and action is not None:
+                if not action_ready(latest, action):
+                    return False
                 rule = _ACTION_RULES[action.action_type]
                 if self._validate_contract(
                     latest, action, rule, latest.state
                 ) or self._validate_preconditions(
                     latest, latest.state, action
                 ):
-                    return
+                    return False
                 if action.timeline_index is not None:
                     item = latest.timeline[action.timeline_index]
                     if item.execution_state in _TERMINAL_STATES:
-                        return
+                        return False
                     at = timeline_item_datetime(item, latest.date, meta=latest.meta)
-                    if at is None or not at <= now <= at + datetime.timedelta(
-                        minutes=action.duration_minutes
-                    ):
-                        return
+                    deferred = timeline_deferred_until(item, latest.date, latest.meta)
+                    if at is None or at > now or (deferred and deferred > now):
+                        return False
                 proposed_run = {
                     "rest_kind": "sleep"
                     if payload.get("rest_kind") == "sleep"
@@ -790,23 +853,28 @@ class ContinuousLifeService:
                     sleep_delayed(latest, proposed_run, now)
                     and action.action_type == "rest"
                 ):
-                    return
+                    return False
                 if self._outfit_superseded(latest, action):
-                    return
+                    return False
                 parent = None
                 parent_id = action.payload.get("artifact_parent_id")
                 if parent_id:
                     parent = self._archive()._life_entity_unlocked(str(parent_id))
                     if not parent or parent.get("owner") != "self" or not parent.get("artifact_version") or parent.get("scope") != "global":
-                        world["resource_blocked"] = "未找到可延续的自身数字作品。"
-                        return
+                        blocked_reason = "未找到可延续的自身数字作品。"
+                        return False
                 resource_reason = reserve_resources(self._archive(), action,
                     scope=str(world.get("last_chat_scope") or "global"),
                     location=str(latest.meta.get("current_place") or ""), now=now)
                 if resource_reason:
-                    world["resource_blocked"] = resource_reason
-                    return
+                    blocked_reason = resource_reason
+                    return False
                 world.pop("resource_blocked", None)
+                if new_steps:
+                    latest.meta["planned_life_actions"] = json.dumps(
+                        [item.as_dict() for item in planned_actions(latest).values()]
+                        + [item.as_dict() for item in new_steps], ensure_ascii=False,
+                    )
                 if action.timeline_index is not None:
                     item = latest.timeline[action.timeline_index]
                     item.execution_state = "active"
@@ -817,11 +885,15 @@ class ContinuousLifeService:
                 action.evidence = reason
                 action.source = "continuous_executor"
                 if action.timeline_index is None:
-                    actions = list(planned_actions(latest).values())
-                    actions.append(action)
+                    actions = planned_actions(latest)
+                    actions[action.action_id] = action
                     latest.meta["planned_life_actions"] = json.dumps(
-                        [item.as_dict() for item in actions], ensure_ascii=False
+                        [item.as_dict() for item in actions.values()], ensure_ascii=False
                     )
+                world["pending_action_ids"] = [
+                    item for item in world.get("pending_action_ids", [])
+                    if item != action.action_id
+                ] + [item.action_id for item in new_steps[1:]]
                 world["run"] = {
                     "date": latest.date,
                     "action": action.as_dict(),
@@ -868,6 +940,7 @@ class ContinuousLifeService:
                 if step:
                     world["run"].update(goal_id=goal["id"], step_id=step["id"])
                 bind_interest(world, world["run"], payload)
+            synchronize_run(latest, world, now)
             running = world.get("run") or {}
             world["sleeping"] = (
                 running.get("status") == "running"
@@ -879,6 +952,14 @@ class ContinuousLifeService:
             ).isoformat()
 
         await self._archive().mutate_continuous_life(day.date, apply)
+        if blocked_reason:
+            def record_blocked(latest, world):
+                if int(world.get("revision") or 0) != expected_revision or latest.revision != day.revision:
+                    return False
+                world["resource_blocked"] = blocked_reason
+                world["next_decision_at"] = (now + datetime.timedelta(minutes=5)).isoformat()
+
+            await self._archive().mutate_continuous_life(day.date, record_blocked)
         await self._notify_status("continuous_life")
 
     async def note_continuous_chat_exchange(self, event) -> None:

@@ -4,6 +4,7 @@ import types
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.archive import LifeArchive
@@ -116,7 +117,7 @@ class _VisionFallbackRuntime(RuntimeStyleCatalogComponent):
 
 
 class _CreativeStyleRuntime(_StyleCatalogRuntime):
-    def __init__(self, archive, payload, *, character_reference="/tmp/character.jpg"):
+    def __init__(self, archive, payload, *, character_reference="/tmp/character.jpg", persona=""):
         super().__init__(archive, payload)
         self.config = types.SimpleNamespace(
             image_generation=types.SimpleNamespace(
@@ -130,6 +131,7 @@ class _CreativeStyleRuntime(_StyleCatalogRuntime):
             image=types.SimpleNamespace(can_edit_image=lambda: True)
         )
         self.character_reference = character_reference
+        self.get_persona_text = AsyncMock(return_value=persona)
         self.generated_calls = []
         self.edited_calls = []
 
@@ -554,7 +556,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         runtime = _VisionFallbackRuntime(primary, fallback)
 
-        payload = await runtime._analyze_style_catalog_image(
+        payload = await runtime._part_runtime_style_catalog_component._analyze_style_catalog_image(
             "/tmp/test-style.jpg",
             note="测试衣橱识图",
             kind="outfit",
@@ -638,7 +640,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
-            runtime = _CreativeStyleRuntime(archive, payload)
+            runtime = _CreativeStyleRuntime(archive, payload, persona="偏好低饱和针织的角色")
             event = types.SimpleNamespace(unified_msg_origin="private:test-user")
             try:
                 result = await runtime.life_style_generate(
@@ -652,6 +654,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(getattr(result, "status", ""), "ok")
                 self.assertEqual(len(runtime.generated_calls), 1)
                 self.assertEqual(runtime.edited_calls, [])
+                runtime.get_persona_text.assert_not_awaited()
+                self.assertNotIn("偏好低饱和针织的角色", runtime.generated_calls[0][0])
                 self.assertFalse(
                     runtime.generated_calls[0][1]["include_character_reference"]
                 )
@@ -762,7 +766,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
-            runtime = _CreativeStyleRuntime(archive, payload)
+            persona = "成年女性，偏好休闲外套，平时素颜、裸甲。"
+            runtime = _CreativeStyleRuntime(archive, payload, persona=persona)
             try:
                 result = await runtime.life_style_generate(
                     types.SimpleNamespace(unified_msg_origin="private:test-user"),
@@ -774,6 +779,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(runtime.edited_calls[0][1], "/tmp/character.jpg")
                 self.assertFalse(runtime.edited_calls[0][2]["preserve_reference_ratio"])
                 self.assertIn("忽略参考图已有的服装", runtime.edited_calls[0][0])
+                self.assertIn(persona, runtime.edited_calls[0][0])
+                runtime.get_persona_text.assert_awaited_once()
+                items = await archive.get_style_catalog_items(status="", limit=10)
+                self.assertEqual({item.kind for item in items}, {"outfit"})
             finally:
                 archive.close()
 
@@ -880,7 +889,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image_path = Path(tmpdir) / "test-style.jpg"
             image_path.write_bytes(b"test-image")
             try:
-                result = await runtime._life_style_learn_inline(
+                result = await runtime._part_runtime_style_catalog_component._life_style_learn_inline(
                     event, str(image_path), kind="auto"
                 )
                 items = await archive.get_style_catalog_items(limit=10)
@@ -931,7 +940,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image_path = Path(tmpdir) / "test-style.jpg"
             image_path.write_bytes(b"test-image")
             try:
-                await runtime._life_style_learn_inline(
+                await runtime._part_runtime_style_catalog_component._life_style_learn_inline(
                     event, str(image_path), kind="outfit"
                 )
                 items = await archive.get_style_catalog_items(status="", limit=10)
@@ -1044,7 +1053,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_contract_uses_one_detailed_description(self):
         runtime = object.__new__(_StyleCatalogRuntime)
-        contract = runtime._style_catalog_contract("", "auto")
+        contract = runtime._part_runtime_style_catalog_component._style_catalog_contract("", "auto")
 
         self.assertIn("description 就是供衣橱展示、检索和后续生图", contract)
         self.assertIn('"home_presence": "home | outdoor | both | unknown"', contract)

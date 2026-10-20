@@ -35,7 +35,7 @@ class LifeHistoryTest(unittest.IsolatedAsyncioTestCase):
         )
 
         lookup = asyncio.create_task(
-            composer._fetch_deep_history(
+            composer._part_reference_component._fetch_deep_history(
                 123456, is_group=False, hours=1, max_count=10
             )
         )
@@ -64,7 +64,7 @@ class LifeHistoryTest(unittest.IsolatedAsyncioTestCase):
         composer, *_ = make_composer()
         composer.context.platform_manager = PlatformManager(bot)
 
-        messages = await composer._fetch_deep_history(
+        messages = await composer._part_reference_component._fetch_deep_history(
             123456, is_group=False, hours=1, max_count=10
         )
 
@@ -97,7 +97,7 @@ class LifeHistoryTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        messages = await composer._fetch_deep_history(
+        messages = await composer._part_reference_component._fetch_deep_history(
             123456, is_group=False, hours=1, max_count=10
         )
 

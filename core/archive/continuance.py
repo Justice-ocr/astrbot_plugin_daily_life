@@ -233,7 +233,31 @@ class ContinuityArchiveComponent:
             "SELECT value FROM meta WHERE key = ?", (_WORLD_KEY,)
         ).fetchone()
         raw = json.loads(row[0]) if row else {}
-        return raw if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        from ..life.goals import remember_goal_review_evidence
+
+        # 目标证据按原 action_id 精确读取，不依赖近期八十条结果窗口。
+        missing = set()
+        for goal in raw.get("goals", []):
+            if goal.get("status") not in {"active", "blocked"}:
+                continue
+            for step in goal.get("steps", []):
+                if step.get("status") == "completed":
+                    continue
+                saved = {item.get("action_id") for item in step.get("review_evidence", [])}
+                missing.update(item["action_id"] for item in step.get("evidence", [])[-4:]
+                               if item.get("action_id") and item["action_id"] not in saved)
+        for action_id in sorted(missing):
+            outcome_id = hashlib.sha256(f"{action_id}:committed".encode()).hexdigest()[:24]
+            entry_id = "outcome:" + hashlib.sha256(outcome_id.encode()).hexdigest()[:24]
+            source = self.context._conn.execute(
+                "SELECT payload_json FROM continuous_life_entries WHERE id=? AND kind='outcome' AND scope='global'",
+                (entry_id,),
+            ).fetchone()
+            if source:
+                remember_goal_review_evidence(raw, json.loads(source[0]))
+        return raw
 
     def clear_continuous_category_unlocked(self, category: str) -> None:
         from ..life.resources import settle as settle_resources
@@ -304,12 +328,15 @@ class ContinuityArchiveComponent:
     ) -> tuple[DayRecord | None, dict[str, Any]]:
         """在同一事务中提交身体、动作进度、长期目标与当日生活事实。"""
         from ..life.continuity import project_world
+        from ..life.locationfacts import reconcile_place
 
         def write():
             self.context._conn.execute("BEGIN IMMEDIATE")
             try:
                 day = self.context._get_day_unlocked(date)
                 world = self.context._continuous_world_unlocked()
+                if day is not None:
+                    reconcile_place(day)
                 previous_kernel = copy.deepcopy(world.get("kernel") or {})
                 if day is None or mutator(day, world) is False:
                     self.context._conn.rollback()

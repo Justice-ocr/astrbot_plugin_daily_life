@@ -13,6 +13,7 @@ from support import DayRecord, LifeArchive, LifeState
 from core.clock import now as life_now
 from core.epistemic import knowledge_label
 from core.life.body import ContinuousBody
+from core.life.entities import living_context
 from core.life.achievement import apply_reviews
 from core.life.presence import apply_action_reflections, kernel_context
 from core.models.vitals import BodyCondition
@@ -135,6 +136,9 @@ class DigitalContinuityTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(world["history"][-1]["status"], "completed")
             parent = await self.reflect(run, index + 1)
             self.assertEqual(parent["artifact_version"], index + 1)
+            self.assertEqual(parent["progress"], f"已保存第 {index + 1} 版")
+            self.assertEqual(parent["next_step"], "继续比较构图")
+            self.assertIn("后续意向（尚未执行）：继续比较构图", living_context([parent]))
             # 每天回放有观测的练习、进食、饮水和休息；其余离线时间保持未知。
             for action_type in ("meal", "drink"):
                 self.assertIsNotNone(await self.start(action_type))
@@ -158,6 +162,7 @@ class DigitalContinuityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paper["state"], "unavailable")
         versions = await self.archive.get_artifact_versions(parent["id"], "global")
         self.assertEqual(len(versions), 30)
+        self.assertTrue(all(item["next_step"] not in item["progress"] for item in versions))
         self.assertEqual(
             versions[-1]["content"], "第 1 版：居中构图稳定，三分构图留下视线空间。"
         )
@@ -325,12 +330,12 @@ class DigitalContinuityTest(unittest.IsolatedAsyncioTestCase):
             return {
                 "decision": "start",
                 "reason": "过期判断",
-                "new_action": {
+                "new_actions": [{
                     "owner": "self",
                     "action_type": "study",
                     "target": "练习",
                     "duration_minutes": 2,
-                },
+                }],
             }
 
         self.runtime.continuous_life._decide = delayed
@@ -486,7 +491,7 @@ class DigitalContinuityTest(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
             }
-            saved = await runtime._save_batch_temporal_facts(
+            saved = await runtime._part_chat_memory_batch_component._save_batch_temporal_facts(
                 {"temporal_facts": [fact]}, batch
             )
             self.assertEqual(saved[0].status, "active" if index == 2 else "uncertain")

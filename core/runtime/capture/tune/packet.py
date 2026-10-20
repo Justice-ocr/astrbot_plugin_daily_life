@@ -22,10 +22,7 @@ class PacketComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _MEMORY_PAYLOAD_CALIBRATION_KEYS: Any
-    _build_memory_payload_calibration_prompt: Any
     _get_memory_provider: Any
-    _memory_payload_has_saveable_context: Any
-    _merge_memory_payload_revision: Any
     _str_payload: Any
     call_text_model: Any
     close_text_session: Any
@@ -215,7 +212,7 @@ JSON 输出要求：
         persona_hint: str,
     ) -> dict:
         persona_hint = self.context._str_payload(persona_hint)
-        if not self.context._memory_payload_has_saveable_context(payload):
+        if not self._memory_payload_has_saveable_context(payload):
             return payload
         try:
             provider = await self.context._get_memory_provider()
@@ -225,7 +222,7 @@ JSON 输出要求：
         if not provider:
             return payload
         session_id = f"daily_life_memory_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self.context._build_memory_payload_calibration_prompt(
+        prompt = self._build_memory_payload_calibration_prompt(
             payload, meta, persona_hint
         )
         try:
@@ -240,7 +237,7 @@ JSON 输出要求：
             revision = extract_json_from_text(text)
             if not isinstance(revision, dict):
                 return payload
-            calibrated = self.context._merge_memory_payload_revision(payload, revision)
+            calibrated = self._merge_memory_payload_revision(payload, revision)
             has_interaction_candidate = any(
                 isinstance(item, dict)
                 and str(item.get("predicate") or "").strip() == "interaction_mode"

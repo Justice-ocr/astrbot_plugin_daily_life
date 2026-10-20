@@ -45,7 +45,6 @@ class ValidationIssue:
 class DailyContractComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _apply_derived_timeline_audit: Any
     _build_contract_prompt: Any
     _contract_json_text: Any
     _cooking_payload_issue: Any
@@ -53,8 +52,6 @@ class DailyContractComponentContext(Protocol):
     _day_repeat_profile: Any
     _daytime_outfit_transition_issue: Any
     _decision_novelty_text: Any
-    _declared_life_window: Any
-    _derive_timeline_audit: Any
     _full_day_coverage_ok: Any
     _full_day_coverage_profile: Any
     _full_day_coverage_thresholds: Any
@@ -65,17 +62,9 @@ class DailyContractComponentContext(Protocol):
     _repeat_sequence_similarity: Any
     _repeat_similarity: Any
     _set_validation_issue: Any
-    _timeline_cadence_issue: Any
-    _timeline_coverage: Any
-    _timeline_covered_end_minutes: Any
-    _timeline_density_issue: Any
     _timeline_item_duration: Any
     _timeline_minutes: Any
-    _timeline_raw_minutes: Any
-    _timeline_unwrapped_minutes: Any
-    _validate_generation_contract: Any
     _validate_outfit_style: Any
-    _validate_timeline_rhythm: Any
     archive: Any
 
 
@@ -130,8 +119,8 @@ class DailyContractComponent:
             self.context._set_validation_issue("timeline_invalid")
             return False, "timeline 必须按日期及时间递增排列"
         if expected_coverage:
-            self.context._apply_derived_timeline_audit(payload, expected_coverage)
-        contract_ok, contract_reason = self.context._validate_generation_contract(
+            self._apply_derived_timeline_audit(payload, expected_coverage)
+        contract_ok, contract_reason = self._validate_generation_contract(
             payload,
             expected_coverage=expected_coverage,
         )
@@ -142,7 +131,7 @@ class DailyContractComponent:
         if cooking_issue:
             self.context._set_validation_issue("cook_ingredients_required")
             return False, cooking_issue
-        timeline_ok, timeline_reason = self.context._validate_timeline_rhythm(
+        timeline_ok, timeline_reason = self._validate_timeline_rhythm(
             payload,
             expected_coverage=expected_coverage,
         )
@@ -573,7 +562,7 @@ class DailyContractComponent:
 
     def _timeline_covered_end_minutes(self, timeline: object) -> int | None:
         items = timeline if isinstance(timeline, list) else []
-        minutes = self.context._timeline_unwrapped_minutes(items)
+        minutes = self._timeline_unwrapped_minutes(items)
         if not minutes:
             return None
         return max(
@@ -582,7 +571,7 @@ class DailyContractComponent:
         )
 
     def _timeline_cadence_issue(self, timeline: object) -> str:
-        minutes = self.context._timeline_unwrapped_minutes(timeline)
+        minutes = self._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 5:
             return ""
 
@@ -605,7 +594,7 @@ class DailyContractComponent:
 
     def _timeline_density_issue(self, payload: dict) -> str:
         timeline = payload.get("timeline")
-        minutes = self.context._timeline_unwrapped_minutes(timeline)
+        minutes = self._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 2:
             return "完整全天日程缺少足够的生活节点"
         items = timeline if isinstance(timeline, list) else []
@@ -641,10 +630,10 @@ class DailyContractComponent:
         return ""
 
     def _timeline_coverage(self, timeline: object) -> dict[str, int]:
-        raw_minutes = self.context._timeline_raw_minutes(timeline)
+        raw_minutes = self._timeline_raw_minutes(timeline)
         if not raw_minutes:
             return {}
-        unwrapped = self.context._timeline_unwrapped_minutes(timeline)
+        unwrapped = self._timeline_unwrapped_minutes(timeline)
 
         return {
             "first": raw_minutes[0],
@@ -655,7 +644,7 @@ class DailyContractComponent:
         }
 
     def _timeline_bounds(self, timeline: object) -> tuple[int | None, int | None]:
-        coverage = self.context._timeline_coverage(timeline)
+        coverage = self._timeline_coverage(timeline)
         if not coverage:
             return None, None
         return coverage["first"], coverage["last"]
@@ -741,7 +730,7 @@ class DailyContractComponent:
         self, payload: dict, expected_coverage: str = ""
     ) -> dict[str, object]:
         timeline = payload.get("timeline")
-        coverage = self.context._timeline_coverage(timeline)
+        coverage = self._timeline_coverage(timeline)
         if not coverage:
             return {}
         first_minutes = coverage["first"]
@@ -761,8 +750,8 @@ class DailyContractComponent:
             }
 
         profile = self.context._full_day_coverage_profile(payload)
-        covered_end = self.context._timeline_covered_end_minutes(timeline)
-        life_window = self.context._declared_life_window(payload)
+        covered_end = self._timeline_covered_end_minutes(timeline)
+        life_window = self._declared_life_window(payload)
         if life_window:
             effective_end = int(covered_end or coverage["last_unwrapped"])
             covers_full_day = (
@@ -810,7 +799,7 @@ class DailyContractComponent:
         self, payload: dict, expected_coverage: str = ""
     ) -> dict[str, object]:
         payload.pop("timeline_audit", None)
-        audit = self.context._derive_timeline_audit(payload, expected_coverage)
+        audit = self._derive_timeline_audit(payload, expected_coverage)
         if audit:
             payload["timeline_audit"] = audit
         return audit
@@ -819,7 +808,7 @@ class DailyContractComponent:
         self, payload: dict, expected_coverage: str = ""
     ) -> tuple[bool, str]:
         timeline = payload.get("timeline")
-        coverage = self.context._timeline_coverage(timeline)
+        coverage = self._timeline_coverage(timeline)
         if not coverage:
             return True, ""
 
@@ -827,19 +816,19 @@ class DailyContractComponent:
         if not expected_coverage:
             return True, ""
 
-        cadence_issue = self.context._timeline_cadence_issue(timeline)
+        cadence_issue = self._timeline_cadence_issue(timeline)
         if cadence_issue:
             self.context._set_validation_issue("timeline_cadence")
             return False, cadence_issue
 
         if expected_coverage == "full_day":
             profile = self.context._full_day_coverage_profile(payload)
-            life_window = self.context._declared_life_window(payload)
+            life_window = self._declared_life_window(payload)
             first_minutes = coverage["first_unwrapped"]
             last_minutes = max(
                 coverage["last_unwrapped"],
                 int(
-                    self.context._timeline_covered_end_minutes(timeline)
+                    self._timeline_covered_end_minutes(timeline)
                     or coverage["last_unwrapped"]
                 ),
             )
@@ -865,7 +854,7 @@ class DailyContractComponent:
                 if span < FULL_DAY_MIN_SPAN_MINUTES:
                     self.context._set_validation_issue("timeline_coverage_span")
                     return False, "完整全天日程覆盖范围不足，timeline 仍像局部片段"
-            density_issue = self.context._timeline_density_issue(payload)
+            density_issue = self._timeline_density_issue(payload)
             if density_issue:
                 self.context._set_validation_issue("timeline_density")
                 return False, density_issue

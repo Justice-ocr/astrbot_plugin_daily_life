@@ -414,6 +414,10 @@ class LifeArchive:
 
     _wardrobe_action_issue_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_wardrobe_action_issue_unlocked")
 
+    _prepare_outfit_action_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_prepare_outfit_action_unlocked")
+
+    prepare_outfit_action = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "prepare_outfit_action")
+
     get_wardrobe_snapshot = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "get_wardrobe_snapshot")
 
     _wardrobe_event_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_wardrobe_event_unlocked")
@@ -589,6 +593,8 @@ class LifeArchive:
     finalize_durable_task = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "finalize_durable_task")
 
     fail_durable_task = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "fail_durable_task")
+
+    recover_provider_blocked_task = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "recover_provider_blocked_task")
 
     defer_durable_task = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "defer_durable_task")
 
@@ -847,6 +853,8 @@ class LifeArchive:
     _maintain_long_term_memory_quality_unlocked = ComponentCall("_part_long_term_memory_archive_component", LongTermMemoryArchiveComponent, "_maintain_long_term_memory_quality_unlocked")
 
     upsert_long_term_memory = ComponentCall("_part_long_term_memory_archive_component", LongTermMemoryArchiveComponent, "upsert_long_term_memory")
+
+    link_memory_episode = ComponentCall("_part_long_term_memory_archive_component", LongTermMemoryArchiveComponent, "link_memory_episode")
 
     upsert_long_term_memories = ComponentCall("_part_long_term_memory_archive_component", LongTermMemoryArchiveComponent, "upsert_long_term_memories")
 

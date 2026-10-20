@@ -27,9 +27,6 @@ class EmojiSweepComponentContext(Protocol):
     _emoji_replace_when_full: Any
     _emoji_review_batch_size: Any
     _prune_extra_ready_emoji_assets: Any
-    _prune_inactive_emoji_asset_records: Any
-    _remote_source_from_asset: Any
-    _revalidate_review_emoji_assets: Any
     archive: Any
     cleanup_emoji_asset_cache: Any
 
@@ -55,7 +52,7 @@ class EmojiSweepComponent:
             ):
                 continue
 
-            source = self.context._remote_source_from_asset(asset)
+            source = self._remote_source_from_asset(asset)
             if source:
                 cache_dir = self.context._emoji_asset_cache_dir()
                 cached_path = (
@@ -111,9 +108,9 @@ class EmojiSweepComponent:
             )
             updated += 1
 
-        revalidated = await self.context._revalidate_review_emoji_assets()
+        revalidated = await self._revalidate_review_emoji_assets()
         deleted_records = await self.context._prune_extra_ready_emoji_assets()
-        deleted_inactive_records = await self.context._prune_inactive_emoji_asset_records()
+        deleted_inactive_records = await self._prune_inactive_emoji_asset_records()
         deleted_files = await self.context.cleanup_emoji_asset_cache()
         result = {
             "missing_marked": updated,

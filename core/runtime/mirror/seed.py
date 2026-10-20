@@ -12,8 +12,6 @@ from typing import Any, Protocol
 class SnapshotSeedComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _generate_injection_day_background: Any
-    _generate_missing_day_background: Any
     _prepare_residence_change: Any
     _refresh_after_residence_change: Any
     _runtime_now: Any
@@ -96,7 +94,7 @@ class SnapshotSeedComponent:
                         exc,
                     )
             return
-        await self.context._generate_missing_day_background(
+        await self._generate_missing_day_background(
             target_date_str,
             now,
             source="startup_seed",
@@ -118,7 +116,7 @@ class SnapshotSeedComponent:
             return data
 
         self.context._schedule_background_task(
-            self.context._generate_injection_day_background(target_date_str, now),
+            self._generate_injection_day_background(target_date_str, now),
             label="日常生活即时生成",
             key=f"injection_day:{target_date_str}",
         )
@@ -129,7 +127,7 @@ class SnapshotSeedComponent:
         target_date_str: str,
         now: datetime.datetime,
     ) -> None:
-        await self.context._generate_missing_day_background(
+        await self._generate_missing_day_background(
             target_date_str,
             now,
             source="injection_seed",

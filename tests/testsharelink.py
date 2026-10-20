@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import support  # noqa: F401
 from core.archive import LifeArchive
+from core.config import LifeSettings
 from core.media.picture.polling import ImageTaskError, ImageTaskFailed
 from core.media.video.errors import VideoTaskError, VideoTaskFailed
 from core.models import DayRecord, TimelineItem
@@ -83,23 +84,37 @@ class _AssetRuntime(RuntimeActionReceiptComponent):
 
 
 class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
-    async def test_share_terminal_media_task_is_failed_and_same_key_never_resubmits(self):
+    async def test_share_terminal_media_task_is_failed_and_same_key_never_resubmits(
+        self,
+    ):
         for kind in ("image", "video"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
                 archive = LifeArchive(Path(folder) / "life.db")
                 try:
                     runtime = _AssetRuntime(archive)
-                    failure_type = ImageTaskFailed if kind == "image" else VideoTaskFailed
-                    setattr(getattr(runtime.media, kind), f"resume_async_{kind}", AsyncMock(side_effect=failure_type("明确失败")))
+                    failure_type = (
+                        ImageTaskFailed if kind == "image" else VideoTaskFailed
+                    )
+                    setattr(
+                        getattr(runtime.media, kind),
+                        f"resume_async_{kind}",
+                        AsyncMock(side_effect=failure_type("明确失败")),
+                    )
                     generate = getattr(runtime, f"generate_share_{kind}_task")
                     await generate(None, "生活素材", task_key="share-failed")
-                    record = (await archive.get_durable_tasks(kind=f"share_{kind}_generation"))[0]
+                    record = (
+                        await archive.get_durable_tasks(kind=f"share_{kind}_generation")
+                    )[0]
                     self.assertEqual(record.status, "pending")
-                    await archive.reschedule_durable_task(record.task_key, archive._cognition_now())
+                    await archive.reschedule_durable_task(
+                        record.task_key, archive._cognition_now()
+                    )
                     task = (await archive.lease_durable_tasks("terminal"))[0]
                     with self.assertRaises(failure_type):
                         await getattr(runtime, f"resume_share_{kind}_generation")(task)
-                    await archive.fail_durable_task(task.id, "明确失败", owner="terminal", permanent=True)
+                    await archive.fail_durable_task(
+                        task.id, "明确失败", owner="terminal", permanent=True
+                    )
                     result = await generate(None, "重复请求", task_key="share-failed")
                     self.assertEqual(result["status"], "failed")
                     self.assertEqual(runtime.calls, 1)
@@ -108,26 +123,45 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_image_channel_clears_progress_before_fallback(self):
         for pending_backup in (False, True):
-            with self.subTest(pending_backup=pending_backup), tempfile.TemporaryDirectory() as folder:
+            with (
+                self.subTest(pending_backup=pending_backup),
+                tempfile.TemporaryDirectory() as folder,
+            ):
                 archive = LifeArchive(Path(folder) / "life.db")
                 try:
                     runtime = _AssetRuntime(archive)
-                    route = types.SimpleNamespace(api_url="https://image.example/v1", model="image-test", protocol="openai", api_key="test-key")
+                    route = types.SimpleNamespace(
+                        api_url="https://image.example/v1",
+                        model="image-test",
+                        protocol="openai",
+                        api_key="test-key",
+                    )
 
                     async def generate(*_args, **_kwargs):
                         await runtime.listener("failed-image", route)
-                        await runtime.failure_listener("failed-image", route, ImageTaskFailed("任务失败"))
+                        await runtime.failure_listener(
+                            "failed-image", route, ImageTaskFailed("任务失败")
+                        )
                         if pending_backup:
                             await runtime.listener("backup-image", route)
                             raise ImageTaskError("备选任务结果尚未确认")
                         raise ImageTaskFailed("所有任务失败")
 
                     runtime.generate_life_image_asset = generate
-                    result = await runtime.generate_share_image_task(None, "生活照片", task_key="share-a")
-                    self.assertEqual(result["status"], "pending" if pending_backup else "failed")
-                    record = (await archive.get_durable_tasks(kind="share_image_generation"))[0]
+                    result = await runtime.generate_share_image_task(
+                        None, "生活照片", task_key="share-a"
+                    )
+                    self.assertEqual(
+                        result["status"], "pending" if pending_backup else "failed"
+                    )
+                    record = (
+                        await archive.get_durable_tasks(kind="share_image_generation")
+                    )[0]
                     progress = record.result.get("progress", {})
-                    self.assertEqual(progress.get("task_id"), "backup-image" if pending_backup else None)
+                    self.assertEqual(
+                        progress.get("task_id"),
+                        "backup-image" if pending_backup else None,
+                    )
                     runtime.stage_durable_media_delivery.assert_not_awaited()
                 finally:
                     archive.close()
@@ -278,13 +312,22 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
     def test_snapshot_does_not_promote_clock_only_active_plan(self):
         day = DayRecord(
             date="2026-10-11",
-            timeline=[TimelineItem(time="12:00", activity="准备午餐", execution_state="active")],
+            timeline=[
+                TimelineItem(
+                    time="12:00", activity="准备午餐", execution_state="active"
+                )
+            ],
         )
-        self.assertEqual(SnapshotExportComponent._share_current_facts(day)["current_action"], {})
+        self.assertEqual(
+            SnapshotExportComponent._share_current_facts(day)["current_action"], {}
+        )
 
     async def test_voice_semantics_keep_original_and_validate_style(self):
         class Runtime(_IntegrationRuntime):
-            config = types.SimpleNamespace(chat_style=None)
+            config = types.SimpleNamespace(
+                chat_style=None,
+                voice_generation=LifeSettings.from_dict({}).voice_generation,
+            )
 
             def get_share_chat_style(self, **kwargs):
                 return {"enabled": True, "prompt": "自然接话"}

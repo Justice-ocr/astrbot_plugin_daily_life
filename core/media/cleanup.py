@@ -16,7 +16,6 @@ from typing import Any, Protocol
 class MediaFileCleanupComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _media_file_cache_root: Any
     _media_keep_days: Any
     _prune_media_cache_tree: Any
     archive: Any
@@ -40,7 +39,7 @@ class MediaFileCleanupComponent:
 
     async def maintain_plugin_file_cache(self) -> dict[str, int]:
         settings = getattr(getattr(self.context, "config", None), "storage", None)
-        root = self.context._media_file_cache_root()
+        root = self._media_file_cache_root()
         jobs = (
             (
                 "generated",

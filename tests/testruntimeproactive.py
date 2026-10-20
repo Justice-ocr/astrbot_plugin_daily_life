@@ -81,7 +81,7 @@ class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
             },
         }
 
-        runtime._normalize_proactive_voice_call_intent(Event(), payload)
+        runtime._part_proactive_flow_component._normalize_proactive_voice_call_intent(Event(), payload)
 
         self.assertTrue(payload["voice_call_intent"]["should_invite"])
         self.assertEqual(
@@ -89,7 +89,7 @@ class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
         )
 
         runtime._event_is_group_message = lambda _event: True
-        runtime._normalize_proactive_voice_call_intent(Event(), payload)
+        runtime._part_proactive_flow_component._normalize_proactive_voice_call_intent(Event(), payload)
         self.assertFalse(payload["voice_call_intent"]["should_invite"])
 
     def test_proactive_lifecycle_accepts_only_declared_transitions(self):
@@ -974,7 +974,7 @@ class RuntimeProactiveAsyncTest(
         runtime._send_proactive_emoji_if_needed = lambda scope, payload: async_return(
             None
         )
-        runtime._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
+        runtime._part_proactive_send_component._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
             None
         )
 
@@ -1027,7 +1027,7 @@ class RuntimeProactiveAsyncTest(
         runtime._send_proactive_emoji_if_needed = lambda scope, payload: async_return(
             None
         )
-        runtime._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
+        runtime._part_proactive_send_component._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
             None
         )
 
@@ -1073,7 +1073,7 @@ class RuntimeProactiveAsyncTest(
         runtime._send_proactive_emoji_if_needed = lambda scope, payload: async_return(
             None
         )
-        runtime._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
+        runtime._part_proactive_send_component._mark_failed_proactive_contact = lambda *args, **kwargs: async_return(
             None
         )
 
@@ -2484,7 +2484,7 @@ class RuntimeProactiveAsyncTest(
                 "reason": "用户明确认可并继续当前互动",
             }
 
-        runtime._classify_reply_effect = classify
+        runtime._part_air_effect_component._classify_reply_effect = classify
 
         await runtime._observe_proactive_reply_effect(
             event, datetime.datetime(2026, 5, 24, 12, 5)
@@ -2534,7 +2534,7 @@ class RuntimeProactiveAsyncTest(
                 "reason": "用户明确表达互动受阻",
             }
 
-        runtime._classify_reply_effect = classify
+        runtime._part_air_effect_component._classify_reply_effect = classify
 
         await runtime._observe_proactive_reply_effect(
             event, datetime.datetime(2026, 5, 24, 12, 5)
@@ -2599,7 +2599,7 @@ class RuntimeProactiveAsyncTest(
                 runtime._init_response_gate_state()
                 event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
                 event.message_str = "最后还有一部分没说完"
-                decision = await runtime._response_gate_semantic_decision(
+                decision = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
                     event, score=0.8, reasons=[], pending_count=pending_count,
                     wait_state={"rounds": rounds, "messages": ["先等我讲完整件事", "第一部分", "第二部分", "第三部分"]},
                 )
@@ -2648,7 +2648,7 @@ class RuntimeProactiveAsyncTest(
         event.message_str = "再补上后半句"
         wait_state = runtime._response_gate_wait_state(scope, now)
 
-        decision = await runtime._response_gate_semantic_decision(
+        decision = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
             event,
             score=0.5,
             reasons=["正在聚合当前连续话轮"],
@@ -2702,7 +2702,7 @@ class RuntimeProactiveAsyncTest(
             types.SimpleNamespace(mode="co_present", mode_label="同处现场")
         )
 
-        decision = await runtime._evaluate_private_revisit_payload(
+        decision = await runtime._part_proactive_revisit_component._evaluate_private_revisit_payload(
             "aiocqhttp:FriendMessage:10001",
             relationship=types.SimpleNamespace(id="10001", user_id="10001"),
             now=datetime.datetime(2026, 8, 13, 12, 0),
@@ -2835,12 +2835,12 @@ class RuntimeProactiveAsyncTest(
                 "reason": "用户自然接住并推进了互动",
             }
 
-        runtime._classify_reply_effect = classify
+        runtime._part_air_effect_component._classify_reply_effect = classify
 
         runtime.note_proactive_activity(
             accepted, now=datetime.datetime(2026, 5, 24, 12, 1)
         )
-        self.assertEqual(runtime._response_gate_continuation_store(), {})
+        self.assertEqual(runtime._part_response_gate_state_component._response_gate_continuation_store(), {})
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
         follow = Event(
@@ -3041,22 +3041,22 @@ class RuntimeProactiveAsyncTest(
         self.assertIn("沉默惯性", state_text)
         self.assertIn("等对方补一句", state_text)
         self.assertEqual(
-            runtime._proactive_send_delay_seconds(
+            runtime._part_proactive_segment_component._proactive_send_delay_seconds(
                 {"send_timing": {"delay_seconds": 30}}
             ),
             12.0,
         )
         self.assertEqual(
-            runtime._proactive_send_delay_seconds(
+            runtime._part_proactive_segment_component._proactive_send_delay_seconds(
                 {"send_timing": {"delay_seconds": "3.5"}}
             ),
             3.5,
         )
-        self.assertEqual(runtime._proactive_send_delay_seconds({}), 0.0)
+        self.assertEqual(runtime._part_proactive_segment_component._proactive_send_delay_seconds({}), 0.0)
 
         with patch("core.runtime.delay.random.uniform", return_value=1.25):
             self.assertEqual(
-                runtime._proactive_send_delay_seconds(
+                runtime._part_proactive_segment_component._proactive_send_delay_seconds(
                     {"reply_text": "我听见了，不过现在真的快睡着了"}
                 ),
                 1.25,
@@ -3244,7 +3244,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion_category": "sad", "emotion": "有点委屈", "send_emoji": True}
         )
 
@@ -3266,7 +3266,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion_category": "happy", "emotion": "轻松", "send_emoji": True}
         )
 
@@ -3289,7 +3289,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "好奇", "emoji_intent": "围观", "send_emoji": True}
         )
 
@@ -3322,7 +3322,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "有点好奇", "emoji_intent": "围观一下", "send_emoji": True}
         )
 
@@ -3357,7 +3357,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "好奇", "emoji_intent": "围观", "send_emoji": True}
         )
 
@@ -3403,7 +3403,7 @@ class RuntimeProactiveAsyncTest(
             }
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "开心", "emoji_intent": "俏皮回应", "send_emoji": True},
             scope=scope,
         )
@@ -3441,7 +3441,7 @@ class RuntimeProactiveAsyncTest(
             }
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "开心", "emoji_intent": "俏皮回应", "send_emoji": True},
             scope=scope,
         )
@@ -3465,7 +3465,7 @@ class RuntimeProactiveAsyncTest(
                     status="ready",
                 )
             )
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "好奇", "emoji_intent": "围观", "send_emoji": True}
         )
 
@@ -3492,7 +3492,7 @@ class RuntimeProactiveAsyncTest(
                 )
             )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "探头", "emoji_intent": "围观", "send_emoji": True}
         )
 
@@ -3533,7 +3533,7 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
-        emoji = await runtime._select_emoji_asset_for_intent(
+        emoji = await runtime._part_proactive_gesture_component._select_emoji_asset_for_intent(
             {"emotion": "有点想接话", "send_emoji": True}, scope=scope
         )
 
@@ -3758,10 +3758,6 @@ class RuntimeProactiveAsyncTest(
         plan = SemanticSegmentPlan(
             (SegmentPart("收到啦"),),
             valid=True,
-            emotion="轻松",
-            emotion_category="happy",
-            emoji_intent="轻松回应",
-            send_emoji=True,
             reason="测试普通回复开关",
         )
         setattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
@@ -3799,14 +3795,14 @@ class RuntimeProactiveAsyncTest(
         runtime, _ = self._make_proactive_runtime([])
         runtime.config.emoji.send_cooldown_seconds = 60
         scope = "aiocqhttp:FriendMessage:10001"
-        runtime._emoji_sent_store()[scope] = {
+        runtime._part_proactive_gesture_component._emoji_sent_store()[scope] = {
             "sent_at": datetime.datetime.now(datetime.timezone.utc),
         }
 
-        self.assertTrue(await runtime._emoji_send_cooldown_active(scope))
+        self.assertTrue(await runtime._part_proactive_gesture_component._emoji_send_cooldown_active(scope))
 
         runtime.config.emoji.send_cooldown_seconds = 0
-        self.assertFalse(await runtime._emoji_send_cooldown_active(scope))
+        self.assertFalse(await runtime._part_proactive_gesture_component._emoji_send_cooldown_active(scope))
 
     async def test_normal_reply_semantic_emoji_is_sent_once_after_text_decision(self):
         runtime, provider = self._make_proactive_runtime(
@@ -3831,10 +3827,6 @@ class RuntimeProactiveAsyncTest(
         plan = SemanticSegmentPlan(
             (SegmentPart("收到啦"),),
             valid=True,
-            emotion="轻松",
-            emotion_category="happy",
-            emoji_intent="轻松回应",
-            send_emoji=True,
             reason="文字后补一个轻松表情",
         )
         setattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
@@ -4319,13 +4311,13 @@ class RuntimeProactiveAsyncTest(
             "benefit": 90, "timeliness": 90, "continuity": 90,
             "disruption": 10, "uncertainty": 10,
         }
-        result = runtime._private_revisit_normalize_payload(
+        result = runtime._part_proactive_revisit_component._private_revisit_normalize_payload(
             dict(payload), target_scope="aiocqhttp:FriendMessage:10001",
             revisit_evidence={"can_revisit": True},
         )
         self.assertTrue(result["should_reply"])
         self.assertEqual(result["reply_text"], reply)
-        declined = runtime._private_revisit_normalize_payload(
+        declined = runtime._part_proactive_revisit_component._private_revisit_normalize_payload(
             dict(payload), target_scope="aiocqhttp:FriendMessage:10001",
             revisit_evidence={"can_revisit": False, "reason": "没有回访依据"},
         )

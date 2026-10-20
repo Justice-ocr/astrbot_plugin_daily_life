@@ -34,10 +34,8 @@ class NativeSightComponentContext(Protocol):
     _event_message_id: Any
     _lock_video_note_source: Any
     _model_cache_meter: Any
-    _native_sight_client: Any
     _native_video_client: Any
     _native_video_prompt: Any
-    _native_video_tool_work: Any
     _sight_cache_dir: Any
     _sight_clips_from_event: Any
     _sight_clips_from_event_async: Any
@@ -49,7 +47,6 @@ class NativeSightComponentContext(Protocol):
     _sight_vault_for_runtime: Any
     _snapshot_media_event: Any
     _submit_background_tool: Any
-    _understand_native_video_once: Any
     _understand_sight_clip: Any
     config: Any
     event_was_recalled: Any
@@ -98,7 +95,7 @@ class NativeSightComponent:
         async def work():
             # 等待方的时限不取消实际理解及落库。下载和原生客户端分别有界，
             # 超过分享前台等待时间后仍保存摘要，后续追问复用同一任务或缓存。
-            return await self.context._understand_native_video_once(
+            return await self._understand_native_video_once(
                 event, copy.deepcopy(clip), route, prompt, signature, force=force
             )
 
@@ -171,7 +168,7 @@ class NativeSightComponent:
                 if request_timeout <= 0:
                     raise NativeVideoError("视频准备超过总时限，未提交理解请求。")
             logger.info("[日常生活] Gemini 原生视频理解开始：完整文件输入。")
-            result, usage = await self.context._native_sight_client().analyze(
+            result, usage = await self._native_sight_client().analyze(
                 path,
                 route,
                 prompt,
@@ -356,7 +353,7 @@ class NativeSightComponent:
                     locked = await self.context._lock_video_note_source(clip)
 
         async def work() -> ToolResultText:
-            return await self.context._native_video_tool_work(snapshot, target, locked)
+            return await self._native_video_tool_work(snapshot, target, locked)
 
         return self.context._submit_background_tool(
             snapshot,

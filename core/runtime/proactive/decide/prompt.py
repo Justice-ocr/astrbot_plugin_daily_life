@@ -44,17 +44,10 @@ class ProactivePromptComponentContext(Protocol):
     _format_reply_effects_for_proactive: Any
     _format_temporary_expression_states_for_proactive: Any
     _proactive_focus_lines: Any
-    _proactive_person_fact_context: Any
-    _proactive_prompt_dynamic: Any
-    _proactive_prompt_fixed: Any
-    _proactive_prompt_records: Any
-    _proactive_prompt_scene: Any
     _proactive_readiness_text: Any
     _proactive_relationship_context: Any
-    _proactive_reply_limit_for_prompt: Any
     _proactive_scope_key: Any
     _proactive_summary_lines: Any
-    _proactive_voice_call_capability: Any
     _proactive_voice_capability: Any
     _settle_stale_reply_effects: Any
     archive: Any
@@ -291,7 +284,7 @@ class ProactivePromptComponent:
         state = normalize_state(
             day.state.as_dict() if day and getattr(day, "state", None) else {}
         )
-        records = await self.context._proactive_prompt_records(
+        records = await self._proactive_prompt_records(
             event,
             sender_name=sender_name,
             message=message,
@@ -309,7 +302,7 @@ class ProactivePromptComponent:
         )
         is_group = self.context._event_is_group_message(event)
         persona = await self.context._current_proactive_persona(session_id)
-        person_facts = await self.context._proactive_person_fact_context(
+        person_facts = await self._proactive_person_fact_context(
             persona=persona,
             message=message,
             relationships=records["relationships"],
@@ -335,7 +328,7 @@ class ProactivePromptComponent:
             "frequency": self.context.config.proactive.talk_frequency
             if is_group
             else self.context.config.proactive.private_talk_frequency,
-            "voice_call_capability": self.context._proactive_voice_call_capability(event),
+            "voice_call_capability": self._proactive_voice_call_capability(event),
             "voice_message_capability": self.context._proactive_voice_capability(session_id),
             "message": message,
             "meta": meta,
@@ -343,7 +336,7 @@ class ProactivePromptComponent:
             "pending_count": pending_count,
             "persona_context": self.context._format_proactive_persona_context(persona),
             "person_fact_context": person_facts,
-            "proactive_limit": self.context._proactive_reply_limit_for_prompt(),
+            "proactive_limit": self._proactive_reply_limit_for_prompt(),
             "readiness_text": self.context._proactive_readiness_text(readiness),
             "records": records,
             "relationship_context": self.context._proactive_relationship_context(
@@ -402,7 +395,7 @@ JSON 输出要求：
     "greeting": "如果邀请被接受，角色想先说的上下文相关短句；没有自然开场就留空",
     "reason": "为什么此刻适合或不适合主动邀请实时语音通话"
   }},
-  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|soft|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 
 裁定方式：
@@ -533,7 +526,7 @@ MemOS 外部长期记忆参考：
         using_extended_night: bool,
         readiness: dict[str, Any] | None = None,
     ) -> str:
-        scene = await self.context._proactive_prompt_scene(
+        scene = await self._proactive_prompt_scene(
             event,
             sender_name,
             now,
@@ -543,5 +536,5 @@ MemOS 外部长期记忆参考：
             readiness,
         )
         return cache_friendly_prompt(
-            self.context._proactive_prompt_fixed(), self.context._proactive_prompt_dynamic(scene)
+            self._proactive_prompt_fixed(), self._proactive_prompt_dynamic(scene)
         )

@@ -14,7 +14,6 @@ class StructuredDockComponentContext(Protocol):
     _structured_messages: Any
     _structured_scope_messages: Any
     _structured_sequence_counters: Any
-    _structured_store: Any
 
 
 class StructuredDockComponent:
@@ -23,7 +22,7 @@ class StructuredDockComponent:
 
     def remove_recalled_structured_message(self, scope: str, message_id: str) -> None:
         """仅移除所属会话的撤回消息，并保留上下文容量与排序。"""
-        store = self.context._structured_store()
+        store = self._structured_store()
         messages = store.get(scope)
         if not messages:
             return
@@ -44,7 +43,7 @@ class StructuredDockComponent:
 
     def _structured_scope_messages(self, scope: str) -> deque[StructuredMessage]:
         scope = str(scope or "").strip()
-        store = self.context._structured_store()
+        store = self._structured_store()
         messages = store.get(scope)
         if not isinstance(messages, deque):
             messages = deque(maxlen=self.context._STRUCTURED_CONTEXT_LIMIT)
@@ -74,7 +73,7 @@ class StructuredDockComponent:
         if key:
             kept = [item for item in messages if item.key != key]
             kept.append(message)
-            self.context._structured_store()[message.scope] = deque(
+            self._structured_store()[message.scope] = deque(
                 kept[-self.context._STRUCTURED_CONTEXT_LIMIT :],
                 maxlen=self.context._STRUCTURED_CONTEXT_LIMIT,
             )

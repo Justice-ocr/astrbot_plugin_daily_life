@@ -196,10 +196,10 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         runtime.build_missing_life_context = lambda *a, **k: "暂无生活事实"
         runtime.friend_reference_injection_context = lambda event: ""
         runtime._voice_expression_channel_enabled = lambda event: False
-        runtime._append_visual_input_anchor = lambda req: None
+        runtime._part_layer_chain_component._append_visual_input_anchor = lambda req: None
         runtime._append_video_input_anchor = lambda req, event: None
-        runtime._schedule_chat_state_refresh = lambda *args: None
-        runtime._build_available_life_context = AsyncMock(return_value="当前已经起床")
+        runtime._part_layer_chain_component._schedule_chat_state_refresh = lambda *args: None
+        runtime._part_layer_chain_component._build_available_life_context = AsyncMock(return_value="当前已经起床")
         await runtime.record_conversation_delivery(self.scope, self.sent)
         requests = []
         for data, arrival in ((None, self.arrived), (object(), self.arrived + 3600)):

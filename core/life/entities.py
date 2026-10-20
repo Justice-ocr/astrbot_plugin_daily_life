@@ -100,6 +100,8 @@ def living_context(items: list[dict[str, Any]]) -> str:
                 f"来源 {item.get('provenance', '')}；"
                 f"{str(item.get('content') or '')[:240]}"
             )
+            if item.get("next_step"):
+                lines.append(f"  后续意向（尚未执行）：{str(item['next_step'])[:240]}")
         elif kind == "correction":
             lines.append(
                 f"- 已确认纠正 {prefix}：{item.get('title', '')}；"

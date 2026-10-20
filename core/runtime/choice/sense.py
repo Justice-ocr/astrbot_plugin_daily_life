@@ -10,14 +10,11 @@ class ResponseGateSenseComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _response_gate_attention: Any
-    _response_gate_episode_delta: Any
     _response_gate_first_seen_at: Any
     _response_gate_has_media: Any
     _response_gate_int: Any
     _response_gate_profile_ids: Any
-    _response_gate_reply_effect_delta: Any
     _response_gate_reply_times: Any
-    _response_gate_scene_delta: Any
     _response_gate_visible_text: Any
     _safe_event_call: Any
     archive: Any
@@ -146,7 +143,7 @@ class ResponseGateSenseComponent:
         total = 0.0
         weight_sum = 0.0
         for index, item in enumerate(effects[:6]):
-            item_delta = self.context._response_gate_reply_effect_delta(item)
+            item_delta = self._response_gate_reply_effect_delta(item)
             if item_delta == 0.0:
                 continue
             weight = max(0.4, 1.0 - index * 0.12)
@@ -182,8 +179,8 @@ class ResponseGateSenseComponent:
         if archive is None:
             return 0.0
         delta = 0.0
-        delta += await self.context._response_gate_scene_delta(archive, key, reasons)
-        delta += await self.context._response_gate_episode_delta(archive, event, reasons)
+        delta += await self._response_gate_scene_delta(archive, key, reasons)
+        delta += await self._response_gate_episode_delta(archive, event, reasons)
         return max(-0.14, min(delta, 0.14))
 
     async def _response_gate_scene_delta(

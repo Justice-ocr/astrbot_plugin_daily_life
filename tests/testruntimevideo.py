@@ -23,7 +23,6 @@ from runtimehelpers import (
     Provider,
     RuntimeAsyncHelpers,
     SegmentPart,
-    SemanticSegmentPlan,
     SightBrief,
     SightClip,
     SightInsight,
@@ -43,6 +42,9 @@ from runtimehelpers import (
 )
 
 
+from core.runtime.voice.modality import VoiceExpressionPlan
+
+
 class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _set_voice_expression_plan(
@@ -54,12 +56,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         confidence=0.9,
         reason="整轮语义更适合直接说出来",
     ):
-        reply_text = runtime._voice_switch_reply_text_from_event(event)
         setattr(
             event,
-            runtime._SEMANTIC_SEGMENT_PLAN_ATTR,
-            SemanticSegmentPlan(
-                (SegmentPart(reply_text),),
+            "_daily_life_expression_plan",
+            VoiceExpressionPlan(
                 channel="voice",
                 emotion=emotion,
                 emotion_category=emotion_category,
@@ -95,10 +95,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             for index in range(12):
                 runtime._mark_sight_completed_key(f"video-{index}")
             self.assertLessEqual(len(runtime._sight_completed_keys), 8)
-            self.assertTrue(runtime._sight_completed_key_is_fresh("video-11"))
+            self.assertTrue(runtime._part_sight_identity_component._sight_completed_key_is_fresh("video-11"))
 
         with patch("core.sight.identity.time.monotonic", return_value=4001.0):
-            self.assertFalse(runtime._sight_completed_key_is_fresh("video-11"))
+            self.assertFalse(runtime._part_sight_identity_component._sight_completed_key_is_fresh("video-11"))
             self.assertEqual(runtime._sight_completed_keys, {})
 
     async def test_life_video_generate_runs_in_background_and_sends_result(self):
@@ -149,7 +149,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         structured = list(runtime._structured_scope_messages(event.unified_msg_origin))
         self.assertTrue(structured)
         self.assertIn("[视频已发送：4.0 KB，耗时", structured[-1].content)
-        cadence = runtime._media_cadence_store()[event.unified_msg_origin]
+        cadence = runtime._part_runtime_media_common_component._media_cadence_store()[event.unified_msg_origin]
         self.assertEqual(cadence["last_media"], "视频")
         self.assertEqual(cadence["consecutive"], 1)
         self.assertFalse(
@@ -179,7 +179,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             return types.SimpleNamespace(url="https://example.com/life.mp4")
 
         runtime._resolve_life_image_reference_async = resolve_reference
-        runtime._generate_life_video_first_frame = generate_first_frame
+        runtime._part_runtime_video_media_component._generate_life_video_first_frame = generate_first_frame
         runtime.generate_life_video_asset = generate_video_asset
         request = types.SimpleNamespace(
             subject_route="free",
@@ -198,7 +198,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             request_id="video-request",
         )
 
-        execution = await runtime._execute_life_video_request(request)
+        execution = await runtime._part_runtime_video_media_component._execute_life_video_request(request)
 
         self.assertEqual(resolver_calls, [])
         self.assertEqual(len(first_frame_calls), 1)
@@ -218,7 +218,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         async def background(request):
             requests.append(request)
 
-        runtime._life_video_generate_background = background
+        runtime._part_runtime_video_media_component._life_video_generate_background = background
         runtime._schedule_background_task = lambda coro, **_kwargs: (
             scheduled.append(coro) or True
         )
@@ -999,7 +999,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_life_video_prompt_allows_optional_director_fields(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
 
-        prompt = runtime._media_video_prompt_from_payload(
+        prompt = runtime._part_stage_voice_component._media_video_prompt_from_payload(
             {
                 "image": "雨夜窗边半身镜头",
                 "motion": "雨滴在玻璃上缓慢滑落，人物轻轻眨眼",
@@ -1317,7 +1317,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
-        runtime._register_life_video_request(
+        runtime._part_runtime_video_media_component._register_life_video_request(
             event.unified_msg_origin, "窗边短视频", event
         )
         event.set_result(event.chain_result(["视频生成要稍微等等，我已经开始跑了。"]))
@@ -2068,7 +2068,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(provider.prompts, [])
         self.assertEqual(voice_calls, [])
         item = runtime._voice_switch_round_store()[event.unified_msg_origin]
-        self.assertIn("语音留到更需要", item["text_reason"])
+        self.assertIn("未命中普通语音概率", item["text_reason"])
         self.assertEqual(item["probability_result"], "20%，未通过")
 
     async def test_voice_switch_can_continue_short_voice_chain_after_recent_voice(self):
@@ -2112,7 +2112,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                 )
             )
         )
-        runtime._voice_switch_next_chain_limit = lambda: 3
+        runtime._part_voice_switch_gate_component._voice_switch_next_chain_limit = lambda: 3
         event = Event(
             unified_msg_origin="aiocqhttp:FriendMessage:10001", sender_id="10001"
         )
@@ -2132,7 +2132,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(provider.prompts, [])
         self.assertEqual(voice_calls, ["嗯，雨停了我就往回走。"])
         self.assertTrue(await runtime.note_voice_switch_message_sent(event))
-        cadence = runtime._voice_switch_cadence_store()[event.unified_msg_origin]
+        cadence = runtime._part_voice_switch_gate_component._voice_switch_cadence_store()[event.unified_msg_origin]
         self.assertEqual(cadence["consecutive_voice"], 2)
 
     async def test_voice_switch_stops_after_voice_chain_limit(self):
@@ -2181,7 +2181,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                 )
             )
         )
-        runtime._voice_switch_next_chain_limit = lambda: 2
+        runtime._part_voice_switch_gate_component._voice_switch_next_chain_limit = lambda: 2
         event = Event(
             unified_msg_origin="aiocqhttp:FriendMessage:10001", sender_id="10001"
         )

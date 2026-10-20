@@ -17,7 +17,6 @@ class ProactiveSegmentComponentContext(Protocol):
     _chat_style_enabled: Any
     _chat_style_initial_typing_delay_seconds: Any
     _chat_style_limit_for_scope: Any
-    _proactive_send_delay_seconds: Any
     config: Any
     send_background_text: Any
 
@@ -106,7 +105,7 @@ class ProactiveSegmentComponent:
     async def _apply_proactive_send_timing(
         self, payload: dict[str, Any] | None
     ) -> None:
-        delay = self.context._proactive_send_delay_seconds(payload)
+        delay = self._proactive_send_delay_seconds(payload)
         if delay <= 0:
             return
         reason = "按文本长度模拟自然打字"

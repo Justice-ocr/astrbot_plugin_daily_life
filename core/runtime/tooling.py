@@ -209,7 +209,7 @@ def tool_argument_parameters(
             and "preface" not in required
         ):
             required.append("preface")
-    # 框架从 docstring 生成的 Schema 只有字符串类型，需要补充实际场景枚举。
+    # 可选场景通过省略参数表示不适用，枚举只包含有效场景。
     if tool.name in {
         "life_image_generate",
         "life_photo_suite_generate",
@@ -217,7 +217,7 @@ def tool_argument_parameters(
     }:
         scene = parameters.get("properties", {}).get("friend_scene_category")
         if isinstance(scene, dict):
-            scene["enum"] = ["", *OUTFIT_SCENE_CATEGORY_ENUM.split(" | ")]
+            scene["enum"] = OUTFIT_SCENE_CATEGORY_ENUM.split(" | ")
     local_handler = tool.handler is not None or bool(tool.handler_module_path)
     call_parameters = inspect.signature(tool.call).parameters.values()
     fixed_call = not any(

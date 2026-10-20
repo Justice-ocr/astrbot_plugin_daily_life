@@ -376,14 +376,21 @@ class DayArchiveComponent:
     def _save_day_unlocked(self, day: DayRecord, *, replace: bool, require_wearable: bool = False) -> DayRecord:
         self.context._conn.execute("BEGIN IMMEDIATE")
         try:
-            if require_wearable:
-                issue = self.context._wardrobe_action_issue_unlocked(str(day.meta.get('style_catalog_reference_ids') or '').split(','))
-                if issue:
-                    raise ValueError(issue)
             current = self.context._get_day_unlocked(day.date)
             target = (
                 day if replace or current is None else merge_day_records(day, current)
             )
+            if require_wearable:
+                retained_ids = (
+                    str(current.meta.get("style_catalog_reference_ids") or "").split(",")
+                    if current else []
+                )
+                issue = self.context._wardrobe_action_issue_unlocked(
+                    str(target.meta.get("style_catalog_reference_ids") or "").split(","),
+                    retained_ids=retained_ids,
+                )
+                if issue:
+                    raise ValueError(issue)
             revision = self.context._set_day_unlocked(target)
             if require_wearable:
                 self.context._record_wardrobe_wear_unlocked(target, source='outfit_atomic_receipt')

@@ -23,21 +23,14 @@ class CapturePersonaComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _PERSONA_HINT_CACHE_LIMIT: Any
-    _build_persona_hint_extract_prompt: Any
     _current_persona_text: Any
     _event_is_group_message: Any
     _event_profile_id: Any
     _event_session_id: Any
-    _extract_persona_hint_by_llm: Any
-    _extract_persona_hint_exact: Any
     _float_payload: Any
     _get_memory_provider: Any
-    _get_persona_hint_cache: Any
     _persona_hint_cache: Any
-    _persona_hint_cache_signature: Any
     _persona_hint_cache_text: Any
-    _persona_match_context: Any
-    _relationship_persona_names: Any
     _str_payload: Any
     archive: Any
     call_text_model: Any
@@ -150,7 +143,7 @@ class CapturePersonaComponent:
             if relationship is not None
             else ""
         )
-        persona_context = self.context._persona_match_context(persona)
+        persona_context = self._persona_match_context(persona)
         fixed = f"""从当前角色人设里找出某个聊天对象的明确人物线索。
 
 人物称谓与性别规则：
@@ -192,7 +185,7 @@ JSON 输出要求：
         provider = await self.context._get_memory_provider()
         if not provider:
             return "", False
-        prompt = self.context._build_persona_hint_extract_prompt(persona, names, relationship)
+        prompt = self._build_persona_hint_extract_prompt(persona, names, relationship)
         session_id = f"daily_life_persona_hint_{uuid.uuid4().hex[:8]}"
         try:
             provider_id = self.context.config.memory.provider
@@ -266,19 +259,19 @@ JSON 输出要求：
             relationship = (
                 await self.context.archive.get_relationship(profile_id) if profile_id else None
             )
-        names = self.context._relationship_persona_names(relationship, sender_name)
+        names = self._relationship_persona_names(relationship, sender_name)
         persona_signature, relationship_signature = (
-            self.context._persona_hint_cache_signature(persona, relationship)
+            self._persona_hint_cache_signature(persona, relationship)
         )
         cache_key = (
             "|".join(names),
             persona_signature,
             relationship_signature,
         )
-        cache = self.context._get_persona_hint_cache()
+        cache = self._get_persona_hint_cache()
         if cache_key in cache:
             return cache[cache_key]
-        hint = self.context._extract_persona_hint_exact(persona, names)
+        hint = self._extract_persona_hint_exact(persona, names)
         cacheable = True
         if not hint:
             is_private_chat = bool(
@@ -300,7 +293,7 @@ JSON 输出要求：
                 )
             )
             if is_private_chat or has_saved_context:
-                hint, cacheable = await self.context._extract_persona_hint_by_llm(
+                hint, cacheable = await self._extract_persona_hint_by_llm(
                     persona, names, relationship
                 )
         if cacheable:

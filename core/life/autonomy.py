@@ -31,10 +31,6 @@ def _decision_evidence_field(value: object, limit: int = 180) -> str:
 class LifeAutonomyComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _build_emotion_arc_context: Any
-    _build_execution_review_context: Any
-    _build_recent_life_decision_context: Any
-    _build_short_term_life_context: Any
     _counter_line: Any
     _current_residence_boundary_date: Any
     _is_before_residence_boundary: Any
@@ -189,10 +185,10 @@ class LifeAutonomyComponent:
         from .continuity import execution_context
 
         sections = [
-            await self.context._build_short_term_life_context(),
-            await self.context._build_emotion_arc_context(date),
-            await self.context._build_recent_life_decision_context(),
-            await self.context._build_execution_review_context(date),
+            await self._build_short_term_life_context(),
+            await self._build_emotion_arc_context(date),
+            await self._build_recent_life_decision_context(),
+            await self._build_execution_review_context(date),
         ]
         getter = getattr(self.context.archive, "get_continuous_life", None)
         if callable(getter):

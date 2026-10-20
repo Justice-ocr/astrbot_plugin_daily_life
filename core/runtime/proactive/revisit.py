@@ -34,7 +34,6 @@ class ProactiveRevisitComponentContext(Protocol):
     _clamp_float: Any
     _commit_proactive_decision: Any
     _current_proactive_persona: Any
-    _evaluate_private_revisit_payload: Any
     _event_message_id: Any
     _expression_review_passed: Any
     _format_behavior_patterns_for_proactive: Any
@@ -53,16 +52,10 @@ class ProactiveRevisitComponentContext(Protocol):
     _format_reply_effects_for_proactive: Any
     _format_temporary_expression_states_for_proactive: Any
     _get_proactive_provider: Any
-    _get_recent_private_targets: Any
     _normalize_proactive_utility: Any
     _private_revisit_event: Any
     _private_revisit_evidence_scope: Any
-    _private_revisit_expression_context: Any
-    _private_revisit_life_context: Any
-    _private_revisit_memory_context: Any
     _private_revisit_memos_query: Any
-    _private_revisit_normalize_payload: Any
-    _private_revisit_prompt: Any
     _private_revisit_relationship_snapshot: Any
     _proactive_air_delay_remaining: Any
     _proactive_bool: Any
@@ -435,7 +428,7 @@ JSON 输出要求：
   "reason": "为什么此刻适合或不适合发起私聊回访",
   "reply_text": "简短自然、意思完整的私聊问候或话题延续",
   "expression_review": {{"passed": true, "risk": "具体表达风险或空字符串", "suggestion": "必要的调整或空字符串", "reason": "结合本轮话题和已学习表达习惯的检查依据"}},
-  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|soft|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 裁定方式：
 - 先看“回访依据”，判断 reply、observe、wait 或 skip。
@@ -603,7 +596,7 @@ JSON 输出要求：
         )
         persona = await self.context._current_proactive_persona(target_scope)
         persona_context = self.context._format_proactive_persona_context(persona)
-        memory_context = await self.context._private_revisit_memory_context(
+        memory_context = await self._private_revisit_memory_context(
             target_scope,
             relationship,
             relationship_snapshot["target_name"],
@@ -640,11 +633,11 @@ JSON 输出要求：
         (
             life_context,
             life_evidence_available,
-        ) = await self.context._private_revisit_life_context(target_scope, now)
-        expression_context = await self.context._private_revisit_expression_context(
+        ) = await self._private_revisit_life_context(target_scope, now)
+        expression_context = await self._private_revisit_expression_context(
             target_scope, relationship, now
         )
-        prompt = self.context._private_revisit_prompt(
+        prompt = self._private_revisit_prompt(
             target_scope=target_scope,
             now=now,
             persona_context=persona_context,
@@ -688,7 +681,7 @@ JSON 输出要求：
                     "decision": "skip",
                     "reason": "模型未返回有效裁定",
                 }
-            normalized = self.context._private_revisit_normalize_payload(
+            normalized = self._private_revisit_normalize_payload(
                 payload,
                 target_scope=target_scope,
                 revisit_evidence=revisit_evidence,
@@ -726,7 +719,7 @@ JSON 输出要求：
             (
                 latest_life_context,
                 latest_life_evidence,
-            ) = await self.context._private_revisit_life_context(target_scope, now)
+            ) = await self._private_revisit_life_context(target_scope, now)
             if (
                 latest_messages
                 or life_evidence_available
@@ -789,7 +782,7 @@ JSON 输出要求：
                     }
                 )
                 return normalized
-            return self.context._private_revisit_normalize_payload(
+            return self._private_revisit_normalize_payload(
                 audit.payload,
                 target_scope=target_scope,
                 revisit_evidence=revisit_evidence,
@@ -808,7 +801,7 @@ JSON 输出要求：
         if not self.context.config.proactive.private_revisit_enabled:
             return
         now = life_now()
-        targets = await self.context._get_recent_private_targets(limit=5)
+        targets = await self._get_recent_private_targets(limit=5)
         if not targets:
             return
         for relationship in targets:
@@ -859,7 +852,7 @@ JSON 输出要求：
                 reason="开始评估私聊回访价值",
                 now=now,
             )
-            payload = await self.context._evaluate_private_revisit_payload(
+            payload = await self._evaluate_private_revisit_payload(
                 target_scope,
                 relationship=relationship,
                 now=now,
@@ -928,7 +921,7 @@ JSON 输出要求：
             )
             current_life_context = ""
             if life_context:
-                current_life_context, _ = await self.context._private_revisit_life_context(
+                current_life_context, _ = await self._private_revisit_life_context(
                     target_scope, life_now()
                 )
             if current_marker != context_marker or (

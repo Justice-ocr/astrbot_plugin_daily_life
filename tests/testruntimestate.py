@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import AsyncMock
 
+from core.runtime.expression import expression_context_for_event
+
 from runtimehelpers import (
     AltProvider,
     BackgroundTaskScheduler,
@@ -31,6 +33,35 @@ from runtimehelpers import (
 
 
 class RuntimeStateTest(unittest.TestCase):
+    def test_expression_context_follows_current_life_and_clears_stale_state(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        event = Event(unified_msg_origin="test:FriendMessage:1")
+        now = datetime.datetime(2026, 5, 24, 22, 5)
+        day = DayRecord(
+            date="2026-05-24",
+            state=LifeState(sleepiness=85, summary="已经躺下，困得只想轻声聊天"),
+            timeline=[TimelineItem(time="22:00", activity="准备休息")],
+        )
+        runtime.build_hidden_life_context(day, now, False, expression_event=event)
+        context = json.loads(expression_context_for_event(event))
+        self.assertIn("困倦 85/100", context["state"])
+        self.assertIn("当前计划", context["activity"])
+        self.assertNotIn("正在:", context["activity"])
+        self.assertEqual(context["time"], "2026-05-24T22:05")
+        other = Event(unified_msg_origin="test:FriendMessage:2")
+        self.assertEqual(expression_context_for_event(other), "")
+
+        day.meta["residence_context_stale"] = "true"
+        runtime.build_hidden_life_context(day, now, False, expression_event=event)
+        context = json.loads(expression_context_for_event(event))
+        self.assertNotIn("state", context)
+        self.assertIn("暂不引用旧记录", context["activity"])
+        runtime.build_missing_life_context(now, day.date, False, event=event)
+        context = json.loads(expression_context_for_event(event))
+        self.assertNotIn("state", context)
+        self.assertIn("暂无已确认", context["activity"])
+
     def test_planned_activity_is_not_presented_as_underway(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -199,18 +230,18 @@ class RuntimeStateTest(unittest.TestCase):
             ],
         )
         now = datetime.datetime(2026, 8, 21, 22, 30)
-        before = runtime._outfit_context_signature(data, now, "深夜")
+        before = runtime._part_refresh_component._outfit_context_signature(data, now, "深夜")
 
         data.state.outgoing = 80
-        self.assertEqual(before, runtime._outfit_context_signature(data, now, "深夜"))
+        self.assertEqual(before, runtime._part_refresh_component._outfit_context_signature(data, now, "深夜"))
         data.state.sleep.depth = "light_sleep"
-        after = runtime._outfit_context_signature(data, now, "深夜")
+        after = runtime._part_refresh_component._outfit_context_signature(data, now, "深夜")
 
         self.assertNotEqual(before, after)
         data.state.sleep.depth = "awake"
         data.timeline[0].place_kind = "poi"
         self.assertNotEqual(
-            before, runtime._outfit_context_signature(data, now, "深夜")
+            before, runtime._part_refresh_component._outfit_context_signature(data, now, "深夜")
         )
 
     def test_outfit_context_ignores_period_and_ordinary_home_activity_progress(self):
@@ -240,10 +271,10 @@ class RuntimeStateTest(unittest.TestCase):
             ],
         )
 
-        morning = runtime._outfit_context_signature(
+        morning = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 9, 30), "上午"
         )
-        noon = runtime._outfit_context_signature(
+        noon = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 12, 30), "中午"
         )
 
@@ -287,13 +318,13 @@ class RuntimeStateTest(unittest.TestCase):
             },
         )
 
-        before = runtime._outfit_context_signature(
+        before = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 8, 30), "上午"
         )
-        during = runtime._outfit_context_signature(
+        during = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 9, 15), "上午"
         )
-        after = runtime._outfit_context_signature(
+        after = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 10, 15), "上午"
         )
 
@@ -321,10 +352,10 @@ class RuntimeStateTest(unittest.TestCase):
             ],
         )
 
-        before = runtime._outfit_context_signature(
+        before = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 8, 30), "上午"
         )
-        after = runtime._outfit_context_signature(
+        after = runtime._part_refresh_component._outfit_context_signature(
             data, datetime.datetime(2026, 8, 21, 9, 30), "上午"
         )
 
@@ -609,7 +640,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         runtime.rank_semantic_groups = slow_rank
         started = asyncio.get_running_loop().time()
-        world, experience = await runtime._select_life_memory_contexts(
+        world, experience = await runtime._part_layer_chain_component._select_life_memory_contexts(
             {}, DayRecord(date="2026-05-24"), "现在聊聊"
         )
         self.assertLess(asyncio.get_running_loop().time() - started, 0.2)
@@ -660,7 +691,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             return {key: [] for key in groups}
 
         runtime.rank_semantic_groups = rank_once
-        world_context, experience_context = await runtime._select_life_memory_contexts(
+        world_context, experience_context = await runtime._part_layer_chain_component._select_life_memory_contexts(
             {},
             DayRecord(
                 date="2026-08-04",
@@ -695,7 +726,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             return {key: [] for key in groups}
 
         runtime.rank_semantic_groups = rank_once
-        await runtime._select_life_memory_contexts(
+        await runtime._part_layer_chain_component._select_life_memory_contexts(
             {
                 "places": [
                     {"name": "旧城市公园", "last_seen": "2026-08-03"},
@@ -951,6 +982,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             unified_msg_origin="aiocqhttp:FriendMessage:10001",
         )
         event2.message_str = "下午场也可以"
+        event2._daily_life_expression_context = {
+            "state": "上一轮过期状态", "preferences": "上一轮过期偏好"
+        }
         req1 = type(
             "Request",
             (),
@@ -970,6 +1004,10 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertIn("喜欢看展", temporary_facts)
         self.assertIn("<daily_life>", temporary_facts)
         self.assertNotIn("喜欢看展", req2.system_prompt)
+        expression_context = expression_context_for_event(event2)
+        self.assertIn("喜欢看展", expression_context)
+        self.assertNotIn("上一轮过期", expression_context)
+        self.assertIn("当前计划", json.loads(expression_context)["activity"])
         self.assertTrue(req2.extra_user_content_parts[-1].model_dump_for_context()["_no_save"])
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
@@ -1983,7 +2021,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         await archive.save_day(newer)
 
-        await runtime._save_invite_day(incoming, today)
+        await runtime._part_spine_invite_component._save_invite_day(incoming, today)
 
         stored = await archive.get_day(today)
         self.assertEqual(stored.state.summary, "后台刚更新的状态")

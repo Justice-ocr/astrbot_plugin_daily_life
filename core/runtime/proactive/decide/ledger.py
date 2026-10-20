@@ -15,7 +15,6 @@ class ProactiveStoreComponentContext(Protocol):
     _clamp_float: Any
     _event_context_meta: Any
     _proactive_scope_key: Any
-    _save_proactive_decision_trace: Any
     _str_payload: Any
     archive: Any
     composer: Any
@@ -48,7 +47,7 @@ class ProactiveStoreComponent:
         staged = dict(payload)
         staged["stage"] = stage
         staged["reason_code"] = reason_code
-        await self.context._save_proactive_decision_trace(
+        await self._save_proactive_decision_trace(
             event, staged, stage=stage, sent=sent, outcome=outcome
         )
         trace_id = str(staged.get("_decision_trace_id") or "").strip()
@@ -242,7 +241,7 @@ class ProactiveStoreComponent:
                     confidence=self.context._clamp_float(payload.get("confidence"), 0.5),
                 )
             )
-        await self.context._save_proactive_decision_trace(
+        await self._save_proactive_decision_trace(
             event,
             payload,
             stage=stage,

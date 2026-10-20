@@ -250,6 +250,8 @@ class DailyLifeRuntime:
 
     @cached_property
     def continuous_decision(self) -> ContinuousDecisionService:
+        from ..life.itinerary import itinerary_wardrobe_context
+
         return ContinuousDecisionService(
             archive=lambda: self.archive,
             config=lambda: self.config,
@@ -259,10 +261,13 @@ class DailyLifeRuntime:
             text_provider=lambda provider_id: self.get_text_provider(provider_id),
             call_text_model=lambda *args, **kwargs: self.call_text_model(*args, **kwargs),
             close_text_session=lambda session_id: self.close_text_session(session_id),
+            wardrobe_context=lambda day, now: itinerary_wardrobe_context(self.composer, day.date, now),
         )
 
     @cached_property
     def continuous_life(self) -> ContinuousLifeService:
+        from ..life.actionchain import prepare_new_actions
+
         return ContinuousLifeService(
             archive=lambda: self.archive,
             config=lambda: self.config,
@@ -272,7 +277,8 @@ class DailyLifeRuntime:
             session_id=self._event_session_id,
             notify_status=lambda reason: self.mark_page_status_changed(reason),
             decide=lambda day, world, now: self.continuous_decision.choose(day, world, now),
-            validate_action=lambda action: self.domains.validate_action(action),
+            validate_action=lambda action, **kwargs: self.domains.validate_action(action, **kwargs),
+            prepare_actions=lambda day, steps: prepare_new_actions(self.composer, day, steps),
             outfit_superseded=lambda *args: self.composer._planned_outfit_action_is_superseded(*args),
             settle_action=lambda *args, **kwargs: self.composer.settle_life_action(*args, **kwargs),
             save_receipt=lambda *args, **kwargs: self.composer._save_action_receipt(*args, **kwargs),
@@ -572,6 +578,7 @@ class DailyLifeRuntime:
     def share_expression(self) -> ShareExpressionService:
         return ShareExpressionService(
             chat_style_config=lambda: self.config.chat_style,
+            voice_config=lambda: self.config.voice_generation,
             share_style=lambda **kwargs: self.get_share_chat_style(**kwargs),
             text_is_structural=self._chat_style_text_is_structural,
             clean_punctuation=self._semantic_segment_clean_punctuation,
@@ -981,25 +988,17 @@ class DailyLifeRuntime:
 
     _memos_context_cache_key = staticmethod(MemosComponent._memos_context_cache_key)
 
-    _memos_context_pending = ComponentCall("_part_memos_component", MemosComponent, "_memos_context_pending")
 
-    _load_memos_hidden_context = ComponentCall("_part_memos_component", MemosComponent, "_load_memos_hidden_context")
 
-    _forget_memos_context_task = ComponentCall("_part_memos_component", MemosComponent, "_forget_memos_context_task")
 
-    _memos_context_cache = ComponentCall("_part_memos_component", MemosComponent, "_memos_context_cache")
 
-    _memos_context_from_cache = ComponentCall("_part_memos_component", MemosComponent, "_memos_context_from_cache")
 
-    _set_memos_context_cache = ComponentCall("_part_memos_component", MemosComponent, "_set_memos_context_cache")
 
     sync_memos_selected_memory = ComponentCall("_part_memos_component", MemosComponent, "sync_memos_selected_memory")
 
     schedule_memos_selected_memory = ComponentCall("_part_memos_component", MemosComponent, "schedule_memos_selected_memory")
 
-    _memos_text = ComponentCall("_part_memos_component", MemosComponent, "_memos_text")
 
-    _memos_record_text = ComponentCall("_part_memos_component", MemosComponent, "_memos_record_text")
 
     _memos_items_from_payload = ComponentCall("_part_memos_component", MemosComponent, "_memos_items_from_payload")
 
@@ -1025,7 +1024,6 @@ class DailyLifeRuntime:
 
     _start_chat_memory_batcher = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_start_chat_memory_batcher")
 
-    _ensure_chat_memory_worker = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_ensure_chat_memory_worker")
 
     _shutdown_chat_memory_batcher = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_shutdown_chat_memory_batcher")
 
@@ -1035,15 +1033,12 @@ class DailyLifeRuntime:
 
     capture_proactive_chat_memory_reply = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "capture_proactive_chat_memory_reply")
 
-    _chat_memory_worker = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_chat_memory_worker")
 
     _chat_memory_elapsed_seconds = staticmethod(ChatMemoryBatchComponent._chat_memory_elapsed_seconds)
 
     process_due_chat_memory_batches = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "process_due_chat_memory_batches")
 
-    _build_chat_memory_batch_prompt = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_build_chat_memory_batch_prompt")
 
-    _normalize_chat_memory_batch_payload = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_normalize_chat_memory_batch_payload")
 
     _split_batch_reference_segments = classmethod(ChatMemoryBatchComponent._split_batch_reference_segments.__func__)
 
@@ -1053,15 +1048,10 @@ class DailyLifeRuntime:
 
     _sanitize_batch_readable_fields = classmethod(ChatMemoryBatchComponent._sanitize_batch_readable_fields.__func__)
 
-    _save_batch_commitments = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_save_batch_commitments")
 
-    _save_batch_temporal_facts = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_save_batch_temporal_facts")
 
-    _save_batch_memory_targets = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_save_batch_memory_targets")
 
-    _save_chat_memory_batch_payload = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_save_chat_memory_batch_payload")
 
-    _process_chat_memory_batch = ComponentCall("_part_chat_memory_batch_component", ChatMemoryBatchComponent, "_process_chat_memory_batch")
 
     _chat_execution_context = ComponentCall("_part_chat_execution_component", ChatExecutionComponent, "_chat_execution_context")
 
@@ -1093,7 +1083,6 @@ class DailyLifeRuntime:
 
     _event_is_platform_directed = classmethod(CaptureEventComponent._event_is_platform_directed.__func__)
 
-    _event_bot_aliases = ComponentCall("_part_capture_event_component", CaptureEventComponent, "_event_bot_aliases")
 
     _event_ascii_token_char = staticmethod(CaptureEventComponent._event_ascii_token_char)
 
@@ -1145,57 +1134,40 @@ class DailyLifeRuntime:
 
     _compact_log = staticmethod(CapturePayloadComponent._compact_log)
 
-    _subjective_impression_data = ComponentCall("_part_capture_relation_component", CaptureRelationComponent, "_subjective_impression_data")
 
-    _save_subjective_impression = ComponentCall("_part_capture_relation_component", CaptureRelationComponent, "_save_subjective_impression")
 
     _PERSONA_HINT_CACHE_LIMIT = CapturePersonaComponent._PERSONA_HINT_CACHE_LIMIT
 
-    _get_persona_hint_cache = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_get_persona_hint_cache")
 
     _current_persona_text = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_current_persona_text")
 
     _current_role_label = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_current_role_label")
 
-    _relationship_persona_names = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_relationship_persona_names")
 
-    _extract_persona_hint_exact = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_extract_persona_hint_exact")
 
-    _persona_match_context = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_persona_match_context")
 
-    _build_persona_hint_extract_prompt = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_build_persona_hint_extract_prompt")
 
-    _extract_persona_hint_by_llm = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_extract_persona_hint_by_llm")
 
     _persona_hint_cache_text = staticmethod(CapturePersonaComponent._persona_hint_cache_text)
 
-    _persona_hint_cache_signature = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_persona_hint_cache_signature")
 
     _extract_speaker_persona_hint = ComponentCall("_part_capture_persona_component", CapturePersonaComponent, "_extract_speaker_persona_hint")
 
     _MEMORY_PAYLOAD_CALIBRATION_KEYS = PacketComponent._MEMORY_PAYLOAD_CALIBRATION_KEYS
 
-    _memory_payload_has_saveable_context = ComponentCall("_part_packet_component", PacketComponent, "_memory_payload_has_saveable_context")
 
-    _build_memory_payload_calibration_prompt = ComponentCall("_part_packet_component", PacketComponent, "_build_memory_payload_calibration_prompt")
 
-    _merge_memory_payload_revision = ComponentCall("_part_packet_component", PacketComponent, "_merge_memory_payload_revision")
 
     _calibrate_chat_memory_payload = ComponentCall("_part_packet_component", PacketComponent, "_calibrate_chat_memory_payload")
 
     _MEMORY_TARGET_CALIBRATION_KEYS = TargetComponent._MEMORY_TARGET_CALIBRATION_KEYS
 
-    _memory_target_has_saveable_context = ComponentCall("_part_target_component", TargetComponent, "_memory_target_has_saveable_context")
 
-    _build_memory_target_calibration_prompt = ComponentCall("_part_target_component", TargetComponent, "_build_memory_target_calibration_prompt")
 
-    _merge_memory_target_revision = ComponentCall("_part_target_component", TargetComponent, "_merge_memory_target_revision")
 
     _calibrate_memory_target_payload = ComponentCall("_part_target_component", TargetComponent, "_calibrate_memory_target_payload")
 
-    _relationship_calibration_signature = ComponentCall("_part_profile_component", ProfileComponent, "_relationship_calibration_signature")
 
-    _build_relationship_calibration_prompt = ComponentCall("_part_profile_component", ProfileComponent, "_build_relationship_calibration_prompt")
 
     _calibrate_relationship_profile = ComponentCall("_part_profile_component", ProfileComponent, "_calibrate_relationship_profile")
 
@@ -1205,23 +1177,16 @@ class DailyLifeRuntime:
 
     _event_context_meta = ComponentCall("_part_awareness_component", AwarenessComponent, "_event_context_meta")
 
-    _message_visibility_from_payload = ComponentCall("_part_awareness_component", AwarenessComponent, "_message_visibility_from_payload")
 
-    _action_decision_from_payload = ComponentCall("_part_awareness_component", AwarenessComponent, "_action_decision_from_payload")
 
-    _group_environment_from_payload = ComponentCall("_part_awareness_component", AwarenessComponent, "_group_environment_from_payload")
 
-    _is_effective_message_visibility = ComponentCall("_part_awareness_component", AwarenessComponent, "_is_effective_message_visibility")
 
-    _is_effective_action_decision = ComponentCall("_part_awareness_component", AwarenessComponent, "_is_effective_action_decision")
 
-    _is_effective_group_environment = ComponentCall("_part_awareness_component", AwarenessComponent, "_is_effective_group_environment")
 
     _save_memory_awareness_records = ComponentCall("_part_awareness_component", AwarenessComponent, "_save_memory_awareness_records")
 
     _append_memory_decision_log = ComponentCall("_part_awareness_component", AwarenessComponent, "_append_memory_decision_log")
 
-    _long_term_scope = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_long_term_scope")
 
     _save_long_term_memory = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_long_term_memory")
 
@@ -1231,43 +1196,26 @@ class DailyLifeRuntime:
 
     _dict_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_dict_payloads")
 
-    _save_life_episode_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_life_episode_payloads")
 
-    _save_evidence_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_evidence_payloads")
 
-    _save_behavior_feedback_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_behavior_feedback_payloads")
 
     _save_expression_profile_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_expression_profile_payloads")
 
-    _save_behavior_context_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_behavior_context_payloads")
 
-    _save_session_summary_payload = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_session_summary_payload")
 
-    _save_temporary_expression_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_temporary_expression_payloads")
 
-    _save_focus_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_focus_payloads")
 
-    _save_memory_correction_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_memory_correction_payloads")
 
     _life_adjustment_default_expiry = staticmethod(ImprintDepositComponent._life_adjustment_default_expiry)
 
-    _life_adjustment_target_id = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_life_adjustment_target_id")
 
-    _life_adjustment_payload_data = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_life_adjustment_payload_data")
 
-    _save_short_term_life_adjustment = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_short_term_life_adjustment")
 
-    _save_long_term_life_adjustment = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_long_term_life_adjustment")
 
-    _save_memory_correction_life_adjustment = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_memory_correction_life_adjustment")
 
-    _save_life_adjustment_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_life_adjustment_payloads")
 
-    _save_expression_intent_payload = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_expression_intent_payload")
 
-    _save_life_term_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_life_term_payloads")
 
-    _save_memory_boundary_payloads = ComponentCall("_part_imprint_deposit_component", ImprintDepositComponent, "_save_memory_boundary_payloads")
 
     _apply_memory_correction = ComponentCall("_part_imprint_portrait_component", ImprintPortraitComponent, "_apply_memory_correction")
 
@@ -1305,7 +1253,6 @@ class DailyLifeRuntime:
 
     EMOJI_ASSET_INACTIVE_STATUSES = EmojiBaseComponent.EMOJI_ASSET_INACTIVE_STATUSES
 
-    _emoji_settings = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_settings")
 
     _emoji_auto_collect_enabled = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_auto_collect_enabled")
 
@@ -1325,11 +1272,9 @@ class DailyLifeRuntime:
 
     _emoji_asset_size_allowed = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_asset_size_allowed")
 
-    _emoji_ready_asset_count = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_ready_asset_count")
 
     _emoji_can_accept_ready_asset = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_can_accept_ready_asset")
 
-    _get_vision_provider = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_get_vision_provider")
 
     _emoji_asset_cache_dir = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_emoji_asset_cache_dir")
 
@@ -1349,7 +1294,6 @@ class DailyLifeRuntime:
 
     _visual_context_summary_cache = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_visual_context_summary_cache")
 
-    _remember_visual_context_summary = ComponentCall("_part_emoji_base_component", EmojiBaseComponent, "_remember_visual_context_summary")
 
     _emoji_asset_suffix = classmethod(EmojiBaseComponent._emoji_asset_suffix.__func__)
 
@@ -1391,13 +1335,10 @@ class DailyLifeRuntime:
 
     maintain_emoji_assets = ComponentCall("_part_emoji_sweep_component", EmojiSweepComponent, "maintain_emoji_assets")
 
-    _revalidate_review_emoji_assets = ComponentCall("_part_emoji_sweep_component", EmojiSweepComponent, "_revalidate_review_emoji_assets")
 
-    _remote_source_from_asset = ComponentCall("_part_emoji_sweep_component", EmojiSweepComponent, "_remote_source_from_asset")
 
     _prune_extra_ready_emoji_assets = ComponentCall("_part_emoji_sweep_component", EmojiSweepComponent, "_prune_extra_ready_emoji_assets")
 
-    _prune_inactive_emoji_asset_records = ComponentCall("_part_emoji_sweep_component", EmojiSweepComponent, "_prune_inactive_emoji_asset_records")
 
     _EMOJI_VISION_TIMEOUT_SECONDS = _part_emoji_vision_component.EmojiVisionComponent._EMOJI_VISION_TIMEOUT_SECONDS
 
@@ -1445,43 +1386,32 @@ class DailyLifeRuntime:
 
     _visual_media_sources = staticmethod(EmojiGatherComponent._visual_media_sources)
 
-    _first_existing_visual_media_path = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_first_existing_visual_media_path")
 
     _visual_media_has_durable_source = staticmethod(EmojiGatherComponent._visual_media_has_durable_source)
 
-    _build_prepared_visual_media = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_build_prepared_visual_media")
 
     prepare_visual_media_from_event = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "prepare_visual_media_from_event")
 
-    _prepared_visual_media_from_event = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_prepared_visual_media_from_event")
 
     _visual_media_source_looks_like_gif = staticmethod(EmojiGatherComponent._visual_media_source_looks_like_gif)
 
-    _prepared_visual_media_is_gif = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_prepared_visual_media_is_gif")
 
-    _visual_media_source_is_gif = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_visual_media_source_is_gif")
 
     _read_visual_media_header = staticmethod(EmojiGatherComponent._read_visual_media_header)
 
-    _run_visual_context_task = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_run_visual_context_task")
 
-    _remove_gif_inputs_from_provider_request = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_remove_gif_inputs_from_provider_request")
 
     _append_gif_visual_summary = staticmethod(EmojiGatherComponent._append_gif_visual_summary)
 
-    _wait_for_gif_visual_context = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_wait_for_gif_visual_context")
 
     bridge_animated_visual_for_llm_request = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "bridge_animated_visual_for_llm_request")
 
-    _cache_and_describe_emoji_asset = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_cache_and_describe_emoji_asset")
 
     maybe_collect_emoji_assets_from_event = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "maybe_collect_emoji_assets_from_event")
 
     schedule_visual_context_from_event = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "schedule_visual_context_from_event")
 
-    _collect_visual_context_background = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_collect_visual_context_background")
 
-    _collect_one_visual_context = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "_collect_one_visual_context")
 
     _STRUCTURED_CONTEXT_LIMIT = StructuredBaseComponent._STRUCTURED_CONTEXT_LIMIT
 
@@ -1505,7 +1435,6 @@ class DailyLifeRuntime:
 
     remove_recalled_structured_message = ComponentCall("_part_structured_dock_component", StructuredDockComponent, "remove_recalled_structured_message")
 
-    _structured_store = ComponentCall("_part_structured_dock_component", StructuredDockComponent, "_structured_store")
 
     _structured_scope_messages = ComponentCall("_part_structured_dock_component", StructuredDockComponent, "_structured_scope_messages")
 
@@ -1541,11 +1470,9 @@ class DailyLifeRuntime:
 
     format_structured_message_context = ComponentCall("_part_structured_glance_component", StructuredGlanceComponent, "format_structured_message_context")
 
-    _format_structured_message_line = ComponentCall("_part_structured_glance_component", StructuredGlanceComponent, "_format_structured_message_line")
 
     structured_recent_history_messages = ComponentCall("_part_structured_glance_component", StructuredGlanceComponent, "structured_recent_history_messages")
 
-    _structured_history_payload = ComponentCall("_part_structured_glance_component", StructuredGlanceComponent, "_structured_history_payload")
 
     _init_sight = ComponentCall("_part_sight_component", _part_sight_component.SightComponent, "_init_sight")
 
@@ -1715,15 +1642,12 @@ class DailyLifeRuntime:
 
     _native_sight_route = ComponentCall("_part_native_sight_component", NativeSightComponent, "_native_sight_route")
 
-    _native_sight_client = ComponentCall("_part_native_sight_component", NativeSightComponent, "_native_sight_client")
 
     _native_video_prompt = staticmethod(NativeSightComponent._native_video_prompt)
 
     _understand_native_video = ComponentCall("_part_native_sight_component", NativeSightComponent, "_understand_native_video")
 
-    _understand_native_video_once = ComponentCall("_part_native_sight_component", NativeSightComponent, "_understand_native_video_once")
 
-    _native_video_tool_work = ComponentCall("_part_native_sight_component", NativeSightComponent, "_native_video_tool_work")
 
     _submit_native_video_tool = ComponentCall("_part_native_sight_component", NativeSightComponent, "_submit_native_video_tool")
 
@@ -1745,7 +1669,6 @@ class DailyLifeRuntime:
 
     _sight_enrich_clips_from_raw_message = ComponentCall("_part_sight_identity_component", SightIdentityComponent, "_sight_enrich_clips_from_raw_message")
 
-    _sight_completed_key_is_fresh = ComponentCall("_part_sight_identity_component", SightIdentityComponent, "_sight_completed_key_is_fresh")
 
     _mark_sight_completed_key = ComponentCall("_part_sight_identity_component", SightIdentityComponent, "_mark_sight_completed_key")
 
@@ -1783,13 +1706,9 @@ class DailyLifeRuntime:
 
     _init_continuous_turn_state = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_init_continuous_turn_state")
 
-    _continuous_turn_style = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_style")
 
-    _continuous_turn_enabled = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_enabled")
 
-    _continuous_turn_eligible = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_eligible")
 
-    _continuous_turn_image_items = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_image_items")
 
     note_continuous_turn_media_ready = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "note_continuous_turn_media_ready")
 
@@ -1799,9 +1718,7 @@ class DailyLifeRuntime:
 
     _continuous_turn_message_id = staticmethod(ContinuousTurnComponent._continuous_turn_message_id)
 
-    _continuous_turn_revision = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_revision")
 
-    _continuous_turn_wait = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_wait")
 
     continuous_turn_intentional_wait_seconds = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "continuous_turn_intentional_wait_seconds")
 
@@ -1809,7 +1726,6 @@ class DailyLifeRuntime:
 
     _continuous_turn_trim_messages = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_trim_messages")
 
-    _continuous_turn_adaptive_wait = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "_continuous_turn_adaptive_wait")
 
     note_continuous_turn_incoming = ComponentCall("_part_continuous_turn_component", ContinuousTurnComponent, "note_continuous_turn_incoming")
 
@@ -1853,7 +1769,6 @@ class DailyLifeRuntime:
 
     _response_gate_clear_wait = ComponentCall("_part_response_gate_state_component", ResponseGateStateComponent, "_response_gate_clear_wait")
 
-    _response_gate_continuation_store = ComponentCall("_part_response_gate_state_component", ResponseGateStateComponent, "_response_gate_continuation_store")
 
     _response_gate_mark_continuation = ComponentCall("_part_response_gate_state_component", ResponseGateStateComponent, "_response_gate_mark_continuation")
 
@@ -1877,13 +1792,10 @@ class DailyLifeRuntime:
 
     _response_gate_feedback_delta = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_feedback_delta")
 
-    _response_gate_reply_effect_delta = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_reply_effect_delta")
 
     _response_gate_experience_delta = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_experience_delta")
 
-    _response_gate_scene_delta = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_scene_delta")
 
-    _response_gate_episode_delta = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_episode_delta")
 
     _response_gate_note_attention = ComponentCall("_part_response_gate_sense_component", ResponseGateSenseComponent, "_response_gate_note_attention")
 
@@ -1927,29 +1839,23 @@ class DailyLifeRuntime:
 
     _response_gate_reply = staticmethod(ResponseGateScoreComponent._response_gate_reply)
 
-    _response_gate_superseded_decision = ComponentCall("_part_response_gate_apply_component", ResponseGateApplyComponent, "_response_gate_superseded_decision")
 
-    _response_gate_scope_enabled = ComponentCall("_part_response_gate_apply_component", ResponseGateApplyComponent, "_response_gate_scope_enabled")
 
     apply_response_gate_for_event = ComponentCall("_part_response_gate_apply_component", ResponseGateApplyComponent, "apply_response_gate_for_event")
 
-    _response_gate_semantic_decision = ComponentCall("_part_response_gate_apply_component", ResponseGateApplyComponent, "_response_gate_semantic_decision")
 
     evaluate_response_gate = ComponentCall("_part_response_gate_apply_component", ResponseGateApplyComponent, "evaluate_response_gate")
 
     apply_rest_timing = ComponentCall("_part_refresh_component", RefreshComponent, "apply_rest_timing")
 
-    _settle_timeline_planning = ComponentCall("_part_refresh_component", RefreshComponent, "_settle_timeline_planning")
 
     _meta_datetime = staticmethod(RefreshComponent._meta_datetime)
 
-    _auto_life_check_due = ComponentCall("_part_refresh_component", RefreshComponent, "_auto_life_check_due")
 
     _state_stability_signature = staticmethod(RefreshComponent._state_stability_signature)
 
     _pending_commitment_outfit = staticmethod(RefreshComponent._pending_commitment_outfit)
 
-    _outfit_context_signature = ComponentCall("_part_refresh_component", RefreshComponent, "_outfit_context_signature")
 
     _schedule_outfit_scene = staticmethod(RefreshComponent._schedule_outfit_scene)
 
@@ -1957,7 +1863,6 @@ class DailyLifeRuntime:
 
     _synchronize_outfit_with_schedule = classmethod(RefreshComponent._synchronize_outfit_with_schedule.__func__)
 
-    _next_auto_life_check_at = ComponentCall("_part_refresh_component", RefreshComponent, "_next_auto_life_check_at")
 
     _state_refresh_in_quiet_hours = ComponentCall("_part_refresh_component", RefreshComponent, "_state_refresh_in_quiet_hours")
 
@@ -1977,13 +1882,11 @@ class DailyLifeRuntime:
 
     get_share_video_task = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "get_share_video_task")
 
-    _get_share_asset_task = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "_get_share_asset_task")
 
     generate_share_image_task = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "generate_share_image_task")
 
     generate_share_video_task = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "generate_share_video_task")
 
-    _generate_share_asset_task = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "_generate_share_asset_task")
 
     record_share_delivery = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "record_share_delivery")
 
@@ -1991,7 +1894,6 @@ class DailyLifeRuntime:
 
     resume_share_video_generation = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "resume_share_video_generation")
 
-    _resume_share_asset_generation = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "_resume_share_asset_generation")
 
     track_image_generation = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "track_image_generation")
 
@@ -1999,7 +1901,6 @@ class DailyLifeRuntime:
 
     resume_durable_image_generation = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "resume_durable_image_generation")
 
-    _record_recovered_photo_suite_slot = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "_record_recovered_photo_suite_slot")
 
     record_current_life_action_receipt = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "record_current_life_action_receipt")
 
@@ -2009,7 +1910,6 @@ class DailyLifeRuntime:
 
     direct_media_was_delivered = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "direct_media_was_delivered")
 
-    _settle_direct_media_commitment = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "_settle_direct_media_commitment")
 
     resume_durable_media_delivery = ComponentCall("_part_runtime_action_receipt_component", RuntimeActionReceiptComponent, "resume_durable_media_delivery")
 
@@ -2041,7 +1941,6 @@ class DailyLifeRuntime:
 
     _chat_style_limit_for_event = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_chat_style_limit_for_event")
 
-    _build_chat_style_decision_hint = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_build_chat_style_decision_hint")
 
     build_chat_style_injection_context = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "build_chat_style_injection_context")
 
@@ -2103,13 +2002,9 @@ class DailyLifeRuntime:
 
     _replace_text_result_with_segments = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_replace_text_result_with_segments")
 
-    _chat_style_clean_segment_plans = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_chat_style_clean_segment_plans")
 
-    _chat_style_punctuation_cleaning_active = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_chat_style_punctuation_cleaning_active")
 
-    _chat_style_segment_chain = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_chat_style_segment_chain")
 
-    _note_chat_style_segmented_send = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "_note_chat_style_segmented_send")
 
     send_chat_style_segments_if_needed = ComponentCall("_part_chat_style_runtime_component", ChatStyleRuntimeComponent, "send_chat_style_segments_if_needed")
 
@@ -2131,7 +2026,6 @@ class DailyLifeRuntime:
 
     _CHAT_STYLE_MAX_DELAY_SECONDS = ChatDelayComponent._CHAT_STYLE_MAX_DELAY_SECONDS
 
-    _chat_style_natural_segment_delay_range = ComponentCall("_part_chat_delay_component", ChatDelayComponent, "_chat_style_natural_segment_delay_range")
 
     _chat_style_natural_segment_delay_seconds = ComponentCall("_part_chat_delay_component", ChatDelayComponent, "_chat_style_natural_segment_delay_seconds")
 
@@ -2179,25 +2073,18 @@ class DailyLifeRuntime:
 
     _semantic_segment_clean_punctuation = staticmethod(SemanticSegmentRuntimeComponent._semantic_segment_clean_punctuation)
 
-    _semantic_segment_punctuation_chars = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_punctuation_chars")
 
     _semantic_segment_clean_plan_punctuation = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_clean_plan_punctuation")
 
-    _semantic_segment_validate_payload = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_validate_payload")
 
-    _semantic_segment_plan_text = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_plan_text")
 
-    _semantic_segment_mark_pending = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_mark_pending")
 
-    _semantic_segment_log_expression_trace = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_log_expression_trace")
 
     _semantic_segment_trace = staticmethod(SemanticSegmentRuntimeComponent._semantic_segment_trace)
 
-    _semantic_segment_try_natural_fallback = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_try_natural_fallback")
 
     apply_semantic_segment_before_send = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "apply_semantic_segment_before_send")
 
-    _semantic_segment_delay_seconds = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_semantic_segment_delay_seconds")
 
     send_semantic_segments_if_needed = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "send_semantic_segments_if_needed")
 
@@ -2207,7 +2094,6 @@ class DailyLifeRuntime:
 
     send_background_text = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "send_background_text")
 
-    _send_background_plan = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "_send_background_plan")
 
     semantic_segment_status = ComponentCall("_part_semantic_segment_runtime_component", SemanticSegmentRuntimeComponent, "semantic_segment_status")
 
@@ -2217,33 +2103,26 @@ class DailyLifeRuntime:
 
     is_internal_llm_session = staticmethod(SnapshotTempoComponent.is_internal_llm_session)
 
-    _debug_injection_target_once = ComponentCall("_part_snapshot_tempo_component", SnapshotTempoComponent, "_debug_injection_target_once")
 
     resolve_injection_target = ComponentCall("_part_snapshot_tempo_component", SnapshotTempoComponent, "resolve_injection_target")
 
     _share_current_facts = staticmethod(SnapshotExportComponent._share_current_facts)
 
-    _get_rich_context_parts = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_get_rich_context_parts")
 
-    _resolve_life_context_day = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_resolve_life_context_day")
 
-    _life_context_status_line = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_life_context_status_line")
 
     _life_context_meta_line = staticmethod(SnapshotExportComponent._life_context_meta_line)
 
     _life_context_weather = staticmethod(SnapshotExportComponent._life_context_weather)
 
-    _life_context_schedule = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_life_context_schedule")
 
     _life_context_subject = staticmethod(SnapshotExportComponent._life_context_subject)
 
-    _life_context_archive_snapshot = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_life_context_archive_snapshot")
 
     _life_context_people_keys = staticmethod(SnapshotExportComponent._life_context_people_keys)
 
     _life_context_filter_people_records = classmethod(SnapshotExportComponent._life_context_filter_people_records.__func__)
 
-    _life_context_target_archive_snapshot = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_life_context_target_archive_snapshot")
 
     _share_record_value = staticmethod(SnapshotExportComponent._share_record_value)
 
@@ -2265,21 +2144,17 @@ class DailyLifeRuntime:
 
     _share_interaction_payload = classmethod(SnapshotExportComponent._share_interaction_payload.__func__)
 
-    _share_guidance = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_share_guidance")
 
     get_share_chat_style = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "get_share_chat_style")
 
     get_share_context = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "get_share_context")
 
-    _build_share_base_context = ComponentCall("_part_snapshot_export_component", SnapshotExportComponent, "_build_share_base_context")
 
     ensure_startup_day_data = ComponentCall("_part_snapshot_seed_component", SnapshotSeedComponent, "ensure_startup_day_data")
 
     ensure_injection_day_data = ComponentCall("_part_snapshot_seed_component", SnapshotSeedComponent, "ensure_injection_day_data")
 
-    _generate_injection_day_background = ComponentCall("_part_snapshot_seed_component", SnapshotSeedComponent, "_generate_injection_day_background")
 
-    _generate_missing_day_background = ComponentCall("_part_snapshot_seed_component", SnapshotSeedComponent, "_generate_missing_day_background")
 
     maybe_update_injection_outfit = ComponentCall("_part_snapshot_seed_component", SnapshotSeedComponent, "maybe_update_injection_outfit")
 
@@ -2291,13 +2166,10 @@ class DailyLifeRuntime:
 
     _INJECTION_SNAPSHOT_CACHE_LIMIT = SnapshotPackComponent._INJECTION_SNAPSHOT_CACHE_LIMIT
 
-    _store_injection_snapshot = ComponentCall("_part_snapshot_pack_component", SnapshotPackComponent, "_store_injection_snapshot")
 
-    _injection_snapshot_flight = ComponentCall("_part_snapshot_pack_component", SnapshotPackComponent, "_injection_snapshot_flight")
 
     _cached_injection_snapshot = classmethod(SnapshotPackComponent._cached_injection_snapshot.__func__)
 
-    _read_life_context_snapshot = ComponentCall("_part_snapshot_pack_component", SnapshotPackComponent, "_read_life_context_snapshot")
 
     _close_injection_snapshot_flight = ComponentCall("_part_snapshot_pack_component", SnapshotPackComponent, "_close_injection_snapshot_flight")
 
@@ -2305,67 +2177,40 @@ class DailyLifeRuntime:
 
     _hidden_text = staticmethod(InjectVeilComponent._hidden_text)
 
-    _hidden_first = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_first")
 
-    _hidden_join = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_join")
 
     _hidden_lines = staticmethod(HiddenExperienceComponent._hidden_lines)
 
     _hidden_section = staticmethod(HiddenExperienceComponent._hidden_section)
 
-    _hidden_episode_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_episode_line")
 
-    _hidden_focus_target_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_focus_target_line")
 
-    _hidden_behavior_feedback_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_behavior_feedback_line")
 
-    _hidden_emotion_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_emotion_line")
 
-    _hidden_rhythm_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_rhythm_line")
 
-    _hidden_reply_effect_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_reply_effect_line")
 
-    _hidden_memory_correction_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_memory_correction_line")
 
-    _hidden_expression_profile_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_expression_profile_line")
 
-    _hidden_expression_review_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_expression_review_line")
 
-    _hidden_behavior_pattern_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_behavior_pattern_line")
 
-    _hidden_behavior_scene_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_behavior_scene_line")
 
-    _hidden_focus_slot_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_focus_slot_line")
 
-    _hidden_mid_summary_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_mid_summary_line")
 
-    _hidden_temporary_expression_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_temporary_expression_line")
 
-    _hidden_expression_intent_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_expression_intent_line")
 
-    _hidden_term_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_term_line")
 
-    _hidden_memory_boundary_line = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_memory_boundary_line")
 
-    _hidden_life_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_life_sections")
 
-    _hidden_behavior_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_behavior_sections")
 
-    _hidden_emotion_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_emotion_sections")
 
-    _hidden_rhythm_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_rhythm_sections")
 
-    _hidden_expression_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_expression_sections")
 
-    _hidden_memory_sections = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_hidden_memory_sections")
 
     _format_hidden_experience_context = ComponentCall("_part_hidden_experience_component", HiddenExperienceComponent, "_format_hidden_experience_context")
 
     build_hidden_chat_style_hint = ComponentCall("_part_layer_text_component", LayerTextComponent, "build_hidden_chat_style_hint")
 
-    _format_hidden_state_compact = ComponentCall("_part_layer_text_component", LayerTextComponent, "_format_hidden_state_compact")
 
-    _format_timeline_item_compact = ComponentCall("_part_layer_text_component", LayerTextComponent, "_format_timeline_item_compact")
 
     _format_hidden_schedule_window = ComponentCall("_part_layer_text_component", LayerTextComponent, "_format_hidden_schedule_window")
 
@@ -2381,41 +2226,29 @@ class DailyLifeRuntime:
 
     _build_person_fact_injection_context = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_build_person_fact_injection_context")
 
-    _experience_item_text = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_experience_item_text")
 
     _semantic_snapshot_id = staticmethod(LayerChainComponent._semantic_snapshot_id)
 
-    _semantic_snapshot_group = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_semantic_snapshot_group")
 
-    _request_has_visual_input = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_request_has_visual_input")
 
-    _append_visual_input_anchor = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_append_visual_input_anchor")
 
-    _memos_injection_enabled = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_memos_injection_enabled")
 
-    _build_injection_memos_context = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_build_injection_memos_context")
 
     _event_message_text = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_event_message_text")
 
     schedule_emoji_capture_from_event = ComponentCall("_part_layer_chain_component", LayerChainComponent, "schedule_emoji_capture_from_event")
 
-    _schedule_chat_state_refresh = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_schedule_chat_state_refresh")
 
     schedule_pending_chat_state_refresh = ComponentCall("_part_layer_chain_component", LayerChainComponent, "schedule_pending_chat_state_refresh")
 
-    _select_life_memory_contexts = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_select_life_memory_contexts")
 
-    _scope_snapshot_items = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_scope_snapshot_items")
 
-    _format_selected_experience_context = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_format_selected_experience_context")
 
     _format_cognition_context = staticmethod(LayerChainComponent._format_cognition_context)
 
-    _build_available_life_context = ComponentCall("_part_layer_chain_component", LayerChainComponent, "_build_available_life_context")
 
     inject_life_context = ComponentCall("_part_layer_chain_component", LayerChainComponent, "inject_life_context")
 
-    _life_request_policy = ComponentCall("_part_request_prefix_component", RequestPrefixComponent, "_life_request_policy")
 
     _apply_life_request_context = ComponentCall("_part_request_prefix_component", RequestPrefixComponent, "_apply_life_request_context")
 
@@ -2449,9 +2282,7 @@ class DailyLifeRuntime:
 
     _proactive_commitment_relationship = ComponentCall("_part_proactive_followup_component", ProactiveFollowupComponent, "_proactive_commitment_relationship")
 
-    _proactive_commitment_life_context = ComponentCall("_part_proactive_followup_component", ProactiveFollowupComponent, "_proactive_commitment_life_context")
 
-    _evaluate_proactive_commitment = ComponentCall("_part_proactive_followup_component", ProactiveFollowupComponent, "_evaluate_proactive_commitment")
 
     run_proactive_commitment_task = ComponentCall("_part_proactive_followup_component", ProactiveFollowupComponent, "run_proactive_commitment_task")
 
@@ -2463,7 +2294,6 @@ class DailyLifeRuntime:
 
     _shared_activity_candidates = staticmethod(SharedActivityContactComponent._shared_activity_candidates)
 
-    _evaluate_shared_activity_contact = ComponentCall("_part_shared_activity_contact_component", SharedActivityContactComponent, "_evaluate_shared_activity_contact")
 
     _run_shared_activity_contact = ComponentCall("_part_shared_activity_contact_component", SharedActivityContactComponent, "_run_shared_activity_contact")
 
@@ -2495,13 +2325,11 @@ class DailyLifeRuntime:
 
     _AIR_MAX_RECENT_MESSAGES = AirMeterComponent._AIR_MAX_RECENT_MESSAGES
 
-    _proactive_air_states = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_air_states")
 
     _get_proactive_air_state = ComponentCall("_part_air_meter_component", AirMeterComponent, "_get_proactive_air_state")
 
     _reset_proactive_air_state = ComponentCall("_part_air_meter_component", AirMeterComponent, "_reset_proactive_air_state")
 
-    _air_label = ComponentCall("_part_air_meter_component", AirMeterComponent, "_air_label")
 
     _format_proactive_air_state = ComponentCall("_part_air_meter_component", AirMeterComponent, "_format_proactive_air_state")
 
@@ -2511,27 +2339,20 @@ class DailyLifeRuntime:
 
     _proactive_air_delay_remaining = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_air_delay_remaining")
 
-    _proactive_message_score = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_message_score")
 
-    _proactive_timing_delta = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_timing_delta")
 
-    _proactive_state_score = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_state_score")
 
-    _proactive_context_score = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_context_score")
 
     _proactive_target_payload = staticmethod(AirMeterComponent._proactive_target_payload)
 
-    _proactive_observe_result = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_observe_result")
 
     _proactive_readiness_check = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_readiness_check")
 
-    _proactive_air_delta = ComponentCall("_part_air_meter_component", AirMeterComponent, "_proactive_air_delta")
 
     _update_proactive_air_after_decision = ComponentCall("_part_air_meter_component", AirMeterComponent, "_update_proactive_air_after_decision")
 
     _recent_messages_for_candidate = ComponentCall("_part_air_meter_component", AirMeterComponent, "_recent_messages_for_candidate")
 
-    _select_proactive_reply_target = ComponentCall("_part_air_meter_component", AirMeterComponent, "_select_proactive_reply_target")
 
     _format_candidate_recent_messages = ComponentCall("_part_air_meter_component", AirMeterComponent, "_format_candidate_recent_messages")
 
@@ -2539,7 +2360,6 @@ class DailyLifeRuntime:
 
     _proactive_feedback_watches = ComponentCall("_part_air_effect_component", AirEffectComponent, "_proactive_feedback_watches")
 
-    _save_proactive_behavior_feedback = ComponentCall("_part_air_effect_component", AirEffectComponent, "_save_proactive_behavior_feedback")
 
     _track_proactive_reply_effect = ComponentCall("_part_air_effect_component", AirEffectComponent, "_track_proactive_reply_effect")
 
@@ -2547,19 +2367,14 @@ class DailyLifeRuntime:
 
     _save_pending_reply_effect = ComponentCall("_part_air_effect_component", AirEffectComponent, "_save_pending_reply_effect")
 
-    _update_reply_effect_watch = ComponentCall("_part_air_effect_component", AirEffectComponent, "_update_reply_effect_watch")
 
     _settle_stale_reply_effects = ComponentCall("_part_air_effect_component", AirEffectComponent, "_settle_stale_reply_effects")
 
     _reply_effect_source_labels = staticmethod(AirEffectComponent._reply_effect_source_labels)
 
-    _classify_reply_effect = ComponentCall("_part_air_effect_component", AirEffectComponent, "_classify_reply_effect")
 
-    _learn_repeated_reply_effect = ComponentCall("_part_air_effect_component", AirEffectComponent, "_learn_repeated_reply_effect")
 
-    _proactive_reply_was_accepted = ComponentCall("_part_air_effect_component", AirEffectComponent, "_proactive_reply_was_accepted")
 
-    _proactive_continuation_window = ComponentCall("_part_air_effect_component", AirEffectComponent, "_proactive_continuation_window")
 
     _observe_proactive_reply_effect = ComponentCall("_part_air_effect_component", AirEffectComponent, "_observe_proactive_reply_effect")
 
@@ -2625,29 +2440,18 @@ class DailyLifeRuntime:
 
     _SEMANTIC_EMOJI_ATTEMPTED_ATTR = ProactiveGestureComponent._SEMANTIC_EMOJI_ATTEMPTED_ATTR
 
-    _emoji_config_value = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_config_value")
 
-    _emoji_auto_send_allowed = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_auto_send_allowed")
 
-    _emoji_tool_send_allowed = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_tool_send_allowed")
 
-    _emoji_send_cooldown_seconds = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_send_cooldown_seconds")
 
-    _emoji_recent_sent_exclusion_limit = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_recent_sent_exclusion_limit")
 
-    _emoji_model_candidate_limit = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_model_candidate_limit")
 
     _emoji_timestamp = staticmethod(ProactiveGestureComponent._emoji_timestamp)
 
-    _emoji_send_cooldown_active = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_send_cooldown_active")
 
-    _emoji_sent_store = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_sent_store")
 
-    _note_emoji_sent = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_note_emoji_sent")
 
-    _emoji_duplicate_skip_reason = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_duplicate_skip_reason")
 
-    _emoji_already_sent_for_source = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_already_sent_for_source")
 
     _emoji_asset_key = staticmethod(ProactiveGestureComponent._emoji_asset_key)
 
@@ -2655,15 +2459,12 @@ class DailyLifeRuntime:
 
     life_emoji_send = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "life_emoji_send")
 
-    _emoji_scope = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_scope")
 
-    _mark_emoji_used = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_mark_emoji_used")
 
     send_semantic_emoji_if_needed = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "send_semantic_emoji_if_needed")
 
     _send_proactive_emoji_if_needed = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_send_proactive_emoji_if_needed")
 
-    _emoji_message_chain = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_emoji_message_chain")
 
     _emoji_asset_is_sendable = staticmethod(ProactiveGestureComponent._emoji_asset_is_sendable)
 
@@ -2671,19 +2472,14 @@ class DailyLifeRuntime:
 
     _emoji_semantic_text = staticmethod(ProactiveGestureComponent._emoji_semantic_text)
 
-    _semantic_emoji_candidates = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_semantic_emoji_candidates")
 
-    _recent_sent_emoji_ids = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_recent_sent_emoji_ids")
 
-    _select_emoji_asset_for_intent = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_select_emoji_asset_for_intent")
 
-    _attach_recent_expression_intents = ComponentCall("_part_proactive_gesture_component", ProactiveGestureComponent, "_attach_recent_expression_intents")
 
     _send_segmented_proactive_message = ComponentCall("_part_proactive_segment_component", ProactiveSegmentComponent, "_send_segmented_proactive_message")
 
     _chat_style_limit_for_scope = ComponentCall("_part_proactive_segment_component", ProactiveSegmentComponent, "_chat_style_limit_for_scope")
 
-    _proactive_send_delay_seconds = ComponentCall("_part_proactive_segment_component", ProactiveSegmentComponent, "_proactive_send_delay_seconds")
 
     _apply_proactive_send_timing = ComponentCall("_part_proactive_segment_component", ProactiveSegmentComponent, "_apply_proactive_send_timing")
 
@@ -2691,13 +2487,10 @@ class DailyLifeRuntime:
 
     _record_virtual_life_metric = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_record_virtual_life_metric")
 
-    _proactive_idle_task_store = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_proactive_idle_task_store")
 
-    _cancel_proactive_idle_task = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_cancel_proactive_idle_task")
 
     _cancel_proactive_idle_tasks = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_cancel_proactive_idle_tasks")
 
-    _proactive_candidate_delay_seconds = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_proactive_candidate_delay_seconds")
 
     _schedule_proactive_idle_evaluation = ComponentCall("_part_proactive_scope_component", ProactiveScopeComponent, "_schedule_proactive_idle_evaluation")
 
@@ -2737,7 +2530,6 @@ class DailyLifeRuntime:
 
     _snapshot_proactive_send_event = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_snapshot_proactive_send_event")
 
-    _proactive_chat_snapshot = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_proactive_chat_snapshot")
 
     _proactive_send_is_current = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_proactive_send_is_current")
 
@@ -2745,19 +2537,15 @@ class DailyLifeRuntime:
 
     _proactive_source_label = staticmethod(ProactiveSendComponent._proactive_source_label)
 
-    _normalize_proactive_reply_text = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_normalize_proactive_reply_text")
 
     _send_proactive_message = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_send_proactive_message")
 
-    _mark_failed_proactive_contact = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_mark_failed_proactive_contact")
 
     _save_proactive_expression_records = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_save_proactive_expression_records")
 
-    _proactive_voice_available = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_proactive_voice_available")
 
     _proactive_voice_capability = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_proactive_voice_capability")
 
-    _send_proactive_voice_if_enabled = ComponentCall("_part_proactive_send_component", ProactiveSendComponent, "_send_proactive_voice_if_enabled")
 
     _record_message_chain = staticmethod(ProactiveSendComponent._record_message_chain)
 
@@ -2771,11 +2559,8 @@ class DailyLifeRuntime:
 
     _build_recent_group_awareness_for_proactive = ComponentCall("_part_proactive_aware_component", ProactiveAwareComponent, "_build_recent_group_awareness_for_proactive")
 
-    _proactive_voice_call_capability = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_voice_call_capability")
 
-    _proactive_person_fact_context = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_person_fact_context")
 
-    _proactive_prompt_records = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_prompt_records")
 
     _proactive_relationship_context = staticmethod(ProactivePromptComponent._proactive_relationship_context)
 
@@ -2783,37 +2568,27 @@ class DailyLifeRuntime:
 
     _proactive_focus_lines = staticmethod(ProactivePromptComponent._proactive_focus_lines)
 
-    _proactive_reply_limit_for_prompt = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_reply_limit_for_prompt")
 
     _proactive_readiness_text = staticmethod(ProactivePromptComponent._proactive_readiness_text)
 
-    _proactive_prompt_scene = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_prompt_scene")
 
-    _proactive_prompt_fixed = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_prompt_fixed")
 
-    _proactive_prompt_dynamic = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_proactive_prompt_dynamic")
 
     _build_proactive_prompt = ComponentCall("_part_proactive_prompt_component", ProactivePromptComponent, "_build_proactive_prompt")
 
     _advance_proactive_decision_trace = ComponentCall("_part_proactive_store_component", ProactiveStoreComponent, "_advance_proactive_decision_trace")
 
-    _save_proactive_decision_trace = ComponentCall("_part_proactive_store_component", ProactiveStoreComponent, "_save_proactive_decision_trace")
 
     _save_proactive_decision = ComponentCall("_part_proactive_store_component", ProactiveStoreComponent, "_save_proactive_decision")
 
     _proactive_skip = staticmethod(ProactiveFlowComponent._proactive_skip)
 
-    _proactive_group_anchor = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_proactive_group_anchor")
 
-    _normalize_proactive_voice_call_intent = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_normalize_proactive_voice_call_intent")
 
     _split_voice_call_invite_message = staticmethod(ProactiveFlowComponent._split_voice_call_invite_message)
 
-    _prepare_proactive_voice_call_invite = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_prepare_proactive_voice_call_invite")
 
-    _normalize_proactive_payload = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_normalize_proactive_payload")
 
-    _record_proactive_decision = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_record_proactive_decision")
 
     _commit_proactive_decision = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_commit_proactive_decision")
 
@@ -2821,11 +2596,9 @@ class DailyLifeRuntime:
 
     evaluate_idle_proactive_candidates = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "evaluate_idle_proactive_candidates")
 
-    _idle_candidate_ready = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_idle_candidate_ready")
 
     _evaluate_idle_candidate = ComponentCall("_part_proactive_flow_component", ProactiveFlowComponent, "_evaluate_idle_candidate")
 
-    _get_recent_private_targets = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_get_recent_private_targets")
 
     _private_revisit_memos_query = staticmethod(ProactiveRevisitComponent._private_revisit_memos_query)
 
@@ -2835,17 +2608,11 @@ class DailyLifeRuntime:
 
     _private_revisit_relationship_snapshot = staticmethod(ProactiveRevisitComponent._private_revisit_relationship_snapshot)
 
-    _private_revisit_memory_context = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_private_revisit_memory_context")
 
-    _private_revisit_life_context = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_private_revisit_life_context")
 
-    _private_revisit_expression_context = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_private_revisit_expression_context")
 
-    _private_revisit_prompt = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_private_revisit_prompt")
 
-    _private_revisit_normalize_payload = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_private_revisit_normalize_payload")
 
-    _evaluate_private_revisit_payload = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "_evaluate_private_revisit_payload")
 
     evaluate_private_revisit_candidates = ComponentCall("_part_proactive_revisit_component", ProactiveRevisitComponent, "evaluate_private_revisit_candidates")
 
@@ -2867,7 +2634,6 @@ class DailyLifeRuntime:
 
     _outfit_change_scene_fallback = staticmethod(RuntimeImageMediaComponent._outfit_change_scene_fallback)
 
-    _isolate_outfit_change_scene_prompt = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_isolate_outfit_change_scene_prompt")
 
     _align_current_appearance_scene_prompt = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_align_current_appearance_scene_prompt")
 
@@ -2881,9 +2647,7 @@ class DailyLifeRuntime:
 
     _apply_current_appearance_snapshot = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_apply_current_appearance_snapshot")
 
-    _friend_daily_looks = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_friend_daily_looks")
 
-    _friend_daily_look_path = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_friend_daily_look_path")
 
     _friend_daily_look_key = staticmethod(RuntimeImageMediaComponent._friend_daily_look_key)
 
@@ -2895,11 +2659,8 @@ class DailyLifeRuntime:
 
     _load_friend_daily_looks = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_load_friend_daily_looks")
 
-    _persist_friend_daily_looks = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_persist_friend_daily_looks")
 
-    _current_friend_daily_look = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_current_friend_daily_look")
 
-    _resolve_friend_daily_look = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_resolve_friend_daily_look")
 
     _prepare_friend_daily_look = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_prepare_friend_daily_look")
 
@@ -2909,7 +2670,6 @@ class DailyLifeRuntime:
 
     _friend_look_required_parameters = staticmethod(RuntimeImageMediaComponent._friend_look_required_parameters)
 
-    _friend_profile_display_name = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_friend_profile_display_name")
 
     _log_friend_daily_look = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_log_friend_daily_look")
 
@@ -2925,19 +2685,15 @@ class DailyLifeRuntime:
 
     _image_generation_error_needs_rewrite = staticmethod(RuntimeImageMediaComponent._image_generation_error_needs_rewrite)
 
-    _image_tool_failure_text = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_image_tool_failure_text")
 
-    _image_policy_rewrite_reason = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_image_policy_rewrite_reason")
 
     _image_policy_rejection_detail = staticmethod(RuntimeImageMediaComponent._image_policy_rejection_detail)
 
-    _image_operation_with_policy_retry = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_image_operation_with_policy_retry")
 
     _generate_life_image_with_policy_retry = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_generate_life_image_with_policy_retry")
 
     _edit_life_image_with_policy_retry = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_edit_life_image_with_policy_retry")
 
-    _directed_life_image_result = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_directed_life_image_result")
 
     note_media_source_event = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "note_media_source_event")
 
@@ -2957,45 +2713,30 @@ class DailyLifeRuntime:
 
     _image_generation_mode_label = staticmethod(RuntimeImageMediaComponent._image_generation_mode_label)
 
-    _resolve_last_reverse_image_prompt = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_resolve_last_reverse_image_prompt")
 
-    _resolve_last_reverse_image_prompt_async = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_resolve_last_reverse_image_prompt_async")
 
-    _image_edit_available = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_image_edit_available")
 
     _life_character_reference_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_life_character_reference_image")
 
     generate_life_image_asset = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "generate_life_image_asset")
 
-    _prepare_image_generation_plan = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_prepare_image_generation_plan")
 
-    _execute_image_generation_plan = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_execute_image_generation_plan")
 
     life_image_generate = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "life_image_generate")
 
-    _submit_background_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_submit_background_image")
 
-    _background_image_delivery = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_background_image_delivery")
 
     hold_life_image_final_text = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "hold_life_image_final_text")
 
-    _life_image_generate_inline = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_life_image_generate_inline")
 
-    _generate_and_deliver_life_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_generate_and_deliver_life_image")
 
-    _generate_and_deliver_life_image_tracked = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_generate_and_deliver_life_image_tracked")
 
-    _execute_image_edit = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_execute_image_edit")
 
-    _deliver_edited_life_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_deliver_edited_life_image")
 
     edit_life_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "edit_life_image")
 
-    _edit_life_image_inline = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_edit_life_image_inline")
 
-    _edit_and_deliver_life_image = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_edit_and_deliver_life_image")
 
-    _edit_and_deliver_life_image_tracked = ComponentCall("_part_runtime_image_media_component", RuntimeImageMediaComponent, "_edit_and_deliver_life_image_tracked")
 
     _photo_suite_single_shot_prompt = staticmethod(_part_runtime_photo_suite_media_component.RuntimePhotoSuiteMediaComponent._photo_suite_single_shot_prompt)
 
@@ -3139,21 +2880,16 @@ class DailyLifeRuntime:
 
     _style_analysis_item = classmethod(RuntimeStyleCatalogComponent._style_analysis_item.__func__)
 
-    _style_catalog_contract = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_style_catalog_contract")
 
     _prepare_style_catalog_image_bytes = staticmethod(RuntimeStyleCatalogComponent._prepare_style_catalog_image_bytes)
 
-    _persist_style_catalog_image = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_persist_style_catalog_image")
 
     _style_perceptual_hash = staticmethod(RuntimeStyleCatalogComponent._style_perceptual_hash)
 
     _style_hash_distance = staticmethod(RuntimeStyleCatalogComponent._style_hash_distance)
 
-    _remove_unused_style_catalog_image = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_remove_unused_style_catalog_image")
 
-    _analyze_style_catalog_image = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_analyze_style_catalog_image")
 
-    _style_catalog_call_provider = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_style_catalog_call_provider")
 
     _learn_style_catalog_image = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_learn_style_catalog_image")
 
@@ -3167,13 +2903,10 @@ class DailyLifeRuntime:
 
     life_style_learn = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "life_style_learn")
 
-    _style_learning_images = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_style_learning_images")
 
-    _life_style_learn_inline = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_life_style_learn_inline")
 
     life_style_catalog_list = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "life_style_catalog_list")
 
-    _style_feedback_decision = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "_style_feedback_decision")
 
     life_style_feedback = ComponentCall("_part_runtime_style_catalog_component", RuntimeStyleCatalogComponent, "life_style_feedback")
 
@@ -3191,63 +2924,41 @@ class DailyLifeRuntime:
 
     _video_clamp_seconds = staticmethod(RuntimeVideoMediaComponent._video_clamp_seconds)
 
-    _event_video_prompt_text = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_event_video_prompt_text")
 
-    _resolve_video_prompt = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_resolve_video_prompt")
 
     generate_life_video_asset = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "generate_life_video_asset")
 
-    _generate_life_video_asset_locked = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_generate_life_video_asset_locked")
 
     life_video_generate = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "life_video_generate")
 
     _resolve_life_video_commitment_future = staticmethod(RuntimeVideoMediaComponent._resolve_life_video_commitment_future)
 
-    _life_video_generate_background = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_life_video_generate_background")
 
-    _execute_life_video_request = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_execute_life_video_request")
 
-    _deliver_life_video_execution = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_deliver_life_video_execution")
 
-    _update_life_video_request = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_update_life_video_request")
 
-    _generate_life_video_first_frame = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_generate_life_video_first_frame")
 
-    _generate_life_group_video_first_frame = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_generate_life_group_video_first_frame")
 
-    _life_video_requests = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_life_video_requests")
 
-    _register_life_video_request = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_register_life_video_request")
 
-    _life_video_request_from_event = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_life_video_request_from_event")
 
-    _finish_life_video_request = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_finish_life_video_request")
 
-    _send_life_video_failure_notice = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_send_life_video_failure_notice")
 
     _life_video_failure_fallback_text = staticmethod(RuntimeVideoMediaComponent._life_video_failure_fallback_text)
 
-    _life_video_reply_model = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_life_video_reply_model")
 
     hold_life_video_final_text = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "hold_life_video_final_text")
 
-    _send_life_video_followup = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_send_life_video_followup")
 
-    _generate_life_video_followup_text = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_generate_life_video_followup_text")
 
-    _generate_life_video_failure_text = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_generate_life_video_failure_text")
 
     _parse_life_video_reply_text = staticmethod(RuntimeVideoMediaComponent._parse_life_video_reply_text)
 
-    _send_life_video_text = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_send_life_video_text")
 
-    _load_life_video_reference_image = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_load_life_video_reference_image")
 
-    _life_video_reference_aspect_ratio = ComponentCall("_part_runtime_video_media_component", RuntimeVideoMediaComponent, "_life_video_reference_aspect_ratio")
 
     life_voice_generate = ComponentCall("_part_runtime_voice_media_component", RuntimeVoiceMediaComponent, "life_voice_generate")
 
-    _media_file_cache_root = ComponentCall("_part_media_file_cleanup_component", MediaFileCleanupComponent, "_media_file_cache_root")
 
     _media_keep_days = staticmethod(MediaFileCleanupComponent._media_keep_days)
 
@@ -3267,7 +2978,6 @@ class DailyLifeRuntime:
 
     _submit_background_tool = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_submit_background_tool")
 
-    _deliver_background_tool = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_deliver_background_tool")
 
     hold_background_tool_final_text = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "hold_background_tool_final_text")
 
@@ -3277,11 +2987,9 @@ class DailyLifeRuntime:
 
     _parse_delivered_media_reply = staticmethod(RuntimeMediaCommonComponent._parse_delivered_media_reply)
 
-    _generate_background_failure_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_generate_background_failure_reply")
 
     _send_background_failure_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_send_background_failure_reply")
 
-    _generate_delivered_media_reply = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_generate_delivered_media_reply")
 
     _send_delivered_media_followup = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_send_delivered_media_followup")
 
@@ -3291,7 +2999,6 @@ class DailyLifeRuntime:
 
     _media_size_text = staticmethod(RuntimeMediaCommonComponent._media_size_text)
 
-    _media_file_size = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_media_file_size")
 
     _media_result_summary = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_media_result_summary")
 
@@ -3299,27 +3006,20 @@ class DailyLifeRuntime:
 
     _media_tool_failure_text = staticmethod(RuntimeMediaCommonComponent._media_tool_failure_text)
 
-    _media_cadence_store = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_media_cadence_store")
 
-    _prune_media_cadence = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_prune_media_cadence")
 
     note_life_media_sent = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "note_life_media_sent")
 
     _hidden_media_cadence_hint = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_hidden_media_cadence_hint")
 
-    _image_reference_from_items = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_image_reference_from_items")
 
     _media_payload_from_item_async = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_media_payload_from_item_async")
 
     _image_reference_from_items_async = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_image_reference_from_items_async")
 
-    _quote_image_reference_from_event = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_quote_image_reference_from_event")
 
-    _quote_image_reference_from_event_async = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_quote_image_reference_from_event_async")
 
-    _quote_image_reference_from_value = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_quote_image_reference_from_value")
 
-    _quote_image_reference_from_value_async = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_quote_image_reference_from_value_async")
 
     _resolve_life_image_reference_async = ComponentCall("_part_runtime_media_common_component", RuntimeMediaCommonComponent, "_resolve_life_image_reference_async")
 
@@ -3337,7 +3037,6 @@ class DailyLifeRuntime:
 
     _media_director_emotion_context_text = ComponentCall("_part_stage_frame_component", StageFrameComponent, "_media_director_emotion_context_text")
 
-    _media_director_current_user_message = ComponentCall("_part_stage_frame_component", StageFrameComponent, "_media_director_current_user_message")
 
     _media_director_recent_context_text = ComponentCall("_part_stage_frame_component", StageFrameComponent, "_media_director_recent_context_text")
 
@@ -3349,9 +3048,7 @@ class DailyLifeRuntime:
 
     _character_appearance_prompt = staticmethod(StageFigureComponent._character_appearance_prompt)
 
-    _character_appearance_cache = ComponentCall("_part_stage_figure_component", StageFigureComponent, "_character_appearance_cache")
 
-    _character_appearance_tasks = ComponentCall("_part_stage_figure_component", StageFigureComponent, "_character_appearance_tasks")
 
     _character_appearance_fingerprint = staticmethod(StageFigureComponent._character_appearance_fingerprint)
 
@@ -3359,7 +3056,6 @@ class DailyLifeRuntime:
 
     _character_appearance_context = ComponentCall("_part_stage_figure_component", StageFigureComponent, "_character_appearance_context")
 
-    _extract_character_appearance_profile = ComponentCall("_part_stage_figure_component", StageFigureComponent, "_extract_character_appearance_profile")
 
     _character_appearance_profile = ComponentCall("_part_stage_figure_component", StageFigureComponent, "_character_appearance_profile")
 
@@ -3387,7 +3083,6 @@ class DailyLifeRuntime:
 
     _validate_media_image_route_payload = classmethod(StageReelComponent._validate_media_image_route_payload.__func__)
 
-    _media_image_prompt_from_payload = ComponentCall("_part_stage_reel_component", StageReelComponent, "_media_image_prompt_from_payload")
 
     _media_image_preserve_user_request = staticmethod(StageReelComponent._media_image_preserve_user_request)
 
@@ -3397,23 +3092,18 @@ class DailyLifeRuntime:
 
     _media_image_needs_character_reference = staticmethod(StageReelComponent._media_image_needs_character_reference)
 
-    _media_image_route_prompt = ComponentCall("_part_stage_reel_component", StageReelComponent, "_media_image_route_prompt")
 
-    _media_image_director_prompt = ComponentCall("_part_stage_reel_component", StageReelComponent, "_media_image_director_prompt")
 
     _strip_media_code_fence = staticmethod(StageReelComponent._strip_media_code_fence)
 
-    _media_rewrite_prompt_from_payload = ComponentCall("_part_stage_reel_component", StageReelComponent, "_media_rewrite_prompt_from_payload")
 
     _media_rewrite_prompt_from_response = ComponentCall("_part_stage_reel_component", StageReelComponent, "_media_rewrite_prompt_from_response")
 
-    _direct_life_image_prompt = ComponentCall("_part_stage_reel_component", StageReelComponent, "_direct_life_image_prompt")
 
     _direct_life_image_payload = ComponentCall("_part_stage_reel_component", StageReelComponent, "_direct_life_image_payload")
 
     _rewrite_life_image_prompt_for_policy_retry = ComponentCall("_part_stage_reel_component", StageReelComponent, "_rewrite_life_image_prompt_for_policy_retry")
 
-    _media_video_prompt_from_payload = ComponentCall("_part_stage_voice_component", StageVoiceComponent, "_media_video_prompt_from_payload")
 
     _direct_life_video_prompt = ComponentCall("_part_stage_voice_component", StageVoiceComponent, "_direct_life_video_prompt")
 
@@ -3453,17 +3143,11 @@ class DailyLifeRuntime:
 
     _prune_voice_switch_rounds = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_prune_voice_switch_rounds")
 
-    _voice_switch_cadence_store = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_voice_switch_cadence_store")
 
-    _voice_switch_next_chain_limit = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_voice_switch_next_chain_limit")
 
-    _voice_switch_chain_limit = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_voice_switch_chain_limit")
 
-    _prune_voice_switch_cadence = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_prune_voice_switch_cadence")
 
-    _event_has_voice_input = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_event_has_voice_input")
 
-    _voice_switch_probability = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_voice_switch_probability")
 
     _voice_switch_cadence_snapshot = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "_voice_switch_cadence_snapshot")
 
@@ -3477,13 +3161,9 @@ class DailyLifeRuntime:
 
     mark_voice_switch_used = ComponentCall("_part_voice_switch_gate_component", VoiceSwitchGateComponent, "mark_voice_switch_used")
 
-    _tool_preface_scope_key = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_tool_preface_scope_key")
 
-    _tool_preface_event_key = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_tool_preface_event_key")
 
-    _tool_reply_state_for_event = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_tool_reply_state_for_event")
 
-    _tool_reply_round_store = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_tool_reply_round_store")
 
     _tool_name = classmethod(SilentToolPrefaceComponent._tool_name.__func__)
 
@@ -3495,11 +3175,9 @@ class DailyLifeRuntime:
 
     _plain_send_message_tool_text = staticmethod(SilentToolPrefaceComponent._plain_send_message_tool_text)
 
-    _remember_tool_preface = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_remember_tool_preface")
 
     _plain_tool_preface_text = staticmethod(SilentToolPrefaceComponent._plain_tool_preface_text)
 
-    _send_visible_tool_preface = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "_send_visible_tool_preface")
 
     handle_llm_tool_start = ComponentCall("_part_silent_tool_preface_component", SilentToolPrefaceComponent, "handle_llm_tool_start")
 
@@ -3553,7 +3231,6 @@ class DailyLifeRuntime:
 
     _voice_expression_log_title = staticmethod(VoiceSwitchRecordComponent._voice_expression_log_title)
 
-    _log_voice_expression_decision = ComponentCall("_part_voice_switch_record_component", VoiceSwitchRecordComponent, "_log_voice_expression_decision")
 
     _note_voice_expression_decision = ComponentCall("_part_voice_switch_record_component", VoiceSwitchRecordComponent, "_note_voice_expression_decision")
 
@@ -3603,33 +3280,23 @@ class DailyLifeRuntime:
 
     _astrbot_config = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_astrbot_config")
 
-    _event_sender_id_name = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_event_sender_id_name")
 
-    _event_group_name = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_event_group_name")
 
-    _system_reminder_text = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_system_reminder_text")
 
     inject_astrbot_history_reminder = ComponentCall("_part_history_scene_component", HistorySceneComponent, "inject_astrbot_history_reminder")
 
-    _conversation_user_content = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_conversation_user_content")
 
-    _conversation_user_content_from_event = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_conversation_user_content_from_event")
 
-    _user_history_item = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_user_history_item")
 
     _user_history_item_from_event = ComponentCall("_part_history_scene_component", HistorySceneComponent, "_user_history_item_from_event")
 
-    _observed_history_keys = ComponentCall("_part_history_watch_component", HistoryWatchComponent, "_observed_history_keys")
 
-    _remember_observed_history_key = ComponentCall("_part_history_watch_component", HistoryWatchComponent, "_remember_observed_history_key")
 
-    _observed_history_key = ComponentCall("_part_history_watch_component", HistoryWatchComponent, "_observed_history_key")
 
     _event_user_history_media_label = ComponentCall("_part_history_watch_component", HistoryWatchComponent, "_event_user_history_media_label")
 
     record_observed_private_user_message = ComponentCall("_part_history_watch_component", HistoryWatchComponent, "record_observed_private_user_message")
 
-    _conversation_id_for_scope = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_conversation_id_for_scope")
 
     _append_assistant_history = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_append_assistant_history")
 
@@ -3637,13 +3304,10 @@ class DailyLifeRuntime:
 
     _append_platform_user_history = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_append_platform_user_history")
 
-    _recent_matching_user_index = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_recent_matching_user_index")
 
-    _recent_plain_user_index_for_media = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_recent_plain_user_index_for_media")
 
     _append_turn_history = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_append_turn_history")
 
-    _append_platform_assistant_history = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_append_platform_assistant_history")
 
     _append_proactive_send_history = ComponentCall("_part_history_write_component", HistoryWriteComponent, "_append_proactive_send_history")
 
@@ -3749,7 +3413,6 @@ class DailyLifeRuntime:
 
     run_memory_maintenance = ComponentCall("_part_spine_pulse_component", SpinePulseComponent, "run_memory_maintenance")
 
-    _consolidate_proactive_behavior_scenes = ComponentCall("_part_spine_pulse_component", SpinePulseComponent, "_consolidate_proactive_behavior_scenes")
 
     run_weekly_refresh = ComponentCall("_part_spine_pulse_component", SpinePulseComponent, "run_weekly_refresh")
 
@@ -3763,13 +3426,10 @@ class DailyLifeRuntime:
 
     _persist_schedule_time = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_persist_schedule_time")
 
-    _write_runtime_config = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_write_runtime_config")
 
-    _restore_runtime_config = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_restore_runtime_config")
 
     _rhythm_running = staticmethod(SpineAdaptComponent._rhythm_running)
 
-    _swap_runtime_services = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_swap_runtime_services")
 
     _residence_address = staticmethod(SpineAdaptComponent._residence_address)
 
@@ -3779,7 +3439,6 @@ class DailyLifeRuntime:
 
     apply_config = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "apply_config")
 
-    _apply_config = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_apply_config")
 
     _resolve_command_target_date = ComponentCall("_part_spine_adapt_component", SpineAdaptComponent, "_resolve_command_target_date")
 
@@ -3787,11 +3446,9 @@ class DailyLifeRuntime:
 
     try_update_weather = ComponentCall("_part_spine_climate_component", SpineClimateComponent, "try_update_weather")
 
-    _save_invite_day = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "_save_invite_day")
 
     sync_outfit_after_invite = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "sync_outfit_after_invite")
 
-    _sync_outfit_after_invite_background = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "_sync_outfit_after_invite_background")
 
     schedule_invite_outfit_sync = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "schedule_invite_outfit_sync")
 
@@ -3809,9 +3466,7 @@ class DailyLifeRuntime:
 
     reconcile_due_commitments_for_day = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "reconcile_due_commitments_for_day")
 
-    _accept_invite_timeline_update = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "_accept_invite_timeline_update")
 
-    _decline_invite_timeline_update = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "_decline_invite_timeline_update")
 
     accept_user_invite = ComponentCall("_part_spine_invite_component", SpineInviteComponent, "accept_user_invite")
 

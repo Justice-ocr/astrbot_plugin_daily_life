@@ -28,8 +28,6 @@ from typing import Any, Protocol
 class DailyRecordComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _persist_daily_experience: Any
-    _persist_physiological_rhythm_log: Any
     archive: Any
     domains: Any
     sync_day_world_facts: Any
@@ -103,10 +101,14 @@ class DailyRecordComponent:
             record_appearance_snapshot(day, observed_at)
         await self.context.archive.save_day(day, replace=True)
         sync_world_facts = getattr(self.context, "sync_day_world_facts", None)
-        if callable(sync_world_facts):
+        if (
+            callable(sync_world_facts)
+            and observed_at is not None
+            and observed_at.date().isoformat() == day.date
+        ):
             await sync_world_facts(
                 day,
-                observed_at=f"{date_str} 00:00:00",
+                observed_at=observed_at.strftime("%Y-%m-%d %H:%M:%S"),
                 source="daily_generation",
                 source_id=f"day:{date_str}",
                 evidence="当日日程生成完成",
@@ -173,10 +175,10 @@ class DailyRecordComponent:
         )
         if callable(sync_sessions):
             await sync_sessions(day, now=life_now())
-        await self.context._persist_physiological_rhythm_log(
+        await self._persist_physiological_rhythm_log(
             date_str, day, source="daily_generation"
         )
-        await self.context._persist_daily_experience(date_str, day, due_commitments)
+        await self._persist_daily_experience(date_str, day, due_commitments)
 
     async def _persist_physiological_rhythm_log(
         self, date_str: str, day: DayRecord, *, source: str

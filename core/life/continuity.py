@@ -34,6 +34,10 @@ def execution_context(world: dict[str, Any]) -> str:
             f"{action.get('duration_minutes', 0)} 分钟；{run.get('reason', '')}。"
             "进行中和暂停均不能说已经做完，计划也不能覆盖当前实际行动。"
         )
+        payload = action.get("payload")
+        next_step = payload.get("next_step") if isinstance(payload, dict) else None
+        if next_step:
+            sections.append(f"后续意向（尚未执行，届时重新判断）：{str(next_step)[:240]}。")
     history = world.get("history", [])[-3:]
     if history:
         sections.append(

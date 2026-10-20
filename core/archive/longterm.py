@@ -59,6 +59,24 @@ class LongTermMemoryArchiveComponent:
         "correction": "correction",
     }
 
+    @staticmethod
+    def _active_source_revision_clause(alias: str = "m") -> str:
+        return f"""
+              AND NOT (
+                {alias}.source_table = 'continuous_life_entries'
+                AND {alias}.category = 'autobiography'
+                AND {alias}.source_id <> ''
+                AND EXISTS (
+                    SELECT 1 FROM long_term_memories newer
+                    WHERE newer.scope = {alias}.scope
+                      AND newer.category = {alias}.category
+                      AND newer.source_table = {alias}.source_table
+                      AND newer.source_id = {alias}.source_id
+                      AND newer.status = 'active'
+                      AND newer.id > {alias}.id
+                )
+              )"""
+
     def _compose_long_term_memory(
         self, row: sqlite3.Row, score: float = 0.0
     ) -> LongTermMemoryRecord:
@@ -184,6 +202,58 @@ class LongTermMemoryArchiveComponent:
         ).fetchone()
         if invalidated and not replacing_correction:
             return None
+        normalized_scope = self.context._text(memory.scope)
+        normalized_category = self.context._text(memory.category) or "general"
+        normalized_title = self.context._text(memory.title)
+        normalized_content = self.context._text(memory.content)
+        normalized_source_table = self.context._text(memory.source_table)
+        normalized_source_id = self.context._text(memory.source_id)
+        if (
+            normalized_source_table == "continuous_life_entries"
+            and normalized_category == "autobiography"
+            and normalized_source_id
+        ):
+            existing = self.context._conn.execute(
+                """SELECT * FROM long_term_memories
+                   WHERE scope=? AND category=? AND source_table=? AND source_id=?
+                     AND status='active'
+                   ORDER BY id DESC LIMIT 1""",
+                (normalized_scope, normalized_category, normalized_source_table, normalized_source_id),
+            ).fetchone()
+            if existing:
+                old_content = str(existing["content"] or "")
+                if normalized_content in old_content:
+                    merged_content = old_content
+                elif old_content in normalized_content:
+                    merged_content = normalized_content
+                else:
+                    merged_content = f"{old_content}\n{normalized_content}".strip()
+                self.context._conn.execute(
+                    """UPDATE long_term_memories
+                       SET title=COALESCE(NULLIF(?, ''), title), content=?,
+                           session_id=COALESCE(NULLIF(?, ''), session_id),
+                           message_id=COALESCE(NULLIF(?, ''), message_id),
+                           date=COALESCE(NULLIF(?, ''), date),
+                           confidence=?, weight=MAX(weight, ?), updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (
+                        normalized_title,
+                        merged_content,
+                        self.context._text(memory.session_id),
+                        self.context._text(memory.message_id),
+                        self.context._text(memory.date),
+                        float(memory.confidence),
+                        float(memory.weight),
+                        existing["id"],
+                    ),
+                )
+                row = self.context._conn.execute(
+                    "SELECT * FROM long_term_memories WHERE id=?", (existing["id"],)
+                ).fetchone()
+                saved = self.context._compose_long_term_memory(row) if row else None
+                if saved:
+                    self.context._maintain_long_term_memory_quality_unlocked(saved)
+                return saved
         self.context._conn.execute(
             """
             INSERT INTO long_term_memories(
@@ -203,12 +273,12 @@ class LongTermMemoryArchiveComponent:
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
-                self.context._text(memory.scope),
-                self.context._text(memory.category) or "general",
-                self.context._text(memory.title),
-                self.context._text(memory.content),
-                self.context._text(memory.source_table),
-                self.context._text(memory.source_id),
+                normalized_scope,
+                normalized_category,
+                normalized_title,
+                normalized_content,
+                normalized_source_table,
+                normalized_source_id,
                 self.context._text(memory.session_id),
                 self.context._text(memory.message_id),
                 self.context._text(memory.date),
@@ -385,8 +455,12 @@ class LongTermMemoryArchiveComponent:
         summary = memory.content
         category = self.context._text(memory.category).split(":", 1)[0] or "life"
         # 同一来源的修订使用已有经历链，不依赖摘要标题是否恰好相同。
-        row = None
-        if memory.source_table and memory.source_id:
+        row = self.context._conn.execute(
+            "SELECT c.* FROM memory_episode_clusters c JOIN memory_episode_cluster_items i "
+            "ON c.id=i.cluster_id WHERE i.memory_id=? AND c.scope=? ORDER BY c.id LIMIT 1",
+            (memory.id, memory.scope),
+        ).fetchone() if memory.id else None
+        if row is None and memory.source_table and memory.source_id:
             row = self.context._conn.execute(
                 """SELECT c.* FROM memory_episode_clusters c
                 JOIN memory_episode_cluster_items i ON i.cluster_id = c.id
@@ -468,6 +542,78 @@ class LongTermMemoryArchiveComponent:
             "SELECT * FROM memory_episode_clusters WHERE id = ?", (cluster_id,)
         ).fetchone()
         return self.context._compose_memory_cluster(row) if row else None
+
+    async def link_memory_episode(
+        self, *, scope: str, previous_id: int, summary_id: int, evidence: str
+    ) -> bool:
+        """把有语义证据的新摘要接到已有经历；不改原始事实或合并无关经历。"""
+        if not scope or not previous_id or not summary_id or not evidence:
+            return False
+
+        def write() -> bool:
+            previous = self.context._conn.execute(
+                "SELECT * FROM long_term_memories WHERE id=? AND scope=? AND status='active' "
+                "AND (expires_at='' OR expires_at >= DATE('now', 'localtime'))",
+                (previous_id, scope),
+            ).fetchone()
+            current = self.context._conn.execute(
+                "SELECT * FROM long_term_memories WHERE scope=? AND source_table='chat_summaries' "
+                "AND source_id=? AND status='active' "
+                "AND (expires_at='' OR expires_at >= DATE('now', 'localtime')) ORDER BY id DESC LIMIT 1",
+                (scope, str(summary_id)),
+            ).fetchone()
+            if not previous or not current or previous["id"] == current["id"]:
+                return False
+            if self.context._memory_lifecycle_kind(previous["category"]) not in {"episode", "short_term"}:
+                return False
+            cluster = self.context._conn.execute(
+                "SELECT c.id FROM memory_episode_clusters c JOIN memory_episode_cluster_items i "
+                "ON c.id=i.cluster_id WHERE i.memory_id=? AND c.scope=? AND c.status='active' "
+                "ORDER BY c.id LIMIT 1", (previous_id, scope),
+            ).fetchone()
+            if not cluster:
+                return False
+            cluster_id = cluster["id"]
+            other = self.context._conn.execute(
+                "SELECT 1 FROM memory_episode_cluster_items i JOIN memory_episode_clusters c "
+                "ON c.id=i.cluster_id WHERE i.memory_id=? AND c.id<>? AND c.memory_count>1 LIMIT 1",
+                (current["id"], cluster_id),
+            ).fetchone()
+            if other:
+                return False
+            with self.context._conn:
+                # 新摘要原有的独立分组由经历链替代；包含其他事实的分组保留。
+                self.context._conn.execute(
+                    "DELETE FROM memory_episode_clusters WHERE id IN ("
+                    "SELECT cluster_id FROM memory_episode_cluster_items WHERE memory_id=?) "
+                    "AND id<>? AND memory_count=1", (current["id"], cluster_id),
+                )
+                self.context._conn.execute(
+                    "INSERT OR IGNORE INTO memory_episode_cluster_items(cluster_id,memory_id,sort_order) "
+                    "VALUES(?,?,COALESCE((SELECT MAX(sort_order)+1 FROM memory_episode_cluster_items "
+                    "WHERE cluster_id=?),0))", (cluster_id, current["id"], cluster_id),
+                )
+                self.context._conn.execute(
+                    "UPDATE memory_episode_clusters SET memory_count=(SELECT COUNT(*) FROM "
+                    "memory_episode_cluster_items WHERE cluster_id=?), "
+                    "first_date=CASE WHEN first_date='' THEN ? ELSE MIN(first_date,?) END, "
+                    "last_date=MAX(last_date,?), summary=(SELECT m.content FROM long_term_memories m "
+                    "JOIN memory_episode_cluster_items i ON m.id=i.memory_id WHERE i.cluster_id=? "
+                    "AND m.status='active' ORDER BY m.date DESC,m.id DESC LIMIT 1), "
+                    "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (cluster_id, current["date"], current["date"], current["date"], cluster_id, cluster_id),
+                )
+                self.context._conn.execute(
+                    "INSERT INTO memory_evidence(target_type,target_id,evidence_type,source_table,source_id,"
+                    "session_id,summary) SELECT 'memory_episode_cluster',?,'continuation',"
+                    "'chat_summaries',?,?,? WHERE NOT EXISTS(SELECT 1 FROM memory_evidence "
+                    "WHERE target_type='memory_episode_cluster' AND target_id=? "
+                    "AND source_table='chat_summaries' AND source_id=?)",
+                    (str(cluster_id), str(summary_id), scope, evidence[:1000], str(cluster_id), str(summary_id)),
+                )
+            return True
+
+        return await self.context._run_db(write)
 
     def _record_memory_conflicts_unlocked(
         self, memory: LongTermMemoryRecord
@@ -606,6 +752,7 @@ class LongTermMemoryArchiveComponent:
               AND (m.expires_at = '' OR m.expires_at >= DATE('now', 'localtime'))
               {scope_clause}
               {category_clause}
+              {self._active_source_revision_clause()}
             ORDER BY bm25_score ASC, m.weight DESC, m.updated_at DESC, m.id DESC
             LIMIT ?
         """
@@ -650,6 +797,7 @@ class LongTermMemoryArchiveComponent:
               AND ({conditions})
               {scope_clause}
               {category_clause}
+              {self._active_source_revision_clause()}
             ORDER BY m.weight DESC, m.updated_at DESC, m.id DESC
             LIMIT ?
             """,
@@ -708,7 +856,7 @@ class LongTermMemoryArchiveComponent:
             category_clause = ""
             if category_params:
                 category_clause = (
-                    f" AND category IN ({', '.join('?' for _ in category_params)})"
+                    f" AND m.category IN ({', '.join('?' for _ in category_params)})"
                 )
             rows = self.context._conn.execute(
                 f"""
@@ -717,6 +865,7 @@ class LongTermMemoryArchiveComponent:
                   AND (expires_at = '' OR expires_at >= DATE('now', 'localtime'))
                   {scope_clause}
                   {category_clause}
+                  {self._active_source_revision_clause()}
                 ORDER BY weight DESC, updated_at DESC, id DESC
                 LIMIT ?
                 """,

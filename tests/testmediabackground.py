@@ -228,7 +228,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
     async def test_image_invalid_request_never_returns_pending_or_releases_chat(self):
         self.runtime._release_media_chat_turn = Mock()
         self.runtime._historical_life_appearance_snapshot = AsyncMock(return_value="")
-        self.runtime._resolve_last_reverse_image_prompt_async = AsyncMock(return_value=("", ""))
+        self.runtime._part_runtime_image_media_component._resolve_last_reverse_image_prompt_async = AsyncMock(return_value=("", ""))
         for options, expected in (
             ({"subject_route": "current_character", "historical_target": "昨天"}, "历史造型"),
             ({"current_outfit_change": True}, "subject_route"),
@@ -251,7 +251,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.runtime._historical_life_appearance_snapshot = AsyncMock(
             side_effect=["昨天记录的浅灰棉质睡裙", "后来才写入的其他穿搭"]
         )
-        self.runtime._execute_image_generation_plan = AsyncMock(
+        self.runtime._part_runtime_image_media_component._execute_image_generation_plan = AsyncMock(
             return_value=image_module.ImageGenerationExecution(
                 generated=types.SimpleNamespace(path=self.path), directed_prompt="昨天的照片"
             )
@@ -261,7 +261,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         )
         self.assertEqual(json.loads(result)["status"], "pending")
         await self.finish_tasks()
-        plan = self.runtime._execute_image_generation_plan.call_args.args[1]
+        plan = self.runtime._part_runtime_image_media_component._execute_image_generation_plan.call_args.args[1]
         self.assertIn("昨天记录的浅灰棉质睡裙", plan.prompt)
         self.assertNotIn("后来才写入", plan.prompt)
         self.runtime._historical_life_appearance_snapshot.assert_awaited_once()
@@ -593,7 +593,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
                     side_effect=RuntimeError("测试内部异常") if raises else None,
                     return_value=ToolResultText("测试内部失败", status="failed"),
                 )
-                await self.runtime._deliver_background_tool(
+                await self.runtime._part_runtime_media_common_component._deliver_background_tool(
                     first, work, marker, tool_name, task_name
                 )
                 self.assertEqual(marker["status"], "failed")
@@ -609,7 +609,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         result = json.dumps(
             {"status": "needs_parameters", "missing": ["friend_outfit", "friend_hair"]}
         )
-        await self.runtime._background_image_delivery(
+        await self.runtime._part_runtime_image_media_component._background_image_delivery(
             first,
             AsyncMock(return_value=result),
             {"status": "pending", "action": "generate"},
@@ -730,7 +730,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             await self.begin_turn(self.event("43", "继续聊"))
             return SemanticSegmentPlan((SegmentPart("这段我没看清，没法给你总结。"),), valid=True)
 
-        self.runtime._semantic_segment_plan_text = segment
+        self.runtime._part_semantic_segment_runtime_component._semantic_segment_plan_text = segment
         sent = await self.runtime._send_background_failure_reply(
             first.unified_msg_origin,
             first,
@@ -845,7 +845,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         first = self.event()
         later = self.event("43", "随便聊两句")
         wrapped = types.SimpleNamespace(context=types.SimpleNamespace(event=first))
-        self.runtime._register_life_video_request(
+        self.runtime._part_runtime_video_media_component._register_life_video_request(
             first.unified_msg_origin, "窗边视频", wrapped
         )
         self.runtime._photo_suite_register_request(
@@ -1184,8 +1184,8 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             self.runtime.note_continuous_turn_incoming(later)
             return "原请求的收尾文字"
 
-        self.runtime._generate_delivered_media_reply = reply
-        self.runtime._generate_life_video_followup_text = reply
+        self.runtime._part_runtime_media_common_component._generate_delivered_media_reply = reply
+        self.runtime._part_runtime_video_media_component._generate_life_video_followup_text = reply
         result = await self.runtime._send_delivered_media_followup(
             first.unified_msg_origin,
             media_name="生活照片",
@@ -1196,7 +1196,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertFalse(result)
         self.assertEqual(first.sent_messages, [])
         self.assertFalse(
-            await self.runtime._send_life_video_followup(
+            await self.runtime._part_runtime_video_media_component._send_life_video_followup(
                 first.unified_msg_origin, "视频", "已送达", first, "request"
             )
         )
@@ -1268,7 +1268,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             return types.SimpleNamespace(path=self.path)
 
         self.runtime.media.voice = types.SimpleNamespace(synthesize=synthesize)
-        self.runtime._proactive_voice_available = lambda scope: True
+        self.runtime._part_proactive_send_component._proactive_voice_available = lambda scope: True
         self.runtime._apply_proactive_send_timing = lambda payload: async_return(None)
         self.runtime._note_voice_expression_decision = lambda **kwargs: async_return(
             None

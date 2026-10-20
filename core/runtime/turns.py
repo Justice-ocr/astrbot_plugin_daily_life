@@ -60,24 +60,17 @@ class ContinuousTurnComponentContext(Protocol):
     _PREPARED_VISUAL_MEDIA_ATTR: Any
     _VIDEO_REFERENCE_SOURCE_ATTR: Any
     _active_agent_runner: Any
-    _continuous_turn_adaptive_wait: Any
     _continuous_turn_batch: Any
     _continuous_turn_batches: Any
     _continuous_turn_cadence: Any
-    _continuous_turn_eligible: Any
-    _continuous_turn_enabled: Any
     _continuous_turn_event_identity: Any
     _continuous_turn_identity: Any
-    _continuous_turn_image_items: Any
     _continuous_turn_message_id: Any
     _continuous_turn_metrics: Any
     _continuous_turn_restart_for_image: Any
-    _continuous_turn_revision: Any
     _continuous_turn_revisions: Any
     _continuous_turn_stop_event: Any
-    _continuous_turn_style: Any
     _continuous_turn_trim_messages: Any
-    _continuous_turn_wait: Any
     _event_component_kind: Any
     _event_has_command_handler: Any
     _event_has_quote: Any
@@ -138,7 +131,7 @@ class ContinuousTurnComponent:
         return getattr(getattr(self.context, "config", None), "chat_style", None)
 
     def _continuous_turn_enabled(self) -> bool:
-        style = self.context._continuous_turn_style()
+        style = self._continuous_turn_style()
         return bool(
             style
             and getattr(style, "enabled", False)
@@ -146,7 +139,7 @@ class ContinuousTurnComponent:
         )
 
     def _continuous_turn_eligible(self, event: Any) -> bool:
-        if not self.context._continuous_turn_enabled() or event is None:
+        if not self._continuous_turn_enabled() or event is None:
             return False
         is_stopped = getattr(event, "is_stopped", None)
         if callable(is_stopped) and is_stopped():
@@ -172,13 +165,13 @@ class ContinuousTurnComponent:
             ):
                 return False
         text = str(getattr(event, "message_str", "") or "").strip()
-        if not text and not self.context._continuous_turn_image_items(event):
+        if not text and not self._continuous_turn_image_items(event):
             return False
         is_group_checker = getattr(self.context, "_event_is_group_message", None)
         is_group = (
             bool(is_group_checker(event)) if callable(is_group_checker) else False
         )
-        style = self.context._continuous_turn_style()
+        style = self._continuous_turn_style()
         return not is_group or bool(
             getattr(style, "continuous_turn_group_enabled", False)
         )
@@ -374,12 +367,12 @@ class ContinuousTurnComponent:
             setattr(event, self.context._MEDIA_CHAT_TOKEN_ATTR, (scope, participant, token))
             if len(store) > 2048:
                 store.pop(next(iter(store)))
-        if not self.context._continuous_turn_eligible(event):
+        if not self._continuous_turn_eligible(event):
             return False
         scope, participant = self.context._continuous_turn_identity(event)
         if not scope:
             return False
-        style = self.context._continuous_turn_style()
+        style = self._continuous_turn_style()
         now = time.monotonic()
         max_wait = max(
             0.0, float(getattr(style, "continuous_turn_max_wait_seconds", 12.0) or 0.0)
@@ -405,7 +398,7 @@ class ContinuousTurnComponent:
             and previous.phase in {"collecting", "ready", "generating", "waiting"}
             and now - previous.last_at <= self.context._CONTINUOUS_TURN_ACTIVE_SECONDS
         )
-        image_items = self.context._continuous_turn_image_items(event)
+        image_items = self._continuous_turn_image_items(event)
         generating = bool(active and previous.phase == "generating")
         joins_active_generation = generating and not image_items
         restarts_generation = generating and bool(image_items)
@@ -435,7 +428,7 @@ class ContinuousTurnComponent:
             0.0,
             float(getattr(style, "continuous_turn_wait_seconds", 3.5) or 0.0),
         )
-        wait_seconds = self.context._continuous_turn_adaptive_wait(
+        wait_seconds = self._continuous_turn_adaptive_wait(
             previous if active else None,
             now,
             base_wait,
@@ -509,7 +502,7 @@ class ContinuousTurnComponent:
         if identity is None:
             return True
         scope, participant, revision = identity
-        return self.context._continuous_turn_revision(scope, participant) == revision
+        return self._continuous_turn_revision(scope, participant) == revision
 
     def media_request_is_current_turn(self, event: Any) -> bool:
         """判断后台媒体请求是否仍属于当前话轮。
@@ -579,7 +572,7 @@ class ContinuousTurnComponent:
         remaining = max(0.0, batch.deadline - time.monotonic())
         delay = min(wait_seconds, remaining)
         if delay > 0:
-            await self.context._continuous_turn_wait(event, delay)
+            await self._continuous_turn_wait(event, delay)
         for images in batch.images.values():
             await images.ready.wait()
         if not self.context.continuous_turn_event_is_current(event):
@@ -631,7 +624,7 @@ class ContinuousTurnComponent:
         return bool(getattr(event, self.context._CONTINUOUS_TURN_FOLLOW_UP_ATTR, False))
 
     def continuous_turn_semantic_enabled_for_event(self, event: Any) -> bool:
-        style = self.context._continuous_turn_style()
+        style = self._continuous_turn_style()
         return bool(
             self.context._continuous_turn_event_identity(event) is not None
             and self.context.continuous_turn_event_is_current(event)
@@ -646,7 +639,7 @@ class ContinuousTurnComponent:
         if not self.context.continuous_turn_event_is_current(event):
             self.context.stop_stale_continuous_turn_event(event)
             return "superseded"
-        style = self.context._continuous_turn_style()
+        style = self._continuous_turn_style()
         if not bool(style and getattr(style, "continuous_turn_semantic_enabled", True)):
             return "reply"
         try:
@@ -660,7 +653,7 @@ class ContinuousTurnComponent:
         if batch is not None:
             batch.phase = "waiting"
         if remaining > 0:
-            await self.context._continuous_turn_wait(event, remaining)
+            await self._continuous_turn_wait(event, remaining)
         if not self.context.continuous_turn_event_is_current(event):
             self.context.stop_stale_continuous_turn_event(event)
             return "superseded"
@@ -707,7 +700,7 @@ class ContinuousTurnComponent:
             return False
         scope, participant, revision = identity
         batch = self.context._continuous_turn_batch(scope, participant)
-        if batch is None or batch.revision != revision:
+        if batch is None or batch.revision != revision or batch.phase == "completed":
             return False
         batch.phase = "completed"
         batch.messages.clear()

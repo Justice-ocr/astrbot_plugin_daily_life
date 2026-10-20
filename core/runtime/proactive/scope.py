@@ -16,7 +16,6 @@ class ProactiveScopeComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _AIR_MAX_RECENT_MESSAGES: Any
-    _cancel_proactive_idle_task: Any
     _candidate_pending_count: Any
     _evaluate_idle_candidate: Any
     _event_group_meta: Any
@@ -27,12 +26,10 @@ class ProactiveScopeComponentContext(Protocol):
     _event_session_id: Any
     _observe_proactive_reply_effect: Any
     _proactive_allowed_for_event: Any
-    _proactive_candidate_delay_seconds: Any
     _proactive_chat_enabled: Any
     _proactive_feedback_watches: Any
     _proactive_idle_candidates: Any
     _proactive_idle_seconds: Any
-    _proactive_idle_task_store: Any
     _proactive_idle_tasks: Any
     _proactive_is_self_message: Any
     _proactive_last_reply_at: Any
@@ -72,7 +69,7 @@ class ProactiveScopeComponent:
                 continue
             if str(candidate.get("message_id") or "").strip() == message_id:
                 candidates.pop(key, None)
-                self.context._cancel_proactive_idle_task(key)
+                self._cancel_proactive_idle_task(key)
                 continue
             original = list(candidate.get("recent_messages") or [])
             kept = [
@@ -99,13 +96,13 @@ class ProactiveScopeComponent:
         return tasks
 
     def _cancel_proactive_idle_task(self, key: str) -> None:
-        task = self.context._proactive_idle_task_store().pop(str(key or ""), None)
+        task = self._proactive_idle_task_store().pop(str(key or ""), None)
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
 
     async def _cancel_proactive_idle_tasks(self) -> None:
-        tasks = list(self.context._proactive_idle_task_store().values())
-        self.context._proactive_idle_task_store().clear()
+        tasks = list(self._proactive_idle_task_store().values())
+        self._proactive_idle_task_store().clear()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -137,11 +134,11 @@ class ProactiveScopeComponent:
         if not isinstance(candidate, dict) or not self.context._proactive_chat_enabled(
             bool(candidate.get("is_group"))
         ):
-            self.context._cancel_proactive_idle_task(key)
+            self._cancel_proactive_idle_task(key)
             return False
-        self.context._cancel_proactive_idle_task(key)
+        self._cancel_proactive_idle_task(key)
         revision = int(candidate.get("revision") or 0)
-        delay = self.context._proactive_candidate_delay_seconds(candidate, now or life_now())
+        delay = self._proactive_candidate_delay_seconds(candidate, now or life_now())
 
         async def runner() -> None:
             try:
@@ -161,7 +158,7 @@ class ProactiveScopeComponent:
             except asyncio.CancelledError:
                 raise
             finally:
-                tasks = self.context._proactive_idle_task_store()
+                tasks = self._proactive_idle_task_store()
                 owns_slot = tasks.get(key) is asyncio.current_task()
                 if owns_slot:
                     tasks.pop(key, None)
@@ -175,7 +172,7 @@ class ProactiveScopeComponent:
                     self.context._schedule_proactive_idle_evaluation(key)
 
         task = asyncio.create_task(runner(), name=f"daily-life-idle:{key}")
-        self.context._proactive_idle_task_store()[key] = task
+        self._proactive_idle_task_store()[key] = task
         self.context._record_virtual_life_metric("idle_scheduled")
         return True
 
@@ -218,7 +215,7 @@ class ProactiveScopeComponent:
                     candidate=candidate,
                 )
             candidates.pop(key, None)
-            self.context._cancel_proactive_idle_task(key)
+            self._cancel_proactive_idle_task(key)
             removed += 1
         return removed
 

@@ -17,13 +17,10 @@ from typing import Protocol
 class StageFigureComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _character_appearance_cache: Any
     _character_appearance_context: Any
     _character_appearance_fingerprint: Any
     _character_appearance_prompt: Any
-    _character_appearance_tasks: Any
     _event_session_id: Any
-    _extract_character_appearance_profile: Any
     _life_character_appearance_cache: Any
     _life_character_appearance_tasks: Any
     _media_director_call: Any
@@ -84,7 +81,7 @@ JSON 字段：
         if not persona:
             return ""
         profile = " ".join(str(appearance_profile or "").strip().split())[:600]
-        cache = self.context._character_appearance_cache()
+        cache = self._character_appearance_cache()
         cache[self.context._character_appearance_fingerprint(persona)] = profile
         while len(cache) > 16:
             cache.pop(next(iter(cache)))
@@ -113,16 +110,16 @@ JSON 字段：
             return "", ""
 
         fingerprint = self.context._character_appearance_fingerprint(persona)
-        cache = self.context._character_appearance_cache()
+        cache = self._character_appearance_cache()
         if fingerprint in cache:
             return persona, cache[fingerprint]
         if not schedule_extract:
             return persona, ""
 
-        tasks = self.context._character_appearance_tasks()
+        tasks = self._character_appearance_tasks()
         task = tasks.get(fingerprint)
         if task is None:
-            task = asyncio.create_task(self.context._extract_character_appearance_profile(persona))
+            task = asyncio.create_task(self._extract_character_appearance_profile(persona))
             tasks[fingerprint] = task
 
             def store_result(completed: asyncio.Task[str]) -> None:
@@ -167,8 +164,8 @@ JSON 字段：
         return profile
 
     async def _close_character_appearance_tasks(self) -> None:
-        tasks = list(self.context._character_appearance_tasks().values())
-        self.context._character_appearance_tasks().clear()
+        tasks = list(self._character_appearance_tasks().values())
+        self._character_appearance_tasks().clear()
         for task in tasks:
             if not task.done():
                 task.cancel()

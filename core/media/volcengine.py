@@ -56,6 +56,12 @@ _VOICE_STYLE_PROFILES: dict[str, dict[str, Any]] = {
         "pitch": 1,
         "instruction": "轻松自然",
     },
+    "soft": {
+        "speech_rate": -6,
+        "loudness_rate": -8,
+        "pitch": 0,
+        "instruction": "轻柔低声",
+    },
     "sad": {
         "speech_rate": -10,
         "loudness_rate": -6,

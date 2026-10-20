@@ -131,7 +131,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             await self.runtime.archive.complete_chat_memory_batch(batch["id"])
             return True
 
-        self.runtime._process_chat_memory_batch = process
+        self.runtime._part_chat_memory_batch_component._process_chat_memory_batch = process
 
     async def asyncTearDown(self):
         await self.runtime._shutdown_chat_memory_batcher()
@@ -384,7 +384,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 },
             ]
         }
-        saved = await self.runtime._save_batch_memory_targets(
+        saved = await self.runtime._part_chat_memory_batch_component._save_batch_memory_targets(
             payload, batch, {"sender_profile_id": "u2", "sender_name": "Bob"}
         )
         self.assertEqual([item["profile_id"] for item in saved], ["u1", "u2"])
@@ -428,7 +428,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
-        saved = await self.runtime._save_batch_memory_targets(payload, batch, {})
+        saved = await self.runtime._part_chat_memory_batch_component._save_batch_memory_targets(payload, batch, {})
 
         self.assertEqual([item["profile_id"] for item in saved], ["u1"])
         self.assertEqual(len(calls), 1)
@@ -447,7 +447,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 "user_id": "user-1",
             }
         )
-        await self.runtime._save_chat_memory_batch_payload(
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "visibility": {"level": "focused", "attention_level": 82, "reason": "用户提出安排"},
@@ -472,7 +472,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 "sender_name": "我",
             }
         )
-        await self.runtime._save_chat_memory_batch_payload(
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "visibility": {"level": "focused", "attention_level": 82, "reason": "正在发送主动消息"},
@@ -504,7 +504,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        saved = await self.runtime._save_chat_memory_batch_payload(
+        saved = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": True,
                 "brief": "晚上约好一起看电影",
@@ -527,7 +527,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         )
         message["id"] = 1
         message["is_directed"] = True
-        prompt = self.runtime._build_chat_memory_batch_prompt(
+        prompt = self.runtime._part_chat_memory_batch_component._build_chat_memory_batch_prompt(
             {"session_id": "group:1", "messages": [message]}
         )
         schema_text = prompt.split("输出结构：", 1)[1].split("\n输入批次：", 1)[0]
@@ -588,7 +588,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
-        normalized = self.runtime._normalize_chat_memory_batch_payload(payload, batch)
+        normalized = self.runtime._part_chat_memory_batch_component._normalize_chat_memory_batch_payload(payload, batch)
 
         self.assertEqual(normalized["life_terms"][0]["evidence"], "来自 2 条聊天消息")
         self.assertEqual(
@@ -609,7 +609,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         message["id"] = 1
         await self.runtime.archive.save_day(DayRecord(date="2026-07-10"))
 
-        saved = await self.runtime._save_chat_memory_batch_payload(
+        saved = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "brief": "No stable long-term facts found.",
@@ -655,7 +655,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             text="周六一起去看展",
         )
         message["id"] = 1
-        saved = await self.runtime._save_chat_memory_batch_payload(
+        saved = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "brief": "No long-term summary.",
@@ -688,7 +688,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             session_id="private:1", message_id="video-now", text="拍个晚安视频"
         )
         message["id"] = 1
-        await self.runtime._save_batch_commitments(
+        await self.runtime._part_chat_memory_batch_component._save_batch_commitments(
             {
                 "commitments": [
                     {
@@ -711,7 +711,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             session_id="private:1", message_id="video-tomorrow", text="明晚九点拍个视频"
         )
         message["id"] = 1
-        await self.runtime._save_batch_commitments(
+        await self.runtime._part_chat_memory_batch_component._save_batch_commitments(
             {
                 "commitments": [
                     {
@@ -744,7 +744,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             return checks == 2
 
         self.runtime.direct_media_was_delivered = delivery_check
-        await self.runtime._save_batch_commitments(
+        await self.runtime._part_chat_memory_batch_component._save_batch_commitments(
             {
                 "commitments": [
                     {
@@ -779,7 +779,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             source_message_id="video-sent",
         )
         self.assertTrue(await self.runtime.finalize_durable_media_delivery(task, outcome="sent"))
-        await self.runtime._save_batch_commitments(
+        await self.runtime._part_chat_memory_batch_component._save_batch_commitments(
             {
                 "commitments": [
                     {
@@ -817,7 +817,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.runtime.archive.link_commitments_to_day("2026-07-10", [accepted.id])
 
-        await self.runtime._save_chat_memory_batch_payload(
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "commitments": [
@@ -852,7 +852,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             is_group=True,
         )
         message["id"] = 1
-        saved = await self.runtime._save_chat_memory_batch_payload(
+        saved = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "visibility": {
@@ -904,7 +904,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             is_group=True,
         )
         message["id"] = 1
-        saved = await self.runtime._save_chat_memory_batch_payload(
+        saved = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": True,
                 "brief": "群聊反馈和称呼梗",
@@ -959,7 +959,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         message["sender_name"] = "测试对象"
         message["id"] = 1
 
-        await self.runtime._save_chat_memory_batch_payload(
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "brief": "测试对象提到周末安排",
@@ -972,7 +972,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["sender_profile_id"], "synthetic-profile")
 
     def test_memory_calibration_prompt_audits_ordered_interaction_evidence(self):
-        prompt = self.runtime._build_memory_payload_calibration_prompt(
+        prompt = self.runtime._part_packet_component._build_memory_payload_calibration_prompt(
             {
                 "worth_saving": False,
                 "temporal_facts": [
@@ -1027,7 +1027,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         message["sender_name"] = "测试对象"
         message["id"] = 1
 
-        await self.runtime._save_chat_memory_batch_payload(
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
                 "worth_saving": False,
                 "temporal_facts": [

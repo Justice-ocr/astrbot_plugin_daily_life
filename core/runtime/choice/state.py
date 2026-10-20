@@ -21,7 +21,6 @@ class ResponseGateStateComponentContext(Protocol):
     _response_gate_backoff_until: Any
     _response_gate_clear_wait: Any
     _response_gate_continuation: Any
-    _response_gate_continuation_store: Any
     _response_gate_first_seen_at: Any
     _response_gate_last_reply_at: Any
     _response_gate_last_seen_at: Any
@@ -143,7 +142,7 @@ class ResponseGateStateComponent:
         except (TypeError, ValueError):
             window_seconds = self.context._RESPONSE_GATE_CONTINUATION_SECONDS
         window_seconds = max(60, min(window_seconds, 15 * 60))
-        store = self.context._response_gate_continuation_store()
+        store = self._response_gate_continuation_store()
         current = store.get(key)
         if isinstance(current, dict):
             until = current.get("until")
@@ -173,17 +172,17 @@ class ResponseGateStateComponent:
     def _response_gate_continuation_reason(
         self, key: str, now: datetime.datetime
     ) -> str:
-        item = self.context._response_gate_continuation_store().get(key)
+        item = self._response_gate_continuation_store().get(key)
         if not isinstance(item, dict):
             return ""
         until = item.get("until")
         turns = int(item.get("turns") or 0)
         if not isinstance(until, datetime.datetime) or now >= until or turns <= 0:
-            self.context._response_gate_continuation_store().pop(key, None)
+            self._response_gate_continuation_store().pop(key, None)
             return ""
         item["turns"] = turns - 1
         if item["turns"] <= 0:
-            self.context._response_gate_continuation_store().pop(key, None)
+            self._response_gate_continuation_store().pop(key, None)
         reason = str(item.get("reason") or "").strip()
         return reason or "闲时回复刚被用户接住，先顺势继续聊一会儿"
 

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from ..models import DayRecord
+from ..clock import local_datetime
 
 
 def score(value: Any, default: float = 50.0) -> float:
@@ -18,10 +19,7 @@ def score(value: Any, default: float = 50.0) -> float:
 
 
 def instant(value: Any) -> datetime.datetime | None:
-    try:
-        return datetime.datetime.fromisoformat(str(value)).replace(tzinfo=None)
-    except (ValueError, TypeError):
-        return None
+    return local_datetime(value)
 
 
 def nonnegative(value: Any, default: float = 0.0) -> float:
@@ -105,32 +103,38 @@ class ContinuousBody:
             "travel",
         }
         energy_rate = (
-            0.12
-            if sleeping
-            else 0.04
-            if resting
-            else -0.035 * effort
+            0.0
+            if sleeping or resting
+            else -0.065 * effort
             if demanding
             else -0.015
         )
         fatigue_rate = (
-            -0.12
-            if sleeping
-            else -0.06
-            if resting
-            else 0.035 * effort
+            0.0
+            if sleeping or resting
+            else 0.055 * effort
             if demanding
-            else -0.005
+            else 0.006
         )
         social_rate = (
             -0.08
             if activity in {"chat", "social"}
-            else 0.045
-            if resting or sleeping
-            else 0.015
+            else 0.0
         )
         # 数值仅模拟角色的活动余力；持续不适增加活动负担、放慢恢复。
         burden = self.discomfort / 100
+        # 恢复逐渐趋缓，避免睡眠和空闲无限累加成满分；解析积分与轮询频率无关。
+        if sleeping or resting:
+            recovery = (1 - burden * 0.45) * minutes
+            ceiling, floor, tau = (92.0, 4.0, 180.0) if sleeping else (82.0, 12.0, 240.0)
+            if self.energy < ceiling:
+                self.energy = ceiling - (ceiling - self.energy) * math.exp(-recovery / tau)
+            if self.fatigue > floor:
+                self.fatigue = floor + (self.fatigue - floor) * math.exp(-recovery / tau)
+        if activity not in {"chat", "social"}:
+            ceiling = 90.0 if sleeping else 85.0 if resting else 75.0
+            if self.social_battery < ceiling:
+                self.social_battery = ceiling - (ceiling - self.social_battery) * math.exp(-minutes / 240)
         energy_rate *= 1 + burden if energy_rate < 0 else 1 - burden * 0.45
         fatigue_rate *= 1 + burden if fatigue_rate > 0 else 1 - burden * 0.45
         if activity in {"chat", "social"}:

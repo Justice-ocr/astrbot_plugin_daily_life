@@ -20,7 +20,6 @@ class StageVoiceComponentContext(Protocol):
     _media_director_current_day: Any
     _media_director_emotion_context_text: Any
     _media_director_recent_context_text: Any
-    _media_video_prompt_from_payload: Any
 
 
 class StageVoiceComponent:
@@ -80,7 +79,7 @@ JSON 字段：
             payload = await self.context._media_director_call(
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="视频生成请求")
             )
-            prompt = self.context._media_video_prompt_from_payload(payload)
+            prompt = self._media_video_prompt_from_payload(payload)
             logger.debug(f"{LOG_PREFIX} 视频智能提取：{prompt[:180]}")
             return prompt
         except Exception as exc:

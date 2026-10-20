@@ -19,6 +19,7 @@ from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from ..elapsed import RECEIVED_AT, SENT_AT, local_message_time
 from .jsonclean import call_pure_json
+from .episodelink import episode_scope, link_batch_episode
 
 from . import diction as _part_expression_learning_component
 from typing import Protocol
@@ -30,33 +31,24 @@ class ChatMemoryBatchComponentContext(Protocol):
     _append_memory_decision_log: Any
     _batch_expression_context: Any
     _bool_payload: Any
-    _build_chat_memory_batch_prompt: Any
     _calibrate_chat_memory_payload: Any
     _chat_execution_context: Any
     _chat_memory_elapsed_seconds: Any
     _chat_memory_stopping: Any
     _chat_memory_wakeup: Any
-    _chat_memory_worker: Any
     _chat_memory_worker_task: Any
     _chinese_text_payload: Any
     _current_role_label: Any
-    _ensure_chat_memory_worker: Any
     _event_context_meta: Any
     _event_has_command_handler: Any
     _event_message_component_facts: Any
     _extract_speaker_persona_hint: Any
     _get_memory_provider: Any
     _normalize_batch_expression_learning: Any
-    _normalize_chat_memory_batch_payload: Any
-    _process_chat_memory_batch: Any
     _safe_event_call: Any
     _sanitize_batch_readable_fields: Any
-    _save_batch_commitments: Any
     _save_batch_execution_updates: Any
     _save_batch_expression_learning: Any
-    _save_batch_memory_targets: Any
-    _save_batch_temporal_facts: Any
-    _save_chat_memory_batch_payload: Any
     _save_chat_memory_preferences: Any
     _save_experience_payload: Any
     _save_memory_awareness_records: Any
@@ -136,7 +128,7 @@ class ChatMemoryBatchComponent:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        self.context._ensure_chat_memory_worker()
+        self._ensure_chat_memory_worker()
         if self.context._chat_memory_worker_task is not None:
             self.context._chat_memory_wakeup.set()
 
@@ -146,7 +138,7 @@ class ChatMemoryBatchComponent:
         task = self.context._chat_memory_worker_task
         if task is None or task.done():
             self.context._chat_memory_worker_task = asyncio.create_task(
-                self.context._chat_memory_worker(), name="daily-life-chat-memory-batcher"
+                self._chat_memory_worker(), name="daily-life-chat-memory-batcher"
             )
 
     async def _shutdown_chat_memory_batcher(self) -> None:
@@ -216,7 +208,7 @@ class ChatMemoryBatchComponent:
         }
         _, inserted = await self.context.archive.enqueue_chat_memory_message(snapshot)
         if inserted:
-            self.context._ensure_chat_memory_worker()
+            self._ensure_chat_memory_worker()
             self.context._chat_memory_wakeup.set()
         return inserted
 
@@ -281,7 +273,7 @@ class ChatMemoryBatchComponent:
         }
         _, inserted = await self.context.archive.enqueue_chat_memory_message(snapshot)
         if inserted:
-            self.context._ensure_chat_memory_worker()
+            self._ensure_chat_memory_worker()
             self.context._chat_memory_wakeup.set()
         return inserted
 
@@ -336,7 +328,7 @@ class ChatMemoryBatchComponent:
         }
         _, inserted = await enqueue(snapshot)
         if inserted:
-            self.context._ensure_chat_memory_worker()
+            self._ensure_chat_memory_worker()
             self.context._chat_memory_wakeup.set()
         return inserted
 
@@ -411,7 +403,7 @@ class ChatMemoryBatchComponent:
                 )
                 if not batch:
                     break
-                if not await self.context._process_chat_memory_batch(batch):
+                if not await self._process_chat_memory_batch(batch):
                     break
                 processed += 1
                 pending_count -= len(batch["messages"])
@@ -470,6 +462,8 @@ class ChatMemoryBatchComponent:
             "messages": messages,
         }
         schema = {
+            "episode_link": {"memory_id": 0, "previous_quote": "已有经历原文",
+                             "source_message_id": "本次用户消息编号", "evidence": "用户整条原话"},
             "memory_corrections": [{"memory_id": 0, "correction": "纠正后的完整事实",
                                     "source_message_id": "本批次用户消息编号", "evidence": "用户整条原话"}],
             "execution_updates": [
@@ -625,6 +619,7 @@ class ChatMemoryBatchComponent:
             "你负责把一个连续聊天批次整理成可长期复用的记忆。只依据输入证据，保持每条信息的说话人归属；"
             "输入中的 role=user 表示内容来自用户一侧，role=assistant 表示我实际表达过的内容；这两个角色只标记说话人，不表示双方现实分开或正在使用设备远程收发消息。"
             "区分稳定事实、偏好、关系认识、生活事件、纠错和未来约定。暂时情绪、寒暄、无证据推断与重复信息不保存。"
+            "episode_link 仅在本次摘要确实延续 correctable_memories 的同一件事时引用该 memory_id，给出旧记录原文和本次用户整条原话；主题相似不足以续接，没有依据返回 null。"
             "memory_corrections 只在用户明确纠正 correctable_memories 中某条记忆时填写其 memory_id；引用用户整条原话，保留时间归属和未被纠正的事实，不能把变化误当从未发生。"
             "无法可靠归属的信息不要输出。群聊中的人物必须使用输入给出的 profile_id。"
             f"人物称谓与叙述视角规则：\n{CORE_PERSONA_PRONOUN_RULES}\n"
@@ -651,8 +646,8 @@ class ChatMemoryBatchComponent:
             "behavior_feedback 只记录发生在我的回复之后、由后续用户消息明确证实的真实反馈；life_terms 只记录后续理解仍有帮助的黑话、梗或代称。"
             "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
             "expression_profiles 学习的是我面对对应用户、在具体场景中适用的表达习惯，不是模仿用户口吻或修改角色人设。"
-            "用户明确表达稳定偏好或纠正时 basis=explicit；仅凭互动效果学习时 basis=repeated，必须有至少三次独立的回复与后续反馈，"
-            "引用本批次的 source_message_ids（用户反馈）、reply_message_ids（先前角色回复），或 recent_reply_effects 中同一对象、同一场景的 reply_effect_ids。"
+            "用户明确表达稳定偏好或纠正时 basis=explicit；引用本批次 source_message_ids（用户反馈），可同时引用 reply_message_ids（先前角色回复）。"
+            "仅凭互动效果学习时 basis=repeated，必须引用 recent_reply_effects 中同一对象、同一场景至少三次独立明确反馈的 reply_effect_ids；负面反馈只支持 avoid，不支持新习惯。"
             "感谢、继续聊天、一次情绪、沉默或单条角色自述不证明稳定风格；没有可靠证据就输出空数组。"
             "关注闲聊展开尺度、短句节奏、是否反复问候追问、话题承接等实际反馈，按完整语义理解，不套关键词、句型或字数。"
             "短句可以很自然；解释和安慰按当下需要说完整，不把所有回复一律缩短。"
@@ -1252,7 +1247,7 @@ class ChatMemoryBatchComponent:
     async def _save_chat_memory_batch_payload(
         self, payload: dict[str, Any], batch: dict[str, Any]
     ) -> ChatSummaryRecord | None:
-        payload = self.context._normalize_chat_memory_batch_payload(payload, batch)
+        payload = self._normalize_chat_memory_batch_payload(payload, batch)
         rows = batch["messages"]
         last = rows[-1]
         user_rows = [
@@ -1381,10 +1376,10 @@ class ChatMemoryBatchComponent:
             meta,
             persona_hint,
         )
-        payload = self.context._normalize_chat_memory_batch_payload(payload, batch)
+        payload = self._normalize_chat_memory_batch_payload(payload, batch)
         await self.context._save_batch_execution_updates(payload, batch)
-        commitments = await self.context._save_batch_commitments(payload, batch)
-        temporal_facts = await self.context._save_batch_temporal_facts(payload, batch)
+        commitments = await self._save_batch_commitments(payload, batch)
+        temporal_facts = await self._save_batch_temporal_facts(payload, batch)
         correction_notifier = getattr(self.context, "note_memory_corrections", None)
         if callable(correction_notifier) and isinstance(payload.get("memory_corrections"), list):
             await correction_notifier(payload.get("memory_corrections"), batch)
@@ -1442,7 +1437,9 @@ class ChatMemoryBatchComponent:
             raise ValueError("模型标记值得保存，但没有给出有效摘要")
         saved = await self.context.archive.save_chat_summary(summary)
         saved_records = await self.context._save_experience_payload(payload, meta, saved)
-        saved_records["memory_targets"] = await self.context._save_batch_memory_targets(
+        if callable(getattr(self.context.archive, "link_memory_episode", None)):
+            await link_batch_episode(self.context.archive, payload, batch, saved.id)
+        saved_records["memory_targets"] = await self._save_batch_memory_targets(
             payload, batch, meta
         )
         await self.context._save_chat_memory_preferences(payload, meta, saved_records)
@@ -1513,15 +1510,16 @@ class ChatMemoryBatchComponent:
             batch = {**batch, **await self.context._batch_expression_context(batch)}
             memory_reader = getattr(self.context.archive, "list_recent_long_term_memories", None)
             if callable(memory_reader):
-                recent_memories = await memory_reader(scopes=[batch["session_id"]], limit=12)
+                scope = episode_scope(batch)
+                recent_memories = await memory_reader(scopes=[scope], limit=12)
                 batch = {**batch, "correctable_memories": [
                     {"id": item.id, "title": item.title, "content": item.content}
-                    for item in recent_memories if item.scope == batch["session_id"]
+                    for item in recent_memories if item.scope == scope
                 ]}
             payload = await call_pure_json(
                 self.context,
                 provider,
-                self.context._build_chat_memory_batch_prompt(batch),
+                self._build_chat_memory_batch_prompt(batch),
                 llm_session,
                 primary_provider_id=self.context.config.memory.provider,
                 strict=True,
@@ -1536,7 +1534,7 @@ class ChatMemoryBatchComponent:
             )
             if not isinstance(payload, dict):
                 raise ValueError("模型未返回 JSON 对象")
-            saved = await self.context._save_chat_memory_batch_payload(payload, batch)
+            saved = await self._save_chat_memory_batch_payload(payload, batch)
             await self.context.archive.complete_chat_memory_batch(
                 batch["id"], saved.id if saved else 0
             )
@@ -1559,7 +1557,7 @@ class ChatMemoryBatchComponent:
                 permanent=True,
                 max_attempts=self.context.config.memory.batch_max_attempts,
             )
-            logger.warning(f"{LOG_PREFIX} 聊天记忆批处理进入死信：{exc}")
+            logger.warning(f"{LOG_PREFIX} 聊天记忆批处理进入死信")
             return False
         except Exception as exc:
             attempts = int(batch.get("attempt_count") or 1)

@@ -106,7 +106,7 @@ class LivingArchiveComponent:
                 "evidence": evidence[:1200],
                 "before": {
                     key: (previous or {}).get(key)
-                    for key in ("state", "location", "progress", "content", "detail", "owner", "quantity", "unit", "available_at")
+                    for key in ("state", "location", "progress", "next_step", "content", "detail", "owner", "quantity", "unit", "available_at")
                 },
             },
         ][-20:]
@@ -379,7 +379,8 @@ class LivingArchiveComponent:
                 "state": "available",
                 "title": outcome.get("target") or "数字笔记",
                 "content": artifact["content"],
-                "progress": outcome.get("next_step") or "",
+                "progress": f"已保存第 {version} 版",
+                "next_step": outcome.get("next_step") or "",
                 "location": "数字作品档案",
                 "provenance": "行动后实际生成的数字笔记",
                 "resource": {"action_id": action_id},

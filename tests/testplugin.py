@@ -5,7 +5,7 @@ import types
 import unittest
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from support import DailyLifeRuntime, Event  # noqa: F401
 
@@ -59,6 +59,67 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_preparation_releases_hook_and_checks_current_turn_before_send(self):
+        from core.runtime.background import BackgroundTaskScheduler
+
+        for stale_source in (None, "continuous", "media"):
+            with self.subTest(stale_source=stale_source):
+                release, entered = asyncio.Event(), asyncio.Event()
+                state = {"continuous": True, "media": True}
+                scheduler = BackgroundTaskScheduler(reply_limit=1)
+
+                async def plan(event):
+                    entered.set()
+                    await release.wait()
+
+                plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+                plugin.runtime = types.SimpleNamespace(
+                    _schedule_background_task=scheduler.schedule,
+                    apply_semantic_segment_before_send=plan,
+                    event_was_recalled=lambda event: False,
+                    continuous_turn_event_is_current=lambda event: state["continuous"],
+                    media_request_is_current_turn=lambda event: state["media"],
+                    complete_continuous_turn=lambda event: None,
+                )
+                plugin._record_reply_delivery = AsyncMock()
+                event = set_llm_result(Event())
+                await asyncio.wait_for(plugin.on_decorating_result(event), 0.2)
+                self.assertIsNone(event.get_result())
+                await asyncio.wait_for(entered.wait(), 0.2)
+                self.assertFalse(event.sent_messages)
+                if stale_source is not None:
+                    state[stale_source] = False
+                release.set()
+                await asyncio.gather(*scheduler.tasks)
+                self.assertEqual(len(event.sent_messages), int(stale_source is None))
+                self.assertEqual(plugin._record_reply_delivery.await_count, int(stale_source is None))
+
+    async def test_reply_queue_overflow_does_not_wait_in_framework_hook(self):
+        def full(coro, **kwargs):
+            coro.close()
+            return False
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            _schedule_background_task=full,
+            complete_continuous_turn=lambda event: None,
+        )
+        plugin._send_pipeline_apply = AsyncMock()
+        event = set_llm_result(Event())
+        await plugin.on_decorating_result(event)
+        self.assertEqual(event.get_result().chain[0].text, "正常回复")
+        plugin._send_pipeline_apply.assert_not_awaited()
+
+    async def test_webchat_keeps_delivery_inside_its_request_lifetime(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace()
+        plugin._send_pipeline_apply = AsyncMock()
+        event = set_llm_result(Event())
+        event.get_platform_name = lambda: "webchat"
+        await plugin.on_decorating_result(event)
+        plugin._send_pipeline_apply.assert_awaited_once_with(event)
+        self.assertEqual(event.get_result().chain[0].text, "正常回复")
+
     async def test_invalid_media_arguments_do_not_mark_video_or_start_reactions(self):
         calls = []
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
@@ -1371,7 +1432,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(event.sent_messages, [])
-        state = runtime._tool_reply_round_store()[event.unified_msg_origin]
+        state = runtime._part_silent_tool_preface_component._tool_reply_round_store()[event.unified_msg_origin]
         self.assertTrue(state["preface_suppressed"])
         self.assertTrue(state["preface_duplicate_owned_by_tool"])
 
@@ -1529,7 +1590,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.suppress_final_silent_tool_result(text_event))
         self.assertIsNotNone(text_event.get_result())
         self.assertEqual(text_event.get_result().chain, ["下一轮普通文字回复。\n"])
-        self.assertEqual(runtime._tool_reply_round_store(), {})
+        self.assertEqual(runtime._part_silent_tool_preface_component._tool_reply_round_store(), {})
 
     async def test_runtime_keeps_final_text_after_emoji_tool_is_used(self):
         class Runtime(VoiceSwitchComponent):
@@ -1553,7 +1614,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             event.get_result().chain,
             ["小鞭子也没用，我要睡了。"],
         )
-        self.assertEqual(runtime._tool_reply_round_store(), {})
+        self.assertEqual(runtime._part_silent_tool_preface_component._tool_reply_round_store(), {})
 
     async def test_runtime_keeps_final_text_when_voice_tool_falls_back(self):
         class Runtime(VoiceSwitchComponent):
@@ -1573,7 +1634,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(suppressed)
         self.assertIsNotNone(event.get_result())
-        self.assertEqual(runtime._tool_reply_round_store(), {})
+        self.assertEqual(runtime._part_silent_tool_preface_component._tool_reply_round_store(), {})
 
     async def test_runtime_does_not_suppress_voice_word_without_tool_state(self):
         class Runtime(VoiceSwitchComponent):
@@ -1655,7 +1716,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     (event.unified_msg_origin, text, event, "tool_preface"),
                 )
                 self.assertEqual(runtime.expression_calls[-1][4].value, "expressive")
-                state = runtime._tool_reply_round_store()[event.unified_msg_origin]
+                state = runtime._part_silent_tool_preface_component._tool_reply_round_store()[event.unified_msg_origin]
                 self.assertTrue(state["preface_sent"])
                 self.assertEqual(state["preface_channel"], "聊天表达")
 
@@ -1709,7 +1770,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         runtime = Runtime()
         event = Event(message_id="buffered-preface")
-        runtime._remember_tool_preface(event, event.chain_result(["我先看看路线。 "]))
+        runtime._part_silent_tool_preface_component._remember_tool_preface(event, event.chain_result(["我先看看路线。 "]))
         tool = types.SimpleNamespace(name="life_route_plan")
         await runtime.handle_llm_tool_start(event, tool, {"preface": "我看看怎么走。"})
         self.assertEqual(event.sent_messages, ["我先看看路线。"])
@@ -1757,7 +1818,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.expression_calls, [])
         self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(event.sent_messages[0].chain, original_chain)
-        state = runtime._tool_reply_round_store()[event.unified_msg_origin]
+        state = runtime._part_silent_tool_preface_component._tool_reply_round_store()[event.unified_msg_origin]
         self.assertTrue(state["preface_sent"])
         self.assertEqual(state["preface_channel"], "原始消息链")
 
@@ -2715,6 +2776,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("想让对方看看这个瞬间", image_doc)
         self.assertIn("用户没有先索要也可以主动调用", image_doc)
         self.assertIn("不要先询问用户是否想看", image_doc)
+        self.assertIn("用户明确要图片时默认调用本工具", image_doc)
+        self.assertIn("不因轻微不便反复拒绝", image_doc)
         self.assertIn("prompt(string)", suite_doc)
         self.assertIn("count(int)", suite_doc)
         self.assertIn("retry_indexes(list[int])", suite_doc)
@@ -2723,6 +2786,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不要为了生成套图而自行连续调用多次单图工具", suite_doc)
         self.assertIn("不能提前声称图片已经完成", image_doc)
         self.assertIn("只适合用户明确要视频", video_doc)
+        self.assertIn("用户明确要视频时默认调用本工具", video_doc)
+        self.assertIn("不因轻微不便反复拒绝", video_doc)
         self.assertNotIn("用户没有先索要也可以", video_doc)
         self.assertIn("subject_route(string)", image_doc)
         self.assertIn("current_character", image_doc)

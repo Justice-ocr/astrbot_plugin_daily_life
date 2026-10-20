@@ -16,9 +16,7 @@ class HistoryWriteComponentContext(Protocol):
 
     _OBSERVED_USER_HISTORY_MARKER: Any
     _append_assistant_history: Any
-    _append_platform_assistant_history: Any
     _conversation_history_list: Any
-    _conversation_id_for_scope: Any
     _event_session_id: Any
     _event_user_history_media_label: Any
     _history_content_has_media: Any
@@ -28,8 +26,6 @@ class HistoryWriteComponentContext(Protocol):
     _history_primary_text: Any
     _history_user_item_matches: Any
     _platform_media_part_from_history_payload: Any
-    _recent_matching_user_index: Any
-    _recent_plain_user_index_for_media: Any
     _safe_event_call: Any
     _user_history_item_from_event: Any
     capture_proactive_chat_memory_reply: Any
@@ -74,7 +70,7 @@ class HistoryWriteComponent:
         if not manager:
             return False
         try:
-            cid = await self.context._conversation_id_for_scope(scope)
+            cid = await self._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
@@ -96,7 +92,7 @@ class HistoryWriteComponent:
         if not manager:
             return False
         try:
-            cid = await self.context._conversation_id_for_scope(scope)
+            cid = await self._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
@@ -206,7 +202,7 @@ class HistoryWriteComponent:
         if not manager:
             return False
         try:
-            cid = await self.context._conversation_id_for_scope(scope)
+            cid = await self._conversation_id_for_scope(scope)
             if not cid:
                 return False
             conversation = await manager.get_conversation(scope, cid)
@@ -226,8 +222,8 @@ class HistoryWriteComponent:
                 user_item = await self.context._user_history_item_from_event(
                     scope, event, user_text, media_label=media_label
                 )
-                if self.context._recent_matching_user_index(history, user_item) < 0:
-                    enrich_index = self.context._recent_plain_user_index_for_media(
+                if self._recent_matching_user_index(history, user_item) < 0:
+                    enrich_index = self._recent_plain_user_index_for_media(
                         history, user_item
                     )
                     if enrich_index >= 0:
@@ -291,7 +287,7 @@ class HistoryWriteComponent:
         media: str = "",
     ) -> None:
         await self.context._append_assistant_history(scope, text)
-        await self.context._append_platform_assistant_history(
+        await self._append_platform_assistant_history(
             scope, text, sender_name=sender_name
         )
         capture = getattr(self.context, "capture_proactive_chat_memory_reply", None)

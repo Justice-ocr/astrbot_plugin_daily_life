@@ -141,7 +141,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
 
         engine = InviteComponent()
         engine.domains = SimpleNamespace(audit_daily_locations=audit)
-        changed, _, reason = await engine._audit_future_timeline(
+        changed, _, reason = await engine._part_invite_component._audit_future_timeline(
             past_timeline=[],
             mutable_timeline=[TimelineItem(time="21:00", activity="躺下休息", activity_kind="rest")],
             protected_timeline=[],
@@ -296,7 +296,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         item, runtime, batch, payload = await self._execution()
         batch["messages"][0]["message_id"] = ""
         payload["execution_updates"][0]["source_message_id"] = "1"
-        prompt = ChatMemoryBatchComponent()._build_chat_memory_batch_prompt(batch)
+        prompt = ChatMemoryBatchComponent()._part_chat_memory_batch_component._build_chat_memory_batch_prompt(batch)
         source = json.loads(prompt.split("输入批次：", 1)[1])
         self.assertEqual(source["messages"][0]["message_id"], "1")
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 1)
@@ -426,10 +426,10 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         runtime._direct_image_tool_already_sent = lambda event: False
         runtime._event_current_image_request_text = lambda event: "前天的穿搭再现一下"
         runtime._historical_life_appearance_snapshot = AsyncMock(return_value="")
-        runtime._prepare_image_generation_plan = AsyncMock(
+        runtime._part_runtime_image_media_component._prepare_image_generation_plan = AsyncMock(
             side_effect=AssertionError("must not generate")
         )
-        result = await runtime._life_image_generate_inline(
+        result = await runtime._part_runtime_image_media_component._life_image_generate_inline(
             SimpleNamespace(), "昨天衣服", subject_route="current_character",
             historical_target="2026-09-23",
         )

@@ -190,9 +190,9 @@ def deduplicate_timeline_items(
 ) -> list[TimelineItem]:
     """移除地图顺延等流程产生的相邻时间轴副本。
 
-    只有活动、状态和结构化地点完全一致，且两个相邻节点相差不超过
+    仅对尚未实际执行的计划去重。活动、状态和结构化地点完全一致，且相邻节点相差不超过
     ``maximum_gap_minutes`` 时才视为副本。保留时间较晚的节点，因为它通常
-    包含地图审计后的时间、路线和最新执行状态。
+    包含地图审计后的时间和路线；已执行或取消的记录各自保留。
     """
 
     result: list[TimelineItem] = []
@@ -201,9 +201,10 @@ def deduplicate_timeline_items(
     for value in values:
         item = TimelineItem.from_value(value)
         copied = TimelineItem.from_value(item.as_dict())
-        if result and _timeline_duplicate_key(result[-1]) == _timeline_duplicate_key(
-            copied
-        ):
+        if (result
+                and result[-1].execution_state in {"planned", "elapsed"}
+                and copied.execution_state in {"planned", "elapsed"}
+                and _timeline_duplicate_key(result[-1]) == _timeline_duplicate_key(copied)):
             previous_minutes = timeline_item_minutes(result[-1])
             current_minutes = timeline_item_minutes(copied)
             if (

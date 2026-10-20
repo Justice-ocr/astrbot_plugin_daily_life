@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime
+import copy
+import json
 import time
 import uuid
 from collections.abc import Callable
@@ -25,6 +27,7 @@ from .appearance import (
     format_life_preference_context,
     strip_hair_from_outfit,
 )
+from .actionchain import execution_evidence
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
 from .dressing import wardrobe_conditions
@@ -52,6 +55,7 @@ from .wardrobe import (
     OUTFIT_SCENE_CATEGORY_ENUM,
     format_outfit_component_ledger,
     format_outfit_components,
+    merge_outfit_catalog_references,
     normalize_outfit_components,
     normalize_outfit_current_basis,
     normalize_outfit_decision,
@@ -94,9 +98,7 @@ _OUTFIT_FACT_SOURCE_LABELS = {
 class OutfitComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _apply_outfit_update_result: Any
     _audit_persona_appearance: Any
-    _build_outfit_update_prompt: Any
     _call_llm_text: Any
     _cleanup_conversation: Any
     _compact_outfit_evidence: Any
@@ -105,13 +107,8 @@ class OutfitComponentContext(Protocol):
     _get_provider: Any
     _localize_outfit_reason: Any
     _mark_style_catalog_references: Any
-    _outfit_appearance_context: Any
     _outfit_fact_context_text: Any
     _outfit_scene_context_text: Any
-    _outfit_update_context: Any
-    _persist_outfit_commit: Any
-    _record_outfit_update_decision: Any
-    _resolve_outfit_catalog_appearance: Any
     _save_life_decision_record: Any
     _state_context_text: Any
     _state_outfit_evidence_text: Any
@@ -426,6 +423,9 @@ class OutfitComponent:
         )
         if rhythm:
             lines.append(f"生理节律：{format_physiological_rhythm_prompt(rhythm)}")
+        execution = execution_evidence(data)
+        if execution["current"] or execution["recent_completed"]:
+            lines.append("实际动作执行记录：" + json.dumps(execution, ensure_ascii=False))
         return "\n".join(lines) if lines else "无"
 
     @staticmethod
@@ -577,7 +577,7 @@ class OutfitComponent:
                 "commitment": "已确认约定",
             }.get(normalized_instruction_source, "无明确来源"),
             "persona": str(persona or "").strip(),
-            "appearance_context": await self.context._outfit_appearance_context(
+            "appearance_context": await self._outfit_appearance_context(
                 catalog_backed=catalog_has_clothing
             ),
             "style_catalog_context": style_catalog_context,
@@ -773,40 +773,39 @@ class OutfitComponent:
         current_time: datetime.datetime, target_period: str,
     ) -> list[int]:
         """集中保存外观、历史和衣橱引用，沿用归档的版本与可穿检查。"""
+        pending = copy.deepcopy(day)
         if commit.outfit_changed:
-            day.outfit_history[target_period] = commit.outfit
+            pending.outfit_history[target_period] = commit.outfit
         for key, value in commit.meta.items():
             text = str(value or "").strip()
             if text:
-                day.meta[key] = text
+                pending.meta[key] = text
             else:
-                day.meta.pop(key, None)
-        day.outfit = commit.outfit
-        day.time_period = target_period
+                pending.meta.pop(key, None)
+        pending.outfit = commit.outfit
+        pending.time_period = target_period
         reference_ids = list(commit.reference_ids)
-        if commit.partial_catalog and reference_ids:
-            previous_items = (
-                await self.context.archive.get_style_catalog_items(
-                    ids=commit.previous_reference_ids,
-                    limit=len(commit.previous_reference_ids),
-                ) if commit.previous_reference_ids else []
-            )
-            new_items = await self.context.archive.get_style_catalog_items(
-                ids=reference_ids, limit=len(reference_ids)
-            )
-            replaced = {item.kind for item in new_items}
-            reference_ids = list(dict.fromkeys(
-                [item.id for item in previous_items if item.kind not in replaced]
-                + reference_ids
-            ))
+        lookup_ids = list(dict.fromkeys(commit.previous_reference_ids + reference_ids))
+        items = await self.context.archive.get_style_catalog_items(
+            ids=lookup_ids, limit=len(lookup_ids)
+        ) if lookup_ids else []
+        reference_ids = merge_outfit_catalog_references(
+            commit.previous_reference_ids, reference_ids,
+            {item.id: item.kind for item in items},
+            normalize_outfit_components(pending.meta.get("outfit_components")),
+            partial=commit.partial_catalog,
+        )
         if reference_ids:
-            day.meta["style_catalog_reference_ids"] = ",".join(map(str, reference_ids))
-        if commit.appearance_changed:
-            record_appearance_snapshot(day, current_time)
-        if commit.require_wearable:
-            await self.context.archive.save_day(day, require_wearable=True)
+            pending.meta["style_catalog_reference_ids"] = ",".join(map(str, reference_ids))
         else:
-            await self.context.archive.save_day(day)
+            pending.meta.pop("style_catalog_reference_ids", None)
+        if commit.appearance_changed:
+            record_appearance_snapshot(pending, current_time)
+        if commit.require_wearable:
+            await self.context.archive.save_day(pending, require_wearable=True)
+        else:
+            await self.context.archive.save_day(pending)
+        day.apply_persisted(pending)
         wear_recorder = getattr(self.context.archive, "record_wardrobe_wear", None)
         if commit.appearance_changed and callable(wear_recorder):
             await wear_recorder(
@@ -899,7 +898,7 @@ class OutfitComponent:
                 )
             )
         )
-        selection = await self.context._resolve_outfit_catalog_appearance(
+        selection = await self._resolve_outfit_catalog_appearance(
             reference_ids,
             scene_category=scene_category,
             component_only=component_only_partial_change,
@@ -939,11 +938,6 @@ class OutfitComponent:
                 "hair_style", "hair", "makeup_style", "makeup", "nails_style", "nails"
             ):
                 generated[key] = generated[key] or catalog_appearance.get(key, "")
-            reserve = str(catalog_appearance.get("outing_reserve") or "").strip()
-            if reserve:
-                old_meta["outing_outfit_reserve"] = reserve
-            else:
-                old_meta.pop("outing_outfit_reserve", None)
             logger.debug(
                 "[穿搭更新] 已采用视觉衣橱候选："
                 + ",".join(str(item) for item in reference_ids)
@@ -1078,6 +1072,10 @@ class OutfitComponent:
             **{key: value for key, value in final.items() if key != "outfit"},
             "outfit_reason": self.context._localize_outfit_reason(result.get("reason")),
         }
+        if reference_ids:
+            meta_updates["outing_outfit_reserve"] = str(
+                catalog_appearance.get("outing_reserve") or ""
+            ).strip()
         if user_instruction:
             meta_updates["outfit_fact_source"] = "user_instruction"
             meta_updates["outfit_fact_confirmed_at"] = current_time.strftime(
@@ -1113,7 +1111,7 @@ class OutfitComponent:
             require_wearable=requires_catalog_clothing and not context.get("instruction"),
         )
         try:
-            reference_ids = await self.context._persist_outfit_commit(
+            reference_ids = await self._persist_outfit_commit(
                 old_data, commit, current_time=current_time, target_period=target_period
             )
         except ValueError as exc:
@@ -1123,7 +1121,7 @@ class OutfitComponent:
             return None
         if appearance_changed and reference_ids:
             await self.context._mark_style_catalog_references(reference_ids)
-        await self.context._record_outfit_update_decision(
+        await self._record_outfit_update_decision(
             old_data, date_str=date_str, target_period=target_period,
             decision=decision, result=result, context=context,
         )
@@ -1178,7 +1176,7 @@ class OutfitComponent:
             if not old_data:
                 return None
 
-            context = await self.context._outfit_update_context(
+            context = await self._outfit_update_context(
                 old_data=old_data,
                 date_str=date_str,
                 target_period=target_period,
@@ -1192,7 +1190,7 @@ class OutfitComponent:
                 f"[穿搭更新] 自主判断穿搭状态：主题「{context['daily_theme']}」，心情「{context['mood_color']}」，"
                 f"时间标签「{get_time_period_cn(target_period)}」"
             )
-            prompt = self.context._build_outfit_update_prompt(
+            prompt = self._build_outfit_update_prompt(
                 context=context,
                 target_period=target_period,
                 current_time=current_time,
@@ -1218,7 +1216,7 @@ class OutfitComponent:
                     if not result:
                         return None
                     context.pop("catalog_selection_issue", None)
-                    updated = await self.context._apply_outfit_update_result(
+                    updated = await self._apply_outfit_update_result(
                         result,
                         date_str=date_str,
                         target_period=target_period,

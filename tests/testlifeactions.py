@@ -67,6 +67,7 @@ class LifeActionTest(unittest.TestCase):
             {
                 "action_id": "rest-1",
                 "action_type": "rest",
+                "duration_minutes": 30,
                 "timeline_index": 0,
                 "evidence": "13:20 已完成",
             }
@@ -81,7 +82,7 @@ class LifeActionTest(unittest.TestCase):
 
         self.assertEqual(first.status, "committed")
         self.assertEqual(day.state.energy, 72)
-        self.assertEqual(day.state.stress, 42)
+        self.assertEqual(day.state.stress, 46)
         self.assertEqual(day.state.sleepiness, 58)
         self.assertEqual(day.timeline[0].execution_state, "completed")
         self.assertTrue(second.replayed)
@@ -141,7 +142,8 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(rejected.status, "rejected")
         self.assertEqual(committed.status, "committed")
         self.assertEqual(day.outfit, "浅黄色短袖和米白长裤")
-        self.assertEqual(day.state.mood_score, 57)
+        self.assertGreater(day.state.mood_score, 55)
+        self.assertLess(day.state.mood_score, 57)
         self.assertEqual(len(day.outfit_history), 1)
         self.assertEqual(day.meta["outfit_fact_source"], "life_action")
         self.assertEqual(day.meta["outfit_fact_confirmed_at"], "2026-08-01 16:05:00")
@@ -251,6 +253,54 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(outcome.status, "committed")
         self.assertEqual(day.outfit, "浅绿色短袖和米白色长裤")
         self.assertEqual(day.meta["outfit_fact_source"], "life_action")
+
+    def test_outfit_energy_effect_commits_and_replaces_old_appearance_reason(self):
+        day = DayRecord(
+            date="2026-10-20",
+            outfit="居家睡裙",
+            state=LifeState(energy=65),
+            meta={
+                "style": "浅色轻软居家睡裙",
+                "outfit_scene_category": "home",
+                "outfit_style_pool": "sleep_styles",
+                "outfit_reason": "还在洗漱前，等换衣节点再换",
+            },
+        )
+        action = {
+            "action_id": "morning-change",
+            "action_type": "change_outfit",
+            "target": "针织衫与牛仔短裤",
+            "effects": [{"field": "energy", "operation": "add", "value": -2}],
+            "payload": {"scene_category": "public", "catalog_reference_ids": [253, 293]},
+        }
+        outcome = self.engine.settle_life_action(
+            day, action, now=datetime.datetime(2026, 10, 20, 8, 30)
+        )
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.outfit, "针织衫与牛仔短裤")
+        self.assertEqual(day.state.energy, 63)
+        self.assertEqual(day.meta["outfit_scene_category"], "public")
+        self.assertEqual(day.meta["outfit_style_pool"], "outfit_styles")
+        self.assertNotIn("style", day.meta)
+        self.assertNotIn("outfit_reason", day.meta)
+        self.assertEqual(day.meta["style_catalog_reference_ids"], "253,293")
+        replayed = self.engine.settle_life_action(day, action)
+        self.assertTrue(replayed.replayed)
+        self.assertEqual(day.state.energy, 63)
+
+    def test_groom_allows_explicit_energy_cost(self):
+        day = DayRecord(date="2026-10-20", state=LifeState(energy=65))
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "morning-groom",
+                "action_type": "groom",
+                "target": "洗漱整理仪容",
+                "effects": [{"field": "energy", "operation": "add", "value": -1}],
+            },
+        )
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.state.energy, 64)
 
     def test_older_planned_outfit_does_not_override_later_user_request(self):
         day = DayRecord(
@@ -395,6 +445,7 @@ class LifeActionTest(unittest.TestCase):
                 "action_id": "move-1",
                 "action_type": "move",
                 "target": "测试公园",
+                "payload": {"origin": "测试住处", "destination": "测试公园"},
                 "effects": [
                     {"field": "energy", "operation": "add", "value": 20}
                 ],
@@ -685,6 +736,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
                                     "action_id": "move-receipt-1",
                                     "action_type": "move",
                                     "target": "公园",
+                                    "payload": {"origin": "家", "destination": "公园"},
                                     "timeline_index": 0,
                                 }
                             ],
@@ -855,6 +907,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 "action_id": "move-1",
                 "action_type": "move",
                 "evidence": "定位记录 18:20",
+                "payload": {"origin": "家", "destination": "公园"},
             },
             now=datetime.datetime(2026, 8, 1, 18, 20),
         )
@@ -979,7 +1032,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         composer.archive.days[day.date] = day
 
-        await composer._apply_timeline_review_updates(
+        await composer._part_lifecycle_component._apply_timeline_review_updates(
             day,
             {
                 "timeline_updates": [

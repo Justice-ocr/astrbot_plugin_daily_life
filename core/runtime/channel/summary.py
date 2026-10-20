@@ -30,7 +30,6 @@ class RuntimeMediaCommonComponentContext(Protocol):
     _append_assistant_history: Any
     _background_tool_existing_result: Any
     _background_tool_request: Any
-    _deliver_background_tool: Any
     _event_component_kind: Any
     _event_image_prompt_text: Any
     _event_message_id: Any
@@ -40,27 +39,17 @@ class RuntimeMediaCommonComponentContext(Protocol):
     _event_user_history_text: Any
     _follow_up_module: Any
     _forget_last_generated_life_image_path: Any
-    _generate_delivered_media_reply: Any
-    _generate_background_failure_reply: Any
-    _image_reference_from_items: Any
     _image_reference_from_items_async: Any
     _is_llm_result_object: Any
     _last_generated_life_image_path: Any
     _life_image_reference_is_usable: Any
     _life_media_cadence: Any
-    _media_cadence_store: Any
     _media_elapsed_text: Any
     _media_error_summary: Any
-    _media_file_size: Any
     _media_payload_from_item_async: Any
     _media_size_text: Any
     _message_media_payload: Any
     _parse_delivered_media_reply: Any
-    _prune_media_cadence: Any
-    _quote_image_reference_from_event: Any
-    _quote_image_reference_from_event_async: Any
-    _quote_image_reference_from_value: Any
-    _quote_image_reference_from_value_async: Any
     _release_media_chat_turn: Any
     _schedule_background_task: Any
     _send_background_failure_reply: Any
@@ -129,7 +118,7 @@ class RuntimeMediaCommonComponent:
                 self.context.cancel_tool_reaction(event, tool_name)
 
         if not self.context._schedule_background_task(
-            self.context._deliver_background_tool(event, work, marker, tool_name, task_name),
+            self._deliver_background_tool(event, work, marker, tool_name, task_name),
             label=label,
             key=f"background_tool:{tool_name}:{scope}:{source_id}",
             category=category,
@@ -409,7 +398,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         if not can_reply():
             return False
         try:
-            text = await self.context._generate_background_failure_reply(
+            text = await self._generate_background_failure_reply(
                 scope,
                 task_name=task_name,
                 request_text=request_text or self.context._event_user_history_text(event),
@@ -512,7 +501,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         if callable(current_turn) and not current_turn(source_event):
             logger.debug(f"{LOG_PREFIX} 跳过过期媒体补话：后续消息已经接管当前话轮。")
             return False
-        text = await self.context._generate_delivered_media_reply(
+        text = await self._generate_delivered_media_reply(
             scope,
             media_name=media_name,
             request_text=request_text,
@@ -601,7 +590,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             return None
 
     async def _media_result_summary(self, target: object, started_at: float) -> str:
-        size = await self.context._media_file_size(target)
+        size = await self._media_file_size(target)
         return f"{self.context._media_size_text(size)}，耗时 {self.context._media_elapsed_text(started_at)}"
 
     @staticmethod
@@ -638,7 +627,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
 
     def _prune_media_cadence(self, now: datetime.datetime | None = None) -> None:
         now = now or datetime.datetime.now()
-        for scope, item in list(self.context._media_cadence_store().items()):
+        for scope, item in list(self._media_cadence_store().items()):
             last_at = item.get("last_at") if isinstance(item, dict) else None
             if not isinstance(last_at, datetime.datetime):
                 self.context._life_media_cadence.pop(scope, None)
@@ -669,8 +658,8 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         if not scope:
             return
         now = now or datetime.datetime.now()
-        self.context._prune_media_cadence(now)
-        store = self.context._media_cadence_store()
+        self._prune_media_cadence(now)
+        store = self._media_cadence_store()
         item = store.get(scope, {})
         if not isinstance(item, dict):
             item = {}
@@ -684,9 +673,9 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         store[scope] = item
 
     def _hidden_media_cadence_hint(self, event: Any = None) -> str:
-        self.context._prune_media_cadence()
+        self._prune_media_cadence()
         scope = self.context._event_session_id(event) if event is not None else ""
-        item = self.context._media_cadence_store().get(scope, {}) if scope else {}
+        item = self._media_cadence_store().get(scope, {}) if scope else {}
         if not isinstance(item, dict) or not isinstance(
             item.get("last_at"), datetime.datetime
         ):
@@ -770,14 +759,14 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         for source in self.context._event_sources(event):
             for attr in ("quote", "reply", "reply_message"):
                 value = getattr(source, attr, None)
-                reference = self.context._quote_image_reference_from_value(value)
+                reference = self._quote_image_reference_from_value(value)
                 if reference:
                     return reference
             for item in self.context._event_message_items(source):
                 kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
-                reference = self.context._quote_image_reference_from_value(item)
+                reference = self._quote_image_reference_from_value(item)
                 if reference:
                     return reference
         return ""
@@ -785,7 +774,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
     async def _quote_image_reference_from_event_async(self, event: Any) -> str:
         for source in self.context._event_sources(event):
             for attr in ("quote", "reply", "reply_message"):
-                reference = await self.context._quote_image_reference_from_value_async(
+                reference = await self._quote_image_reference_from_value_async(
                     getattr(source, attr, None)
                 )
                 if reference:
@@ -794,7 +783,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                 kind = self.context._event_component_kind(item)
                 if "reply" not in kind and "quote" not in kind:
                     continue
-                reference = await self.context._quote_image_reference_from_value_async(item)
+                reference = await self._quote_image_reference_from_value_async(item)
                 if reference:
                     return reference
         return ""
@@ -813,31 +802,31 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             ):
                 raw_items = value.get(key)
                 if isinstance(raw_items, list):
-                    reference = self.context._image_reference_from_items(raw_items)
+                    reference = self._image_reference_from_items(raw_items)
                     if reference:
                         return reference
             data = value.get("data")
             if isinstance(data, dict):
-                reference = self.context._quote_image_reference_from_value(data)
+                reference = self._quote_image_reference_from_value(data)
                 if reference:
                     return reference
             if "image" in self.context._event_component_kind(value):
-                return self.context._image_reference_from_items([value])
+                return self._image_reference_from_items([value])
             return ""
 
         for attr in ("chain", "message", "messages", "items", "segments", "components"):
             raw_items = getattr(value, attr, None)
             if isinstance(raw_items, list):
-                reference = self.context._image_reference_from_items(raw_items)
+                reference = self._image_reference_from_items(raw_items)
                 if reference:
                     return reference
         data = getattr(value, "data", None)
         if isinstance(data, dict):
-            reference = self.context._quote_image_reference_from_value(data)
+            reference = self._quote_image_reference_from_value(data)
             if reference:
                 return reference
         if "image" in self.context._event_component_kind(value):
-            return self.context._image_reference_from_items([value])
+            return self._image_reference_from_items([value])
         return ""
 
     async def _quote_image_reference_from_value_async(self, value: Any) -> str:
@@ -859,7 +848,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                         return reference
             data = value.get("data")
             if isinstance(data, dict):
-                reference = await self.context._quote_image_reference_from_value_async(data)
+                reference = await self._quote_image_reference_from_value_async(data)
                 if reference:
                     return reference
             if "image" in self.context._event_component_kind(value):
@@ -874,7 +863,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                     return reference
         data = getattr(value, "data", None)
         if isinstance(data, dict):
-            reference = await self.context._quote_image_reference_from_value_async(data)
+            reference = await self._quote_image_reference_from_value_async(data)
             if reference:
                 return reference
         if "image" in self.context._event_component_kind(value):
@@ -898,7 +887,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         )
         if current:
             return current
-        quoted = await self.context._quote_image_reference_from_event_async(event)
+        quoted = await self._quote_image_reference_from_event_async(event)
         if quoted:
             return quoted
         extractor = None
@@ -974,6 +963,6 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         explicit = str(reference_image or "").strip()
         if explicit:
             return explicit
-        return self.context._image_reference_from_items(
+        return self._image_reference_from_items(
             self.context._event_message_items(event)
-        ) or self.context._quote_image_reference_from_event(event)
+        ) or self._quote_image_reference_from_event(event)

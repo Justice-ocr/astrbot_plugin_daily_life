@@ -19,10 +19,7 @@ class EmojiBaseComponentContext(Protocol):
     _emoji_asset_is_remote: Any
     _emoji_max_bytes: Any
     _emoji_max_ready_count: Any
-    _emoji_ready_asset_count: Any
     _emoji_replace_when_full: Any
-    _emoji_settings: Any
-    _remember_visual_context_summary: Any
     _str_payload: Any
     _visual_context_summaries: Any
     _visual_context_summary_cache: Any
@@ -86,29 +83,29 @@ class EmojiBaseComponent:
         return settings if isinstance(settings, EmojiSettings) else EmojiSettings()
 
     def _emoji_auto_collect_enabled(self) -> bool:
-        return bool(self.context._emoji_settings().collect_chat_emojis)
+        return bool(self._emoji_settings().collect_chat_emojis)
 
     def _emoji_max_bytes(self) -> int:
-        max_mb = max(1.0, min(float(self.context._emoji_settings().max_size_mb), 20.0))
+        max_mb = max(1.0, min(float(self._emoji_settings().max_size_mb), 20.0))
         return max(1, int(max_mb * 1024 * 1024))
 
     def _emoji_max_ready_count(self) -> int:
-        return max(1, int(self.context._emoji_settings().max_ready))
+        return max(1, int(self._emoji_settings().max_ready))
 
     def _emoji_replace_when_full(self) -> bool:
-        return bool(self.context._emoji_settings().replace_when_full)
+        return bool(self._emoji_settings().replace_when_full)
 
     def _emoji_send_candidate_limit(self) -> int:
-        return max(1, int(self.context._emoji_settings().send_candidate_limit))
+        return max(1, int(self._emoji_settings().send_candidate_limit))
 
     def _emoji_review_batch_size(self) -> int:
-        return max(1, int(self.context._emoji_settings().review_batch_size))
+        return max(1, int(self._emoji_settings().review_batch_size))
 
     def _emoji_inactive_record_keep_days(self) -> int:
-        return max(1, int(self.context._emoji_settings().inactive_record_keep_days))
+        return max(1, int(self._emoji_settings().inactive_record_keep_days))
 
     def _emoji_orphan_grace_seconds(self) -> int:
-        return max(1, int(self.context._emoji_settings().orphan_cache_grace_hours)) * 60 * 60
+        return max(1, int(self._emoji_settings().orphan_cache_grace_hours)) * 60 * 60
 
     def _emoji_asset_size_allowed(self, size_bytes: int) -> bool:
         max_bytes = self.context._emoji_max_bytes()
@@ -129,7 +126,7 @@ class EmojiBaseComponent:
     async def _emoji_can_accept_ready_asset(self, *, exclude_hash: str = "") -> bool:
         return (
             self.context._emoji_replace_when_full()
-            or await self.context._emoji_ready_asset_count(exclude_hash=exclude_hash)
+            or await self._emoji_ready_asset_count(exclude_hash=exclude_hash)
             < self.context._emoji_max_ready_count()
         )
 
@@ -341,7 +338,7 @@ class EmojiBaseComponent:
         if not summary:
             return
         if fingerprint:
-            self.context._remember_visual_context_summary(fingerprint, summary)
+            self._remember_visual_context_summary(fingerprint, summary)
         self.context._apply_visual_context_summary_text(
             context_scope, context_message_key, summary
         )

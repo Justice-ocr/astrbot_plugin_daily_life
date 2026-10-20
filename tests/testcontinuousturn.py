@@ -518,6 +518,8 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         runtime.note_continuous_turn_incoming(first)
         self.assertTrue(await runtime.settle_continuous_turn(first))
         self.assertTrue(runtime.complete_continuous_turn(first))
+        self.assertFalse(runtime.complete_continuous_turn(first))
+        self.assertEqual(runtime._continuous_turn_metrics["completed"], 1)
         runtime.note_continuous_turn_incoming(second)
         self.assertTrue(await runtime.settle_continuous_turn(second))
 
@@ -598,7 +600,7 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
             runtime.note_continuous_turn_incoming(second)
             return {"action": "reply", "confidence": 0.9, "reason": "可以回复"}
 
-        runtime._response_gate_semantic_decision = semantic
+        runtime._part_response_gate_apply_component._response_gate_semantic_decision = semantic
         decision = await runtime.evaluate_response_gate(first)
 
         self.assertTrue(decision["superseded"])

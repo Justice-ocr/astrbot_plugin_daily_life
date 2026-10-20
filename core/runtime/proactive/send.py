@@ -40,18 +40,13 @@ class ProactiveSendComponentContext(Protocol):
     _continuous_turn_identity: Any
     _event_message_id: Any
     _event_session_id: Any
-    _mark_failed_proactive_contact: Any
     _media_chat_tokens: Any
-    _normalize_proactive_reply_text: Any
     _note_voice_expression_decision: Any
-    _proactive_chat_snapshot: Any
     _proactive_scope_key: Any
     _proactive_send_is_current: Any
     _proactive_source_label: Any
-    _proactive_voice_available: Any
     _record_message_chain: Any
     _send_proactive_emoji_if_needed: Any
-    _send_proactive_voice_if_enabled: Any
     _send_segmented_proactive_message: Any
     _snapshot_proactive_send_event: Any
     _state_refresh_in_quiet_hours: Any
@@ -82,7 +77,7 @@ class ProactiveSendComponent:
         if not hasattr(event, "_daily_life_proactive_send_token"):
             event._daily_life_proactive_send_token = (
                 scope,
-                self.context._proactive_chat_snapshot(scope),
+                self._proactive_chat_snapshot(scope),
             )
         if bind_source and self.context._event_message_id(event):
             identity = self.context._continuous_turn_identity(event)
@@ -115,7 +110,7 @@ class ProactiveSendComponent:
             return False
         token = getattr(event, "_daily_life_proactive_send_token", None)
         return self.context.media_request_is_current_turn(event) and (
-            token is None or self.context._proactive_chat_snapshot(token[0]) == token[1]
+            token is None or self._proactive_chat_snapshot(token[0]) == token[1]
         )
 
     async def _send_proactive_voice_call_invite(
@@ -179,7 +174,7 @@ class ProactiveSendComponent:
         raise_delivery_errors: bool = False,
     ) -> bool:
         target_scope = str(target_scope or "").strip()
-        reply_text = self.context._normalize_proactive_reply_text(reply_text)
+        reply_text = self._normalize_proactive_reply_text(reply_text)
         if not target_scope or not reply_text:
             return False
         source_event = self.context._snapshot_proactive_send_event(
@@ -209,7 +204,7 @@ class ProactiveSendComponent:
                 source_message_id=source_message_id,
             ):
                 return False
-            if await self.context._send_proactive_voice_if_enabled(
+            if await self._send_proactive_voice_if_enabled(
                 target_scope,
                 reply_text,
                 send_payload,
@@ -241,7 +236,7 @@ class ProactiveSendComponent:
             return True
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} {failure_label}：{exc}")
-            await self.context._mark_failed_proactive_contact(
+            await self._mark_failed_proactive_contact(
                 target_scope,
                 exc,
                 relationship=relationship,
@@ -331,7 +326,7 @@ class ProactiveSendComponent:
         )
 
     def _proactive_voice_capability(self, target_scope: str) -> str:
-        if self.context._proactive_voice_available(target_scope):
+        if self._proactive_voice_available(target_scope):
             return "可用；是否使用由本轮表达意图和收听情境决定，不代表必须发语音"
         return "不可用；expression_intent.channel 必须选择 text"
 
@@ -344,7 +339,7 @@ class ProactiveSendComponent:
         source_event: Any = None,
         source_message_id: str = "",
     ) -> bool:
-        if not self.context._proactive_voice_available(target_scope):
+        if not self._proactive_voice_available(target_scope):
             return False
         intent = payload.get("expression_intent") if isinstance(payload, dict) else None
         if not isinstance(intent, dict) or intent.get("channel") != "voice":

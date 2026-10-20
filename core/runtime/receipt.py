@@ -27,17 +27,12 @@ class RuntimeActionReceiptComponentContext(Protocol):
     _durable_task_owner: Any
     _event_message_id: Any
     _event_session_id: Any
-    _generate_share_asset_task: Any
-    _get_share_asset_task: Any
     _photo_suite_read_manifest: Any
     _photo_suite_finalize_manifest: Any
     _photo_suite_write_manifest: Any
-    _record_recovered_photo_suite_slot: Any
-    _resume_share_asset_generation: Any
     _runtime_now: Any
     _send_delivered_media_followup: Any
     _send_background_failure_reply: Any
-    _settle_direct_media_commitment: Any
     _share_asset_key: Any
     archive: Any
     composer: Any
@@ -74,10 +69,10 @@ class RuntimeActionReceiptComponent:
         return f"share_{kind}:" + hashlib.sha256(task_key.encode()).hexdigest()
 
     async def get_share_image_task(self, task_key: str) -> dict:
-        return await self.context._get_share_asset_task(task_key, "image")
+        return await self._get_share_asset_task(task_key, "image")
 
     async def get_share_video_task(self, task_key: str) -> dict:
-        return await self.context._get_share_asset_task(task_key, "video")
+        return await self._get_share_asset_task(task_key, "video")
 
     async def _get_share_asset_task(self, task_key: str, kind: str) -> dict:
         task = await self.context.archive.get_durable_task(
@@ -113,7 +108,7 @@ class RuntimeActionReceiptComponent:
         contains_character: bool = False,
         target_umo: str = "",
     ) -> dict:
-        return await self.context._generate_share_asset_task(
+        return await self._generate_share_asset_task(
             event,
             prompt,
             task_key=task_key,
@@ -126,7 +121,7 @@ class RuntimeActionReceiptComponent:
         self, event: Any, prompt: str, *, task_key: str, reference_image: str = "",
         target_umo: str = "",
     ) -> dict:
-        return await self.context._generate_share_asset_task(
+        return await self._generate_share_asset_task(
             event,
             prompt,
             task_key=task_key,
@@ -159,7 +154,7 @@ class RuntimeActionReceiptComponent:
             priority=85,
         )
         if record.lease_owner != owner:
-            return await self.context._get_share_asset_task(task_key, kind)
+            return await self._get_share_asset_task(task_key, kind)
         progress = {}
 
         async def accepted(task_id, route, metadata=None):
@@ -244,7 +239,7 @@ class RuntimeActionReceiptComponent:
                 raise
             if not isinstance(exc, (ImageTaskError, VideoTaskError)) and not progress:
                 raise
-        return await self.context._get_share_asset_task(task_key, kind)
+        return await self._get_share_asset_task(task_key, kind)
 
     async def record_share_delivery(self, receipt: dict) -> bool:
         """记录明确的分享发送回执；不补发消息、不将作品生成视为送达。"""
@@ -271,10 +266,10 @@ class RuntimeActionReceiptComponent:
         return True
 
     async def resume_share_image_generation(self, task: Any) -> dict:
-        return await self.context._resume_share_asset_generation(task, "image")
+        return await self._resume_share_asset_generation(task, "image")
 
     async def resume_share_video_generation(self, task: Any) -> dict:
-        return await self.context._resume_share_asset_generation(task, "video")
+        return await self._resume_share_asset_generation(task, "video")
 
     async def _resume_share_asset_generation(self, task: Any, kind: str) -> dict:
         from ..media.picture.polling import ImageTaskError, ImageTaskFailed
@@ -450,7 +445,7 @@ class RuntimeActionReceiptComponent:
                 ):
                     raise RuntimeError("图片恢复任务已失去租约，暂不投递")
         except ImageTaskFailed as exc:
-            await self.context._record_recovered_photo_suite_slot(
+            await self._record_recovered_photo_suite_slot(
                 payload.get("photo_suite", {}), "", sent=False, error=str(exc)
             )
             should_reply = bool(payload.get("scope"))
@@ -478,7 +473,7 @@ class RuntimeActionReceiptComponent:
                 "reason": str(exc),
                 "progress": progress,
             }
-        await self.context._record_recovered_photo_suite_slot(
+        await self._record_recovered_photo_suite_slot(
             payload.get("photo_suite", {}), path, sent=False
         )
         delivery = await self.context.stage_durable_media_delivery(
@@ -760,7 +755,7 @@ class RuntimeActionReceiptComponent:
                         life_now().isoformat(timespec="seconds"),
                     )
             elif finalized and str(outcome or "").strip() == "sent":
-                await self.context._settle_direct_media_commitment(payload)
+                await self._settle_direct_media_commitment(payload)
             return bool(finalized)
         except Exception as exc:
             logger.warning(f"[日常生活] 媒体投递任务收束失败：{exc}")
@@ -861,7 +856,7 @@ class RuntimeActionReceiptComponent:
             if inspect.isawaitable(result):
                 await result
         logger.debug("[日常生活] 已恢复投递重启前生成的媒体产物")
-        await self.context._record_recovered_photo_suite_slot(
+        await self._record_recovered_photo_suite_slot(
             payload.get("photo_suite", {}), artifacts[0], sent=True
         )
         recorder = getattr(self.context, "record_current_life_action_receipt", None)
@@ -893,7 +888,7 @@ class RuntimeActionReceiptComponent:
                     life_now().isoformat(timespec="seconds"),
                 )
         else:
-            await self.context._settle_direct_media_commitment(payload)
+            await self._settle_direct_media_commitment(payload)
         reply_sent = False
         reply_context = payload.get("reply_context")
         followup = getattr(self.context, "_send_delivered_media_followup", None)

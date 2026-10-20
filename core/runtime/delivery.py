@@ -128,17 +128,23 @@ class ReplyDeliveryService:
         if not callable(send):
             return DeliveryResult("skipped")
 
+        def current() -> bool:
+            preparation_guard = getattr(event, "_daily_life_reply_is_current", None)
+            return request.is_current() and (
+                not callable(preparation_guard) or preparation_guard()
+            )
+
         sent_count = 0
         try:
             for index, _text in enumerate(request.texts):
                 if index > 0:
-                    if not request.is_current():
+                    if not current():
                         self._clear_result(event)
                         return DeliveryResult("cancelled", sent_count)
                     delay = max(float(request.delay_seconds(index) or 0.0), 0.0)
                     if delay > 0:
                         await request.sleep(delay)
-                if not request.is_current():
+                if not current():
                     self._clear_result(event)
                     return DeliveryResult("cancelled", sent_count)
                 message = await self._send_one(request, chain, index, send)

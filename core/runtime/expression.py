@@ -1,12 +1,59 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 from typing import Any
 
 from astrbot.api import logger
 
 from ..media.picture import routes
 from .markers import LOG_PREFIX
+
+
+_EXPRESSION_CONTEXT_LIMITS = {
+    "time": 40,
+    "activity": 320,
+    "state": 640,
+    "relationships": 480,
+    "preferences": 800,
+    "conversation": 1800,
+    "interaction": 400,
+    "timing": 400,
+}
+
+
+def remember_expression_context(event: Any, **sections: str) -> None:
+    """复用本轮已准备的事实，避免表达判断再次查库或调用模型。"""
+    if event is None:
+        return
+    context = dict(getattr(event, "_daily_life_expression_context", {}) or {})
+    for key, value in sections.items():
+        limit = _EXPRESSION_CONTEXT_LIMITS[key]
+        text = str(value or "").strip()
+        if len(text) > limit:
+            text = text[:limit] + "…"
+        if text:
+            context[key] = text
+        else:
+            context.pop(key, None)
+    event._daily_life_expression_context = context
+
+
+def expression_context_for_event(event: Any) -> str:
+    context = getattr(event, "_daily_life_expression_context", None)
+    return json.dumps(context, ensure_ascii=False) if context else ""
+
+
+def expression_context_has_message(event: Any, message: str) -> bool:
+    """判断当前消息是否已在结构化表达上下文中，避免重复发送相同正文。"""
+    needle = str(message or "").strip()
+    context = getattr(event, "_daily_life_expression_context", None)
+    conversation = context.get("conversation", "") if isinstance(context, dict) else ""
+    return bool(
+        len(needle) >= 4
+        and bool(conversation)
+        and needle in str(conversation)
+    )
 
 
 class ExpressionHintService:
@@ -117,7 +164,7 @@ class ExpressionHintService:
             cadence_hint = self._hidden_voice_cadence_hint(event, probability)
             parts.extend(
                 [
-                    "\n- 普通聊天时我只需要正常输出最终文字回复；插件会在发送前用本地节奏算法判断是否转成语音。",
+                    "\n- 普通聊天正常输出最终回复；发送前的语义判断会结合当前生活状态、对方偏好和收听情境选择表达方式，再检查语音概率与节奏。",
                     f"\n[HiddenVoiceChance] 普通聊天语音概率参考为 {probability}%，仍以当下表达是否自然和聊天节奏为准。",
                     f"\n[HiddenVoiceCadence] {cadence_hint}",
                 ]
@@ -126,7 +173,7 @@ class ExpressionHintService:
             cadence_hint = self._media_cadence(event)
             parts.extend(
                 [
-                    "\n[HiddenMediaExpression] 图片或视频是否合适只根据对话意图、当下状态和表达自然度判断；不要靠固定词触发，也不要为了展示而调用。",
+                    "\n[HiddenMediaExpression] 图片或视频是否合适只根据对话意图、当下状态和表达自然度判断；不要靠固定词触发，也不要为了展示而调用。用户明确提出当前媒体请求时默认履行；只有真实限制才说明或改约，不因轻微不便反复拒绝。",
                     f"\n[HiddenMediaCadence] {cadence_hint}",
                 ]
             )

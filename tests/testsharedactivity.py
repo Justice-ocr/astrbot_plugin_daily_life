@@ -71,7 +71,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
             self.sent.append((scope, text, kwargs))
             return True
 
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         self.runtime._send_proactive_message = send
         self.decision = {
             "decision": "wait",
@@ -155,7 +155,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
             day.outfit = "刚换好的出门装"
             await self.archive.save_day(day)
             return self.decision
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         result = await self.send_now()
         self.assertIn("retry_at", result)
         self.assertEqual(self.sent, [])
@@ -169,7 +169,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         self.runtime.close_text_session = AsyncMock()
         self.runtime.config = SimpleNamespace(proactive=SimpleNamespace(provider="test"))
         self.runtime._audit_proactive_continuity = AsyncMock(return_value=(False, "没有换装完成证据"))
-        self.runtime._evaluate_shared_activity_contact = SharedActivityContactComponent(
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = SharedActivityContactComponent(
             self.runtime
         )._evaluate_shared_activity_contact
         with patch("core.runtime.proactive.rendezvous.call_pure_json", AsyncMock(return_value={
@@ -194,7 +194,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
                 "reply_text": "该准备啦",
             }
 
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         result = await self.run_contact()
         self.assertIn("retry_at", result)
         self.assertEqual(self.sent, [])
@@ -204,7 +204,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
             await self.archive.set_commitment_status(self.commitment.id, "cancelled")
             return self.decision
 
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         result = await self.run_contact()
         self.assertEqual(result["outcome"], "cancelled")
         self.assertEqual(self.sent, [])
@@ -227,7 +227,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
                 "reply_text": "准备好了吗？",
             }
 
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         result = await self.run_contact()
         self.assertEqual(result["outcome"], "expired")
         self.assertEqual(self.sent, [])
@@ -312,7 +312,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
             self.now += datetime.timedelta(minutes=25)
             return self.decision
 
-        self.runtime._evaluate_shared_activity_contact = evaluate
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
         result = await self.run_contact()
         self.assertEqual(result["retry_at"], "2026-10-03 18:25:00")
         self.assertEqual(self.sent, [])

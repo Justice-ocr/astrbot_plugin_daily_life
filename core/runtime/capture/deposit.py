@@ -35,28 +35,10 @@ class ImprintDepositComponentContext(Protocol):
     _float_payload: Any
     _int_payload: Any
     _life_adjustment_default_expiry: Any
-    _life_adjustment_payload_data: Any
-    _life_adjustment_target_id: Any
     _list_payload: Any
-    _long_term_scope: Any
-    _save_behavior_context_payloads: Any
-    _save_behavior_feedback_payloads: Any
-    _save_evidence_payloads: Any
     _save_experience_evidence: Any
-    _save_expression_intent_payload: Any
     _save_expression_profile_payloads: Any
-    _save_focus_payloads: Any
-    _save_life_adjustment_payloads: Any
-    _save_life_episode_payloads: Any
-    _save_life_term_payloads: Any
-    _save_long_term_life_adjustment: Any
     _save_long_term_memory: Any
-    _save_memory_boundary_payloads: Any
-    _save_memory_correction_life_adjustment: Any
-    _save_memory_correction_payloads: Any
-    _save_session_summary_payload: Any
-    _save_short_term_life_adjustment: Any
-    _save_temporary_expression_payloads: Any
     _str_payload: Any
     archive: Any
     schedule_memos_correction: Any
@@ -90,7 +72,7 @@ class ImprintDepositComponent:
             return None
         return await self.context.archive.upsert_long_term_memory(
             LongTermMemoryRecord(
-                scope=self.context._long_term_scope(meta, scope),
+                scope=self._long_term_scope(meta, scope),
                 category=self.context._str_payload(category, "general") or "general",
                 title=self.context._str_payload(title, 120),
                 content=text,
@@ -172,21 +154,21 @@ class ImprintDepositComponent:
                 weight=1.0,
             )
         scope = meta.get("group_id") or meta.get("session_id") or ""
-        await self.context._save_life_episode_payloads(payload, meta, saved_records)
-        await self.context._save_evidence_payloads(payload, meta, saved_summary)
-        await self.context._save_behavior_feedback_payloads(payload, meta, saved_records)
+        await self._save_life_episode_payloads(payload, meta, saved_records)
+        await self._save_evidence_payloads(payload, meta, saved_summary)
+        await self._save_behavior_feedback_payloads(payload, meta, saved_records)
         await self.context._save_expression_profile_payloads(
             payload, meta, scope, saved_records
         )
-        await self.context._save_behavior_context_payloads(payload, meta, scope)
-        await self.context._save_session_summary_payload(payload, meta)
-        await self.context._save_temporary_expression_payloads(payload, scope)
-        await self.context._save_focus_payloads(payload, meta, scope)
-        await self.context._save_memory_correction_payloads(payload, meta)
-        await self.context._save_life_adjustment_payloads(payload, meta, scope, saved_records)
-        await self.context._save_expression_intent_payload(payload, meta, scope)
-        await self.context._save_life_term_payloads(payload, meta, scope)
-        await self.context._save_memory_boundary_payloads(payload)
+        await self._save_behavior_context_payloads(payload, meta, scope)
+        await self._save_session_summary_payload(payload, meta)
+        await self._save_temporary_expression_payloads(payload, scope)
+        await self._save_focus_payloads(payload, meta, scope)
+        await self._save_memory_correction_payloads(payload, meta)
+        await self._save_life_adjustment_payloads(payload, meta, scope, saved_records)
+        await self._save_expression_intent_payload(payload, meta, scope)
+        await self._save_life_term_payloads(payload, meta, scope)
+        await self._save_memory_boundary_payloads(payload)
         return saved_records
 
     def _dict_payloads(self, *values: Any) -> list[dict]:
@@ -534,7 +516,7 @@ class ImprintDepositComponent:
         target_type = (
             self.context._str_payload(raw_adjustment.get("target_type"), "other") or "other"
         )
-        target_id = self.context._life_adjustment_target_id(
+        target_id = self._life_adjustment_target_id(
             raw_adjustment, content, default_scope
         )
         reason = self.context._str_payload(
@@ -718,23 +700,23 @@ class ImprintDepositComponent:
         for raw_adjustment in self.context._dict_payloads(
             payload.get("life_adjustment"), payload.get("life_adjustments")
         )[:6]:
-            item = self.context._life_adjustment_payload_data(raw_adjustment, default_scope)
+            item = self._life_adjustment_payload_data(raw_adjustment, default_scope)
             if not item:
                 continue
             if item["scope"] == "short_term":
-                await self.context._save_short_term_life_adjustment(
+                await self._save_short_term_life_adjustment(
                     raw_adjustment, meta, item, saved_records
                 )
                 continue
 
             if item["scope"] == "long_term":
-                await self.context._save_long_term_life_adjustment(
+                await self._save_long_term_life_adjustment(
                     raw_adjustment, meta, item, saved_records
                 )
                 continue
 
             if item["scope"] == "correction":
-                await self.context._save_memory_correction_life_adjustment(
+                await self._save_memory_correction_life_adjustment(
                     meta, item, saved_records
                 )
                 continue

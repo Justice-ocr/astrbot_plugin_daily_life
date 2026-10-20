@@ -14,8 +14,6 @@ class StructuredGlanceComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _event_session_id: Any
-    _format_structured_message_line: Any
-    _structured_history_payload: Any
     _structured_result_text: Any
     _structured_scope_messages: Any
     _structured_text: Any
@@ -115,7 +113,7 @@ class StructuredGlanceComponent:
             "  <note>最近真实消息结构，优先用于判断群聊里谁在对谁说话；不是长期记忆。</note>",
         ]
         for item in messages:
-            lines.append(self.context._format_structured_message_line(item))
+            lines.append(self._format_structured_message_line(item))
         lines.append("</structured_conversation>")
         return "\n".join(lines)
 
@@ -169,7 +167,7 @@ class StructuredGlanceComponent:
             -max(1, int(limit or 6)) :
         ]
         return [
-            self.context._structured_history_payload(item)
+            self._structured_history_payload(item)
             for item in messages
             if item.content or item.media
         ]

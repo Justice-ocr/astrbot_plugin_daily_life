@@ -763,6 +763,10 @@ class DailyLocationAuditComponent:
         previous = None
         for entry, minutes in zip(entries, unwrapped_minutes, strict=True):
             if entry["kind"] not in {"home", "poi"} or not entry["coordinate"]:
+                # 经过附近街区、步道等没有可验证坐标的地点后，不能继续沿用更早的
+                # 家或 POI 作为路线起点，否则结构化路线会与生活文字脱节。
+                if entry.get("place") or entry.get("kind") == "generic":
+                    previous = None
                 continue
             if previous is not None:
                 lat1, lon1 = previous["coordinate"]

@@ -44,7 +44,7 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
             key = "activities"
         elif kind == "object":
             fields.update(
-                progress=160, provenance=120, delivery=32, delivered_at=40,
+                progress=160, next_step=160, provenance=120, delivery=32, delivered_at=40,
                 unit=30, available_at=40,
             )
             # 物品正文与位置可能含私人资料，只在其所属私聊使用。

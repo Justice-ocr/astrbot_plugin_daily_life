@@ -560,25 +560,24 @@ class LifeDomainService:
             return ""
         return f"{date_str} {text}:00" if len(text) == 5 else f"{date_str} {text}"
 
-    async def validate_action(self, action: LifeActionIntent) -> tuple[bool, str]:
+    async def validate_action(
+        self, action: LifeActionIntent, *, day: DayRecord
+    ) -> tuple[bool, str]:
         """校验领域前置条件，避免库存被扣成负数。"""
 
         if not self.settings.enabled:
             return True, ""
-        wardrobe_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
-        if action.action_type == "change_outfit" and callable(wardrobe_getter):
-            snapshot = await wardrobe_getter()
-            if snapshot.get("items"):
-                raw_ids = action.payload.get("catalog_reference_ids") or []
-                ids = [int(v) for v in raw_ids if str(v).isdigit()] if isinstance(raw_ids, list) else []
-                clothes = [i for i in ids if str(i) in snapshot["items"]]
-                if not clothes or any(not snapshot["items"][str(i)].get("available") for i in clothes):
-                    return False, "计划换装的衣物尚未拥有或正在洗护，待可穿衣物确认后再执行"
+        from .locationfacts import action_place, place_issue
+
+        issue = place_issue(day, action)
+        if issue:
+            return False, issue
+        if action.action_type == "change_outfit":
+            _, issue = await self.archive.prepare_outfit_action(day, action)
+            return not issue, issue
         if action.action_type in {"move", "travel"} and self.settings.location_enabled:
             origin = str(action.payload.get("origin") or "").strip()
-            destination = str(
-                action.payload.get("destination") or action.target or ""
-            ).strip()
+            destination = action_place(day, action)
             if origin and destination and action.duration_minutes > 0:
                 route = await self.estimate_route(
                     origin,
@@ -914,14 +913,14 @@ class LifeDomainService:
     async def _apply_route(
         self, day: DayRecord, action: LifeActionIntent, *, occurred_at: str
     ) -> None:
+        from .locationfacts import action_place
+
         if not self.settings.location_enabled:
             return
         origin = str(
             action.payload.get("origin") or (day.meta or {}).get("previous_place") or ""
         ).strip()
-        destination = str(
-            action.payload.get("destination") or action.target or ""
-        ).strip()
+        destination = action_place(day, action)
         if not origin or not destination:
             return
         route = await self.estimate_route(

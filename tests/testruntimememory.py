@@ -31,7 +31,7 @@ class RuntimeMemoryTest(unittest.TestCase):
         )
         other = SimpleNamespace(session_id="session-other", group_id="group-other")
 
-        scoped = runtime._scope_snapshot_items(
+        scoped = runtime._part_layer_chain_component._scope_snapshot_items(
             {
                 "environments": [other, current],
                 "decisions": [other],
@@ -557,7 +557,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         }
 
         await runtime._save_memory_awareness_records(payload, meta)
-        await runtime._save_subjective_impression(payload, meta)
+        await runtime._part_capture_relation_component._save_subjective_impression(payload, meta)
         await runtime._save_experience_payload(payload, meta)
 
         relationship = (await runtime.archive.get_recent_relationships(10))[0]

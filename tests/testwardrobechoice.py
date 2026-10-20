@@ -117,6 +117,20 @@ class WardrobeChoiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(garment["attributes"]["wardrobe"]["available"])
         self.assertEqual(garment["attributes"]["wardrobe"]["ownership"], "owned")
 
+    async def test_selected_garment_ids_reach_context_without_marking_them_worn(self):
+        state = await self.review({**self.choice, "decision": "remix"})
+        context = wardrobe_fact_text(state)
+        self.assertIn(f"这次选择的单品编号（尚非穿着事实）：#{self.item.id}", context)
+        self.assertNotIn("实际穿着编号：", context)
+        self.assertEqual((await self.archive.get_day(self.day.date)).outfit, "喜欢的旧裙子")
+        await self.archive.start_wardrobe_care(
+            [self.item.id], decision="dirty", event_id="later-dirty",
+            at=str(self.runtime.now), observer="test", duration_minutes=10,
+            reason="穿后待洗",
+        )
+        state = await self.review({**self.choice, "decision": "remix"})
+        self.assertNotIn("这次选择的单品编号", wardrobe_fact_text(state))
+
     async def test_keep_and_consider_do_not_generate_or_accumulate_duplicate_history(
         self,
     ):

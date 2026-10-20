@@ -12,6 +12,7 @@ from core.life.engine import _resolve_planned_outfit_catalog
 from componentfixtures import DailyLocationAuditComponent
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.life.reliability import NonRetryableProviderError
+from core.life.outfitstate import OutfitCommit
 from core.life.surroundings import (
     choose_place_candidates,
     format_world_prompt,
@@ -32,6 +33,7 @@ from core.models import (
     PreferenceRecord,
     TimelineItem,
 )
+from core.prompts import LIFE_ACTION_SCOPE_RULES
 from support import (
     ActionBot,
     AltProvider,
@@ -44,6 +46,27 @@ from support import (
 
 
 class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_outfit_commit_does_not_change_context_or_history(self):
+        composer, _, _, archive = make_composer([])
+        day = DayRecord(
+            date="2026-10-19", outfit="原来的衣服和拖鞋",
+            meta={"style": "居家风", "outing_outfit_reserve": "外出鞋包"},
+        )
+        await archive.save_day(day)
+        before = day.persistence_snapshot()
+        commit = OutfitCommit(
+            outfit="原来的衣服和板鞋", meta={"style": "日常外出风", "outing_outfit_reserve": ""},
+            outfit_changed=True, appearance_changed=True, reference_ids=[],
+            previous_reference_ids=[], partial_catalog=True, require_wearable=True,
+        )
+        with patch.object(archive, "save_day", AsyncMock(side_effect=ValueError("不可穿"))):
+            with self.assertRaises(ValueError):
+                await composer._part_outfit_component._persist_outfit_commit(
+                    day, commit, current_time=datetime.datetime(2026, 10, 19, 17),
+                    target_period="evening",
+                )
+        self.assertEqual(day.persistence_snapshot(), before)
+
     async def test_planned_outfit_accepts_catalog_display_reference_and_preserves_id(self):
         composer, _, _, archive = make_composer([])
         outfit = await archive.upsert_style_catalog_item(
@@ -77,6 +100,33 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("浅粉棉质吊带睡裙", action["target"])
         self.assertNotIn("模型另写", action["target"])
 
+    async def test_planned_shoe_only_change_does_not_require_selecting_main_clothing(self):
+        composer, _, _, archive = make_composer([])
+        shoes = await archive.upsert_style_catalog_item({
+            "kind": "footwear", "description": "白色板鞋",
+            "source_image_hash": "shoes" * 13,
+            "attributes": {"home_presence": "outdoor"},
+        })
+        action = {
+            "action_type": "change_outfit", "target": "原来的上衣和长裤；白色板鞋",
+            "timeline_index": 0, "payload": {
+                "outfit_components": {"footwear": {"state": "worn", "description": "白色板鞋"}},
+                "catalog_reference_ids": [f"#{shoes.id}"],
+            },
+        }
+        with patch.object(composer, "_style_catalog_new_outfit_selection", AsyncMock()) as full_selection:
+            issue = await _resolve_planned_outfit_catalog(composer, {
+                "timeline": [{"time": "17:00", "place_kind": "generic"}],
+                "planned_actions": [action],
+                "outfit_components": {"main_clothing": {"state": "worn", "description": "原来的上衣和长裤"}},
+            }, manual_extra=False)
+        self.assertEqual(issue, "")
+        full_selection.assert_not_awaited()
+        self.assertEqual(action["payload"]["catalog_reference_ids"], [shoes.id])
+        self.assertEqual(action["payload"]["scene_category"], "public")
+        self.assertNotIn("main_clothing", json.loads(action["payload"]["outfit_components"]))
+        self.assertEqual(action["target"], "原来的上衣和长裤；白色板鞋")
+
     def test_catalog_display_reference_only_normalizes_explicit_ids(self):
         composer, _, _, _ = make_composer([])
         self.assertEqual(
@@ -102,7 +152,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "timeline_index": 0,
             "payload": {"scene_category": "sleep"},
         }
-        result, issue = await composer._persist_daily_generation_success(
+        result, issue = await composer._part_daily_engine_component._persist_daily_generation_success(
             {
                 "timeline": [{"time": "22:00", "place_kind": "home"}],
                 "planned_actions": [action],
@@ -124,7 +174,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "payload": {"scene_category": "sleep", "catalog_reference_ids": [7]},
         }
         with patch.object(composer, "_style_catalog_new_outfit_selection", selection):
-            await composer._persist_daily_generation_success(
+            await composer._part_daily_engine_component._persist_daily_generation_success(
                 {
                     "timeline": [{"time": "22:00", "place_kind": "home"}],
                     "planned_actions": [action],
@@ -946,6 +996,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("每次真实状态或环境变化都应留下节点", prompt)
         self.assertIn("duration_minutes 表示该节点主要活动自然持续", prompt)
         self.assertIn("时间间隔只作参考，不能机械等距", prompt)
+        self.assertIn(LIFE_ACTION_SCOPE_RULES, prompt)
         self.assertNotIn("8-12 个有意义节点", prompt)
         self.assertNotIn("约 3 小时", prompt)
 
@@ -1146,6 +1197,34 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.prompts, ["测试请求"])
         sleep.assert_not_awaited()
 
+    async def test_provider_failure_falls_back_without_detailed_error_logs(self):
+        for error in (
+            RuntimeError("HTTP 502: Bad Gateway"),
+            RuntimeError("OpenAI completion has no choices"),
+            TimeoutError(),
+            RuntimeError("401 Unauthorized"),
+        ):
+            with self.subTest(error=type(error).__name__ + str(error)):
+                composer, default, selected, _ = make_composer(
+                    ["默认模型成功"], provider_id="selected", selected_responses=[error]
+                )
+                call_id = "daily_life_preference_consistency_1234abcd"
+                with patch("core.life.planner.logger") as log:
+                    text = await composer._call_llm_text(
+                        selected,
+                        "待整理的生活偏好正文",
+                        call_id,
+                        empty_retries=0,
+                        primary_provider_id="selected",
+                        timeout_seconds=0.01,
+                    )
+
+                self.assertEqual(text, "默认模型成功")
+                self.assertEqual(len(selected.prompts), 1)
+                self.assertEqual(len(default.prompts), 1)
+                # 供应商切换属于内部容错，不把调用标识、模型标识或异常细节写入日志。
+                self.assertEqual(log.mock_calls, [])
+
     async def test_provider_http_404_can_propagate_permanent_failure(self):
         composer, provider, _, _ = make_composer(
             [RuntimeError("HTTP 404: model not found")]
@@ -1180,7 +1259,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 empty_retries=0,
                 timeout_seconds=0.01,
             )
-        self.assertIn("TimeoutError：模型请求超时（上限 0.01 秒）", warning.call_args.args[0])
+        warning.assert_not_called()
 
         self.assertEqual(text, "")
 
@@ -1253,25 +1332,22 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("身体状态线索", prompt)
         self.assertIn('"life_event"', prompt)
         self.assertIn("body_condition.burden_present", prompt)
-        self.assertIn("JSON 输出要求", prompt)
+        self.assertIn("输出格式=JSON 对象本体", prompt)
         self.assertIn("颜色名·情绪词", prompt)
         self.assertIn("日程类型标签", prompt)
-        self.assertIn("不要写穿搭风格", prompt)
-        self.assertIn("不要因为当前时间线索偏早就强制起床", prompt)
-        self.assertIn(
-            "节点数量由 life_decision、清醒跨度、活动复杂度和当前状态共同决定", prompt
-        )
-        self.assertIn("当前/目标时刻仍在外出", prompt)
+        self.assertIn("schedule_type 概括生活重心", prompt)
+        self.assertIn("时间不是强制起居指令", prompt)
+        self.assertIn("时间轴按真实生活需要自然增减，不套固定节点数", prompt)
+        self.assertIn("未来行程不能提前改变当前穿搭", prompt)
         self.assertIn("keep 延续当前 outfit、style、hair_style、hair", prompt)
         self.assertIn('"scene_category"', prompt)
         self.assertIn('"style_pool"', prompt)
         self.assertIn("home | sleep | outdoor | public | mixed", prompt)
         self.assertIn("sleep_styles | outfit_styles | mixed", prompt)
         self.assertIn("回家、进入室内或时段变化不等于已经换衣", prompt)
-        self.assertIn("单纯“回家”不能默认补写换衣", prompt)
         self.assertIn("地点与衣着不能强制绑定", prompt)
-        self.assertIn("保持视觉一致性", prompt)
-        self.assertIn("色彩细节放在顶层 outfit", prompt)
+        self.assertIn("采用衣橱候选时忠实使用其细节与实际编号", prompt)
+        self.assertIn("顶层 outfit 只描述已经穿戴或携带的服装", prompt)
         self.assertIn("至少交代服装类别、主色", prompt)
         self.assertIn("hair_style 只写简短发型名称", prompt)
         self.assertIn("hair 单独写当前可见的详细发型", prompt)
@@ -1723,6 +1799,38 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("待替换的今日草稿", context)
         self.assertIn("昨日真实片段", context)
+
+    async def test_lifecycle_context_surfaces_recent_sleep_streak_without_forcing_change(self):
+        composer, _, _, archive = make_composer([])
+        for offset in range(1, 4):
+            day_date = datetime.date(2026, 6, 12) - datetime.timedelta(days=offset)
+            await archive.save_day(
+                DayRecord(
+                    date=day_date.isoformat(),
+                    state=LifeState.from_value(
+                        {
+                            "energy": 90,
+                            "mood_score": 78,
+                            "stress": 8,
+                            "sleepiness": 5,
+                            "emotional_stability": 90,
+                            "sleep": {"quality": 88, "summary": "正常休息"},
+                        }
+                    ),
+                    meta={"sleep_mode": "normal"},
+                )
+            )
+
+        context = await composer._build_lifecycle_context(
+            datetime.datetime(2026, 6, 12, 9, 0)
+        )
+
+        self.assertIn("近一周作息", context)
+        self.assertIn("近期有 3 天作息或状态高度相似", context)
+        self.assertIn("不是固定模板", context)
+        self.assertIn("精力90", context)
+        self.assertIn("不要复制连续高分", context)
+        self.assertIn("偶尔因日常节奏、临时起意或聊天自然晚睡", context)
 
     async def test_residence_boundary_excludes_old_city_generation_context(self):
         composer, _, _, archive = make_composer([])
@@ -2310,7 +2418,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        grounded = await composer._ground_generated_current_appearance(
+        grounded = await composer._part_daily_engine_component._ground_generated_current_appearance(
             day,
             context={
                 "check_time": datetime.datetime(2026, 5, 24, 7, 30),
@@ -2348,7 +2456,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             meta={"plan_outfit_decision": "outdoor"},
         )
 
-        grounded = await composer._ground_generated_current_appearance(
+        grounded = await composer._part_daily_engine_component._ground_generated_current_appearance(
             day,
             context={
                 "check_time": datetime.datetime(2026, 5, 24, 7, 30),
@@ -2359,6 +2467,27 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(grounded.outfit, "白色薄棉短袖配浅蓝色棉麻短裤")
         self.assertEqual(grounded.meta["outfit_fact_source"], "daily_generation")
         self.assertNotIn("outfit_carried_from", grounded.meta)
+
+    async def test_regenerated_day_preserves_actual_timeline_and_drops_past_plan(self):
+        composer, _, _, _ = make_composer([])
+        previous = DayRecord(
+            date="2026-05-24",
+            timeline=[
+                TimelineItem(time="08:00", activity="已经完成的早餐", execution_state="completed"),
+                TimelineItem(time="11:00", activity="尚未发生的旧计划", execution_state="planned"),
+            ],
+        )
+        regenerated = DayRecord(
+            date="2026-05-24",
+            timeline=[
+                TimelineItem(time="09:00", activity="重生成后落后的计划"),
+                TimelineItem(time="18:00", activity="晚间的新安排"),
+            ],
+        )
+        result = composer._part_daily_engine_component._preserve_regenerated_actual_timeline(
+            regenerated, previous, datetime.datetime(2026, 5, 24, 10, 0)
+        )
+        self.assertEqual([item.activity for item in result.timeline], ["已经完成的早餐", "晚间的新安排"])
 
     async def test_update_outfit_can_keep_current_outfit(self):
         composer, provider, _, archive = make_composer(
@@ -3561,7 +3690,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         await archive.save_day(day)
 
-        context = await composer._outfit_update_context(
+        context = await composer._part_outfit_component._outfit_update_context(
             old_data=day,
             date_str="2026-08-16",
             target_period="forenoon",
@@ -3572,7 +3701,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             ),
             source_instruction="换上衣橱第50组这套",
         )
-        prompt = composer._build_outfit_update_prompt(
+        prompt = composer._part_outfit_component._build_outfit_update_prompt(
             context=context,
             target_period="forenoon",
             current_time=datetime.datetime(2026, 8, 16, 10, 41),
@@ -4211,7 +4340,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        await composer._apply_timeline_review_updates(stale, {})
+        await composer._part_lifecycle_component._apply_timeline_review_updates(stale, {})
 
         stored = await archive.get_day("2026-05-24")
         self.assertEqual(stored.timeline[0].activity, "其他任务更新后的活动")
@@ -4245,7 +4374,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(composer, "settle_completed_planned_actions", settle):
             with patch("core.life.rhythm.asyncio.sleep", new=AsyncMock()) as sleeper:
-                await composer._apply_timeline_review_updates(day, {})
+                await composer._part_lifecycle_component._apply_timeline_review_updates(day, {})
 
         stored = await archive.get_day(day.date)
         self.assertEqual(settle.await_count, 4)

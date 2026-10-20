@@ -60,19 +60,11 @@ DAILY_REVIEW_REVISION_ATTEMPTS = 6
 class LifecycleComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _apply_focus_review_updates: Any
-    _apply_life_decision_review_outcomes: Any
-    _apply_life_event_review_updates: Any
-    _apply_timeline_review_updates: Any
-    _build_daily_review_prompt: Any
-    _build_preference_consistency_prompt: Any
     _call_llm_text: Any
     _cleanup_conversation: Any
     _compute_sleep_continuity: Any
-    _fallback_daily_review: Any
     _format_physiological_rhythm_trend_context: Any
     _get_provider: Any
-    _mark_daily_review_completed: Any
     _meta_float: Any
     _preference_maintenance_done: Any
     _style_catalog_has_clothing_candidates: Any
@@ -165,7 +157,7 @@ class LifecycleComponent:
         try:
             text = await self.context._call_llm_text(
                 provider,
-                self.context._build_preference_consistency_prompt(preferences),
+                self._build_preference_consistency_prompt(preferences),
                 session_id,
                 empty_retries=0,
                 primary_provider_id=provider_id,
@@ -325,6 +317,9 @@ class LifecycleComponent:
                 state=continuity_day.state if continuity_day else None,
             )
         )
+        recent_sleep_context = await self._build_recent_sleep_context(date)
+        if recent_sleep_context:
+            sections.append("## 🌙 近一周作息\n" + recent_sleep_context)
         if previous_day:
             debt = self.context._meta_float(previous_day.meta or {}, "sleep_debt", 0.0)
             carryover = self.context._meta_float(
@@ -449,6 +444,85 @@ class LifecycleComponent:
                 + "\n".join(lines)
             )
         return "\n\n".join(sections)
+
+    async def _build_recent_sleep_context(self, date: datetime.datetime) -> str:
+        modes: list[tuple[str, str, int | None, dict[str, int | None]]] = []
+        for offset in range(1, 8):
+            day_date = (date - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+            day = await self.context.archive.get_day(day_date)
+            if not day:
+                modes.append((day_date, "", None, {}))
+                continue
+            meta = day.meta or {}
+            mode = str(meta.get("sleep_mode") or "").strip()
+            sleep = day.state.sleep if day.state else None
+            quality = sleep.quality if sleep else None
+            state = day.state
+            scores = {
+                "精力": state.energy if state else None,
+                "心情": state.mood_score if state else None,
+                "压力": state.stress if state else None,
+                "困意": state.sleepiness if state else None,
+                "稳定度": state.emotional_stability if state else None,
+            }
+            modes.append((day_date, mode, quality, scores))
+
+        labels = {
+            "normal": "正常",
+            "late_night": "晚睡",
+            "all_nighter": "通宵",
+            "early_sleep": "早睡",
+            "nap": "午睡/补觉",
+        }
+        recorded = []
+        for day_date, mode, quality, scores in modes:
+            if not mode and quality is None and not any(
+                value is not None for value in scores.values()
+            ):
+                continue
+            detail = labels.get(mode, "未标注") if mode else "作息未标注"
+            if quality is not None:
+                detail += f"；睡眠质量 {quality}"
+            score_text = "、".join(
+                f"{name}{value}"
+                for name, value in scores.items()
+                if value is not None
+            )
+            if score_text:
+                detail += f"；{score_text}"
+            recorded.append(f"{day_date[5:]} {detail}")
+        if not recorded:
+            return ""
+
+        normal_streak = 0
+        high_state_streak = 0
+        for _day_date, mode, _quality, _scores in modes:
+            if mode != "normal":
+                break
+            normal_streak += 1
+        for _day_date, _mode, quality, scores in modes:
+            if (
+                quality is not None
+                and quality >= 85
+                and scores.get("精力") is not None
+                and scores["精力"] >= 85
+                and scores.get("稳定度") is not None
+                and scores["稳定度"] >= 85
+                and scores.get("压力") is not None
+                and scores["压力"] <= 15
+            ):
+                high_state_streak += 1
+            else:
+                break
+        if normal_streak >= 3 or high_state_streak >= 3:
+            guidance = (
+                f"近期有 {max(normal_streak, high_state_streak)} 天作息或状态高度相似；这是趋势，不是固定模板。"
+                "不要把正常作息等同于高质量睡眠，也不要复制连续高分；结合今天实际活动、清醒跨度、聊天余波和睡眠债重新判断。"
+                "偶尔因日常节奏、临时起意或聊天自然晚睡、晚起、补觉都成立，不必等待重大事件；身体有具体自觉症状时可低频记录短期不适或生病感，不必等用户报告，但不能为打破规律硬造症状。"
+            )
+        else:
+            guidance = "只把这些记录当作近期趋势；作息、睡眠质量、精力和情绪各自按当日状态判断，不直接复制前一天。"
+        return "\n".join(["近到远：" + "；".join(recorded), guidance])
 
     @staticmethod
     def _format_physiological_rhythm_trend_context(trend: dict[str, Any]) -> str:
@@ -674,7 +748,7 @@ class LifecycleComponent:
                 if provider:
                     text = await self.context._call_llm_text(
                         provider,
-                        self.context._build_daily_review_prompt(
+                        self._build_daily_review_prompt(
                             day,
                             preferences,
                             events,
@@ -699,7 +773,7 @@ class LifecycleComponent:
             finally:
                 await self.context._cleanup_conversation(session_id)
 
-            fallback_review = self.context._fallback_daily_review(day)
+            fallback_review = self._fallback_daily_review(day)
             review = review or fallback_review
             if not review.summary:
                 review.summary = fallback_review.summary
@@ -714,17 +788,17 @@ class LifecycleComponent:
             saved = await self.context.archive.save_daily_review(review)
         else:
             saved = review
-        await self.context._apply_life_event_review_updates(
+        await self._apply_life_event_review_updates(
             events, review_payload, date_str=date_str
         )
-        await self.context._apply_life_decision_review_outcomes(decisions, review_payload)
-        await self.context._apply_focus_review_updates(
+        await self._apply_life_decision_review_outcomes(decisions, review_payload)
+        await self._apply_focus_review_updates(
             focus_slots,
             review_payload,
             date_str=date_str,
             allowed_evidence_ids=allowed_evidence_ids,
         )
-        await self.context._apply_timeline_review_updates(day, review_payload)
+        await self._apply_timeline_review_updates(day, review_payload)
         evolution = LifeEvolutionService(self.context.archive)
         await evolution.settle_review(
             review_payload,
@@ -801,7 +875,7 @@ class LifecycleComponent:
                 )
 
             await continuous_mutator(date_str, sync_continuity)
-        await self.context._mark_daily_review_completed(date_str)
+        await self._mark_daily_review_completed(date_str)
         return saved
 
     async def _mark_daily_review_completed(self, date_str: str) -> None:

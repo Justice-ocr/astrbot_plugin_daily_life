@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any
 
+from .actionchain import execution_evidence
 from .calendar import format_season_context
 from .tools import get_current_timeline_status
 
@@ -61,6 +62,8 @@ def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
         ),
         "current_activity": activity(current),
         "next_activity": activity(following),
+        "actual_execution": execution_evidence(day),
+        "current_place": day.meta.get("current_place", ""),
         "current_outfit": day.outfit,
         "current_ids": day.meta.get("style_catalog_reference_ids", ""),
         "outfit_confirmed_at": day.meta.get("outfit_fact_confirmed_at", ""),
@@ -71,10 +74,53 @@ def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
 
 
 def suitability_key(conditions: dict) -> str:
-    # 不受钟点或记录时间影响；身体负担、天气、活动或实际穿搭变化即失效。
+    # 只在穿衣相关事实变化时失效，不跟随普通活动文案和天气附加信息抖动。
     body = conditions.get("body") or {}
     condition = body.get("body_condition") or {}
     cycle = body.get("optional_cycle") or {}
+    weather = conditions.get("weather") or {}
+    execution = conditions.get("actual_execution") or {}
+    actual = execution.get("current") or next(
+        iter(reversed(execution.get("recent_completed") or [])), {}
+    )
+    try:
+        temperature = (
+            round(float(weather["temp"]) / 5)
+            if weather.get("temp") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        temperature = None
+
+    def activity_context(value: Any) -> dict:
+        item = value if isinstance(value, dict) else {}
+        result = {
+            "activity_kind": "rest" if item.get("activity_kind") == "rest" else "",
+            "place_kind": str(item.get("place_kind") or "").strip().lower(),
+        }
+        if result["place_kind"] == "none":
+            result["place_kind"] = ""
+        if result["place_kind"] in {"poi", "generic", "transit"}:
+            result["activity"] = str(item.get("activity") or "").strip()
+        return result
+
+    weather_context = {
+        "known": bool(conditions.get("weather_known")),
+        "temperature": temperature,
+        "condition": str(weather.get("condition") or "").strip(),
+        **{
+            key: bool(weather.get(key))
+            for key in (
+                "is_hot",
+                "is_warm",
+                "is_cool",
+                "is_cold",
+                "is_rainy",
+                "is_sunny",
+                "is_severe",
+            )
+        },
+    }
     return digest(
         {
             "body_condition": {
@@ -84,19 +130,21 @@ def suitability_key(conditions: dict) -> str:
             "optional_cycle": {
                 key: cycle.get(key) for key in ("enabled", "label", "intensity")
             },
+            "weather": weather_context,
+            "actual_action_type": actual.get("action_type", ""),
             **{
-            k: conditions.get(k)
-            for k in (
-                "date",
-                "residence",
-                "weather",
-                "weather_known",
-                "current_activity",
-                "next_activity",
-                "current_outfit",
-                "current_ids",
-            )
+                k: conditions.get(k)
+                for k in (
+                    "date",
+                    "residence",
+                    "current_outfit",
+                    "current_ids",
+                    "current_place",
+                )
             },
+            "current_activity": activity_context(conditions.get("current_activity")),
+            "next_activity": activity_context(conditions.get("next_activity")),
+            "upcoming_outings": conditions.get("upcoming_outings", []),
         }
     )
 
@@ -226,9 +274,17 @@ def wardrobe_fact_text(snapshot: dict) -> str:
     lines = [
         "数字衣橱：候选不等于已拥有，已拥有不等于已经穿上；洗护是数字生活执行记录。"
     ]
-    choice = wardrobe_choice_text(current_wardrobe_choice(snapshot))
-    if choice:
-        lines.append("- 自己的衣橱想法（不等于已穿上）：" + choice)
+    choice = current_wardrobe_choice(snapshot)
+    choice_text = wardrobe_choice_text(choice)
+    if choice_text:
+        lines.append("- 自己的衣橱想法（不等于已穿上）：" + choice_text)
+        selected_ids = [
+            str(item_id)
+            for item_id in choice.get("item_ids", [])
+            if type(item_id) is int and str(item_id) in snapshot.get("items", {})
+        ]
+        if choice.get("status") == "decided" and selected_ids:
+            lines.append("- 这次选择的单品编号（尚非穿着事实）：" + "、".join("#" + k for k in selected_ids))
     for point in tastes[:6]:
         lines.append(
             f"- {labels.get(point.get('origin'), '审美参考')}：{point.get('preference', '')}（置信度 {point.get('confidence', 0.5):.2f}）"

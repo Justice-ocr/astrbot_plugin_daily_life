@@ -19,11 +19,8 @@ class HistoryWatchComponentContext(Protocol):
     _event_session_id: Any
     _event_user_history_media_label: Any
     _event_user_history_text: Any
-    _observed_history_key: Any
-    _observed_history_keys: Any
     _observed_user_history_keys: Any
     _observed_user_history_order: Any
-    _remember_observed_history_key: Any
     _safe_event_call: Any
     event_was_recalled: Any
 
@@ -40,7 +37,7 @@ class HistoryWatchComponent:
         return keys
 
     def _remember_observed_history_key(self, key: str) -> bool:
-        keys = self.context._observed_history_keys()
+        keys = self._observed_history_keys()
         if key in keys:
             return False
         order = getattr(self.context, "_observed_user_history_order", None)
@@ -95,8 +92,8 @@ class HistoryWatchComponent:
         media_label = self.context._event_user_history_media_label(event)
         if not text and not media_label:
             return False
-        key = self.context._observed_history_key(event, text or media_label)
-        if not self.context._remember_observed_history_key(key):
+        key = self._observed_history_key(event, text or media_label)
+        if not self._remember_observed_history_key(key):
             return False
         if self.context.event_was_recalled(event):
             return False

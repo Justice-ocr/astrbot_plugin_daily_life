@@ -256,7 +256,7 @@ class ProactiveContinuityTest(
                     relationship_story="",
                     persona_hint="",
                 )
-                result = await runtime._evaluate_private_revisit_payload(
+                result = await runtime._part_proactive_revisit_component._evaluate_private_revisit_payload(
                     self.scope,
                     relationship=relationship,
                     now=datetime.datetime(2026, 9, 20, 18, 0),

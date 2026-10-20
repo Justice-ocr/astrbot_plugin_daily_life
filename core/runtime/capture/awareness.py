@@ -17,7 +17,6 @@ class AwarenessComponentContext(Protocol):
 
     _MEANINGFUL_DECISION_ACTIONS: Any
     _MEANINGFUL_VISIBILITY_LEVELS: Any
-    _action_decision_from_payload: Any
     _bool_payload: Any
     _compact_log: Any
     _event_group_meta: Any
@@ -30,12 +29,7 @@ class AwarenessComponentContext(Protocol):
     _event_quote_context: Any
     _event_session_id: Any
     _float_payload: Any
-    _group_environment_from_payload: Any
     _int_payload: Any
-    _is_effective_action_decision: Any
-    _is_effective_group_environment: Any
-    _is_effective_message_visibility: Any
-    _message_visibility_from_payload: Any
     _score_payload: Any
     _str_payload: Any
     archive: Any
@@ -231,8 +225,8 @@ class AwarenessComponent:
             if isinstance(payload.get("visibility"), dict)
             else {}
         )
-        visibility_record = self.context._message_visibility_from_payload(visibility, meta)
-        if self.context._is_effective_message_visibility(visibility_record):
+        visibility_record = self._message_visibility_from_payload(visibility, meta)
+        if self._is_effective_message_visibility(visibility_record):
             await self.context.archive.save_message_visibility(visibility_record)
 
         environment = (
@@ -241,8 +235,8 @@ class AwarenessComponent:
             else {}
         )
         if meta.get("is_group") == "true" and meta["group_id"]:
-            environment_record = self.context._group_environment_from_payload(environment, meta)
-            if self.context._is_effective_group_environment(environment_record):
+            environment_record = self._group_environment_from_payload(environment, meta)
+            if self._is_effective_group_environment(environment_record):
                 await self.context.archive.save_group_environment(environment_record)
 
         decision = (
@@ -250,8 +244,8 @@ class AwarenessComponent:
             if isinstance(payload.get("action_decision"), dict)
             else {}
         )
-        decision_record = self.context._action_decision_from_payload(decision, meta)
-        if self.context._is_effective_action_decision(decision_record):
+        decision_record = self._action_decision_from_payload(decision, meta)
+        if self._is_effective_action_decision(decision_record):
             await self.context.archive.save_action_decision(decision_record)
 
     async def _append_memory_decision_log(
@@ -278,14 +272,14 @@ class AwarenessComponent:
             if isinstance(payload.get("group_environment"), dict)
             else {}
         )
-        visibility_record = self.context._message_visibility_from_payload(visibility, meta)
-        decision_record = self.context._action_decision_from_payload(decision, meta)
-        environment_record = self.context._group_environment_from_payload(environment, meta)
-        keep_visibility = self.context._is_effective_message_visibility(visibility_record)
-        keep_decision = self.context._is_effective_action_decision(decision_record)
+        visibility_record = self._message_visibility_from_payload(visibility, meta)
+        decision_record = self._action_decision_from_payload(decision, meta)
+        environment_record = self._group_environment_from_payload(environment, meta)
+        keep_visibility = self._is_effective_message_visibility(visibility_record)
+        keep_decision = self._is_effective_action_decision(decision_record)
         keep_environment = meta.get(
             "is_group"
-        ) == "true" and self.context._is_effective_group_environment(environment_record)
+        ) == "true" and self._is_effective_group_environment(environment_record)
 
         parts = [
             f"{now.strftime('%H:%M')} 群聊观察"

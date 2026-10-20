@@ -277,7 +277,7 @@ class AffectEngine:
         emotional_intensity: Any,
         goal_impact: Any,
         social_impact: Any,
-        threshold: float = 65.0,
+        threshold: float = 50.0,
     ) -> ReflectionGate:
         """按稳定权重判断本轮是否值得调用模型反思。
 

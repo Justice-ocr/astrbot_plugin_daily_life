@@ -17,6 +17,7 @@ from ...prompts import (
 from ...sources.history import SavedHistoryReader
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
+from ..expressionweight import expression_weight
 
 from typing import Protocol
 
@@ -511,7 +512,7 @@ JSON 输出要求：
             if label and body:
                 profile_id = str(getattr(item, "profile_id", "") or "").strip()
                 owner = f"（适用对象：{profile_id}）" if profile_id else ""
-                lines.append(f"- {label}{owner}: {body}")
+                lines.append(f"- {label}{owner}: {body}；经验权重 {expression_weight(item):.2f}")
         return "\n".join(lines) if lines else "暂无稳定表达习惯。"
 
     def _format_behavior_patterns_for_proactive(self, patterns: list[Any]) -> str:

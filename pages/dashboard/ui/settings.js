@@ -336,6 +336,8 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       fields: [
         "voice_generation_config.enabled",
         "voice_generation_config.smart_switch_enabled",
+        "voice_generation_config.expression_provider",
+        "voice_generation_config.expression_timeout_seconds",
         "voice_generation_config.smart_switch_probability",
         "voice_generation_config.proactive_enabled",
         "voice_generation_config.api_key",

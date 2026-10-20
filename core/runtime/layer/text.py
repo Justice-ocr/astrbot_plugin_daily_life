@@ -4,6 +4,8 @@ import datetime
 import json
 from typing import Any
 
+from ..expression import remember_expression_context
+
 from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
@@ -28,8 +30,6 @@ class LayerTextComponentContext(Protocol):
 
     _chat_style_enabled: Any
     _format_hidden_schedule_window: Any
-    _format_hidden_state_compact: Any
-    _format_timeline_item_compact: Any
     _get_time_status: Any
     _hidden_text: Any
     _semantic_segment_enabled: Any
@@ -235,7 +235,7 @@ class LayerTextComponent:
         index_text = "；".join(
             part
             for part in (
-                self.context._format_timeline_item_compact(item, limit=24, timeline_date=date, meta=meta)
+                self._format_timeline_item_compact(item, limit=24, timeline_date=date, meta=meta)
                 for _, _, item in timed
             )
             if part
@@ -266,7 +266,7 @@ class LayerTextComponent:
                 if previous_item is not None
                 else ""
             )
-            compact = self.context._format_timeline_item_compact(
+            compact = self._format_timeline_item_compact(
                 item,
                 previous_place=previous_place,
                 include_travel=True,
@@ -489,8 +489,9 @@ class LayerTextComponent:
         parts.append(f"\n[HiddenTime] {now.strftime('%Y-%m-%d %H:%M')} ({period_cn})")
         parts.append(f"\n[HiddenCalendar] {format_calendar_context(now)}")
         parts.append(f"\n[HiddenSeason] {format_season_context(now)}")
+        state_context = ""
         if not residence_context_stale:
-            state_context = self.context._format_hidden_state_compact(data.state)
+            state_context = self._format_hidden_state_compact(data.state)
             if state_context:
                 parts.append(f"\n{state_context}")
 
@@ -513,6 +514,12 @@ class LayerTextComponent:
                 f"{structured}"
             )
 
+        remember_expression_context(
+            expression_event,
+            time=now.isoformat(timespec="minutes"),
+            activity=activity,
+            state=state_context,
+        )
         parts.append("\n</daily_life>")
         channel_hint = self.context.build_hidden_expression_channel_hint(expression_event)
         if channel_hint:
@@ -551,6 +558,12 @@ class LayerTextComponent:
             f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}"
             f"{self.context.build_hidden_chat_style_hint()}"
             if include_rules else ""
+        )
+        remember_expression_context(
+            event,
+            time=now.isoformat(timespec="minutes"),
+            activity="暂无已确认的生活状态与活动，不推断此刻是否入睡或忙碌。",
+            state="",
         )
         return (
             "\n\n<daily_life>"

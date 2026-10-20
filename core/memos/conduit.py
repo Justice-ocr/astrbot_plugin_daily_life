@@ -23,19 +23,11 @@ class MemosComponentContext(Protocol):
     _MEMOS_CONTEXT_CACHE_LIMIT: Any
     _MEMOS_CONTEXT_CACHE_TTL_SECONDS: Any
     _event_context_meta: Any
-    _forget_memos_context_task: Any
-    _load_memos_hidden_context: Any
-    _memos_context_cache: Any
     _memos_context_cache_key: Any
     _memos_context_cache_store: Any
-    _memos_context_from_cache: Any
-    _memos_context_pending: Any
     _memos_context_pending_store: Any
-    _memos_record_text: Any
     _memos_service: Any
-    _memos_text: Any
     _schedule_background_task: Any
-    _set_memos_context_cache: Any
     config: Any
     contact_resolver: Any
     memos: Any
@@ -57,8 +49,8 @@ class MemosComponent:
         return HostedMemOSService(getattr(settings, "memos", None))
 
     async def close_memos_service(self) -> None:
-        pending = list(self.context._memos_context_pending().values())
-        self.context._memos_context_pending().clear()
+        pending = list(self._memos_context_pending().values())
+        self._memos_context_pending().clear()
         for task in pending:
             if not task.done():
                 task.cancel()
@@ -90,7 +82,7 @@ class MemosComponent:
             if meta.get("is_group") == "true" and sender_name and query:
                 query = f"{sender_name}: {query}"
             cache_key = self.context._memos_context_cache_key(meta, query)
-            cached = self.context._memos_context_from_cache(cache_key)
+            cached = self._memos_context_from_cache(cache_key)
             if cached is not None:
                 return cached
             timeout = max(
@@ -99,11 +91,11 @@ class MemosComponent:
                     getattr(service.settings, "injection_timeout_seconds", 0.8) or 0.8
                 ),
             )
-            pending = self.context._memos_context_pending()
+            pending = self._memos_context_pending()
             task = pending.get(cache_key)
             if task is None or task.done():
                 task = asyncio.create_task(
-                    self.context._load_memos_hidden_context(
+                    self._load_memos_hidden_context(
                         service,
                         query,
                         meta,
@@ -112,7 +104,7 @@ class MemosComponent:
                 )
                 pending[cache_key] = task
                 task.add_done_callback(
-                    lambda done: self.context._forget_memos_context_task(cache_key, done)
+                    lambda done: self._forget_memos_context_task(cache_key, done)
                 )
             return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except asyncio.TimeoutError:
@@ -158,13 +150,13 @@ class MemosComponent:
     ) -> str:
         items = await service.search(query, meta)
         context = service.format_hidden_context(items)
-        self.context._set_memos_context_cache(cache_key, context)
+        self._set_memos_context_cache(cache_key, context)
         return context
 
     def _forget_memos_context_task(
         self, key: str, task: asyncio.Task[str]
     ) -> None:
-        pending = self.context._memos_context_pending()
+        pending = self._memos_context_pending()
         if pending.get(key) is task:
             pending.pop(key, None)
         if not task.cancelled():
@@ -186,13 +178,13 @@ class MemosComponent:
         return cache
 
     def _memos_context_from_cache(self, key: str) -> str | None:
-        item = self.context._memos_context_cache().get(key)
+        item = self._memos_context_cache().get(key)
         if not isinstance(item, dict):
             return None
         return str(item.get("text") or "")
 
     def _set_memos_context_cache(self, key: str, text: str) -> None:
-        cache = self.context._memos_context_cache()
+        cache = self._memos_context_cache()
         cache.pop(key, None)
         cache[key] = {
             "ts": time.monotonic(),
@@ -289,11 +281,11 @@ class MemosComponent:
         return " ".join(str(value or "").split())[:limit].strip()
 
     def _memos_record_text(self, label: str, *parts: Any, limit: int = 360) -> str:
-        values = [self.context._memos_text(part, limit) for part in parts]
+        values = [self._memos_text(part, limit) for part in parts]
         values = [value for value in values if value]
         if not values:
             return ""
-        return self.context._memos_text(f"{label}：" + "；".join(values), limit)
+        return self._memos_text(f"{label}：" + "；".join(values), limit)
 
     def _memos_items_from_payload(
         self,
@@ -306,14 +298,14 @@ class MemosComponent:
         seen: set[str] = set()
 
         def add(text: str) -> None:
-            text = self.context._memos_text(text, 360)
+            text = self._memos_text(text, 360)
             if text and text not in seen:
                 seen.add(text)
                 items.append(text)
 
         if saved_summary is not None:
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "聊天摘要",
                     getattr(saved_summary, "brief", ""),
                     getattr(saved_summary, "long_summary", ""),
@@ -324,7 +316,7 @@ class MemosComponent:
         for item in speaker_relationship:
             if isinstance(item, dict):
                 add(
-                    self.context._memos_record_text(
+                    self._memos_record_text(
                         "关系画像",
                         item.get("name"),
                         item.get("subjective_name"),
@@ -343,7 +335,7 @@ class MemosComponent:
             if isinstance(payload.get("relationship_points"), list)
             else []
         ):
-            add(self.context._memos_record_text("关系画像", point))
+            add(self._memos_record_text("关系画像", point))
 
         target_records = saved_records.get("memory_targets")
         if target_records is None:
@@ -367,7 +359,7 @@ class MemosComponent:
             tags = target.get("subjective_tags") or target.get("tags")
             tags = tags if isinstance(tags, list) else []
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "关系画像",
                     name,
                     target.get("relationship_story"),
@@ -387,7 +379,7 @@ class MemosComponent:
         for pref in preferences:
             if isinstance(pref, dict):
                 add(
-                    self.context._memos_record_text(
+                    self._memos_record_text(
                         "稳定偏好",
                         pref.get("category"),
                         pref.get("content"),
@@ -396,7 +388,7 @@ class MemosComponent:
                 )
             else:
                 add(
-                    self.context._memos_record_text(
+                    self._memos_record_text(
                         "稳定偏好",
                         getattr(pref, "category", ""),
                         getattr(pref, "content", pref),
@@ -406,7 +398,7 @@ class MemosComponent:
 
         for adjustment in saved_records.get("life_adjustments", []):
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "生活纠偏",
                     getattr(adjustment, "label", "")
                     or getattr(adjustment, "category", "")
@@ -421,7 +413,7 @@ class MemosComponent:
 
         for feedback in saved_records.get("behavior_feedback", []):
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "行为反馈",
                     getattr(feedback, "scene", ""),
                     getattr(feedback, "action", ""),
@@ -433,7 +425,7 @@ class MemosComponent:
 
         for profile in saved_records.get("expression_profiles", []):
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "表达方式",
                     getattr(profile, "label", ""),
                     getattr(profile, "tone", ""),
@@ -447,7 +439,7 @@ class MemosComponent:
 
         for episode in saved_records.get("life_episodes", []):
             add(
-                self.context._memos_record_text(
+                self._memos_record_text(
                     "长期生活事件",
                     getattr(episode, "title", ""),
                     getattr(episode, "summary", ""),
@@ -489,7 +481,7 @@ class MemosComponent:
         ):
             return False
         compact_items = [
-            self.context._memos_text(item, 360) for item in items if self.context._memos_text(item, 360)
+            self._memos_text(item, 360) for item in items if self._memos_text(item, 360)
         ]
         if not compact_items:
             return False

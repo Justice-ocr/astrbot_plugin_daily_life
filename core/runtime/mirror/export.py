@@ -24,19 +24,12 @@ from typing import Protocol
 class SnapshotExportComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _build_share_base_context: Any
-    _get_rich_context_parts: Any
     _get_time_status: Any
-    _life_context_archive_snapshot: Any
     _life_context_filter_people_records: Any
     _life_context_meta_line: Any
     _life_context_people_keys: Any
-    _life_context_schedule: Any
-    _life_context_status_line: Any
     _life_context_subject: Any
-    _life_context_target_archive_snapshot: Any
     _life_context_weather: Any
-    _resolve_life_context_day: Any
     _schedule_context_state_refresh: Any
     _settle_stale_reply_effects: Any
     _share_behavior_payload: Any
@@ -45,7 +38,6 @@ class SnapshotExportComponentContext(Protocol):
     _share_exact_scope: Any
     _share_expression_payload: Any
     _share_focus_payload: Any
-    _share_guidance: Any
     _share_interaction_payload: Any
     _share_scope_context: Any
     _share_terms_payload: Any
@@ -197,7 +189,7 @@ class SnapshotExportComponent:
     async def _life_context_schedule(
         self, data: Any, now: datetime.datetime, is_extended_night: bool
     ) -> str:
-        parts = [self.context._life_context_status_line(data, now, is_extended_night)]
+        parts = [self._life_context_status_line(data, now, is_extended_night)]
         meta_line = self.context._life_context_meta_line(data.meta)
         if meta_line:
             parts.append(meta_line)
@@ -206,7 +198,7 @@ class SnapshotExportComponent:
         )
         parts.append(f"(昨日记录) {timeline}" if is_extended_night else timeline)
 
-        rich_parts = await self.context._get_rich_context_parts(data, now, is_extended_night)
+        rich_parts = await self._get_rich_context_parts(data, now, is_extended_night)
         if data.memo:
             rich_parts.append(f"📌 [今日备忘录] {data.memo}")
         if rich_parts:
@@ -353,7 +345,7 @@ class SnapshotExportComponent:
     ) -> dict[str, Any]:
         scope = str(target_umo or "").strip()
         if not scope:
-            return await self.context._life_context_archive_snapshot()
+            return await self._life_context_archive_snapshot()
 
         is_group = ":GroupMessage:" in scope
         relationship_task = (
@@ -768,10 +760,10 @@ class SnapshotExportComponent:
 
     async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:
         """向分享类插件暴露目标隔离且已提炼的生活上下文。"""
-        context = await self.context._build_share_base_context(target_umo)
+        context = await self._build_share_base_context(target_umo)
         if not context:
             return {}
-        context["share_guidance"] = await self.context._share_guidance(
+        context["share_guidance"] = await self._share_guidance(
             target_umo, list(context.get("relationships") or [])
         )
         from .sharing import share_continuity, share_timing
@@ -796,7 +788,7 @@ class SnapshotExportComponent:
             target_date_str,
             is_extended_night,
             missing_schedule,
-        ) = await self.context._resolve_life_context_day(now)
+        ) = await self._resolve_life_context_day(now)
         if missing_schedule:
             return {"schedule": missing_schedule}
         if not data or not target_date_str:
@@ -806,8 +798,8 @@ class SnapshotExportComponent:
         meta = data.meta
         memo = data.memo
         schedule, archive_snapshot = await asyncio.gather(
-            self.context._life_context_schedule(data, now, is_extended_night),
-            self.context._life_context_target_archive_snapshot(target_umo),
+            self._life_context_schedule(data, now, is_extended_night),
+            self._life_context_target_archive_snapshot(target_umo),
         )
         state_dict = data.state.as_dict() if data.state else {}
         current_facts = self.context._share_current_facts(data)

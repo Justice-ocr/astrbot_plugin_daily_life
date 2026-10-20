@@ -7,7 +7,8 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
-from ..models import DayRecord, WeatherInfo, normalize_timeline_day_offsets
+from ..archive.timeline import rebind_planned_actions
+from ..models import DayRecord, TimelineItem, WeatherInfo, normalize_timeline_day_offsets
 from .appearance import current_appearance_values, persona_appearance_values
 from .calendar import format_calendar_context, format_season_context
 from .dressing import wardrobe_conditions
@@ -26,6 +27,7 @@ from .wardrobe import (
     normalize_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
+    outfit_action_components,
     reconcile_outfit_components_for_scene,
     resolve_outfit_style_pool,
     scene_category_for_place_kind,
@@ -89,9 +91,6 @@ class DailyEngineComponentContext(Protocol):
     _collect_recent_chat_context: Any
     _daily_decision_outcome: Any
     _daily_decision_text: Any
-    _daily_generation_check_time: Any
-    _daily_generation_context: Any
-    _daily_generation_memo_text: Any
     _day_from_generation: Any
     _ensure_week_plan: Any
     _format_commitment_prompt: Any
@@ -99,12 +98,10 @@ class DailyEngineComponentContext(Protocol):
     _generation_provider_id: Any
     _get_persona: Any
     _get_provider: Any
-    _ground_generated_current_appearance: Any
     _last_validation_issue_code: Any
     _mark_style_catalog_references: Any
     _meta_from_generation: Any
     _normalize_extra: Any
-    _persist_daily_generation_success: Any
     _persist_generated_day: Any
     _prepare_daily_location_context: Any
     _repeat_generation_issue: Any
@@ -160,15 +157,10 @@ async def _resolve_planned_outfit_catalog(
         current_components = normalize_outfit_components(
             result.get("outfit_components")
         )
-        action_main = action_components.get("main_clothing") or {}
-        current_main = current_components.get("main_clothing") or {}
-        partial_action = bool(
-            action_components
-            and str(action_main.get("description") or "").strip()
-            and str(current_main.get("description") or "").strip()
-            and str(action_main.get("description") or "").strip()
-            == str(current_main.get("description") or "").strip()
+        _, full_change = outfit_action_components(
+            current_components, action_components, str(raw_action.get("target") or "")
         )
+        partial_action = bool(action_components and not full_change)
         if manual_extra or partial_action:
             action_appearance = await host._style_catalog_reference_appearance(
                 action_reference_ids,
@@ -213,6 +205,10 @@ async def _resolve_planned_outfit_catalog(
         if component_ledger:
             payload["outfit_components"] = component_ledger
         payload["scene_category"] = action_scene_category
+        payload["catalog_reference_ids"] = action_reference_ids
+        for field in ("style", "hair_style", "hair", "makeup_style", "makeup", "nails_style", "nails"):
+            if action_appearance.get(field):
+                payload[field] = action_appearance[field]
         if action_appearance.get("outfit"):
             action_visible_outfit = format_outfit_components(
                 json.loads(component_ledger) if component_ledger else {}
@@ -222,11 +218,10 @@ async def _resolve_planned_outfit_catalog(
                 if action_visible_outfit
                 else action_appearance["outfit"]
             )
-            payload["catalog_reference_ids"] = action_reference_ids
             reserve = str(action_appearance.get("outing_reserve") or "").strip()
             if reserve:
                 payload["outing_outfit_reserve"] = reserve
-            raw_action["payload"] = payload
+        raw_action["payload"] = payload
     return ""
 
 
@@ -264,7 +259,7 @@ class DailyEngineComponent:
         regenerate_existing: bool = False,
     ) -> dict:
         date_str = date.strftime("%Y-%m-%d")
-        check_time = self.context._daily_generation_check_time(date, target_hour=target_hour)
+        check_time = self._daily_generation_check_time(date, target_hour=target_hour)
         time_context = build_time_context(
             check_time,
             getattr(self.context.config, "schedule_time", "07:00")
@@ -304,7 +299,7 @@ class DailyEngineComponent:
             persona=persona,
             explicit_instruction=self.context._normalize_extra(extra),
         )
-        memo_str = await self.context._daily_generation_memo_text(
+        memo_str = await self._daily_generation_memo_text(
             date_str, extra=extra, web_inspiration=web_inspiration
         )
         due_commitments = await self.context.archive.get_due_commitments(date_str)
@@ -577,7 +572,10 @@ class DailyEngineComponent:
             return None, repeat_issue
 
         logger.debug("[日程生成] 成功解析结构化数据")
-        day = await self.context._ground_generated_current_appearance(day, context=context)
+        day = await self._ground_generated_current_appearance(day, context=context)
+        day = self._preserve_regenerated_actual_timeline(
+            day, context.get("replaced_day"), context.get("check_time")
+        )
         # 只在旧记录被标为用户确认、且本轮会续接它时做二次审计。
         # 普通首轮生成仍由主日程提示词完成，避免为每次生成增加模型调用。
         appearance_audit_required = bool(
@@ -659,6 +657,53 @@ class DailyEngineComponent:
         """避免把尚未发生的日程穿搭提前保存为当前穿搭。"""
 
         check_time = context["check_time"]
+        replaced_day = context.get("replaced_day")
+        if replaced_day is not None:
+            previous_meta = getattr(replaced_day, "meta", {}) or {}
+            previous_outfit = current_appearance_values(replaced_day)["outfit"]
+            previous_confirmed_at = str(
+                previous_meta.get("outfit_fact_confirmed_at") or ""
+            ).strip()
+            previous_source = str(previous_meta.get("outfit_fact_source") or "").strip()
+            previous_has_actual_node = any(
+                getattr(item, "execution_state", "") in {"active", "completed"}
+                for item in (getattr(replaced_day, "timeline", []) or [])
+            )
+            if previous_outfit and (
+                previous_confirmed_at
+                or previous_source in {"user_instruction", "action_receipt", "continuous_life"}
+                or previous_has_actual_node
+            ):
+                day.meta["plan_outfit"] = day.outfit
+                for current_key, plan_key in _PLANNED_APPEARANCE_META_KEYS.items():
+                    planned_value = str(day.meta.get(current_key) or "").strip()
+                    if planned_value:
+                        day.meta[plan_key] = planned_value
+                for key in _CURRENT_APPEARANCE_META_KEYS:
+                    if key in previous_meta:
+                        day.meta[key] = previous_meta[key]
+                    else:
+                        day.meta.pop(key, None)
+                day.outfit = previous_outfit
+                day.outfit_history = {
+                    **dict(getattr(day, "outfit_history", {}) or {}),
+                    **dict(getattr(replaced_day, "outfit_history", {}) or {}),
+                }
+                for key in (
+                    "current_place",
+                    "place_fact_at",
+                    "place_fact_action_id",
+                    "previous_place",
+                    "outfit_fact_source",
+                    "outfit_fact_confirmed_at",
+                    "outfit_fact_evidence",
+                    "outfit_carried_from",
+                ):
+                    if key in previous_meta:
+                        day.meta[key] = previous_meta[key]
+                    else:
+                        day.meta.pop(key, None)
+                return day
         has_occurred_timeline = any(
             item_time is not None and item_time <= check_time
             for item in day.timeline
@@ -712,6 +757,149 @@ class DailyEngineComponent:
         logger.debug("[日程生成] 首个日程节点尚未发生，当前穿搭延续上一日记录")
         return day
 
+    @staticmethod
+    def _preserve_regenerated_actual_timeline(day, previous_day, check_time):
+        """重生成当日计划时只保留有执行证据的旧节点，避免把计划改写成事实。"""
+        if previous_day is None or check_time is None:
+            return day
+        previous_items = [
+            TimelineItem.from_value(item)
+            for item in (getattr(previous_day, "timeline", []) or [])
+        ]
+        generated_items = [
+            TimelineItem.from_value(item) for item in (getattr(day, "timeline", []) or [])
+        ]
+        actual_items = []
+        for item in previous_items:
+            item_time = timeline_item_datetime(item, day.date, meta=getattr(previous_day, "meta", None))
+            if item.execution_state == "active" or (
+                item.execution_state == "completed"
+                and item_time is not None
+                and item_time <= check_time
+            ):
+                actual_items.append(item)
+
+        def item_key(item):
+            item_time = timeline_item_datetime(item, day.date, meta=getattr(day, "meta", None))
+            return (
+                item_time.isoformat() if item_time else item.time,
+                item.activity,
+                item.place,
+                item.place_kind,
+            )
+
+        actual_keys = {item_key(item) for item in actual_items}
+        future_items = []
+        for item in generated_items:
+            item_time = timeline_item_datetime(item, day.date, meta=getattr(day, "meta", None))
+            if item_key(item) in actual_keys:
+                continue
+            if item_time is None or item_time > check_time:
+                future_items.append(item)
+        merged = actual_items + future_items
+        merged.sort(
+            key=lambda item: (
+                timeline_item_datetime(item, day.date, meta=getattr(day, "meta", None))
+                or datetime.datetime.max
+            )
+        )
+        day.timeline = merged
+        old_actions = []
+        try:
+            old_raw_actions = (getattr(previous_day, "meta", {}) or {}).get(
+                "planned_life_actions"
+            )
+            old_actions = json.loads(old_raw_actions) if old_raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            old_actions = []
+        raw_actions = day.meta.get("planned_life_actions")
+        try:
+            actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            actions = []
+        if isinstance(actions, list):
+            original_indexes = {
+                str(action.get("action_id")): action.get("timeline_index")
+                for action in actions
+                if isinstance(action, dict)
+            }
+            rebind_planned_actions(day.meta, generated_items, merged)
+            actions = json.loads(day.meta.get("planned_life_actions") or "[]")
+            actions = [
+                action
+                for action in actions
+                if not (
+                    isinstance(action, dict)
+                    and action.get("timeline_index") is None
+                    and isinstance(original_indexes.get(str(action.get("action_id"))), int)
+                )
+            ]
+            day.meta["planned_life_actions"] = json.dumps(
+                actions,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        else:
+            actions = []
+        committed_ids = set()
+        previous_settlements = str(
+            (getattr(previous_day, "meta", {}) or {}).get("life_action_settlements") or ""
+        )
+        if previous_settlements:
+            try:
+                old_settlements = json.loads(previous_settlements)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                old_settlements = {}
+            if isinstance(old_settlements, dict):
+                try:
+                    new_settlements = json.loads(day.meta.get("life_action_settlements") or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    new_settlements = {}
+                if not isinstance(new_settlements, dict):
+                    new_settlements = {}
+                for action_id, outcome in old_settlements.items():
+                    if isinstance(outcome, dict) and outcome.get("status") == "committed":
+                        committed_ids.add(str(action_id))
+                        new_settlements.setdefault(action_id, outcome)
+                day.meta["life_action_settlements"] = json.dumps(
+                    new_settlements, ensure_ascii=False, separators=(",", ":")
+                )
+        if isinstance(old_actions, list):
+            known_ids = {
+                str(action.get("action_id"))
+                for action in actions
+                if isinstance(action, dict) and action.get("action_id")
+            }
+            for old_action in old_actions:
+                if not isinstance(old_action, dict):
+                    continue
+                action_id = str(old_action.get("action_id") or "")
+                old_index = old_action.get("timeline_index")
+                if (
+                    not action_id
+                    or action_id in known_ids
+                    or not isinstance(old_index, int)
+                    or not 0 <= old_index < len(previous_items)
+                ):
+                    continue
+                if action_id not in committed_ids and previous_items[old_index].execution_state != "active":
+                    continue
+                old_key = item_key(previous_items[old_index])
+                replacement = next(
+                    (index for index, item in enumerate(merged) if item_key(item) == old_key),
+                    None,
+                )
+                if replacement is None:
+                    continue
+                preserved_action = dict(old_action)
+                preserved_action["timeline_index"] = replacement
+                actions.append(preserved_action)
+                known_ids.add(action_id)
+            day.meta["planned_life_actions"] = json.dumps(
+                actions, ensure_ascii=False, separators=(",", ":")
+            )
+        return day
+
     async def generate_daily(
         self,
         date=None,
@@ -735,7 +923,7 @@ class DailyEngineComponent:
                 "[日程生成] 开始生成今日生活背景，依据近期记忆和生活惯性自主决策"
             )
 
-            context = await self.context._daily_generation_context(
+            context = await self._daily_generation_context(
                 date,
                 target_hour=target_hour,
                 extra=extra,
@@ -867,7 +1055,7 @@ class DailyEngineComponent:
                         (
                             day,
                             repeat_issue,
-                        ) = await self.context._persist_daily_generation_success(
+                        ) = await self._persist_daily_generation_success(
                             result,
                             date=date,
                             context=context,

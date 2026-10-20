@@ -61,7 +61,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     def test_prompt_exposes_current_facts_and_explicit_operations(self):
         runtime = Runtime()
-        prompt = runtime._build_chat_memory_batch_prompt(self.batch())
+        prompt = runtime._part_chat_memory_batch_component._build_chat_memory_batch_prompt(self.batch())
         self.assertIn("ADD|UPDATE|INVALIDATE|NONE", prompt)
         self.assertIn("current_temporal_facts", prompt)
         self.assertIn("favorite_food", prompt)
@@ -71,7 +71,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_interaction_mode_save_is_limited_to_batch_participant(self):
         runtime = Runtime()
-        saved = await runtime._save_batch_temporal_facts(
+        saved = await runtime._part_chat_memory_batch_component._save_batch_temporal_facts(
             {
                 "_interaction_audited": True,
                 "temporal_facts": [
@@ -106,7 +106,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_interaction_mode_without_audit_is_not_saved(self):
         runtime = Runtime()
-        saved = await runtime._save_batch_temporal_facts(
+        saved = await runtime._part_chat_memory_batch_component._save_batch_temporal_facts(
             {
                 "temporal_facts": [
                     {
@@ -129,7 +129,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         runtime = Runtime()
         batch = self.batch()
         batch["messages"][0]["message_text"] = "我最喜欢窝蛋牛肉煲仔饭。"
-        saved = await runtime._save_batch_temporal_facts(
+        saved = await runtime._part_chat_memory_batch_component._save_batch_temporal_facts(
             {
                 "temporal_facts": [
                     {
@@ -177,7 +177,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
             )
 
         runtime.archive.write_temporal_fact = keep_current_fact
-        saved = await runtime._save_batch_temporal_facts(
+        saved = await runtime._part_chat_memory_batch_component._save_batch_temporal_facts(
             {
                 "temporal_facts": [
                     {

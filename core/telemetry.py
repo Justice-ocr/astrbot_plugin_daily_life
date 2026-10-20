@@ -81,7 +81,8 @@ class ModelCacheMetrics:
         self.loop_delays: deque = deque(maxlen=600)
 
     def record(self, response: Any, *, kind: str, model: str = "", elapsed_ms: float | None = None,
-               failed: bool = False, prefix_version: str = "") -> dict[str, int | None]:
+               failed: bool = False, cancelled: bool = False,
+               prefix_version: str = "") -> dict[str, int | None]:
         usage = cache_usage(response)
         if not model:
             raw = _field(response, "raw_completion") or response
@@ -93,13 +94,14 @@ class ModelCacheMetrics:
         item = self.entries.setdefault(key, {
             "requests": 0, "reported_requests": 0, "unreported_requests": 0,
             "input_tokens": 0, "cached_tokens": 0, "requests_with_hits": 0,
-            "failed_requests": 0,
+            "failed_requests": 0, "cancelled_requests": 0,
         })
         self.entries.move_to_end(key)
         while len(self.entries) > self.limit:
             old_key, _ = self.entries.popitem(last=False)
             self.durations.pop(old_key, None)
         item["requests"] += 1
+        item["cancelled_requests"] += int(cancelled)
         if elapsed_ms is not None and math.isfinite(elapsed_ms) and elapsed_ms >= 0:
             self.durations.setdefault(key, deque(maxlen=128)).append(elapsed_ms)
         role = _field(response, "role")

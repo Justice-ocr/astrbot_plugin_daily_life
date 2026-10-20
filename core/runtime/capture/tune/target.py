@@ -21,11 +21,8 @@ class TargetComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _MEMORY_TARGET_CALIBRATION_KEYS: Any
-    _build_memory_target_calibration_prompt: Any
     _get_memory_provider: Any
     _list_payload: Any
-    _memory_target_has_saveable_context: Any
-    _merge_memory_target_revision: Any
     _str_payload: Any
     call_text_model: Any
     close_text_session: Any
@@ -133,13 +130,13 @@ JSON 输出要求：
         persona_hint: str,
     ) -> dict:
         persona_hint = self.context._str_payload(persona_hint)
-        if not persona_hint or not self.context._memory_target_has_saveable_context(target):
+        if not persona_hint or not self._memory_target_has_saveable_context(target):
             return target
         provider = await self.context._get_memory_provider()
         if not provider:
             return target
         session_id = f"daily_life_memory_target_calibration_{uuid.uuid4().hex[:8]}"
-        prompt = self.context._build_memory_target_calibration_prompt(
+        prompt = self._build_memory_target_calibration_prompt(
             target, meta, persona_hint
         )
         try:
@@ -154,7 +151,7 @@ JSON 输出要求：
             revision = extract_json_from_text(text)
             if not isinstance(revision, dict):
                 return target
-            calibrated = self.context._merge_memory_target_revision(target, revision)
+            calibrated = self._merge_memory_target_revision(target, revision)
             if calibrated != target and bool(revision.get("needs_revision")):
                 logger.debug(
                     f"{LOG_PREFIX} 已语义校准目标记忆：{target.get('name') or target.get('profile_id') or '未知'}"

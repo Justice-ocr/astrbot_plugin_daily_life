@@ -42,7 +42,6 @@ class SharedActivityContactComponentContext(Protocol):
 
     _current_proactive_persona: Any
     _audit_proactive_continuity: Any
-    _evaluate_shared_activity_contact: Any
     _format_recent_context_messages: Any
     _get_proactive_provider: Any
     _proactive_commitment_relationship: Any
@@ -366,7 +365,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         interaction = await self.context.resolve_interaction_context(
             target_scope=scope, now=now
         )
-        decision = await self.context._evaluate_shared_activity_contact(
+        decision = await self._evaluate_shared_activity_contact(
             commitment=commitment,
             task=task,
             day=day,

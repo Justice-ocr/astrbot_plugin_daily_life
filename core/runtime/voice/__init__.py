@@ -78,12 +78,12 @@ class VoiceSwitchComponent:
         emotion = str(payload.get("emotion") or "").strip()
         emotion_category = str(payload.get("emotion_category") or "").strip()
         voice_style = str(payload.get("voice_style") or "").strip().lower()
+        revision_getter = getattr(self.context, "_semantic_segment_revision", None)
+        revision = revision_getter(scope) if callable(revision_getter) else None
         try:
-            revision_getter = getattr(self.context, "_semantic_segment_revision", None)
-            revision = revision_getter(scope) if callable(revision_getter) else None
-            confidence = float(payload.get("confidence", 1.0) or 1.0)
+            confidence = float(payload.get("confidence") or 0.0)
         except (TypeError, ValueError):
-            confidence = 1.0
+            confidence = 0.0
         if channel != "voice":
             item["text_reason"] = reason or "我想把这轮话打出来，留在屏幕上更清楚。"
             return False

@@ -22,17 +22,11 @@ class VoiceSwitchGateComponentContext(Protocol):
     _VOICE_SWITCH_MAX_SHORT_LINES: Any
     _VOICE_SWITCH_MIN_CONFIDENCE: Any
     _VOICE_SWITCH_TEXT_TURNS_AFTER_VOICE: Any
-    _event_has_voice_input: Any
     _event_message_items: Any
     _event_session_id: Any
-    _prune_voice_switch_cadence: Any
     _prune_voice_switch_rounds: Any
     _voice_switch_cadence: Any
     _voice_switch_cadence_snapshot: Any
-    _voice_switch_cadence_store: Any
-    _voice_switch_chain_limit: Any
-    _voice_switch_next_chain_limit: Any
-    _voice_switch_probability: Any
     _voice_switch_round_store: Any
     _voice_switch_rounds: Any
     _voice_switch_scope_key: Any
@@ -101,7 +95,7 @@ class VoiceSwitchGateComponent:
 
     def _prune_voice_switch_cadence(self, now: datetime.datetime | None = None) -> None:
         now = now or life_now()
-        store = self.context._voice_switch_cadence_store()
+        store = self._voice_switch_cadence_store()
         for key, item in list(store.items()):
             if not isinstance(item, dict):
                 store.pop(key, None)
@@ -145,7 +139,7 @@ class VoiceSwitchGateComponent:
         except (TypeError, ValueError):
             probability = 35.0
         probability = max(0.0, min(probability, 100.0))
-        if self.context._event_has_voice_input(event):
+        if self._event_has_voice_input(event):
             probability = max(probability, 70.0)
         return probability
 
@@ -155,9 +149,9 @@ class VoiceSwitchGateComponent:
         now: datetime.datetime | None = None,
     ) -> dict[str, Any]:
         now = now or life_now()
-        self.context._prune_voice_switch_cadence(now)
+        self._prune_voice_switch_cadence(now)
         scope = self.context._voice_switch_scope_key(event)
-        item = self.context._voice_switch_cadence_store().get(scope, {}) if scope else {}
+        item = self._voice_switch_cadence_store().get(scope, {}) if scope else {}
         last_voice_at = item.get("last_voice_at") if isinstance(item, dict) else None
         seconds_since_voice = None
         if isinstance(last_voice_at, datetime.datetime):
@@ -172,7 +166,7 @@ class VoiceSwitchGateComponent:
             int(item.get("consecutive_voice") or 0) if isinstance(item, dict) else 0
         )
         chain_limit = (
-            self.context._voice_switch_chain_limit(item)
+            self._voice_switch_chain_limit(item)
             if isinstance(item, dict)
             else self.context._VOICE_SWITCH_MAX_CONSECUTIVE_VOICE
         )
@@ -204,8 +198,8 @@ class VoiceSwitchGateComponent:
             "voice_chain_exhausted": voice_chain_exhausted,
             "max_consecutive_voice": chain_limit,
             "cooldown_active": cooldown_active,
-            "probability": self.context._voice_switch_probability(event),
-            "user_sent_voice": self.context._event_has_voice_input(event),
+            "probability": self._voice_switch_probability(event),
+            "user_sent_voice": self._event_has_voice_input(event),
         }
 
     def _mark_voice_switch_channel(
@@ -215,8 +209,8 @@ class VoiceSwitchGateComponent:
         if not scope:
             return
         now = now or life_now()
-        self.context._prune_voice_switch_cadence(now)
-        store = self.context._voice_switch_cadence_store()
+        self._prune_voice_switch_cadence(now)
+        store = self._voice_switch_cadence_store()
         item = store.setdefault(scope, {})
         normalized = (
             "语音" if str(channel or "").lower() in {"voice", "语音"} else "文字"
@@ -226,10 +220,10 @@ class VoiceSwitchGateComponent:
             if item.get("last_channel") == "语音":
                 item["consecutive_voice"] = int(item.get("consecutive_voice") or 0) + 1
                 if not isinstance(item.get("voice_chain_limit"), int):
-                    item["voice_chain_limit"] = self.context._voice_switch_next_chain_limit()
+                    item["voice_chain_limit"] = self._voice_switch_next_chain_limit()
             else:
                 item["consecutive_voice"] = 1
-                item["voice_chain_limit"] = self.context._voice_switch_next_chain_limit()
+                item["voice_chain_limit"] = self._voice_switch_next_chain_limit()
             item["text_after_voice"] = 0
             item["last_voice_at"] = now
         else:
@@ -272,7 +266,7 @@ class VoiceSwitchGateComponent:
         if not passed:
             return (
                 False,
-                "我这轮虽然可以说出来，但按当前聊天节奏更适合把语音留到更需要的片刻。",
+                "本轮未命中普通语音概率，保留文字。",
             )
         return True, ""
 

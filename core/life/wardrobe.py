@@ -235,7 +235,10 @@ def synchronize_outfit_components_for_scene(
             ("carried_accessories", "carried"),
         ):
             item = components.get(key)
-            if item and item.get("state") == "staged":
+            if (
+                item and item.get("state") == "staged"
+                and item.get("home_presence") != "home"
+            ):
                 components[key] = {
                     **item,
                     "state": state,
@@ -258,6 +261,51 @@ def format_outfit_components(value: object, *, include_staged: bool = False) -> 
         if description and description not in descriptions:
             descriptions.append(description)
     return "；".join(descriptions)
+
+
+def outfit_action_components(
+    current: object, proposed: object, target: str
+) -> tuple[dict[str, dict[str, str]], bool]:
+    """根据动作组成区分整套换装与局部调整，保留未调整的穿着事实。"""
+    existing = normalize_outfit_components(current)
+    changes = normalize_outfit_components(proposed)
+    if not changes and target:
+        changes["main_clothing"] = {"state": "worn", "description": target}
+    main = changes.get("main_clothing") or {}
+    full_change = bool(
+        main.get("state") == "worn"
+        and main.get("description")
+        != (existing.get("main_clothing") or {}).get("description")
+    )
+    return merge_outfit_components({} if full_change else existing, changes), full_change
+
+
+def merge_outfit_catalog_references(
+    previous_ids: list[int], selected_ids: list[int], kinds: dict[int, str],
+    components: dict[str, dict[str, str]], *, partial: bool,
+) -> list[int]:
+    """局部换装按单品类型替换引用，脱下或待用的鞋包不再计入当前穿着。"""
+    replaced = {kinds.get(item_id) for item_id in selected_ids}
+    if "outfit" in replaced:
+        replaced.update({"top", "bottom"})
+    elif {"top", "bottom"} <= replaced:
+        replaced.add("outfit")
+    retained = (
+        [item_id for item_id in previous_ids if kinds.get(item_id) not in replaced]
+        if partial else []
+    )
+    result = []
+    for item_id in [*retained, *selected_ids]:
+        component = {"footwear": "footwear", "accessory": "carried_accessories"}.get(
+            kinds.get(item_id)
+        )
+        if component and (components.get(component) or {}).get("state") in {
+            "removed", "staged"
+        }:
+            continue
+        if item_id not in result:
+            result.append(item_id)
+    return result
 
 
 def format_outfit_component_ledger(value: object) -> str:

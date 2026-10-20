@@ -66,16 +66,10 @@ class SilentToolPrefaceComponentContext(Protocol):
     _is_llm_result_object: Any
     _plain_send_message_tool_text: Any
     _plain_tool_preface_text: Any
-    _remember_tool_preface: Any
     _runner_is_done: Any
     _same_visible_text: Any
-    _send_visible_tool_preface: Any
     _tool_name: Any
-    _tool_preface_event_key: Any
-    _tool_preface_scope_key: Any
-    _tool_reply_round_store: Any
     _tool_reply_rounds: Any
-    _tool_reply_state_for_event: Any
     note_structured_bot_message: Any
     send_background_text: Any
     send_message_if_not_recalled: Any
@@ -114,15 +108,15 @@ class SilentToolPrefaceComponent:
     def _tool_reply_state_for_event(self, event: Any) -> dict[str, Any] | None:
         """读取当前事件的工具状态，并清理属于上一轮的残留状态。"""
 
-        scope = self.context._tool_preface_scope_key(event)
+        scope = self._tool_preface_scope_key(event)
         if not scope:
             return None
-        state = self.context._tool_reply_round_store().get(scope)
+        state = self._tool_reply_round_store().get(scope)
         if not isinstance(state, dict):
             return None
-        expected_key = self.context._tool_preface_event_key(event)
+        expected_key = self._tool_preface_event_key(event)
         if state.get("event_key") != expected_key:
-            self.context._tool_reply_round_store().pop(scope, None)
+            self._tool_reply_round_store().pop(scope, None)
             logger.debug(f"{LOG_PREFIX} 已清理上一话轮残留的媒体工具状态。")
             return None
         return state
@@ -192,13 +186,13 @@ class SilentToolPrefaceComponent:
         return "\n".join(texts)
 
     def _remember_tool_preface(self, event: Any, result: Any) -> bool:
-        scope = self.context._tool_preface_scope_key(event)
+        scope = self._tool_preface_scope_key(event)
         chain = getattr(result, "chain", None)
         if not scope or not isinstance(chain, list) or not chain:
             return False
         copied = self.context._copy_result_chain(result)
-        self.context._tool_reply_round_store()[scope] = {
-            "event_key": self.context._tool_preface_event_key(event),
+        self._tool_reply_round_store()[scope] = {
+            "event_key": self._tool_preface_event_key(event),
             "preface": copied,
             "preface_text": self.context._plain_tool_preface_text(copied),
             "tool_name": "",
@@ -293,20 +287,20 @@ class SilentToolPrefaceComponent:
     ) -> None:
         """已有中间回复优先；模型直接调用时使用工具参数中的前置语。"""
 
-        scope = self.context._tool_preface_scope_key(event)
+        scope = self._tool_preface_scope_key(event)
         if not scope:
             return
-        state = self.context._tool_reply_state_for_event(event)
+        state = self._tool_reply_state_for_event(event)
         name = self.context._tool_name(tool)
         argument_preface = str((tool_args or {}).get("preface") or "").strip()
         preface_text = argument_preface
         if name in TOOL_PREFACE_REQUIRED_NAMES and preface_text:
-            scope_store = self.context._tool_reply_round_store()
+            scope_store = self._tool_reply_round_store()
             if state is None:
                 state = scope_store.setdefault(
                     scope,
                     {
-                        "event_key": self.context._tool_preface_event_key(event),
+                        "event_key": self._tool_preface_event_key(event),
                         "preface": None,
                         "preface_text": "",
                         "tool_name": "",
@@ -361,7 +355,7 @@ class SilentToolPrefaceComponent:
         if normalized and normalized in sent_texts:
             state["preface_sent"] = True
             return
-        sent, channel = await self.context._send_visible_tool_preface(scope, chain, event)
+        sent, channel = await self._send_visible_tool_preface(scope, chain, event)
         state["preface_sent"] = bool(sent)
         state["preface_channel"] = channel
         if sent:
@@ -386,7 +380,7 @@ class SilentToolPrefaceComponent:
     ) -> bool:
         """发送工具已覆盖同内容前置回复时，阻止第二次投递。"""
 
-        state = self.context._tool_reply_state_for_event(event)
+        state = self._tool_reply_state_for_event(event)
         if state is None or not state.get("preface_sent"):
             return False
         if not self.context._same_visible_text(state.get("preface_text"), source_text):
@@ -405,7 +399,7 @@ class SilentToolPrefaceComponent:
         """结束工具阶段，保留结果状态供最终文字回复判断。"""
 
         del tool_args, tool_result
-        state = self.context._tool_reply_state_for_event(event)
+        state = self._tool_reply_state_for_event(event)
         if state is None:
             return
         state["tool_name"] = state.get("tool_name") or self.context._tool_name(tool)
@@ -413,38 +407,38 @@ class SilentToolPrefaceComponent:
         state["final_response_pending"] = True
 
     def mark_tool_outcome(self, event: Any, tool_name: str, outcome: str) -> None:
-        scope = self.context._tool_preface_scope_key(event)
+        scope = self._tool_preface_scope_key(event)
         if not scope:
             return
-        state = self.context._tool_reply_round_store().setdefault(
+        state = self._tool_reply_round_store().setdefault(
             scope,
-            {"event_key": self.context._tool_preface_event_key(event)},
+            {"event_key": self._tool_preface_event_key(event)},
         )
-        if state.get("event_key") != self.context._tool_preface_event_key(event):
+        if state.get("event_key") != self._tool_preface_event_key(event):
             state.clear()
-            state["event_key"] = self.context._tool_preface_event_key(event)
+            state["event_key"] = self._tool_preface_event_key(event)
         state["tool_name"] = str(tool_name or "").strip()
         state["outcome"] = str(outcome or "").strip().lower()
         state["final_response_pending"] = True
 
     def note_tool_final_response(self, event: Any, llm_response: Any) -> None:
-        scope = self.context._tool_preface_scope_key(event)
-        state = self.context._tool_reply_state_for_event(event)
+        scope = self._tool_preface_scope_key(event)
+        state = self._tool_reply_state_for_event(event)
         if state is None:
             return
         completion = str(getattr(llm_response, "completion_text", "") or "").strip()
         result_chain = getattr(llm_response, "result_chain", None)
         chain_items = getattr(result_chain, "chain", result_chain)
         if not completion and not chain_items:
-            self.context._tool_reply_round_store().pop(scope, None)
+            self._tool_reply_round_store().pop(scope, None)
             return
         state["final_response_pending"] = True
 
     def suppress_final_silent_tool_result(self, event: Any) -> bool:
         """语音成功后清除重复文字，表情成功后保留自然补话。"""
 
-        scope = self.context._tool_preface_scope_key(event)
-        state = self.context._tool_reply_state_for_event(event)
+        scope = self._tool_preface_scope_key(event)
+        state = self._tool_reply_state_for_event(event)
         if state is None:
             return False
         name = str(state.get("tool_name") or "").strip()
@@ -453,10 +447,10 @@ class SilentToolPrefaceComponent:
         if not policy.preface_silent or outcome != "sent":
             if state.get("final_response_pending"):
                 state["final_response_pending"] = False
-                self.context._tool_reply_round_store().pop(scope, None)
+                self._tool_reply_round_store().pop(scope, None)
             return False
         if not policy.replaces_text:
-            self.context._tool_reply_round_store().pop(scope, None)
+            self._tool_reply_round_store().pop(scope, None)
             logger.debug(f"{LOG_PREFIX} 媒体已发送，保留后续文字回复：{name}")
             return False
         clearer = getattr(event, "clear_result", None)
@@ -467,7 +461,7 @@ class SilentToolPrefaceComponent:
             chain = getattr(result, "chain", None)
             if isinstance(chain, list):
                 chain.clear()
-        self.context._tool_reply_round_store().pop(scope, None)
+        self._tool_reply_round_store().pop(scope, None)
         logger.debug(f"{LOG_PREFIX} 语音已发送，已隐藏重复文字回复")
         return True
 
@@ -507,7 +501,7 @@ class SilentToolPrefaceComponent:
             return False
         if not self.context._is_active_agent_intermediate_result(event):
             return False
-        self.context._remember_tool_preface(event, result)
+        self._remember_tool_preface(event, result)
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
             clearer()

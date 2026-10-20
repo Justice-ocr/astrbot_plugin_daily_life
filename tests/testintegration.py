@@ -237,10 +237,10 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_target_snapshot_does_not_mix_private_relationships(self):
         snapshot = _Snapshot()
 
-        target_a = await snapshot._life_context_target_archive_snapshot(
+        target_a = await snapshot._part_snapshot_export_component._life_context_target_archive_snapshot(
             "bot-test:FriendMessage:user-test-a"
         )
-        target_b = await snapshot._life_context_target_archive_snapshot(
+        target_b = await snapshot._part_snapshot_export_component._life_context_target_archive_snapshot(
             "bot-test:FriendMessage:user-test-b"
         )
 
@@ -262,7 +262,7 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_group_snapshot_contains_no_private_relationship(self):
         snapshot = _Snapshot()
 
-        result = await snapshot._life_context_target_archive_snapshot(
+        result = await snapshot._part_snapshot_export_component._life_context_target_archive_snapshot(
             "bot-test:GroupMessage:group-test-a"
         )
 
@@ -273,7 +273,7 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
         snapshot = _ShareSnapshot()
         target = "bot-test:FriendMessage:user-test-a"
 
-        result = await snapshot._share_guidance(
+        result = await snapshot._part_snapshot_export_component._share_guidance(
             target,
             [{"id": "user-test-a", "name": "联系人甲"}],
         )
@@ -306,7 +306,7 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
         snapshot = _ShareSnapshot()
         target = "bot-test:GroupMessage:group-test-a"
 
-        result = await snapshot._share_guidance(target, [])
+        result = await snapshot._part_snapshot_export_component._share_guidance(target, [])
 
         self.assertEqual(
             [item["title"] for item in result["episodes"]], ["公共日程片段"]
@@ -322,7 +322,7 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_share_guidance_contains_only_public_daily_episode(self):
         snapshot = _ShareSnapshot()
 
-        result = await snapshot._share_guidance("qzone_broadcast", [])
+        result = await snapshot._part_snapshot_export_component._share_guidance("qzone_broadcast", [])
 
         self.assertEqual(
             [item["title"] for item in result["episodes"]], ["公共日程片段"]

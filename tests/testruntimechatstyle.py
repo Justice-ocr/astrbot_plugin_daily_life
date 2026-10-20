@@ -214,7 +214,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         self.assertEqual(
             runtime._chat_style_limit_for_scope(event.unified_msg_origin), 0
         )
-        self.assertEqual(runtime._proactive_reply_limit_for_prompt(), 80)
+        self.assertEqual(runtime._part_proactive_prompt_component._proactive_reply_limit_for_prompt(), 80)
         self.assertEqual(
             runtime._format_proactive_expression_style(event.unified_msg_origin), ""
         )
@@ -321,7 +321,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
 
         raw_text = "我也觉得这个方向挺顺的。后面那段先不用展开很多啦"
-        text = runtime._normalize_proactive_reply_text(raw_text)
+        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
@@ -332,7 +332,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
 
         raw_text = "先不卖。后面那段先不用展开很多啦"
-        text = runtime._normalize_proactive_reply_text(raw_text)
+        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
@@ -343,7 +343,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
 
         raw_text = "这个点我也有一点点同感但是先不长篇展开后面再说"
-        text = runtime._normalize_proactive_reply_text(raw_text)
+        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
@@ -354,7 +354,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
 
         raw_text = "这个点我也有一点点同感但是先不长篇展开后面再说"
-        text = runtime._normalize_proactive_reply_text(raw_text)
+        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 

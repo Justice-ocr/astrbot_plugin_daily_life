@@ -37,6 +37,7 @@ from ..scopes import RuntimeScopeState
 from ..timer import LifeRhythmClock
 from ..voicecall import VoiceCallManager
 from ..voicecall.voicegateway import voice_gateway_start_error_detail
+from .providerrecovery import recover_provider_commitments, remember_provider_block
 
 from typing import Protocol
 
@@ -701,6 +702,7 @@ class SpineBootComponent:
 
     async def _drain_durable_tasks(self, *, media_only: bool = False) -> int:
         if not media_only:
+            await recover_provider_commitments(self.context)
             for name in (
                 "reconcile_commitment_photo_tasks",
                 "reconcile_commitment_video_tasks",
@@ -751,6 +753,12 @@ class SpineBootComponent:
             except asyncio.CancelledError:
                 raise
             except (NonRetryableProviderError, ImageTaskFailed, VideoTaskFailed) as exc:
+                if isinstance(exc, NonRetryableProviderError):
+                    try:
+                        await remember_provider_block(self.context, task, exc, owner)
+                    except Exception:
+                        # 恢复依据保存失败不妨碍原任务释放租约并记录失败。
+                        pass
                 await self.context.archive.fail_durable_task(
                     task.id,
                     str(exc),
@@ -759,7 +767,7 @@ class SpineBootComponent:
                 )
                 task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
                 logger.warning(
-                    f"{LOG_PREFIX} 持久生活任务不可重试（{task_label}）：{exc}"
+                    f"{LOG_PREFIX} 持久生活任务不可重试（{task_label}）"
                 )
             except Exception as exc:
                 await self.context.archive.fail_durable_task(

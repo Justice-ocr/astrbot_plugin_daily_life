@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import tempfile
 import unittest
 from contextlib import contextmanager, nullcontext
@@ -7,18 +8,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from support import DailyLifeRuntime, LifeArchive, LifeSettings, DayRecord, LifeState
-from core.models import WeatherInfo
+from componentfixtures import StyleCatalogComponent
+from core.life.body import ContinuousBody
+from core.life.domain import LifeDomainService
 from core.life.dressing import (
     digest,
-    suitability_key,
     reviewed_candidates,
+    suitability_key,
     validate_aesthetics,
     wardrobe_conditions,
 )
-from componentfixtures import StyleCatalogComponent
-from core.runtime.background import BackgroundTaskScheduler
+from core.life.wardrobe import synchronize_outfit_components_for_scene
 from core.media.picture.polling import ImageTaskFailed
+from core.models import LifeActionIntent, TimelineItem, WeatherInfo
+from core.runtime.background import BackgroundTaskScheduler
+from support import (
+    DailyLifeRuntime,
+    DayRecord,
+    LifeArchive,
+    LifeSettings,
+    LifeState,
+    make_composer,
+)
 
 
 class Runtime(DailyLifeRuntime):
@@ -379,6 +390,13 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conditions["residence"], "新的居住地")
 
     async def test_automatic_generation_uses_character_image_only(self):
+        persona = "成年男性，喜欢简单实穿的日常服装。"
+        self.runtime.get_persona_text.return_value = persona
+        reference = Path(self.tmp.name) / "character.png"
+        reference.write_bytes(b"reference image")
+        self.runtime.media.image.first_configured_character_reference_image = (
+            lambda: str(reference)
+        )
         item = await self.item()
         path = Path(self.tmp.name) / "output.png"
         path.write_bytes(b"image")
@@ -400,10 +418,37 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.wardrobe_life._run_wardrobe_job("auto")
         self.runtime._generate_life_image_with_policy_retry.assert_not_called()
         args = self.runtime._edit_life_image_with_policy_retry.call_args.args
-        self.assertEqual(args[2], "/tmp/character.png")
+        self.assertEqual(args[2], str(reference))
+        self.assertIn(persona, args[1])
+        self.runtime.get_persona_text.assert_awaited_once()
+        self.runtime.call_text_model.assert_not_awaited()
         state = (await self.archive.get_wardrobe_snapshot())["items"][str(item.id)]
         self.assertEqual(state["ownership"], "owned")
         self.assertEqual(state["condition"], "clean")
+
+    async def test_manual_text_generation_keeps_role_independent(self):
+        item = await self.item()
+        path = Path(self.tmp.name) / "output.png"
+        path.write_bytes(b"image")
+        self.runtime._generate_life_image_with_policy_retry.return_value = SimpleNamespace(
+            path=str(path)
+        )
+        self.runtime._learn_style_catalog_image.return_value = [item]
+        await self.archive.enqueue_wardrobe_job(
+            "manual-text",
+            {"requirement": "新的通勤搭配灵感", "generation_mode": "text_to_image", "count": 1},
+            at=str(self.now),
+        )
+        await self.runtime.wardrobe_life._run_wardrobe_job("manual-text")
+        self.runtime.get_persona_text.assert_not_awaited()
+        self.runtime._edit_life_image_with_policy_retry.assert_not_called()
+        self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
+        state = await self.archive.get_wardrobe_snapshot()
+        self.assertEqual(
+            state["recent_jobs"][0]["status"],
+            "completed",
+            state["recent_jobs"][0].get("error"),
+        )
 
     async def test_failed_wardrobe_image_is_terminal_without_old_task_progress(self):
         callbacks = {}
@@ -436,10 +481,17 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("route", job["progress"]["current"])
         self.runtime.media.image.resume_async_image.assert_not_awaited()
 
-    async def test_missing_character_reference_keeps_original_job_pending(self):
+    async def test_missing_character_reference_falls_back_to_text_generation(self):
+        item = await self.item()
+        path = Path(self.tmp.name) / "output.png"
+        path.write_bytes(b"image")
         self.runtime.media.image.first_configured_character_reference_image = lambda: (
             None
         )
+        self.runtime._generate_life_image_with_policy_retry.return_value = (
+            SimpleNamespace(path=str(path))
+        )
+        self.runtime._learn_style_catalog_image.return_value = [item]
         await self.archive.enqueue_wardrobe_job(
             "auto",
             {"automatic": True, "count": 1, "requirement": "秋季衣物"},
@@ -447,9 +499,87 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.runtime.wardrobe_life._run_wardrobe_job("auto")
         state = await self.archive.get_wardrobe_snapshot()
-        self.assertEqual(state["jobs"][0]["status"], "pending")
-        self.runtime._generate_life_image_with_policy_retry.assert_not_called()
+        self.assertEqual(
+            state["recent_jobs"][0]["status"],
+            "completed",
+            state["recent_jobs"][0].get("error"),
+        )
+        self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
+        self.assertEqual(
+            self.runtime._generate_life_image_with_policy_retry.call_args.kwargs[
+                "include_character_reference"
+            ],
+            False,
+        )
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
+        generated = self.runtime._generate_life_image_with_policy_retry.call_args.args[1]
+        self.assertIn("秋季衣物", generated)
+
+    async def test_missing_edit_channel_falls_back_to_text_generation(self):
+        item = await self.item()
+        path = Path(self.tmp.name) / "output.png"
+        path.write_bytes(b"image")
+        reference = Path(self.tmp.name) / "character.png"
+        reference.write_bytes(b"reference image")
+        self.runtime.media.image.first_configured_character_reference_image = (
+            lambda: str(reference)
+        )
+        self.runtime.media.image.can_edit_image = lambda: False
+        self.runtime._generate_life_image_with_policy_retry.return_value = (
+            SimpleNamespace(path=str(path))
+        )
+        self.runtime._learn_style_catalog_image.return_value = [item]
+        await self.archive.enqueue_wardrobe_job(
+            "auto-no-edit",
+            {"automatic": True, "count": 1, "requirement": "秋季衣物"},
+            at=str(self.now),
+        )
+
+        await self.runtime.wardrobe_life._run_wardrobe_job("auto-no-edit")
+
+        state = await self.archive.get_wardrobe_snapshot()
+        self.assertEqual(state["recent_jobs"][0]["status"], "completed")
+        self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
+        self.runtime._edit_life_image_with_policy_retry.assert_not_called()
+
+    async def test_automatic_single_item_can_be_verified_and_adopted(self):
+        item = await self.item(kind="footwear")
+        path = Path(self.tmp.name) / "output.png"
+        path.write_bytes(b"image")
+        reference = Path(self.tmp.name) / "character.png"
+        reference.write_bytes(b"reference image")
+        self.runtime.media.image.first_configured_character_reference_image = (
+            lambda: str(reference)
+        )
+        self.runtime._edit_life_image_with_policy_retry.return_value = (
+            SimpleNamespace(path=str(path))
+        )
+        self.runtime._learn_style_catalog_image.return_value = [item]
+        await self.archive.enqueue_wardrobe_job(
+            "auto-footwear",
+            {
+                "automatic": True,
+                "count": 1,
+                "requirement": "轻便透气的居家拖鞋",
+                "reason": "炎热天气缺少可穿的室内拖鞋",
+            },
+            at=str(self.now),
+        )
+
+        await self.runtime.wardrobe_life._run_wardrobe_job("auto-footwear")
+
+        state = await self.archive.get_wardrobe_snapshot()
+        self.assertEqual(
+            state["recent_jobs"][0]["status"],
+            "completed",
+            state["recent_jobs"][0].get("error"),
+        )
+        self.assertEqual(state["items"][str(item.id)]["ownership"], "owned")
+        self.assertFalse(
+            self.runtime._learn_style_catalog_image.call_args.kwargs[
+                "require_complete_clothing"
+            ]
+        )
 
     async def test_resume_accepted_image_does_not_submit_another_request(self):
         item = await self.item()
@@ -483,13 +613,15 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             "original", {"model": "test"}
         )
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
+        self.runtime.get_persona_text.assert_not_awaited()
 
     async def test_wardrobe_recovery_uses_next_channel_and_learns_finished_image(self):
         import base64
         from unittest.mock import patch
-        from testimagetasks import ImageTaskTests, _Session, _Response, _accepted
+
         from core.media.picture import polling
         from core.media.picture.routes import task_reference
+        from testimagetasks import ImageTaskTests, _accepted, _Response, _Session
 
         session = _Session([_accepted()], [_Response(404)])
         service = ImageTaskTests()._service(session, mode="edit")
@@ -858,6 +990,169 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["items"][str(item.id)]["condition"], "dirty")
         self.assertEqual(sum(e["kind"] == "wear" for e in snapshot["events"]), 1)
 
+    async def test_outdoor_partial_change_keeps_worn_dirty_clothes_and_changes_shoes(self):
+        outfit = await self.item(used=True)
+        shoes = await self.archive.upsert_style_catalog_item({
+            "kind": "footwear", "title": "白色板鞋", "description": "白色板鞋",
+            "source_image_hash": "shoes" * 13, "confidence": 0.95,
+            "attributes": {"home_presence": "outdoor"},
+        })
+        await self.archive.adopt_wardrobe_items(
+            [shoes.id], event_id="own-shoes", at=str(self.now), reason="已有鞋履",
+        )
+        day = await self.day([outfit.id])
+        day.outfit = "浅色针织上衣与长裤；室内拖鞋"
+        day.timeline = [TimelineItem(
+            time="11:30", activity="在街边散步拍照", place_kind="generic",
+        )]
+        day.meta.update({
+            "style": "甜美居家混搭", "outfit_scene_category": "public",
+            "outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "浅色针织上衣与长裤"},
+                "footwear": {"state": "worn", "description": "室内拖鞋", "home_presence": "home"},
+            }, ensure_ascii=False),
+        })
+        await self.archive.save_day(day)
+        await self.archive.record_wardrobe_wear(day, event_id="wear-main")
+        await self.archive.start_wardrobe_care(
+            [outfit.id], decision="dirty", event_id="dirty-current", at=str(self.now),
+            observer="test", duration_minutes=0, reason="已经穿过，脱下后再洗",
+        )
+        response = {
+            "outfit_decision": "partial_change", "current_outfit_basis": "stored",
+            "scene_category": "public", "style_pool": "outfit_styles",
+            "component_review": {"main_clothing": "keep", "footwear": "adjust"},
+            "outfit": "浅色针织上衣与长裤；白色板鞋", "style": "清爽日常外出风",
+            "outfit_components": {"footwear": {
+                "state": "worn", "description": "白色板鞋", "home_presence": "outdoor",
+            }},
+            "catalog_reference_ids": [shoes.id], "reason": "衣服继续穿，换适合走路的鞋",
+        }
+        composer, provider, _, _ = make_composer([json.dumps(response, ensure_ascii=False)])
+        composer.archive = self.archive
+        updated = await composer.update_outfit(
+            day.date, "noon", current_time=self.now + datetime.timedelta(minutes=1),
+        )
+        self.assertIsNotNone(updated)
+        stored = await self.archive.get_day(day.date)
+        self.assertEqual(stored.outfit, "浅色针织上衣与长裤；白色板鞋")
+        self.assertEqual(stored.meta["style"], "清爽日常外出风")
+        self.assertEqual(set(stored.meta["style_catalog_reference_ids"].split(",")),
+                         {str(outfit.id), str(shoes.id)})
+        states = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertEqual(states[str(outfit.id)]["condition"], "dirty")
+        self.assertTrue(states[str(outfit.id)]["currently_worn"])
+        self.assertTrue(states[str(shoes.id)]["currently_worn"])
+        self.assertEqual(len(provider.prompts), 1)
+
+    async def test_retained_catalog_id_does_not_allow_dirty_clothes_to_be_put_back_on(self):
+        outfit = await self.item(used=True)
+        day = await self.day([outfit.id])
+        await self.archive.start_wardrobe_care(
+            [outfit.id], decision="dirty", event_id="dirty", at=str(self.now),
+            observer="test", duration_minutes=0, reason="已脱下等待清洗",
+        )
+        with self.assertRaises(ValueError):
+            await self.archive.save_day(day, require_wearable=True)
+
+    async def _planned_partial_change(self, *, continuous):
+        outfit = await self.item(used=True)
+        old_shoes = await self.item(kind="footwear", seed=2, used=True)
+        new_shoes = await self.item(kind="footwear", seed=3, used=True)
+        day = await self.day([outfit.id, old_shoes.id])
+        day.outfit = "针织上衣与长裤；拖鞋"
+        day.meta.update({
+            "outfit_scene_category": "home", "style": "甜美居家混搭",
+            "outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "针织上衣与长裤"},
+                "footwear": {"state": "worn", "description": "拖鞋"},
+            }),
+        })
+        if continuous:
+            day.meta["continuous_body"] = json.dumps(ContinuousBody().as_dict())
+        await self.archive.save_day(day, require_wearable=True)
+        await self.archive.start_wardrobe_care(
+            [outfit.id, old_shoes.id], decision="dirty", event_id="dirty-worn",
+            at=str(self.now), observer="test", duration_minutes=0, reason="脱下后再洗",
+        )
+        action = LifeActionIntent.from_value({
+            "action_id": "planned-shoes", "action_type": "change_outfit",
+            "target": "针织上衣与长裤；板鞋",
+            "payload": {
+                "scene_category": "public", "style": "清爽日常外出风",
+                "outfit_components": {"footwear": {"state": "worn", "description": "板鞋"}},
+                "catalog_reference_ids": [new_shoes.id],
+            },
+        })
+        domains = LifeDomainService(self.runtime.config.domains, self.archive)
+        self.assertEqual(await domains.validate_action(action, day=day), (True, ""))
+        self.assertEqual(action.payload["catalog_reference_ids"], [new_shoes.id])
+        composer, _, _, _ = make_composer([])
+        composer.archive = self.archive
+        outcome = await composer.settle_and_persist_life_action(day, action, now=self.now)
+        self.assertEqual(outcome.status, "committed")
+        stored = await self.archive.get_day(day.date)
+        self.assertEqual(stored.outfit, "针织上衣与长裤；板鞋")
+        self.assertEqual(stored.meta["style"], "清爽日常外出风")
+        self.assertEqual(set(stored.meta["style_catalog_reference_ids"].split(",")),
+                         {str(outfit.id), str(new_shoes.id)})
+        states = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertTrue(states[str(outfit.id)]["currently_worn"])
+        self.assertEqual(states[str(outfit.id)]["condition"], "dirty")
+        self.assertFalse(states[str(old_shoes.id)]["currently_worn"])
+        self.assertTrue(states[str(new_shoes.id)]["currently_worn"])
+        replay = await composer.settle_and_persist_life_action(day, action, now=self.now)
+        self.assertTrue(replay.replayed)
+        self.assertEqual((await self.archive.get_day(day.date)).outfit, stored.outfit)
+
+    async def test_planned_partial_change_preserves_worn_main_and_replaces_shoe_reference(self):
+        await self._planned_partial_change(continuous=False)
+
+    async def test_continuous_receipt_partial_change_preserves_worn_main_and_replaces_shoe_reference(self):
+        await self._planned_partial_change(continuous=True)
+
+    async def test_home_only_staged_shoes_do_not_become_worn_when_going_out(self):
+        components = synchronize_outfit_components_for_scene({
+            "footwear": {"state": "staged", "description": "室内拖鞋", "home_presence": "home"},
+            "carried_accessories": {"state": "staged", "description": "帆布包", "home_presence": "outdoor"},
+        }, "public", previous_scene_category="home")
+        self.assertEqual(components["footwear"]["state"], "staged")
+        self.assertEqual(components["carried_accessories"]["state"], "carried")
+
+    async def test_return_home_removes_shoe_reference_without_blocking_dirty_main(self):
+        main = await self.item(used=True)
+        shoes = await self.item(kind="footwear", seed=2, used=True)
+        day = await self.day([main.id, shoes.id])
+        day.outfit = "针织上衣与长裤；板鞋"
+        day.meta.update({
+            "style": "日常外出风", "outfit_scene_category": "public",
+            "outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "针织上衣与长裤"},
+                "footwear": {"state": "worn", "description": "板鞋"},
+            }),
+        })
+        await self.archive.save_day(day, require_wearable=True)
+        await self.archive.start_wardrobe_care(
+            [main.id, shoes.id], decision="dirty", event_id="dirty-after-outing",
+            at=str(self.now), observer="test", duration_minutes=0, reason="外出后待洗",
+        )
+        composer, _, _, _ = make_composer([])
+        composer.archive = self.archive
+        outcome = await composer.settle_and_persist_life_action(day, {
+            "action_id": "take-off-shoes", "action_type": "change_outfit",
+            "target": "针织上衣与长裤", "payload": {
+                "scene_category": "home",
+                "outfit_components": {"footwear": {"state": "removed", "description": "板鞋"}},
+            },
+        }, now=self.now)
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.outfit, "针织上衣与长裤")
+        self.assertEqual(day.meta["style_catalog_reference_ids"], str(main.id))
+        self.assertNotIn("style", day.meta)
+        states = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertTrue(states[str(main.id)]["currently_worn"])
+        self.assertFalse(states[str(shoes.id)]["currently_worn"])
+
     async def test_weather_change_discards_background_review(self):
         day = await self.day([])
         snapshot = await self.archive.get_wardrobe_snapshot()
@@ -961,3 +1256,116 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         day.state.physiological_rhythm.body_condition.started_at = "2026-10-08 12:01"
         timed = wardrobe_conditions(day, self.now, residence="现实居住地")
         self.assertEqual(suitability_key(changed), suitability_key(timed))
+
+    def test_suitability_ignores_home_activity_wording_and_weather_metadata(self):
+        conditions = {
+            "date": "2026-10-08",
+            "residence": "现实居住地",
+            "weather_known": True,
+            "weather": {
+                "raw": "城市 多云 28°C AQI 30",
+                "temp": 28,
+                "condition": "多云",
+                "is_warm": True,
+                "outfit_hint": "建议轻薄穿着",
+            },
+            "current_activity": {
+                "activity": "午睡醒来，坐在书桌前导出相片",
+                "activity_kind": "other",
+                "place_kind": "home",
+                "duration_minutes": 30,
+                "execution_state": "active",
+            },
+            "next_activity": {
+                "activity": "起身去琴房做手腕热身",
+                "activity_kind": "other",
+                "place_kind": "home",
+                "duration_minutes": 20,
+                "execution_state": "planned",
+            },
+            "upcoming_outings": [
+                {
+                    "time": "2026-10-08T18:00:00",
+                    "activity": "去书店逛逛",
+                    "place_kind": "poi",
+                }
+            ],
+            "current_outfit": "浅粉针织衫和牛仔短裤",
+            "current_ids": "253,293",
+            "body": {},
+        }
+        changed_copy = json.loads(json.dumps(conditions, ensure_ascii=False))
+        changed_copy["weather"].update(
+            raw="城市 多云 29°C AQI 42",
+            temp=29,
+            outfit_hint="天气预报补充说明有变化",
+        )
+        changed_copy["current_activity"].update(
+            activity="午睡醒来，处理照片后准备慢练钢琴",
+            duration_minutes=40,
+            execution_state="completed",
+        )
+
+        self.assertEqual(suitability_key(conditions), suitability_key(changed_copy))
+        changed_plan = json.loads(json.dumps(conditions, ensure_ascii=False))
+        changed_plan["upcoming_outings"][0]["activity"] = "去公园散步"
+        self.assertNotEqual(suitability_key(conditions), suitability_key(changed_plan))
+        changed_copy["next_activity"]["place_kind"] = "poi"
+        self.assertNotEqual(suitability_key(conditions), suitability_key(changed_copy))
+
+    def test_wardrobe_review_runs_once_per_day_when_context_is_stable(self):
+        due = self.runtime.wardrobe_life._wardrobe_review_due
+        profile = {"reviewed_at": "2026-10-08 12:00"}
+
+        self.assertFalse(due(profile, self.now + datetime.timedelta(minutes=30)))
+        self.assertTrue(due(profile, self.now + datetime.timedelta(days=1)))
+        self.assertTrue(due({}, self.now))
+
+    async def test_stable_wardrobe_review_skips_half_hour_recheck(self):
+        day = await self.day([])
+        await self.archive.record_wardrobe_wear(
+            day,
+            event_id="wear:" + digest(
+                [
+                    day.date,
+                    day.meta.get("outfit_fact_confirmed_at"),
+                    day.meta.get("style_catalog_reference_ids"),
+                ]
+            ),
+        )
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        conditions = self.runtime.wardrobe_life._wardrobe_conditions(day, self.now)
+        inventory_key = digest(
+            {
+                key: {field: value.get(field) for field in ("ownership", "condition")}
+                for key, value in snapshot["items"].items()
+            }
+        )
+        feedback_key = digest(
+            [
+                event["event_id"]
+                for event in snapshot["events"]
+                if event["kind"] in {"feedback", "wear"}
+            ]
+        )
+        profile = {
+            **snapshot["profile"],
+            "review_version": "wardrobe_choice_v1",
+            "context_key": suitability_key(conditions),
+            "inventory_key": inventory_key,
+            "feedback_key": feedback_key,
+            "reviewed_at": self.now.isoformat(sep=" "),
+        }
+        self.assertTrue(
+            await self.archive.save_wardrobe_review(
+                profile,
+                expected_revision=snapshot["profile_revision"],
+                at=profile["reviewed_at"],
+            )
+        )
+
+        self.runtime.now += datetime.timedelta(minutes=30)
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.runtime.call_text_model.assert_not_awaited()

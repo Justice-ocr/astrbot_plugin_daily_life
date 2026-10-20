@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import copy
 import json
 from typing import Any
 
@@ -15,7 +16,6 @@ from ..models import (
     LifeActionIntent,
     LifeActionOutcome,
     LifeState,
-    PlaceRecord,
     PlanRevision,
     ReflectionDecision,
     ReflectionSignal,
@@ -24,13 +24,14 @@ from ..models import (
     timeline_item_minutes,
 )
 from .lookback import record_appearance_snapshot
+from .actionchain import preceding_actions, committed_ids, timeline_complete
 from .body import ContinuousBody, project_body
 from .presence import record_action_outcome
+from .locationfacts import action_place, commit_place, place_issue
 from .tools import parse_life_datetime, timeline_item_datetime
 from .wardrobe import (
     format_outfit_components,
-    merge_outfit_components,
-    normalize_outfit_components,
+    outfit_action_components,
     normalize_outfit_scene_category,
     resolve_outfit_style_pool,
     serialize_outfit_components,
@@ -123,11 +124,11 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
     },
     "groom": {
         "effects": (("mood_score", 4), ("stress", -2)),
-        "allowed": {"mood_score", "stress"},
+        "allowed": {"energy", "mood_score", "stress"},
     },
     "change_outfit": {
         "effects": (("mood_score", 2),),
-        "allowed": {"mood_score", "stress"},
+        "allowed": {"energy", "mood_score", "stress"},
         "requires_target": True,
     },
     "social": {
@@ -225,6 +226,11 @@ class LifeActionComponent:
             return "action_type 不在受支持的生活动作集合中"
         if rule.get("requires_target") and not action.target:
             return "该动作需要明确 target"
+        if action.action_type in {"move", "travel"}:
+            origin = str(action.payload.get("origin") or "").strip()
+            destination = action_place(day, action)
+            if not origin or not destination:
+                return "移动需要结构化 origin 和 destination，不能把行动描述当作地点"
         if action.timeline_index is not None:
             if not 0 <= action.timeline_index < len(day.timeline):
                 return "timeline_index 超出当日时间轴范围"
@@ -240,7 +246,10 @@ class LifeActionComponent:
             current_value = getattr(state, minimum_field, None)
             if current_value is not None and current_value < minimum_value:
                 return f"{minimum_field} 低于动作最低可行值 {minimum_value}"
-        return ""
+        # 开始、恢复与最终结算共用动作契约，避免执行完才发现状态字段无效。
+        return LifeActionComponent._validate_action_effects(
+            LifeActionComponent._resolve_action_effects(action, rule), rule
+        )
 
     @staticmethod
     def _action_condition_value(
@@ -311,6 +320,9 @@ class LifeActionComponent:
         state: LifeState | None,
         action: LifeActionIntent,
     ) -> str:
+        issue = place_issue(day, action)
+        if issue:
+            return issue
         for condition in action.preconditions:
             known, actual = cls._action_condition_value(
                 day, state, action, condition.field
@@ -360,20 +372,43 @@ class LifeActionComponent:
         day.state = state
         changes: dict[str, dict[str, float | int | None]] = {}
         applicable_effects = [] if preserve_outfit_fact else effects
-        body = ContinuousBody.from_value(json.loads(day.meta["continuous_body"])) if day.meta.get("continuous_body") else None
+        body = (
+            ContinuousBody.from_value(json.loads(day.meta["continuous_body"]))
+            if day.meta.get("continuous_body")
+            else None
+        )
         body_fields = {"energy", "sleepiness", "interaction_capacity"}
         if body is not None:
-            applicable_effects = [effect for effect in applicable_effects if effect.field not in body_fields]
+            applicable_effects = [
+                effect
+                for effect in applicable_effects
+                if effect.field not in body_fields
+            ]
             previous_values = {field: getattr(state, field) for field in body_fields}
             body.complete(action.action_type, action.payload)
             project_body(day, body)
-            changes.update({field: {"before": previous_values[field], "after": getattr(state, field)} for field in body_fields if previous_values[field] != getattr(state, field)})
+            changes.update(
+                {
+                    field: {
+                        "before": previous_values[field],
+                        "after": getattr(state, field),
+                    }
+                    for field in body_fields
+                    if previous_values[field] != getattr(state, field)
+                }
+            )
         for effect in applicable_effects:
             previous = getattr(state, effect.field, None)
             base_value = float(previous) if previous is not None else 50.0
-            updated = (
-                base_value + effect.value if effect.operation == "add" else effect.value
-            )
+            delta = effect.value
+            if (
+                not action.effects
+                and effect.operation == "add"
+                and effect.field in {"stress", "mood_score"}
+            ):
+                room = (100 - base_value) if delta > 0 else base_value
+                delta *= room / 100 * min(1.0, max(1, action.duration_minutes) / 30)
+            updated = base_value + delta if effect.operation == "add" else effect.value
             updated = round(max(0.0, min(100.0, updated)), 2)
             normalized: int | float = int(updated) if updated.is_integer() else updated
             setattr(state, effect.field, normalized)
@@ -384,26 +419,10 @@ class LifeActionComponent:
             state.source = f"life_action:{action.action_type}"
 
         if action.action_type == "change_outfit" and not preserve_outfit_fact:
-            existing_components = normalize_outfit_components(
-                (day.meta or {}).get("outfit_components")
-            )
-            action_components = normalize_outfit_components(
-                (action.payload or {}).get("outfit_components")
-            )
-            if not action_components and action.target:
-                action_components["main_clothing"] = {
-                    "state": "worn", "description": action.target
-                }
-            main = action_components.get("main_clothing")
-            previous_main = existing_components.get("main_clothing")
-            full_change = bool(
-                main
-                and main.get("state") == "worn"
-                and main.get("description") != (previous_main or {}).get("description")
-            )
-            components = merge_outfit_components(
-                {} if full_change else existing_components,
-                action_components,
+            components, full_change = outfit_action_components(
+                day.meta.get("outfit_components"),
+                action.payload.get("outfit_components"),
+                action.target,
             )
             component_outfit = format_outfit_components(components)
             resolved_outfit = component_outfit or action.target
@@ -413,17 +432,35 @@ class LifeActionComponent:
             day.meta["outfit_fact_source"] = "life_action"
             day.meta["outfit_fact_confirmed_at"] = committed_at
             day.meta["outfit_fact_evidence"] = action.action_id
-            if action_components:
+            day.meta.pop("outfit_reason", None)
+            if components:
                 day.meta["outfit_components"] = serialize_outfit_components(components)
             scene = normalize_outfit_scene_category(
                 action.payload.get("scene_category"), default=""
             )
+            previous_scene = day.meta.get("outfit_scene_category")
             if scene:
                 day.meta["outfit_scene_category"] = scene
                 day.meta["outfit_style_pool"] = resolve_outfit_style_pool(scene)
-            record_appearance_snapshot(
-                day, datetime.datetime.fromisoformat(committed_at)
-            )
+            for field in (
+                "style",
+                "hair_style",
+                "hair",
+                "makeup_style",
+                "makeup",
+                "nails_style",
+                "nails",
+            ):
+                if field in action.payload:
+                    value = str(action.payload[field] or "").strip()
+                    if value:
+                        day.meta[field] = value
+                    else:
+                        day.meta.pop(field, None)
+            if "style" not in action.payload and (
+                full_change or (scene and scene != previous_scene)
+            ):
+                day.meta.pop("style", None)
             catalog_ids = []
             raw_catalog_ids = action.payload.get("catalog_reference_ids")
             values = (
@@ -444,24 +481,17 @@ class LifeActionComponent:
                 day.meta["style_catalog_reference_ids"] = ",".join(
                     str(item_id) for item_id in catalog_ids
                 )
-            elif full_change:
+            elif full_change or "catalog_reference_ids" in action.payload:
                 day.meta.pop("style_catalog_reference_ids", None)
-        if action.action_type in {"move", "travel"} and action.target:
-            previous_place = str((day.meta or {}).get("current_place") or "").strip()
-            if previous_place:
-                day.meta["previous_place"] = previous_place
-            day.meta["current_place"] = action.target
-            if not any(place.name == action.target for place in day.places):
-                day.places.append(
-                    PlaceRecord(
-                        name=action.target,
-                        source="life_action",
-                        last_seen=committed_at,
-                    )
-                )
+            record_appearance_snapshot(
+                day, datetime.datetime.fromisoformat(committed_at)
+            )
+        commit_place(day, action, committed_at)
         if action.timeline_index is not None:
             item = day.timeline[action.timeline_index]
-            item.execution_state = "completed"
+            item.execution_state = (
+                "completed" if timeline_complete(day, action) else "active"
+            )
             item.execution_reason = f"生活动作已结算：{action.action_type}"
             item.execution_evidence = action.evidence or action.action_id
             item.execution_updated_at = committed_at
@@ -473,15 +503,18 @@ class LifeActionComponent:
         """判断旧日程换装是否已被稍后的用户明确穿搭替代。"""
         if (
             action.action_type != "change_outfit"
-            or action.timeline_index is None
-            or not 0 <= action.timeline_index < len(day.timeline)
             or str(day.meta.get("outfit_fact_source") or "").strip()
             != "user_instruction"
         ):
             return False
         confirmed_at = parse_life_datetime(day.meta.get("outfit_fact_confirmed_at"))
-        scheduled_at = timeline_item_datetime(
-            day.timeline[action.timeline_index], day.date
+        scheduled_at = (
+            timeline_item_datetime(day.timeline[action.timeline_index], day.date)
+            if action.timeline_index is not None
+            and 0 <= action.timeline_index < len(day.timeline)
+            else parse_life_datetime(action.requested_at)
+            if action.source in {"continuous_plan", "continuous_executor"}
+            else None
         )
         return bool(
             confirmed_at is not None
@@ -516,15 +549,30 @@ class LifeActionComponent:
             replayed.replayed = True
             return replayed
 
+        completed = committed_ids(day)
+        if any(
+            item.action_id not in completed for item in preceding_actions(day, action)
+        ):
+            # 前序尚未完成只是等待条件，不固化成该动作永久的幂等拒绝结果。
+            return LifeActionOutcome(
+                action_id=action.action_id,
+                action_type=action.action_type,
+                status="rejected",
+                reason="同一活动的前序步骤尚未完成",
+                committed_at=committed_at,
+                timeline_index=action.timeline_index,
+                evidence=action.evidence,
+            )
+
         rule = _ACTION_RULES.get(action.action_type, {})
         state = day.state
         reason = self.context._validate_action_contract(day, action, rule, state)
         if not reason:
             reason = self.context._validate_action_preconditions(day, state, action)
         effects = self.context._resolve_action_effects(action, rule)
-        if not reason:
-            reason = self.context._validate_action_effects(effects, rule)
-        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(day, action)
+        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(
+            day, action
+        )
 
         outcome = LifeActionOutcome(
             action_id=action.action_id,
@@ -696,7 +744,7 @@ class LifeActionComponent:
         domain_service = getattr(self.context, "domains", None)
         validator = getattr(domain_service, "validate_action", None)
         if status in {"confirmed", "simulated"} and callable(validator):
-            valid, validation_reason = await validator(action)
+            valid, validation_reason = await validator(action, day=day)
             if not valid:
                 status = "failed"
                 receipt = {
@@ -796,16 +844,22 @@ class LifeActionComponent:
         )
         if outcome.status == "committed":
             if action.action_type == "change_outfit":
-                wear_recorder = getattr(self.context.archive, "record_wardrobe_wear", None)
+                wear_recorder = getattr(
+                    self.context.archive, "record_wardrobe_wear", None
+                )
                 if callable(wear_recorder):
                     saved_day = await self.context.archive.get_day(day.date)
                     if saved_day:
-                        await wear_recorder(saved_day, event_id="action-wear:" + action.action_id)
+                        await wear_recorder(
+                            saved_day, event_id="action-wear:" + action.action_id
+                        )
                 marker = getattr(self.context, "_mark_style_catalog_references", None)
                 if callable(marker):
                     await marker(action.payload.get("catalog_reference_ids"))
             if action.action_type in {"chat", "social"} and action.target:
-                writer = getattr(self.context.archive, "upsert_current_temporal_fact", None)
+                writer = getattr(
+                    self.context.archive, "upsert_current_temporal_fact", None
+                )
                 if callable(writer):
                     await writer(
                         scope="global",
@@ -908,29 +962,65 @@ class LifeActionComponent:
             已持久化的幂等动作结果。
         """
         action = LifeActionIntent.from_value(intent)
-        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(day, action)
-        continuous_mutator = getattr(self.context.archive, "mutate_continuous_life", None)
+        preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(
+            day, action
+        )
+        continuous_mutator = getattr(
+            self.context.archive, "mutate_continuous_life", None
+        )
         if day.meta.get("continuous_body") and callable(continuous_mutator):
             outcome = None
+
             def commit(latest, world):
                 nonlocal outcome, preserve_outfit_fact
                 if action.timeline_index is not None:
-                    raw_actions = json.loads(latest.meta.get("planned_life_actions") or "[]")
-                    current = next((LifeActionIntent.from_value(raw) for raw in raw_actions if isinstance(raw, dict) and raw.get("action_id") == action.action_id), None)
+                    raw_actions = json.loads(
+                        latest.meta.get("planned_life_actions") or "[]"
+                    )
+                    current = next(
+                        (
+                            LifeActionIntent.from_value(raw)
+                            for raw in raw_actions
+                            if isinstance(raw, dict)
+                            and raw.get("action_id") == action.action_id
+                        ),
+                        None,
+                    )
                     if current is None:
                         action.timeline_index = None
                     else:
                         action.timeline_index = current.timeline_index
-                preserve_outfit_fact = self.context._planned_outfit_action_is_superseded(latest, action)
-                wardrobe_validator = getattr(self.context.archive, '_wardrobe_action_issue_unlocked', None)
-                wardrobe_issue = wardrobe_validator(action.payload.get('catalog_reference_ids')) if action.action_type == 'change_outfit' and callable(wardrobe_validator) else ''
+                preserve_outfit_fact = (
+                    self.context._planned_outfit_action_is_superseded(latest, action)
+                )
+                prepared = action
+                wardrobe_issue = ""
+                if not preserve_outfit_fact:
+                    prepared, wardrobe_issue = (
+                        self.context.archive._prepare_outfit_action_unlocked(
+                            latest, action
+                        )
+                    )
                 if wardrobe_issue:
-                    outcome = LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status='rejected', reason=wardrobe_issue)
+                    outcome = LifeActionOutcome(
+                        action_id=action.action_id,
+                        action_type=action.action_type,
+                        status="rejected",
+                        reason=wardrobe_issue,
+                    )
                 else:
-                    outcome = self.context.settle_life_action(latest, action, now=now)
-                if outcome.status == "committed" and not outcome.replayed and world.get("body"):
+                    outcome = self.context.settle_life_action(latest, prepared, now=now)
+                if (
+                    outcome.status == "committed"
+                    and not outcome.replayed
+                    and world.get("body")
+                ):
                     world["body"] = json.loads(latest.meta["continuous_body"])
-                if not outcome.replayed and outcome.status in {"committed", "failed", "rejected"}:
+                if not outcome.replayed and outcome.status in {
+                    "committed",
+                    "failed",
+                    "rejected",
+                }:
                     record_action_outcome(
                         world,
                         action,
@@ -939,13 +1029,56 @@ class LifeActionComponent:
                         reason=outcome.reason,
                         run=world.get("run"),
                     )
+
             latest, _ = await continuous_mutator(day.date, commit)
             if latest is None or outcome is None:
-                return LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status="rejected", reason="原生活日记录已清理")
+                return LifeActionOutcome(
+                    action_id=action.action_id,
+                    action_type=action.action_type,
+                    status="rejected",
+                    reason="原生活日记录已清理",
+                )
             day.apply_persisted(latest)
         else:
-            outcome = self.context.settle_life_action(day, action, now=now)
-            await self.context.archive.save_day(day)
+            pending = copy.deepcopy(day)
+            prepared = action
+            issue = ""
+            prepare = getattr(self.context.archive, "prepare_outfit_action", None)
+            if not preserve_outfit_fact and callable(prepare):
+                prepared, issue = await prepare(pending, action)
+            if issue:
+                outcome = LifeActionOutcome(
+                    action_id=action.action_id,
+                    action_type=action.action_type,
+                    status="rejected",
+                    reason=issue,
+                )
+            else:
+                outcome = self.context.settle_life_action(pending, prepared, now=now)
+                require_wearable = (
+                    action.action_type == "change_outfit"
+                    and not preserve_outfit_fact
+                    and outcome.status == "committed"
+                    and not outcome.replayed
+                )
+                try:
+                    if require_wearable:
+                        await self.context.archive.save_day(
+                            pending, require_wearable=True
+                        )
+                    else:
+                        await self.context.archive.save_day(pending)
+                except ValueError as exc:
+                    if not require_wearable:
+                        raise
+                    outcome = LifeActionOutcome(
+                        action_id=action.action_id,
+                        action_type=action.action_type,
+                        status="rejected",
+                        reason=str(exc),
+                    )
+                else:
+                    day.apply_persisted(pending)
 
         save_outcome = getattr(self.context.archive, "save_life_action_outcome", None)
         if callable(save_outcome) and action.action_id and action.action_type:
@@ -984,7 +1117,9 @@ class LifeActionComponent:
                 }
             )
         if outcome.status == "committed":
-            complete = getattr(self.context.archive, "complete_simulated_commitment", None)
+            complete = getattr(
+                self.context.archive, "complete_simulated_commitment", None
+            )
             links = action.payload.get("commitment_links")
             if action.action_type in INTERNAL_SIMULATED_ACTION_TYPES and callable(
                 complete
@@ -1056,6 +1191,11 @@ class LifeActionComponent:
             expirations = {}
         outcomes = []
         changed = False
+        confirmed_nodes = {
+            index
+            for index, item in enumerate(day.timeline)
+            if item.execution_state == "completed"
+        }
         for raw_action in planned_actions if isinstance(planned_actions, list) else []:
             action = LifeActionIntent.from_value(raw_action)
             if (
@@ -1090,10 +1230,11 @@ class LifeActionComponent:
                 timeline_item.execution_updated_at = (now or life_now()).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
+                confirmed_nodes.add(action.timeline_index)
                 changed = True
             elif action.action_id in expirations:
                 continue
-            if timeline_item.execution_state != "completed":
+            if action.timeline_index not in confirmed_nodes:
                 continue
             # completed 已不能由时钟产生，只能来自显式回执或有证据的复盘。
             # 对虚拟世界内部动作，此时才允许生成模拟回执并落地库存、地点等事实。
@@ -1123,7 +1264,9 @@ class LifeActionComponent:
                 if simulated is not None:
                     outcomes.append(simulated)
                 continue
-            receipt_getter = getattr(self.context.archive, "get_life_action_receipts", None)
+            receipt_getter = getattr(
+                self.context.archive, "get_life_action_receipts", None
+            )
             existing_receipts = (
                 await receipt_getter(action_id=action.action_id, limit=1)
                 if callable(receipt_getter)
@@ -1162,7 +1305,9 @@ class LifeActionComponent:
             timeline_item.execution_updated_at = expired_at
             expirations[action.action_id] = outcome.as_dict()
             changed = True
-            save_outcome = getattr(self.context.archive, "save_life_action_outcome", None)
+            save_outcome = getattr(
+                self.context.archive, "save_life_action_outcome", None
+            )
             if callable(save_outcome):
                 await save_outcome(
                     {

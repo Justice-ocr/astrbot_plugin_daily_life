@@ -295,6 +295,8 @@ class LifeSettingsTest(unittest.TestCase):
                 "voice_generation_config": {
                     "enabled": "true",
                     "smart_switch_enabled": "false",
+                    "expression_provider": " voice-model ",
+                    "expression_timeout_seconds": "99",
                     "smart_switch_probability": "135",
                     "proactive_enabled": "yes",
                     "api_key": "volc-key",
@@ -474,6 +476,8 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.video_generation.poll_interval_seconds, 1.0)
         self.assertTrue(config.voice_generation.enabled)
         self.assertFalse(config.voice_generation.smart_switch_enabled)
+        self.assertEqual(config.voice_generation.expression_provider, "voice-model")
+        self.assertEqual(config.voice_generation.expression_timeout_seconds, 20.0)
         self.assertEqual(config.voice_generation.smart_switch_probability, 100.0)
         self.assertTrue(config.voice_generation.proactive_enabled)
         self.assertFalse(hasattr(config.voice_generation, "proactive_probability"))
@@ -724,7 +728,11 @@ class LifeSettingsTest(unittest.TestCase):
         items = schema["life_domain_config"]["items"]
 
         self.assertEqual(items["home_address"]["description"], "居住地")
-        self.assertEqual(items["amap_api_key"]["hint"], "填写高德 Web 服务 Key。")
+        self.assertEqual(
+            items["amap_api_key"]["hint"],
+            "在高德开放平台创建 Web 服务类型的 Key，用于地点解析、搜索、详情和路线查询。",
+        )
+        self.assertFalse(items["amap_api_key"]["multiline"])
         self.assertNotIn("weather_city", schema["weather_awareness"]["items"])
         self.assertIn("amap_api_key", items)
         self.assertNotIn("map_provider", items)
@@ -1403,6 +1411,10 @@ class LifeSettingsTest(unittest.TestCase):
             schema["voice_generation_config"]["items"]["proactive_enabled"]["hint"],
         )
         voice_items = schema["voice_generation_config"]["items"]
+        self.assertEqual(voice_items["expression_provider"]["_special"], "select_provider")
+        self.assertEqual(voice_items["expression_provider"]["default"], "")
+        self.assertEqual(voice_items["expression_timeout_seconds"]["default"], 8)
+        self.assertIn("独立请求", voice_items["expression_provider"]["hint"])
         self.assertIn("speaker_source", voice_items)
         self.assertIn("speaker_id", voice_items)
         self.assertIn("speech_rate", voice_items)
@@ -1604,10 +1616,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.4.7", metadata)
+        self.assertIn("version: 1.4.8", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.4.7", readme)
-        self.assertIn("v1.4.7 重点更新", readme)
+        self.assertIn("version-1.4.8", readme)
+        self.assertIn("v1.4.8 更新说明", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1619,6 +1631,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.4.8 · 2026-10-20", changelog)
         self.assertIn("v1.4.7 · 2026-10-16", changelog)
         self.assertIn("v1.4.6 · 2026-10-16", changelog)
         self.assertIn("v1.4.5 · 2026-10-15", changelog)
@@ -1672,6 +1685,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.4.8"), changelog.index("v1.4.7"))
         self.assertLess(changelog.index("v1.4.7"), changelog.index("v1.4.6"))
         self.assertLess(changelog.index("v1.4.6"), changelog.index("v1.4.5"))
         self.assertLess(changelog.index("v1.4.5"), changelog.index("v1.4.4"))

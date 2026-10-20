@@ -57,7 +57,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
         }
 
     def normalize(self, profile, batch=None):
-        return self.runtime._normalize_chat_memory_batch_payload(
+        return self.runtime._part_chat_memory_batch_component._normalize_chat_memory_batch_payload(
             {"worth_saving": False, "expression_profiles": [profile]},
             batch or self.batch,
         )
@@ -89,7 +89,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
                     self.normalize(self.profile(**changes))["expression_profiles"], []
                 )
 
-    def test_repeated_style_needs_three_independent_turns(self):
+    def test_ordinary_continued_turns_do_not_prove_style_approval(self):
         batch = copy.deepcopy(self.batch)
         batch["messages"] = [
             self.row(index, "assistant" if index % 2 else "user", "真实回应或反馈")
@@ -100,7 +100,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             source_message_ids=["m2", "m4", "m6"],
             reply_message_ids=["m1", "m3", "m5"],
         )
-        self.assertEqual(len(self.normalize(profile, batch)["expression_profiles"]), 1)
+        self.assertEqual(self.normalize(profile, batch)["expression_profiles"], [])
         profile["reply_message_ids"] = ["m1"]
         self.assertEqual(self.normalize(profile, batch)["expression_profiles"], [])
 
@@ -159,7 +159,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             return payload
 
         self.runtime._calibrate_chat_memory_payload = unchanged
-        summary = await self.runtime._save_chat_memory_batch_payload(
+        summary = await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {"worth_saving": False, "expression_profiles": [self.profile()]}, self.batch
         )
         self.assertIsNone(summary)
@@ -174,7 +174,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             [(item.source_table, item.source_id) for item in evidence],
             [("chat_memory_messages", "2")],
         )
-        context = self.runtime._hidden_expression_profile_line(profiles[0])
+        context = self.runtime._part_hidden_experience_component._hidden_expression_profile_line(profiles[0])
         self.assertIn("每轮结尾都追问", context)
 
     async def test_multiple_expression_sources_keep_proofs_without_duplicate_memories(self):
@@ -232,7 +232,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             "reply_text": "伪造内容",
             "reason": "用户明确要求减少反问",
         }
-        payload = self.runtime._normalize_chat_memory_batch_payload(
+        payload = self.runtime._part_chat_memory_batch_component._normalize_chat_memory_batch_payload(
             {"expression_reviews": [review]}, self.batch
         )
         self.assertEqual(
@@ -240,7 +240,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             self.batch["messages"][0]["message_text"],
         )
         review["reply_message_id"] = "m3"
-        payload = self.runtime._normalize_chat_memory_batch_payload(
+        payload = self.runtime._part_chat_memory_batch_component._normalize_chat_memory_batch_payload(
             {"expression_reviews": [review]}, self.batch
         )
         self.assertEqual(payload["expression_reviews"], [])
@@ -258,7 +258,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
             max_summaries=2, experience_scope=self.batch["session_id"]
         )
         self.assertEqual(snapshot["expression_profiles"], [])
-        context = await self.runtime._private_revisit_expression_context(
+        context = await self.runtime._part_proactive_revisit_component._private_revisit_expression_context(
             self.batch["session_id"], None, datetime.datetime(2026, 10, 8, 12)
         )
         self.assertEqual(context["expression_profiles"], [])
@@ -313,7 +313,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
                 "reply_text": "伪造候选",
             },
         }
-        normalized = self.runtime._private_revisit_normalize_payload(
+        normalized = self.runtime._part_proactive_revisit_component._private_revisit_normalize_payload(
             payload,
             target_scope=self.batch["session_id"],
             revisit_evidence={"can_revisit": True},

@@ -26,6 +26,28 @@ class _Event:
 
 
 class ReplyDeliveryServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_background_reply_guard_cancels_remaining_segments_during_pause(self):
+        event = _Event()
+        state = {"current": True}
+        event._daily_life_reply_is_current = lambda: state["current"]
+
+        async def new_message_during_pause(delay):
+            state["current"] = False
+
+        outcome = await ReplyDeliveryService(object()).send_event(
+            EventDeliveryRequest(
+                event=event, texts=("一", "二", "三", "四"), scope="private:test",
+                match="exact", text_from_item=str,
+                build_message=lambda index, chain: chain[index],
+                delay_seconds=lambda index: 1, sleep=new_message_during_pause,
+                is_current=lambda: True,
+            )
+        )
+        self.assertEqual(outcome.status, "cancelled")
+        self.assertEqual(outcome.sent_count, 1)
+        self.assertEqual(event.sent, ["一"])
+        self.assertIsNone(event.get_result())
+
     async def test_event_delivery_keeps_each_artificial_delay(self):
         event = _Event()
         sleeps = []

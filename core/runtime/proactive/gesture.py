@@ -34,39 +34,21 @@ class ProactiveGestureComponentContext(Protocol):
     _EMOJI_MODEL_CANDIDATE_LIMIT: Any
     _EMOJI_RECENT_SENT_EXCLUSION_LIMIT: Any
     _SEMANTIC_EMOJI_ATTEMPTED_ATTR: Any
-    _attach_recent_expression_intents: Any
     _disable_emoji_tool_for_active_turn: Any
-    _emoji_already_sent_for_source: Any
     _emoji_asset_is_sendable: Any
     _emoji_asset_key: Any
-    _emoji_auto_send_allowed: Any
-    _emoji_config_value: Any
-    _emoji_duplicate_skip_reason: Any
-    _emoji_message_chain: Any
-    _emoji_model_candidate_limit: Any
     _emoji_recency_penalty: Any
-    _emoji_recent_sent_exclusion_limit: Any
-    _emoji_scope: Any
     _emoji_semantic_text: Any
     _emoji_send_candidate_limit: Any
-    _emoji_send_cooldown_active: Any
-    _emoji_send_cooldown_seconds: Any
     _emoji_sent_state: Any
-    _emoji_sent_store: Any
     _emoji_timestamp: Any
-    _emoji_tool_send_allowed: Any
     _event_message_id: Any
     _event_session_id: Any
     _get_proactive_provider: Any
-    _mark_emoji_used: Any
-    _note_emoji_sent: Any
     _proactive_bool: Any
     _proactive_scope_key: Any
     _proactive_send_is_current: Any
-    _recent_sent_emoji_ids: Any
     _schedule_background_task: Any
-    _select_emoji_asset_for_intent: Any
-    _semantic_emoji_candidates: Any
     _structured_result_text: Any
     archive: Any
     call_text_model: Any
@@ -93,7 +75,7 @@ class ProactiveGestureComponent:
         return getattr(settings, name, default)
 
     def _emoji_auto_send_allowed(self, source: str) -> bool:
-        if not bool(self.context._emoji_config_value("auto_send_enabled", True)):
+        if not bool(self._emoji_config_value("auto_send_enabled", True)):
             return False
         source_field = {
             "regular_reply": "send_on_regular_reply",
@@ -101,14 +83,14 @@ class ProactiveGestureComponent:
             "private_revisit": "send_on_private_revisit",
             "proactive_commitment": "send_on_commitment",
         }.get(str(source or "").strip())
-        return source_field is None or bool(self.context._emoji_config_value(source_field, True))
+        return source_field is None or bool(self._emoji_config_value(source_field, True))
 
     def _emoji_tool_send_allowed(self) -> bool:
-        return bool(self.context._emoji_config_value("tool_send_enabled", True))
+        return bool(self._emoji_config_value("tool_send_enabled", True))
 
     def _emoji_send_cooldown_seconds(self) -> int:
         try:
-            return max(0, int(self.context._emoji_config_value("send_cooldown_seconds", 0)))
+            return max(0, int(self._emoji_config_value("send_cooldown_seconds", 0)))
         except (TypeError, ValueError):
             return 0
 
@@ -117,7 +99,7 @@ class ProactiveGestureComponent:
             return max(
                 0,
                 int(
-                    self.context._emoji_config_value(
+                    self._emoji_config_value(
                         "recent_sent_exclusion_limit",
                         self.context._EMOJI_RECENT_SENT_EXCLUSION_LIMIT,
                     )
@@ -131,7 +113,7 @@ class ProactiveGestureComponent:
             return max(
                 1,
                 int(
-                    self.context._emoji_config_value(
+                    self._emoji_config_value(
                         "semantic_candidate_limit", self.context._EMOJI_MODEL_CANDIDATE_LIMIT
                     )
                 ),
@@ -159,12 +141,12 @@ class ProactiveGestureComponent:
         return parsed.astimezone(datetime.timezone.utc)
 
     async def _emoji_send_cooldown_active(self, scope: str) -> bool:
-        cooldown = self.context._emoji_send_cooldown_seconds()
+        cooldown = self._emoji_send_cooldown_seconds()
         scope = str(scope or "").strip()
         if cooldown <= 0 or not scope:
             return False
         now = datetime.datetime.now(datetime.timezone.utc)
-        state = self.context._emoji_sent_store().get(scope)
+        state = self._emoji_sent_store().get(scope)
         if isinstance(state, dict):
             sent_at = self.context._emoji_timestamp(state.get("sent_at"))
             if sent_at and (now - sent_at).total_seconds() < cooldown:
@@ -205,7 +187,7 @@ class ProactiveGestureComponent:
         scope = str(scope or "").strip()
         if not scope:
             return
-        self.context._emoji_sent_store()[scope] = {
+        self._emoji_sent_store()[scope] = {
             "last_asset_key": self.context._emoji_asset_key(emoji),
             "last_source_message_id": str(source_message_id or "").strip(),
             "source": str(source or "").strip(),
@@ -218,7 +200,7 @@ class ProactiveGestureComponent:
         source_message_id = str(source_message_id or "").strip()
         if not source_message_id:
             return ""
-        item = self.context._emoji_sent_store().get(str(scope or "").strip())
+        item = self._emoji_sent_store().get(str(scope or "").strip())
         if not item or item.get("last_source_message_id") != source_message_id:
             return ""
         asset_key = self.context._emoji_asset_key(emoji)
@@ -232,7 +214,7 @@ class ProactiveGestureComponent:
         source_message_id = str(source_message_id or "").strip()
         if not source_message_id:
             return False
-        item = self.context._emoji_sent_store().get(str(scope or "").strip())
+        item = self._emoji_sent_store().get(str(scope or "").strip())
         return bool(item and item.get("last_source_message_id") == source_message_id)
 
     @staticmethod
@@ -288,15 +270,15 @@ class ProactiveGestureComponent:
             if callable(marker):
                 marker(event, "life_emoji_send", outcome)
 
-        if not self.context._emoji_tool_send_allowed():
+        if not self._emoji_tool_send_allowed():
             mark_outcome("fallback")
             return "表情工具已关闭。"
-        scope = self.context._emoji_scope(event)
+        scope = self._emoji_scope(event)
         if not scope:
             mark_outcome("fallback")
             return "当前会话不可发送表情。"
         message_id = self.context._event_message_id(event)
-        if self.context._emoji_already_sent_for_source(
+        if self._emoji_already_sent_for_source(
             scope, source_message_id=message_id
         ):
             mark_outcome("fallback")
@@ -319,12 +301,12 @@ class ProactiveGestureComponent:
             intent_payload["emoji_intent"] = current_message
             intent_payload["action_intent"] = current_message
             intent_payload["reason"] = "根据当前用户消息提取表情意图"
-        emoji = await self.context._select_emoji_asset_for_intent(intent_payload, scope=scope)
+        emoji = await self._select_emoji_asset_for_intent(intent_payload, scope=scope)
         if emoji is None:
             mark_outcome("fallback")
             return "没有找到可发送的表情素材。"
 
-        chain = self.context._emoji_message_chain(emoji)
+        chain = self._emoji_message_chain(emoji)
         items = (
             list(getattr(chain, "chain", None) or getattr(chain, "items", None) or [])
             if chain
@@ -334,7 +316,7 @@ class ProactiveGestureComponent:
             mark_outcome("fallback")
             return "表情素材暂时不可发送。"
 
-        skip_reason = self.context._emoji_duplicate_skip_reason(
+        skip_reason = self._emoji_duplicate_skip_reason(
             scope, emoji, source_message_id=message_id
         )
         if skip_reason:
@@ -351,7 +333,7 @@ class ProactiveGestureComponent:
 
         mark_outcome("sent")
         self.context._disable_emoji_tool_for_active_turn(event)
-        await self.context._mark_emoji_used(
+        await self._mark_emoji_used(
             event,
             emoji,
             intent_payload,
@@ -393,7 +375,7 @@ class ProactiveGestureComponent:
         message_id: str = "",
         source: str = "tool",
     ) -> None:
-        self.context._note_emoji_sent(scope, emoji, source=source, source_message_id=message_id)
+        self._note_emoji_sent(scope, emoji, source=source, source_message_id=message_id)
         emoji_id = int(getattr(emoji, "id", 0) or 0)
         marker = getattr(self.context.archive, "mark_emoji_used", None)
         if callable(marker) and emoji_id > 0:
@@ -423,7 +405,7 @@ class ProactiveGestureComponent:
         """文字投递后安排独立的后台表情判断；返回是否成功安排。"""
         if (
             event is None
-            or not self.context._emoji_auto_send_allowed("regular_reply")
+            or not self._emoji_auto_send_allowed("regular_reply")
             or getattr(event, self.context._SEMANTIC_EMOJI_ATTEMPTED_ATTR, False)
         ):
             return False
@@ -431,7 +413,7 @@ class ProactiveGestureComponent:
         if not reply_text or media:
             return False
         setattr(event, self.context._SEMANTIC_EMOJI_ATTEMPTED_ATTR, True)
-        scope = self.context._emoji_scope(event)
+        scope = self._emoji_scope(event)
         if not scope:
             return False
         source_message_id = self.context._event_message_id(event)
@@ -466,7 +448,7 @@ class ProactiveGestureComponent:
     ) -> None:
         if not await self._automatic_emoji_allowed(scope, "regular_reply", event, message_id):
             return
-        emoji = await self.context._select_emoji_asset_for_intent(intent, scope=scope)
+        emoji = await self._select_emoji_asset_for_intent(intent, scope=scope)
         if emoji is None:
             logger.debug(f"{LOG_PREFIX} 普通回复表情判断：此刻保留文字更合适，或没有匹配素材。")
             return
@@ -474,7 +456,7 @@ class ProactiveGestureComponent:
             **intent,
             "emoji_intent": str(getattr(emoji, "label", "") or getattr(emoji, "description", "") or "附加表情"),
         }
-        chain = self.context._emoji_message_chain(emoji)
+        chain = self._emoji_message_chain(emoji)
         if not chain:
             return
         async with operation_lock(self.context, f"auto_emoji:{scope}"):
@@ -485,7 +467,7 @@ class ProactiveGestureComponent:
             ):
                 return
             try:
-                await self.context._mark_emoji_used(
+                await self._mark_emoji_used(
                     event, emoji, intent, scope=scope,
                     reply_text=intent["_reply_text"], message_id=message_id, source="regular_reply",
                 )
@@ -505,11 +487,11 @@ class ProactiveGestureComponent:
     async def _automatic_emoji_allowed(
         self, scope: str, source: str, event: Any, message_id: str
     ) -> bool:
-        if not self.context._emoji_auto_send_allowed(source):
+        if not self._emoji_auto_send_allowed(source):
             return False
-        if await self.context._emoji_send_cooldown_active(scope):
+        if await self._emoji_send_cooldown_active(scope):
             return False
-        if self.context._emoji_already_sent_for_source(scope, source_message_id=message_id):
+        if self._emoji_already_sent_for_source(scope, source_message_id=message_id):
             return False
         # 冷却查询也可能让出执行权，因此最后再核对话轮。
         return self.context._proactive_send_is_current(event) and self.context.can_send_for_source(
@@ -543,7 +525,7 @@ class ProactiveGestureComponent:
             return
         try:
             emoji = await asyncio.wait_for(
-                self.context._select_emoji_asset_for_intent(intent, scope=target_scope),
+                self._select_emoji_asset_for_intent(intent, scope=target_scope),
                 timeout=self._AUTO_EMOJI_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -552,13 +534,13 @@ class ProactiveGestureComponent:
         if not emoji:
             logger.debug(f"{LOG_PREFIX} {source}表情裁定通过，但没有合适的可发送素材。")
             return
-        skip_reason = self.context._emoji_duplicate_skip_reason(
+        skip_reason = self._emoji_duplicate_skip_reason(
             target_scope, emoji, source_message_id=source_message_id
         )
         if skip_reason:
             logger.debug(f"{LOG_PREFIX} 闲时回复表情跳过：{skip_reason}")
             return
-        chain = self.context._emoji_message_chain(emoji)
+        chain = self._emoji_message_chain(emoji)
         if not chain:
             logger.debug(f"{LOG_PREFIX} {source}表情跳过：候选素材不可发送。")
             return
@@ -573,7 +555,7 @@ class ProactiveGestureComponent:
                     source_message_id=source_message_id,
                 ):
                     return
-                await self.context._mark_emoji_used(
+                await self._mark_emoji_used(
                     source_event,
                     emoji,
                     intent,
@@ -695,7 +677,7 @@ class ProactiveGestureComponent:
             },
             ensure_ascii=False,
         )
-        candidate_limit = self.context._emoji_model_candidate_limit()
+        candidate_limit = self._emoji_model_candidate_limit()
         limit = min(len(assets), candidate_limit * 2)
         ranked = await self.context.rank_embedding_groups(
             query,
@@ -735,7 +717,7 @@ class ProactiveGestureComponent:
         """读取当前会话最近成功投递的表情，用于避免短期反复复用。"""
 
         scope = str(scope or "").strip()
-        exclusion_limit = self.context._emoji_recent_sent_exclusion_limit()
+        exclusion_limit = self._emoji_recent_sent_exclusion_limit()
         getter = getattr(self.context.archive, "get_expression_intents", None)
         if exclusion_limit <= 0 or not scope or not callable(getter):
             return set()
@@ -773,14 +755,14 @@ class ProactiveGestureComponent:
         if not assets:
             return None
         intent = dict(intent)
-        await self.context._attach_recent_expression_intents(intent, scope=scope)
+        await self._attach_recent_expression_intents(intent, scope=scope)
         provider = await self.context._get_proactive_provider()
         if not provider:
             return None
-        candidate_assets = await self.context._semantic_emoji_candidates(assets, intent)
+        candidate_assets = await self._semantic_emoji_candidates(assets, intent)
         if not candidate_assets:
             return None
-        recent_sent_ids = await self.context._recent_sent_emoji_ids(scope)
+        recent_sent_ids = await self._recent_sent_emoji_ids(scope)
         if recent_sent_ids and not bool(intent.get("_explicit_request")):
             candidate_assets = [
                 item

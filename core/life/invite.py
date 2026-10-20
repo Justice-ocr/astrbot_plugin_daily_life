@@ -33,7 +33,6 @@ class InviteComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _apply_timeline_edits: Any
-    _audit_future_timeline: Any
     _audit_person_payload: Any
     _build_autonomous_life_context: Any
     _build_person_fact_context: Any
@@ -525,7 +524,7 @@ JSON 输出要求：
                         result["timeline_issue"] = edit_issue
                     if accepted:
                         audited_future, audit_details, location_reason = (
-                            await self.context._audit_future_timeline(
+                            await self._audit_future_timeline(
                                 past_timeline=past_timeline,
                                 mutable_timeline=merged_future,
                                 protected_timeline=protected_future,
@@ -721,7 +720,7 @@ JSON 输出要求：
                 result["reconcile_issue"] = edit_issue
                 return None, result
             audited_future, audit_details, location_reason = (
-                await self.context._audit_future_timeline(
+                await self._audit_future_timeline(
                     past_timeline=past_timeline,
                     mutable_timeline=merged_future,
                     protected_timeline=protected_future,

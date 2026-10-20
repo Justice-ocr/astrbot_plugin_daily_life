@@ -32,12 +32,8 @@ class ProactiveFlowComponentContext(Protocol):
     _expression_review_passed: Any
     _format_recent_context_messages: Any
     _get_proactive_provider: Any
-    _idle_candidate_ready: Any
     _mark_proactive_reply_sent: Any
-    _normalize_proactive_payload: Any
     _normalize_proactive_utility: Any
-    _normalize_proactive_voice_call_intent: Any
-    _prepare_proactive_voice_call_invite: Any
     _proactive_air_delay_remaining: Any
     _proactive_allowed_for_event: Any
     _proactive_bool: Any
@@ -45,7 +41,6 @@ class ProactiveFlowComponentContext(Protocol):
     _proactive_chat_enabled: Any
     _proactive_cooldown_remaining: Any
     _proactive_current_day: Any
-    _proactive_group_anchor: Any
     _proactive_idle_candidates: Any
     _proactive_idle_enabled: Any
     _proactive_idle_seconds: Any
@@ -56,7 +51,6 @@ class ProactiveFlowComponentContext(Protocol):
     _proactive_scope_key: Any
     _proactive_skip: Any
     _read_recent_context_messages: Any
-    _record_proactive_decision: Any
     _record_virtual_life_metric: Any
     _save_pending_reply_effect: Any
     _save_proactive_decision: Any
@@ -229,7 +223,7 @@ class ProactiveFlowComponent:
                 if utility_valid
                 else "主动收益评分不完整，暂不发送"
             )
-        if should_reply and not self.context._proactive_group_anchor(event, readiness, payload):
+        if should_reply and not self._proactive_group_anchor(event, readiness, payload):
             should_reply = False
             payload["decision"] = "observe"
             payload["reason"] = "群聊闲时回复缺少自然承接点"
@@ -244,7 +238,7 @@ class ProactiveFlowComponent:
                 "reply_text": reply_text if should_reply else "",
             }
         )
-        self.context._normalize_proactive_voice_call_intent(event, payload)
+        self._normalize_proactive_voice_call_intent(event, payload)
         return payload, reply_text
 
     async def _record_proactive_decision(
@@ -404,7 +398,7 @@ class ProactiveFlowComponent:
             if not isinstance(payload, dict):
                 return self.context._proactive_skip("模型未返回有效裁定")
             payload["_interaction_mode"] = interaction_mode
-            payload, reply_text = self.context._normalize_proactive_payload(
+            payload, reply_text = self._normalize_proactive_payload(
                 event, readiness, payload
             )
             if payload["should_reply"]:
@@ -439,7 +433,7 @@ class ProactiveFlowComponent:
                         )
                         reply_text = ""
                     else:
-                        payload, reply_text = self.context._normalize_proactive_payload(
+                        payload, reply_text = self._normalize_proactive_payload(
                             event, readiness, audit.payload
                         )
             if payload["should_reply"]:
@@ -464,10 +458,10 @@ class ProactiveFlowComponent:
                             "reply_text": "",
                         })
                         reply_text = ""
-                        self.context._normalize_proactive_voice_call_intent(event, payload)
+                        self._normalize_proactive_voice_call_intent(event, payload)
             if not payload["should_reply"]:
                 self.context._update_proactive_air_after_decision(key, payload, now, sent=False)
-            await self.context._record_proactive_decision(
+            await self._record_proactive_decision(
                 event, sender_name, payload, reply_text, now
             )
             return payload
@@ -488,7 +482,7 @@ class ProactiveFlowComponent:
             return
         now = now or life_now()
         for key, candidate in list(candidates.items()):
-            if not self.context._idle_candidate_ready(candidate, now):
+            if not self._idle_candidate_ready(candidate, now):
                 if not isinstance(candidate, dict) or not isinstance(
                     candidate.get("last_activity_at"), datetime.datetime
                 ):
@@ -600,7 +594,7 @@ class ProactiveFlowComponent:
                     )
                 reply_text = ""
                 decision_name = "observe"
-        self.context._normalize_proactive_voice_call_intent(event, decision)
+        self._normalize_proactive_voice_call_intent(event, decision)
         if decision_name in {"cooldown", "air_delay", "wait"}:
             retry_after = max(60, int(decision.get("retry_after") or 60))
             candidate["next_evaluation_at"] = now + datetime.timedelta(
@@ -625,7 +619,7 @@ class ProactiveFlowComponent:
                 outcome=str(decision.get("reason") or "等待更合适的时机"),
             )
             return
-        voice_invite = await self.context._prepare_proactive_voice_call_invite(event, decision)
+        voice_invite = await self._prepare_proactive_voice_call_invite(event, decision)
         if not is_current():
             return
         voice_intent = decision.get("voice_call_intent")

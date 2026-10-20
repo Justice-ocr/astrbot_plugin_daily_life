@@ -22,31 +22,25 @@ class AirEffectComponentContext(Protocol):
     _AIR_BACKOFF_START_COUNT: Any
     _AIR_FEEDBACK_WINDOW_SECONDS: Any
     _air_backoff_seconds: Any
-    _classify_reply_effect: Any
     _event_has_command_handler: Any
     _event_message_id: Any
     _event_message_items: Any
     _event_session_id: Any
     _get_proactive_air_state: Any
     _get_proactive_provider: Any
-    _learn_repeated_reply_effect: Any
     _note_chat_pacing_effect: Any
-    _proactive_continuation_window: Any
     _proactive_feedback_watch: Any
     _proactive_feedback_watches: Any
     _proactive_is_self_message: Any
-    _proactive_reply_was_accepted: Any
     _proactive_scope_key: Any
     _reply_effect_source_labels: Any
     _response_gate_has_media: Any
     _response_gate_mark_continuation: Any
     _response_gate_scope_key: Any
     _save_pending_reply_effect: Any
-    _save_proactive_behavior_feedback: Any
     _schedule_background_task: Any
     _structured_result_text: Any
     _track_proactive_reply_effect: Any
-    _update_reply_effect_watch: Any
     archive: Any
     call_text_model: Any
     close_text_session: Any
@@ -408,7 +402,7 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
         now: datetime.datetime,
         key: str | None = None,
     ) -> tuple[int, int, str]:
-        if not self.context._proactive_reply_was_accepted(event, now, key):
+        if not self._proactive_reply_was_accepted(event, now, key):
             return 0, 0, ""
         text = str(getattr(event, "message_str", "") or "").strip()
         compact = "".join(text.split())
@@ -468,7 +462,7 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
             source = str(watch.get("source") or "proactive_reply")
             action, _ = self.context._reply_effect_source_labels(source)
             silence_feedback = f"{action}后会话自然结束，没有足够证据判断好坏"
-            await self.context._update_reply_effect_watch(
+            await self._update_reply_effect_watch(
                 watch,
                 outcome="neutral",
                 evidence=silence_feedback,
@@ -477,14 +471,14 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
                 friction=0,
             )
             return
-        if not self.context._proactive_reply_was_accepted(event, now, key):
+        if not self._proactive_reply_was_accepted(event, now, key):
             return
         source = str(watch.get("source") or "proactive_reply")
         is_proactive = source in {"proactive_reply", "private_revisit"}
-        assessment = await self.context._classify_reply_effect(watch, event)
+        assessment = await self._classify_reply_effect(watch, event)
         outcome = str(assessment["outcome"])
         confidence = float(assessment["confidence"])
-        turns, seconds, reason = self.context._proactive_continuation_window(event, now, key)
+        turns, seconds, reason = self._proactive_continuation_window(event, now, key)
         self.context._proactive_feedback_watches().pop(key, None)
         marker = getattr(self.context, "_response_gate_mark_continuation", None)
         if (
@@ -527,7 +521,7 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
         action, scene = self.context._reply_effect_source_labels(source)
         feedback = str(assessment["reason"])
         if outcome in {"positive", "negative"}:
-            await self.context._save_proactive_behavior_feedback(
+            await self._save_proactive_behavior_feedback(
                 key,
                 date=now.strftime("%Y-%m-%d"),
                 target_id=key,
@@ -539,7 +533,7 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
                 scene=scene,
                 source=source,
             )
-        await self.context._update_reply_effect_watch(
+        await self._update_reply_effect_watch(
             watch,
             outcome=outcome,
             evidence=feedback,
@@ -550,7 +544,7 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
         pacing = getattr(self.context, "_note_chat_pacing_effect", None)
         if callable(pacing):
             pacing(key, outcome)
-        await self.context._learn_repeated_reply_effect(
+        await self._learn_repeated_reply_effect(
             key,
             source=source,
             outcome=outcome,

@@ -171,7 +171,36 @@ from core.life.weekly import WeekComponent as _implementation_179
 def _fixture(name, components):
     members = {}
     initializer = None
+
+    def component_instance(host, component):
+        cache = vars(host).setdefault("_test_components", {})
+        if component not in cache:
+            cache[component] = component(host)
+        instance = cache[component]
+        # 测试替身显式覆盖的领域方法也应在组件内部调用时生效。
+        for member, original in vars(component).items():
+            if not (inspect.isfunction(original) or isinstance(original, (staticmethod, classmethod))):
+                continue
+            override = vars(host).get(member)
+            if override is None:
+                for owner in type(host).__mro__:
+                    value = vars(owner).get(member)
+                    if value is not None:
+                        if not getattr(value, "_fixture_wrapper", False):
+                            override = getattr(host, member)
+                        break
+            if callable(override):
+                setattr(instance, member, override)
+        return instance
+
     for component in reversed(components):
+        field = "_part_" + "".join(
+            ("_" if index and char.isupper() else "") + char.lower()
+            for index, char in enumerate(component.__name__)
+        )
+        members[field] = property(
+            lambda host, component=component: component_instance(host, component)
+        )
         for member, value in vars(component).items():
             if member == "initialize_runtime":
                 initializer = component
@@ -186,7 +215,8 @@ def _fixture(name, components):
                 def bind(component, method):
                     @functools.wraps(method)
                     def call(self, *args, **kwargs):
-                        return method(component(self), *args, **kwargs)
+                        return method(component_instance(self, component), *args, **kwargs)
+                    call._fixture_wrapper = True
                     return call
                 members[member] = bind(component, value)
             else:

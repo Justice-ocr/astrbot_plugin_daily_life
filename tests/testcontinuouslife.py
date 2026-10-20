@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 from support import DailyLifeRuntime, DayRecord, LifeArchive, LifeSettings, LifeState, TimelineItem
 
 from core.life.body import ContinuousBody
+from core.life.continuity import execution_context
 from core.life.domain import LifeDomainService
 from core.life.goals import (
     apply_goal_decisions,
@@ -29,6 +30,7 @@ from core.life.presence import (
 )
 from componentfixtures import LifeActionComponent
 from core.models import LifeActionIntent
+from core.prompts import LIFE_ACTION_SCOPE_RULES
 from core.runtime.continuous import next_decision_time
 from componentfixtures import ProactiveSendComponent
 from core.runtime.status import StateRefreshService, _StateRefreshSpec
@@ -39,6 +41,7 @@ class Composer(LifeActionComponent):
     def __init__(self, archive, domains):
         self.archive = archive
         self.domains = domains
+        self._style_catalog_context = AsyncMock(return_value="")
 
     async def sync_day_world_facts(self, *args, **kwargs):
         return []
@@ -55,6 +58,7 @@ class Runtime(DailyLifeRuntime):
         self.config = LifeSettings.from_dict({})
         self.domains = LifeDomainService(self.config.domains, archive)
         self.composer = Composer(archive, self.domains)
+        self.composer.config = self.config
         self.continuous_life._decide = AsyncMock(return_value={})
         self.mark_page_status_changed = AsyncMock()
 
@@ -405,13 +409,13 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
                 action_id=planned.action_id, _candidates=[planned.as_dict()]
             )
         else:
-            decision["new_action"] = {
+            decision["new_actions"] = [{
                 "owner": "self",
                 "action_type": action_type,
                 "target": "进行自主练习",
                 "duration_minutes": duration,
                 "payload": payload or {},
-            }
+            }]
         await self.runtime.continuous_life._apply_continuous_decision(
             day, world, decision, self.runtime.now
         )
@@ -455,6 +459,63 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         day = await self.archive.get_day(self.runtime.date)
         self.assertIn(action_id, day.meta["planned_life_actions"])
         self.assertIn("已完成", day.meta["continuous_life_context"])
+
+    async def test_current_action_and_timed_followup_keep_separate_execution_evidence(self):
+        runtime = self.runtime
+        target = "从长椅起身到步道饮水点接半杯温水，小口喝完，把晒热的胳膊在树荫里凉一凉"
+        next_step = "01:05 沿树影走回去"
+        future = LifeActionIntent.from_value({
+            "action_id": "return-walk", "action_type": "move", "target": "走回去",
+            "timeline_index": 0, "duration_minutes": 10,
+            "payload": {"origin": "饮水点", "destination": "街口"},
+        })
+        day = await self.archive.get_day(runtime.date)
+        day.timeline = [TimelineItem(time="01:05", activity="沿树影走回去", duration_minutes=10)]
+        day.meta["planned_life_actions"] = json.dumps([future.as_dict()], ensure_ascii=False)
+        await self.archive.save_day(day)
+        runtime.composer._get_persona = AsyncMock(return_value="角色")
+        runtime.composer._collect_recent_chat_context = AsyncMock(return_value="无")
+        runtime.composer._cleanup_conversation = AsyncMock()
+        runtime.get_text_provider = AsyncMock(return_value=object())
+        runtime.call_text_model = AsyncMock(return_value=json.dumps({
+            "decision": "start", "reason": "刚走了一段路，先喝点水",
+            "new_actions": [{
+                "owner": "self", "action_type": "drink", "target": target,
+                "duration_minutes": 2, "payload": {"volume_ml": 250, "next_step": next_step},
+            }],
+        }, ensure_ascii=False))
+        world = await self.archive.get_continuous_life()
+        decision = await runtime.continuous_decision.choose(day, world, runtime.now)
+        prompt = runtime.call_text_model.call_args.args[1]
+        self.assertIn(LIFE_ACTION_SCOPE_RULES, prompt)
+        inputs = json.loads(prompt.split("【眼前内容】\n", 1)[1])
+        self.assertEqual(inputs["timeline"][0]["at"], "2026-10-07T01:05:00")
+        await runtime.continuous_life._apply_continuous_decision(day, world, decision, runtime.now)
+        world = await self.archive.get_continuous_life()
+        action_id = world["run"]["action"]["action_id"]
+        context = execution_context(world)
+        current = next(line for line in context.splitlines() if line.startswith("当前自主行动："))
+        self.assertIn(target, current)
+        self.assertNotIn("01:05", current)
+        self.assertIn(f"后续意向（尚未执行，届时重新判断）：{next_step}", context)
+
+        await self.tick(2)
+        world = await self.archive.get_continuous_life()
+        completed = world["history"][-1]
+        self.assertEqual(completed["action"]["target"], target)
+        self.assertEqual(completed["status"], "completed")
+        outcome = next(item for item in world["kernel"]["action_outcomes"] if item["action_id"] == action_id)
+        self.assertEqual(outcome["target"], target)
+        self.assertEqual(outcome["next_step"], next_step)
+        self.assertEqual(outcome["next_step_source"], "action_plan")
+        self.assertEqual(len(await self.archive.get_life_action_receipts(action_id=action_id)), 1)
+        await self.tick(4)
+        saved = await self.archive.get_day(runtime.date)
+        future_node = next(item for item in saved.timeline if item.time == "01:05")
+        self.assertNotEqual(future_node.execution_state, "completed")
+        self.assertEqual(await self.archive.get_life_action_receipts(action_id=future.action_id), [])
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(len(world["history"]), 1)
 
     async def test_time_passing_without_selection_does_not_complete_a_plan(self):
         action = LifeActionIntent.from_value(
@@ -826,6 +887,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         action = LifeActionIntent.from_value({
             "action_id": "invite-outfit", "action_type": "change_outfit", "target": "外出连衣裙",
             "timeline_index": 0, "duration_minutes": 2, "source": "invite",
+            "effects": [{"field": "energy", "operation": "add", "value": -2}],
         })
         def plan(day):
             apply_edited_timeline(day, [TimelineItem(time="01:00", activity="换衣服")],
@@ -843,6 +905,110 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(receipts), 1)
         await self.tick()
         self.assertEqual(len(await self.archive.get_life_action_receipts(action_id=action.action_id)), 1)
+
+    async def test_invalid_effect_is_rejected_before_execution_starts(self):
+        action = LifeActionIntent.from_value({
+            "action_id": "invalid-effect", "action_type": "study", "target": "自主练习",
+            "timeline_index": 0, "duration_minutes": 2,
+            "effects": [{"field": "interaction_capacity", "operation": "add", "value": 5}],
+        })
+        def plan(day):
+            day.timeline = [TimelineItem(time="01:00", activity="自主练习")]
+            day.meta["planned_life_actions"] = json.dumps([action.as_dict()])
+        await self.archive.mutate_day(self.runtime.date, plan)
+        self.assertIsNone(await self.start(planned=action))
+        day = await self.archive.get_day(self.runtime.date)
+        self.assertNotEqual(day.timeline[0].execution_state, "active")
+        await self.tick(2)
+        self.assertEqual(await self.archive.get_life_action_receipts(action_id=action.action_id), [])
+        self.assertEqual(await self.archive.get_life_action_outcomes(), [])
+
+    async def _plan_partial_wardrobe_change(self):
+        from core.life.itinerary import apply_edited_timeline
+        items = []
+        for kind, name in (("outfit", "针织上衣与长裤"), ("footwear", "拖鞋"), ("footwear", "板鞋")):
+            item = await self.archive.upsert_style_catalog_item({
+                "kind": kind, "description": name, "confidence": 0.95,
+                "source_image_hash": name * 16,
+            })
+            items.append(item)
+        main, old_shoes, shoes = items
+        await self.archive.adopt_wardrobe_items(
+            [item.id for item in items], event_id="own", at=str(self.now), reason="已有衣物",
+        )
+        action = LifeActionIntent.from_value({
+            "action_id": "planned-shoes", "action_type": "change_outfit",
+            "target": "针织上衣与长裤；板鞋", "timeline_index": 0, "duration_minutes": 2,
+            "payload": {
+                "outfit_components": {"footwear": {"state": "worn", "description": "板鞋"}},
+                "catalog_reference_ids": [shoes.id], "scene_category": "public",
+            },
+        })
+        day = await self.archive.get_day(self.runtime.date)
+        day.outfit = "针织上衣与长裤；拖鞋"
+        day.meta.update({
+            "style_catalog_reference_ids": f"{main.id},{old_shoes.id}",
+            "outfit_fact_confirmed_at": str(self.now), "style": "甜美居家混搭",
+            "outfit_scene_category": "home",
+            "outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "针织上衣与长裤"},
+                "footwear": {"state": "worn", "description": "拖鞋"},
+            }),
+        })
+        apply_edited_timeline(day, [TimelineItem(time="01:00", activity="换鞋出门")],
+                              {"_planned_life_actions": [action.as_dict()]})
+        await self.archive.save_day(day, require_wearable=True)
+        await self.archive.start_wardrobe_care(
+            [main.id], decision="dirty", event_id="dirty-main", at=str(self.now),
+            observer="test", duration_minutes=0, reason="脱下后清洗",
+        )
+        self.assertIsNotNone(await self.start(planned=action))
+        return main, old_shoes, shoes
+
+    async def test_executor_changes_shoes_without_rewearing_dirty_main(self):
+        main, old_shoes, shoes = await self._plan_partial_wardrobe_change()
+        await self.tick(2)
+        day = await self.archive.get_day(self.runtime.date)
+        self.assertEqual(day.outfit, "针织上衣与长裤；板鞋")
+        self.assertNotIn("style", day.meta)
+        self.assertEqual(set(day.meta["style_catalog_reference_ids"].split(",")),
+                         {str(main.id), str(shoes.id)})
+        snapshot = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertTrue(snapshot[str(main.id)]["currently_worn"])
+        self.assertFalse(snapshot[str(old_shoes.id)]["currently_worn"])
+        world = await self.archive.get_continuous_life()
+        self.assertNotIn("run", world)
+        self.assertEqual(world["history"][-1]["status"], "completed")
+        await self.tick()
+        self.assertEqual(len(await self.archive.get_life_action_receipts(action_id="planned-shoes")), 1)
+
+    async def test_executor_rechecks_laundry_inside_outfit_commit(self):
+        main, old_shoes, shoes = await self._plan_partial_wardrobe_change()
+        original = self.runtime.continuous_life._validate_action
+        async def send_to_wash_after_check(action, **kwargs):
+            result = await original(action, **kwargs)
+            self.assertTrue(await self.archive.start_wardrobe_care(
+                [shoes.id], decision="dirty", event_id="dirty-before-commit",
+                at=str(self.runtime.now), observer="test", duration_minutes=0,
+                reason="校验后弄湿鞋子",
+            ))
+            self.assertTrue(await self.archive.start_wardrobe_care(
+                [shoes.id], decision="washing", event_id="wash-before-commit",
+                at=str(self.runtime.now), observer="test", duration_minutes=60,
+                reason="校验后送洗",
+            ))
+            return result
+        self.runtime.continuous_life._validate_action = send_to_wash_after_check
+        await self.tick(2)
+        day = await self.archive.get_day(self.runtime.date)
+        self.assertEqual(day.outfit, "针织上衣与长裤；拖鞋")
+        self.assertEqual(day.meta["style_catalog_reference_ids"], f"{main.id},{old_shoes.id}")
+        self.assertEqual(day.outfit_history, {})
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(world["run"]["status"], "failed")
+        await self.tick()
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(world["history"][-1]["status"], "failed")
 
     async def test_new_user_outfit_prevents_running_plan_from_overwriting_it(self):
         action = LifeActionIntent.from_value(
@@ -956,12 +1122,12 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
             return {
                 "decision": "start",
                 "reason": "旧决定",
-                "new_action": {
+                "new_actions": [{
                     "owner": "self",
                     "action_type": "study",
                     "target": "旧练习",
                     "duration_minutes": 5,
-                },
+                }],
             }
 
         self.runtime.continuous_life._decide = decision

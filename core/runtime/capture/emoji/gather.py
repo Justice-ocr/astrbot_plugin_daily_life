@@ -30,12 +30,8 @@ class EmojiGatherComponentContext(Protocol):
     _VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS: Any
     _append_gif_visual_summary: Any
     _apply_visual_context_summary_text: Any
-    _build_prepared_visual_media: Any
-    _cache_and_describe_emoji_asset: Any
     _cache_emoji_asset_file: Any
     _cache_emoji_asset_path: Any
-    _collect_one_visual_context: Any
-    _collect_visual_context_background: Any
     _describe_emoji_asset_with_vision: Any
     _describe_visual_context_with_vision: Any
     _emoji_asset_cache_candidates: Any
@@ -53,23 +49,16 @@ class EmojiGatherComponentContext(Protocol):
     _event_message_id: Any
     _event_message_items: Any
     _event_session_id: Any
-    _first_existing_visual_media_path: Any
     _local_path_from_file_uri: Any
     _media_fingerprint: Any
     _media_payload_from_item_async: Any
     _message_media_payload: Any
-    _prepared_visual_media_from_event: Any
-    _prepared_visual_media_is_gif: Any
     _read_visual_media_header: Any
-    _remove_gif_inputs_from_provider_request: Any
-    _run_visual_context_task: Any
     _schedule_background_task: Any
     _visual_context_summary_cache: Any
     _visual_media_has_durable_source: Any
-    _visual_media_source_is_gif: Any
     _visual_media_source_looks_like_gif: Any
     _visual_media_sources: Any
-    _wait_for_gif_visual_context: Any
     archive: Any
     contact_resolver: Any
     event_was_recalled: Any
@@ -127,11 +116,11 @@ class EmojiGatherComponent:
                 continue
             payload = dict(self.context._message_media_payload(item))
             sources = self.context._visual_media_sources(payload)
-            local_source = await self.context._first_existing_visual_media_path(sources)
+            local_source = await self._first_existing_visual_media_path(sources)
             if not local_source and not self.context._visual_media_has_durable_source(sources):
                 payload = await self.context._media_payload_from_item_async(item)
                 sources = self.context._visual_media_sources(payload)
-                local_source = await self.context._first_existing_visual_media_path(sources)
+                local_source = await self._first_existing_visual_media_path(sources)
 
             fingerprint = self.context._media_fingerprint(payload)
             if inspect.isawaitable(fingerprint):
@@ -194,7 +183,7 @@ class EmojiGatherComponent:
         started_at = time.monotonic()
         try:
             entries = await asyncio.wait_for(
-                self.context._build_prepared_visual_media(event),
+                self._build_prepared_visual_media(event),
                 timeout=self.context._VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -215,7 +204,7 @@ class EmojiGatherComponent:
         prepared = getattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, None)
         if isinstance(prepared, list):
             return prepared
-        prepared = await self.context._build_prepared_visual_media(event)
+        prepared = await self._build_prepared_visual_media(event)
         setattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, prepared)
         return prepared
 
@@ -238,7 +227,7 @@ class EmojiGatherComponent:
             *(str(payload.get(key) or "") for key in ("path", "file", "url", "image")),
         ]
         for source in dict.fromkeys(sources):
-            if await self.context._visual_media_source_is_gif(source):
+            if await self._visual_media_source_is_gif(source):
                 return True
         return False
 
@@ -268,7 +257,7 @@ class EmojiGatherComponent:
         completion: asyncio.Future,
     ) -> None:
         try:
-            await self.context._collect_visual_context_background(event)
+            await self._collect_visual_context_background(event)
         except asyncio.CancelledError:
             if not completion.done():
                 completion.set_result(False)
@@ -289,13 +278,13 @@ class EmojiGatherComponent:
         self,
         req: Any,
         *,
-        remove_all_images: bool = False,
+        converted_sources: frozenset[str] = frozenset(),
     ) -> int:
         image_urls = list(getattr(req, "image_urls", []) or [])
         removed_sources: list[str] = []
         kept_sources: list[str] = []
         for source in image_urls:
-            if remove_all_images or await self.context._visual_media_source_is_gif(
+            if str(source) in converted_sources or await self._visual_media_source_is_gif(
                 str(source or "")
             ):
                 removed_sources.append(str(source or ""))
@@ -326,7 +315,7 @@ class EmojiGatherComponent:
                     source = direct_image_url.get("url", "")
                 elif not source:
                     source = direct_image_url
-                if remove_all_images or await self.context._visual_media_source_is_gif(
+                if str(source) in converted_sources or await self._visual_media_source_is_gif(
                     str(source or "")
                 ):
                     continue
@@ -383,7 +372,7 @@ class EmojiGatherComponent:
                 if isinstance(completion, asyncio.Future):
                     await asyncio.shield(completion)
                 else:
-                    await self.context._collect_visual_context_background(
+                    await self._collect_visual_context_background(
                         event, gif_only=True
                     )
         except TimeoutError:
@@ -398,11 +387,11 @@ class EmojiGatherComponent:
     ) -> bool:
         """将 GIF 先交给视觉模型识别，再以文字摘要交给主对话模型。"""
 
-        entries = await self.context._prepared_visual_media_from_event(event)
+        entries = await self._prepared_visual_media_from_event(event)
         gif_entries = [
             entry
             for entry in entries
-            if await self.context._prepared_visual_media_is_gif(entry)
+            if await self._prepared_visual_media_is_gif(entry)
         ]
         if not gif_entries:
             return False
@@ -412,14 +401,38 @@ class EmojiGatherComponent:
             str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
             for entry in gif_entries
         ):
-            await self.context._wait_for_gif_visual_context(event)
+            await self._wait_for_gif_visual_context(event)
         summaries = [
             str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
             for entry in gif_entries
         ]
-        removed = await self.context._remove_gif_inputs_from_provider_request(
-            req,
-            remove_all_images=len(gif_entries) == len(entries),
+        # AstrBot 先追加本轮图片，再追加引用图片。只关联本轮对应槽位，
+        # 即使 GIF 已转换为 PNG，也不能清空引用或其他附加图片。
+        image_urls = list(getattr(req, "image_urls", []) or [])
+        current_images = [
+            item for item in self.context._event_message_items(event)
+            if self.context._emoji_asset_is_image_item(item)
+        ]
+        entries_by_item = {id(entry.get("item")): entry for entry in entries}
+        # 框架会跳过下载失败的图片。出现其附件状态标记、或前置缓存不完整时，
+        # 不按位置猜测转换后的路径，避免把后面的引用图片当作 GIF 移除。
+        unavailable = any(
+            str(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", ""))
+            == "[Image unavailable]"
+            for part in (getattr(req, "extra_user_content_parts", []) or [])
+        )
+        mapping_complete = not unavailable and all(
+            id(image) in entries_by_item for image in current_images
+        )
+        converted_sources = frozenset(
+            str(image_urls[index])
+            for index, item in enumerate(current_images)
+            if mapping_complete
+            and any(entries_by_item[id(item)] is gif for gif in gif_entries)
+            and index < len(image_urls)
+        )
+        removed = await self._remove_gif_inputs_from_provider_request(
+            req, converted_sources=converted_sources,
         )
         self.context._append_gif_visual_summary(req, summaries)
         logger.debug(
@@ -494,7 +507,7 @@ class EmojiGatherComponent:
         context_message_key = meta.get("message_id") or f"event:{id(event)}"
         saved: list[EmojiAssetRecord] = []
         payloads: dict[str, dict[str, str]] = {}
-        for entry in await self.context._prepared_visual_media_from_event(event):
+        for entry in await self._prepared_visual_media_from_event(event):
             item = entry.get("item")
             source_kind = self.context._emoji_asset_source_kind(item)
             if source_kind not in {"trusted", "review"}:
@@ -561,7 +574,7 @@ class EmojiGatherComponent:
             return
         for asset in saved[: self.context._emoji_review_batch_size()]:
             self.context._schedule_background_task(
-                self.context._cache_and_describe_emoji_asset(
+                self._cache_and_describe_emoji_asset(
                     asset,
                     payloads.get(str(asset.id), {}),
                     context_scope=context_scope,
@@ -593,7 +606,7 @@ class EmojiGatherComponent:
         setattr(event, self.context._VISUAL_CONTEXT_FUTURE_ATTR, completion)
         setattr(event, self.context._GIF_CONTEXT_FUTURE_ATTR, gif_completion)
         scheduled = self.context._schedule_background_task(
-            self.context._run_visual_context_task(event, completion),
+            self._run_visual_context_task(event, completion),
             label="图片上下文识别",
             key=key,
         )
@@ -615,9 +628,9 @@ class EmojiGatherComponent:
         if self.context.event_was_recalled(event, log_skip=True):
             return
 
-        entries = await self.context._prepared_visual_media_from_event(event)
+        entries = await self._prepared_visual_media_from_event(event)
         classified = [
-            (await self.context._prepared_visual_media_is_gif(entry), entry)
+            (await self._prepared_visual_media_is_gif(entry), entry)
             for entry in entries
         ]
         if gif_only:
@@ -634,7 +647,7 @@ class EmojiGatherComponent:
             if self.context.event_was_recalled(event, log_skip=True):
                 return
             try:
-                await self.context._collect_one_visual_context(entry, scope, message_key)
+                await self._collect_one_visual_context(entry, scope, message_key)
             finally:
                 if is_gif:
                     gif_remaining -= 1

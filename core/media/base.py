@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlsplit
 
 LOG_PREFIX = "[日常生活]"
 REFERENCE_IMAGE_MAX_BYTES = 24 * 1024 * 1024
-VOICE_STYLE_KEYS = frozenset({"neutral", "happy", "light", "sad", "angry"})
+VOICE_STYLE_KEYS = frozenset({"neutral", "happy", "light", "soft", "sad", "angry"})
 
 
 def normalize_voice_style(value: Any, fallback: str = "neutral") -> str:

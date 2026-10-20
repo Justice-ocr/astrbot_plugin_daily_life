@@ -8,6 +8,7 @@ from core.labels import page_status_reason_label, preference_category_label
 from core.life.condition import (
     classify_message_interrupt,
     daily_variability_signal,
+    format_daily_variability_prompt,
     message_can_interrupt,
     normalize_physiological_rhythm,
     normalize_state,
@@ -459,6 +460,15 @@ class SceneAwareOutfitTest(unittest.TestCase):
         self.assertEqual(ordinary, same_state_next_day)
         self.assertEqual(ordinary, {"body": "ordinary", "mood": "ordinary"})
         self.assertEqual(burdened, {"body": "watch", "mood": "watch"})
+
+    def test_variability_guidance_allows_contextual_change_without_random_illness(self):
+        prompt = format_daily_variability_prompt(
+            "2026-09-01", state={"sleepiness": 58, "stress": 35}
+        )
+
+        self.assertIn("不要求每天不变", prompt)
+        self.assertIn("不需要用户先报告", prompt)
+        self.assertIn("不按日期抽签", prompt)
 
     def test_realtime_state_refresh_clamps_unexplained_score_jumps(self):
         state = normalize_state(

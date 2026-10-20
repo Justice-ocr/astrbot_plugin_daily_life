@@ -74,20 +74,13 @@ class RuntimeImageMediaComponentContext(Protocol):
     _align_current_appearance_scene_prompt: Any
     _apply_current_appearance_snapshot: Any
     _apply_historical_appearance_snapshot: Any
-    _background_image_delivery: Any
     _build_person_fact_injection_context: Any
     _character_appearance_profile: Any
-    _current_friend_daily_look: Any
     _current_life_appearance_snapshot: Any
-    _deliver_edited_life_image: Any
     _direct_image_tool_already_sent: Any
     _direct_life_image_payload: Any
-    _directed_life_image_result: Any
     _disable_direct_image_tools_for_active_turn: Any
     _duplicate_direct_image_result: Any
-    _edit_and_deliver_life_image: Any
-    _edit_and_deliver_life_image_tracked: Any
-    _edit_life_image_inline: Any
     _edit_life_image_with_policy_retry: Any
     _event_current_image_request_text: Any
     _event_image_prompt_text: Any
@@ -95,42 +88,30 @@ class RuntimeImageMediaComponentContext(Protocol):
     _event_session_id: Any
     _event_sources: Any
     _event_user_history_text: Any
-    _execute_image_edit: Any
-    _execute_image_generation_plan: Any
     _friend_daily_look_key: Any
-    _friend_daily_look_path: Any
-    _friend_daily_looks: Any
     _friend_look_compatible: Any
     _friend_look_default_decision: Any
     _friend_look_parameters_result: Any
     _friend_look_prompt: Any
     _friend_look_required_parameters: Any
     _friend_look_should_persist: Any
-    _friend_profile_display_name: Any
-    _generate_and_deliver_life_image: Any
-    _generate_and_deliver_life_image_tracked: Any
     _generate_life_image_with_policy_retry: Any
     _get_curr_period: Any
     _historical_life_appearance_snapshot: Any
     _image_delivery_result: Any
     _image_generation_error_needs_rewrite: Any
     _image_generation_mode_label: Any
-    _image_operation_with_policy_retry: Any
     _image_policy_rejection_detail: Any
-    _image_policy_rewrite_reason: Any
     _image_prompt_aspect_ratio: Any
     _image_prompt_detail_score: Any
     _image_prompt_resolution: Any
-    _image_tool_failure_text: Any
     _is_llm_result_object: Any
-    _isolate_outfit_change_scene_prompt: Any
     _last_reverse_prompt_for_scope: Any
     _last_reverse_prompt_record_for_scope: Any
     _life_character_reference_image: Any
     _life_friend_daily_looks: Any
     _life_friend_daily_looks_loaded: Any
     _life_friend_daily_looks_write_lock: Any
-    _life_image_generate_inline: Any
     _life_media_source_events: Any
     _load_friend_daily_looks: Any
     _log_friend_daily_look: Any
@@ -145,16 +126,12 @@ class RuntimeImageMediaComponentContext(Protocol):
     _normalize_image_participants: Any
     _normalize_image_subject_route: Any
     _outfit_change_scene_fallback: Any
-    _persist_friend_daily_looks: Any
     _prepare_friend_daily_look: Any
-    _prepare_image_generation_plan: Any
     _proactive_is_self_message: Any
     _release_media_chat_turn: Any
     _remember_friend_daily_look: Any
     _remember_life_image_for_scope: Any
     _resolve_image_prompt: Any
-    _resolve_last_reverse_image_prompt: Any
-    _resolve_last_reverse_image_prompt_async: Any
     _resolve_life_identity_profiles: Any
     _resolve_life_image_reference_async: Any
     _rewrite_life_image_prompt_for_policy_retry: Any
@@ -162,7 +139,6 @@ class RuntimeImageMediaComponentContext(Protocol):
     _schedule_background_task: Any
     _send_delivered_media_followup: Any
     _snapshot_media_event: Any
-    _submit_background_image: Any
     archive: Any
     cancel_tool_reaction: Any
     composer: Any
@@ -361,7 +337,7 @@ JSON 字段：
 
         route = self.context._normalize_image_subject_route(subject_route)
         if final_snapshot:
-            return await self.context._isolate_outfit_change_scene_prompt(prompt, route)
+            return await self._isolate_outfit_change_scene_prompt(prompt, route)
 
         original = str(prompt or "").strip()
         user_request = str(source_request or "").strip()
@@ -593,7 +569,7 @@ JSON 字段：
         self.context._life_friend_daily_looks_loaded = True
         if not getattr(self.context, "data_path", None):
             return
-        path = self.context._friend_daily_look_path()
+        path = self._friend_daily_look_path()
 
         def read() -> dict[str, Any]:
             try:
@@ -604,7 +580,7 @@ JSON 字段：
 
         loaded = await asyncio.to_thread(read)
         today = time.strftime("%Y-%m-%d")
-        store = self.context._friend_daily_looks()
+        store = self._friend_daily_looks()
         for key, value in loaded.items():
             look = self.context._normalize_friend_look(value)
             if look["date"] == today and (look["outfit"] or look["hair"]):
@@ -613,8 +589,8 @@ JSON 字段：
     async def _persist_friend_daily_looks(self) -> None:
         if not getattr(self.context, "data_path", None):
             return
-        path = self.context._friend_daily_look_path()
-        payload = dict(self.context._friend_daily_looks())
+        path = self._friend_daily_look_path()
+        payload = dict(self._friend_daily_looks())
 
         def write() -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -633,9 +609,9 @@ JSON 字段：
 
     def _current_friend_daily_look(self, scope: str, profile_id: str) -> dict[str, str]:
         key = self.context._friend_daily_look_key(scope, profile_id)
-        look = self.context._normalize_friend_look(self.context._friend_daily_looks().get(key))
+        look = self.context._normalize_friend_look(self._friend_daily_looks().get(key))
         if look["date"] != time.strftime("%Y-%m-%d"):
-            self.context._friend_daily_looks().pop(key, None)
+            self._friend_daily_looks().pop(key, None)
             return {}
         return look if look["outfit"] or look["hair"] else {}
 
@@ -670,7 +646,7 @@ JSON 字段：
         decision: str = "",
     ) -> tuple[dict[str, str], str, list[str]]:
         await self.context._load_friend_daily_looks()
-        current = self.context._current_friend_daily_look(
+        current = self._current_friend_daily_look(
             self.context._event_session_id(event), profile_id
         )
         provided = self.context._normalize_friend_look(
@@ -822,7 +798,7 @@ JSON 字段：
         self, profile_id: str, look: dict[str, str], source: str
     ) -> None:
         logger.debug(
-            f"{LOG_PREFIX} 好友合影造型：好友={self.context._friend_profile_display_name(profile_id)}；"
+            f"{LOG_PREFIX} 好友合影造型：好友={self._friend_profile_display_name(profile_id)}；"
             f"来源={source or '本轮'}；场景={outfit_scene_category_label(look.get('scene_category'))}；"
             f"风格池={outfit_style_pool_label(look.get('style_pool'))}；"
             f"决定={look.get('decision') or '继续沿用'}；"
@@ -838,10 +814,10 @@ JSON 字段：
             return
         normalized["date"] = time.strftime("%Y-%m-%d")
         normalized["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        self.context._friend_daily_looks()[self.context._friend_daily_look_key(scope, profile_id)] = (
+        self._friend_daily_looks()[self.context._friend_daily_look_key(scope, profile_id)] = (
             normalized
         )
-        await self.context._persist_friend_daily_looks()
+        await self._persist_friend_daily_looks()
 
     @staticmethod
     def _friend_look_prompt(prompt: str, look: dict[str, str]) -> str:
@@ -986,7 +962,7 @@ JSON 字段：
             rewrite = getattr(self.context, "_rewrite_life_image_prompt_for_policy_retry", None)
             if not callable(rewrite):
                 raise
-            reason = self.context._image_policy_rewrite_reason(exc)
+            reason = self._image_policy_rewrite_reason(exc)
             logger.info(f"{LOG_PREFIX} 图片触发安全拒绝，尝试轻量润色后重试")
             logger.debug(f"{LOG_PREFIX} 图片安全拒绝详情：{reason}")
             try:
@@ -1044,7 +1020,7 @@ JSON 字段：
             return await self.context.media.image.generate_image(safe_prompt, **options)
 
         async with self.context.runtime_service_lease():
-            return await self.context._image_operation_with_policy_retry(
+            return await self._image_operation_with_policy_retry(
                 event,
                 prompt,
                 generate,
@@ -1089,7 +1065,7 @@ JSON 字段：
             )
 
         async with self.context.runtime_service_lease():
-            return await self.context._image_operation_with_policy_retry(
+            return await self._image_operation_with_policy_retry(
                 event,
                 prompt,
                 edit,
@@ -1222,7 +1198,7 @@ JSON 字段：
             if profile_id:
                 line = f"- {display_name}：{profile_id}"
                 look = (
-                    self.context._current_friend_daily_look(scope, profile_id) if scope else {}
+                    self._current_friend_daily_look(scope, profile_id) if scope else {}
                 )
                 if look:
                     details = "；".join(
@@ -1353,7 +1329,7 @@ JSON 字段：
             )
             if prompt:
                 return prompt, self.context._image_prompt_aspect_ratio(prompt)
-        return self.context._resolve_last_reverse_image_prompt(event)
+        return self._resolve_last_reverse_image_prompt(event)
 
     def _image_edit_available(self) -> bool:
         image_service = getattr(getattr(self.context, "media", None), "image", None)
@@ -1424,7 +1400,7 @@ JSON 字段：
                 directed_prompt,
                 detected_character,
                 needs_character_reference,
-            ) = await self.context._directed_life_image_result(
+            ) = await self._directed_life_image_result(
                 event,
                 prompt,
                 direct_prompt=True,
@@ -1505,7 +1481,7 @@ JSON 字段：
             resolved_prompt, aspect_ratio = (
                 locked
                 if locked is not None
-                else await self.context._resolve_last_reverse_image_prompt_async(event)
+                else await self._resolve_last_reverse_image_prompt_async(event)
             )
             if not resolution:
                 resolution = self.context._image_prompt_resolution(resolved_prompt)
@@ -1610,7 +1586,7 @@ JSON 字段：
             directed_prompt,
             contains_character,
             needs_character_reference,
-        ) = await self.context._directed_life_image_result(
+        ) = await self._directed_life_image_result(
             event,
             plan.prompt,
             direct_prompt=False,
@@ -1689,7 +1665,7 @@ JSON 字段：
         if int(getattr(event, "_daily_life_commitment_id", 0) or 0) > 0:
             # 持久化承诺任务已在聊天 Runner 之外执行，
             # 必须等待实际投递完成后才能将承诺标记为完成。
-            return await self.context._life_image_generate_inline(event, prompt, **options)
+            return await self._life_image_generate_inline(event, prompt, **options)
         for source in self.context._event_sources(event):
             marker = getattr(source, "_daily_life_image_request", None)
             if isinstance(marker, dict) and marker.get("status") in {"pending", "sent"}:
@@ -1724,7 +1700,7 @@ JSON 字段：
                 return "没有收到当前角色的换装要求。"
         if options.get("use_last_reverse_prompt"):
             snapshot._daily_life_locked_reverse_prompt = (
-                await self.context._resolve_last_reverse_image_prompt_async(snapshot)
+                await self._resolve_last_reverse_image_prompt_async(snapshot)
             )
             if not snapshot._daily_life_locked_reverse_prompt[0]:
                 return "没有可用的上一条反推提示词，请提供本次画面要求。"
@@ -1749,10 +1725,10 @@ JSON 字段：
             snapshot._daily_life_locked_appearance = (
                 await self.context._current_life_appearance_snapshot(route)
             )
-        return self.context._submit_background_image(
+        return self._submit_background_image(
             snapshot,
             event,
-            lambda: self.context._life_image_generate_inline(snapshot, prompt, **options),
+            lambda: self._life_image_generate_inline(snapshot, prompt, **options),
             action="generate",
         )
 
@@ -1771,7 +1747,7 @@ JSON 字段：
         source_id = self.context._event_message_id(source_event) or f"event:{id(source_event)}"
         scope = self.context._event_session_id(event)
         scheduled = self.context._schedule_background_task(
-            self.context._background_image_delivery(event, work, marker, tool_name),
+            self._background_image_delivery(event, work, marker, tool_name),
             label="生活图片生成" if action == "generate" else "生活图片编辑",
             key=f"life_image:{scope}:{source_id}",
         )
@@ -2037,7 +2013,7 @@ JSON 字段：
                 final_snapshot=bool(current_outfit_change),
             )
 
-        plan = await self.context._prepare_image_generation_plan(
+        plan = await self._prepare_image_generation_plan(
             event,
             prompt,
             use_last_reverse_prompt=use_last_reverse_prompt,
@@ -2063,7 +2039,7 @@ JSON 字段：
             friend_look_persist = self.context._friend_look_should_persist(look_source)
             plan.prompt = self.context._friend_look_prompt(plan.prompt, friend_look)
             plan.prompt += await self.context._build_person_fact_injection_context(event)
-        work = self.context._generate_and_deliver_life_image(
+        work = self._generate_and_deliver_life_image(
             event, plan, friend_look, friend_look_persist
         )
         return await work
@@ -2077,7 +2053,7 @@ JSON 字段：
     ) -> str:
         return await self.context.track_image_generation(
             event,
-            self.context._generate_and_deliver_life_image_tracked(
+            self._generate_and_deliver_life_image_tracked(
                 event, plan, friend_look, friend_look_persist
             ),
         )
@@ -2092,7 +2068,7 @@ JSON 字段：
         scope = self.context._event_session_id(event)
         started_at = time.monotonic()
         try:
-            execution = await self.context._execute_image_generation_plan(event, plan)
+            execution = await self._execute_image_generation_plan(event, plan)
             if execution.error:
                 return execution.error
             generated = execution.generated
@@ -2187,7 +2163,7 @@ JSON 字段：
                 return pending
             error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 图片生成或发送失败：{error}")
-            return self.context._image_tool_failure_text("图片生成", error)
+            return self._image_tool_failure_text("图片生成", error)
 
     async def _execute_image_edit(
         self,
@@ -2240,7 +2216,7 @@ JSON 字段：
             directed_prompt,
             contains_character,
             needs_character_reference,
-        ) = await self.context._directed_life_image_result(
+        ) = await self._directed_life_image_result(
             event,
             prompt,
             direct_prompt=direct_prompt,
@@ -2373,10 +2349,10 @@ JSON 字段：
                 return "请先发送或引用一张要参考的图片。"
             if participant_ids:
                 return "没有参考图时，请改用 life_image_generate，subject_route=group，并填写好友场景及造型参数。"
-        return self.context._submit_background_image(
+        return self._submit_background_image(
             snapshot,
             event,
-            lambda: self.context._edit_life_image_inline(
+            lambda: self._edit_life_image_inline(
                 snapshot, prompt, reference_image, **options
             ),
             action="edit",
@@ -2444,7 +2420,7 @@ JSON 字段：
                 logger.debug(
                     f"{LOG_PREFIX} 图片编辑未找到参考图，已按工具参数改走文生图。"
                 )
-                return await self.context._life_image_generate_inline(
+                return await self._life_image_generate_inline(
                     event,
                     prompt,
                     subject_route="group" if group_request else "free",
@@ -2455,7 +2431,7 @@ JSON 字段：
             if continue_last_result or str(reference_image or "").strip():
                 return "当前会话没有可继续修改的图片，请重新发送或引用原图。"
             return "请先发送或引用一张要参考的图片。"
-        work = self.context._edit_and_deliver_life_image(
+        work = self._edit_and_deliver_life_image(
             event,
             prompt,
             reference,
@@ -2481,7 +2457,7 @@ JSON 字段：
     ) -> str:
         return await self.context.track_image_generation(
             event,
-            self.context._edit_and_deliver_life_image_tracked(
+            self._edit_and_deliver_life_image_tracked(
                 event,
                 prompt,
                 reference,
@@ -2508,7 +2484,7 @@ JSON 字段：
         scope = self.context._event_session_id(event)
         started_at = time.monotonic()
         try:
-            execution = await self.context._execute_image_edit(
+            execution = await self._execute_image_edit(
                 event,
                 prompt,
                 reference,
@@ -2524,7 +2500,7 @@ JSON 字段：
                 f"{LOG_PREFIX} 图片生成模式：{execution.generation_mode}；"
                 f"长度：{len(execution.directed_prompt)}"
             )
-            return await self.context._deliver_edited_life_image(
+            return await self._deliver_edited_life_image(
                 event,
                 scope,
                 prompt,
@@ -2537,4 +2513,4 @@ JSON 字段：
                 return pending
             error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 参考图生成或发送失败：{error}")
-            return self.context._image_tool_failure_text("参考图生成", error)
+            return self._image_tool_failure_text("参考图生成", error)

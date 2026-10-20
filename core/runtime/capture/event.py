@@ -25,7 +25,6 @@ class CaptureEventComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _emoji_asset_size_allowed: Any
-    _event_bot_aliases: Any
     _event_is_group_message: Any
     _event_is_platform_directed: Any
     _event_mentions_bot_alias: Any
@@ -195,7 +194,7 @@ class CaptureEventComponent:
             return False
         return any(
             self.context._event_text_contains_bot_alias(text, alias)
-            for alias in self.context._event_bot_aliases()
+            for alias in self._event_bot_aliases()
         )
 
     def _event_is_directed(self, event: Any) -> bool:

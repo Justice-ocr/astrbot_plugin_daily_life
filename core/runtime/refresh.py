@@ -33,21 +33,17 @@ from typing import Protocol
 class RefreshComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _auto_life_check_due: Any
     _event_message_id: Any
     _event_message_text: Any
     _event_session_id: Any
     _get_curr_period: Any
     _meta_datetime: Any
-    _next_auto_life_check_at: Any
-    _outfit_context_signature: Any
     _pending_commitment_outfit: Any
     _run_autonomous_life_check: Any
     _runtime_now: Any
     _schedule_background_task: Any
     _schedule_outfit_scene: Any
     _schedule_outfit_scene_sync_needed: Any
-    _settle_timeline_planning: Any
     _state_stability_signature: Any
     _synchronize_outfit_with_schedule: Any
     archive: Any
@@ -514,9 +510,9 @@ class RefreshComponent:
         schedule_outfit_sync_needed = self.context._schedule_outfit_scene_sync_needed(data, now)
         outfit_context_changed = str(
             (data.meta or {}).get("auto_outfit_context", "") or ""
-        ) != self.context._outfit_context_signature(data, now, current_period)
+        ) != self._outfit_context_signature(data, now, current_period)
         if (
-            not self.context._auto_life_check_due(data, now)
+            not self._auto_life_check_due(data, now)
             and not commitment_changed
             and not execution_changed
             and not outfit_context_changed
@@ -539,10 +535,10 @@ class RefreshComponent:
                 timeline_end=(data.meta or {}).get("life_window_end"),
                 meta=data.meta,
             )
-            planning_changed = await self.context._settle_timeline_planning(data, now)
+            planning_changed = await self._settle_timeline_planning(data, now)
             if execution_changed or planning_changed:
                 await self.context.archive.save_day(data)
-            state_due = self.context._auto_life_check_due(data, now)
+            state_due = self._auto_life_check_due(data, now)
             state_changed = False
             if state_due:
                 if log_trigger:
@@ -575,7 +571,7 @@ class RefreshComponent:
             previous_outfit_context = str(
                 (data.meta or {}).get("auto_outfit_context", "") or ""
             )
-            current_outfit_context = self.context._outfit_context_signature(
+            current_outfit_context = self._outfit_context_signature(
                 data, now, current_period
             )
             outfit_context_changed = (
@@ -591,7 +587,7 @@ class RefreshComponent:
                 async with operation_lock(self.context, f"outfit:{target_date_str}"):
                     latest = await self.context.archive.get_day(target_date_str)
                     if latest:
-                        latest_context = self.context._outfit_context_signature(
+                        latest_context = self._outfit_context_signature(
                             latest, now, current_period
                         )
                         latest_recorded = str(
@@ -660,7 +656,7 @@ class RefreshComponent:
                 if not state_due:
                     if outfit_context_recorded or not outfit_context_changed:
                         data.meta["auto_outfit_context"] = (
-                            self.context._outfit_context_signature(data, now, current_period)
+                            self._outfit_context_signature(data, now, current_period)
                         )
                         await self.context.archive.save_day(data)
                         await self.context.mark_page_status_changed(
@@ -689,10 +685,10 @@ class RefreshComponent:
                 data.meta["auto_life_last_checked_at"] = now.strftime("%Y-%m-%d %H:%M")
                 data.meta["auto_life_stable_checks"] = str(stable_checks)
                 if outfit_context_recorded or not outfit_context_changed:
-                    data.meta["auto_outfit_context"] = self.context._outfit_context_signature(
+                    data.meta["auto_outfit_context"] = self._outfit_context_signature(
                         data, now, current_period
                     )
-                next_check = self.context._next_auto_life_check_at(
+                next_check = self._next_auto_life_check_at(
                     data,
                     now,
                     stable_checks=stable_checks,

@@ -122,6 +122,24 @@ class VolcengineVoiceTest(unittest.IsolatedAsyncioTestCase):
             "请用轻松自然的语气自然地说出这句话，不要改变文字内容。"
         ])
 
+    def test_soft_voice_lowers_delivery_without_changing_emotion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for source in ("preset", "cloned"):
+                with self.subTest(source=source):
+                    settings = self._settings(source)
+                    service = VolcengineVoiceService(settings, Path(directory))
+                    route = service._voice_route("平静亲近", "neutral", "soft")
+                    payload = service._payload("晚安啦", route)["req_params"]
+                    self.assertEqual(route["style_key"], "soft")
+                    self.assertEqual(route["emotion_category"], "neutral")
+                    self.assertEqual(route["emotion"], "平静亲近")
+                    self.assertLess(payload["audio_params"]["speech_rate"], settings.speech_rate)
+                    self.assertLess(payload["audio_params"]["loudness_rate"], settings.loudness_rate)
+                    additions = json.loads(payload["additions"])
+                    if source == "preset":
+                        self.assertIn("轻柔低声", additions["context_texts"][0])
+                    self.assertEqual(additions["post_process"]["pitch"], 0)
+
     async def test_emotion_text_does_not_select_voice_style(self):
         service = VolcengineVoiceService(
             self._settings("preset"), Path(tempfile.mkdtemp())

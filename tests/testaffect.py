@@ -80,6 +80,17 @@ def test_reflection_gate_skips_low_importance_updates():
     assert gate.reason_code == "importance_below_threshold"
 
 
+def test_reflection_gate_allows_material_life_change():
+    gate = AffectEngine.reflection_gate(
+        novelty=0.8,
+        emotional_intensity=0.6,
+        goal_impact=0.4,
+        social_impact=0.2,
+    )
+    assert gate.should_reflect is True
+    assert gate.importance >= 50
+
+
 def test_relationship_updates_are_bounded_and_require_evidence():
     updates = AffectEngine.relationship_updates_from_payload(
         {

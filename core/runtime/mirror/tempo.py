@@ -15,7 +15,6 @@ from typing import Any, Protocol
 class SnapshotTempoComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _debug_injection_target_once: Any
     _last_injection_target_log_key: Any
     archive: Any
     config: Any
@@ -59,7 +58,7 @@ class SnapshotTempoComponent:
 
         yesterday_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         if await self.context.archive.get_day(yesterday_str):
-            self.context._debug_injection_target_once(
+            self._debug_injection_target_once(
                 (
                     "extended_yesterday",
                     today_str,
@@ -71,7 +70,7 @@ class SnapshotTempoComponent:
             )
             return yesterday_str, True
 
-        self.context._debug_injection_target_once(
+        self._debug_injection_target_once(
             ("fallback_today", today_str, str(self.context.config.schedule_time)),
             f"[上下文注入] 凌晨时段 ({now.strftime('%H:%M')} < {self.context.config.schedule_time})，"
             f"未找到可延续的昨日记录，改用当前日期记录: {today_str}",

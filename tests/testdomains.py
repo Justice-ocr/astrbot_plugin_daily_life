@@ -154,6 +154,40 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             "测试书店", city_hint="测试市", limit=5
         )
 
+    async def test_location_route_does_not_cross_unresolved_generic_place(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-local",
+                    "name": "测试书店",
+                    "address": "测试区测试街2号",
+                    "category": "书店",
+                    "city": "测试市",
+                    "coordinate": (23.01, 113.01),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(
+            return_value={"distance_meters": 1800, "duration_seconds": 900, "provider": "amap"}
+        )
+        payload = self._location_payload(destination_time="10:00")
+        payload["timeline"].insert(
+            1,
+            {
+                "time": "08:30",
+                "activity": "在附近街区慢慢走走",
+                "place": "附近街区",
+                "place_kind": "generic",
+                "place_scope": "local",
+                "travel_mode": "walking",
+            },
+        )
+        revised, reason = await service.audit_daily_locations(payload)
+        self.assertEqual(reason, "")
+        self.assertEqual(service._map.route.await_count, 0)
+        self.assertNotIn("travel_origin", revised["timeline"][2])
+
     async def test_daily_location_preselection_returns_map_confirmed_candidate(self):
         service = self._location_audit_service()
         service._map.search_places = AsyncMock(

@@ -446,7 +446,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 await archive.aclose()
 
-    async def test_save_day_removes_adjacent_shifted_timeline_duplicate(self):
+    async def test_save_day_preserves_distinct_execution_records_with_same_activity(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
@@ -480,11 +480,13 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 await archive.save_day(day)
                 saved = await archive.get_day("2026-08-15")
 
-                self.assertEqual(len(saved.timeline), 1)
-                self.assertEqual(saved.timeline[0].time, "20:06")
-                self.assertEqual(saved.timeline[0].travel_minutes, 56)
-                self.assertEqual(saved.timeline[0].execution_state, "active")
-                self.assertEqual(len(day.timeline), 1)
+                self.assertEqual(len(saved.timeline), 2)
+                self.assertEqual(saved.timeline[0].execution_state, "completed")
+                self.assertEqual(saved.timeline[0].time, "20:00")
+                self.assertEqual(saved.timeline[1].time, "20:06")
+                self.assertEqual(saved.timeline[1].travel_minutes, 56)
+                self.assertEqual(saved.timeline[1].execution_state, "active")
+                self.assertEqual(len(day.timeline), 2)
             finally:
                 await archive.aclose()
 

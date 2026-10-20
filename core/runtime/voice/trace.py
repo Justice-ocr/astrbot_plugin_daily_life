@@ -13,7 +13,6 @@ from typing import Protocol
 class VoiceSwitchRecordComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
-    _log_voice_expression_decision: Any
     _mark_voice_switch_channel: Any
     _prune_voice_switch_rounds: Any
     _record_message_chain: Any
@@ -89,7 +88,7 @@ class VoiceSwitchRecordComponent:
             return False
         self.context._mark_voice_switch_channel(event, "文字")
         if item.get("pre_send_checked"):
-            self.context._log_voice_expression_decision(
+            self._log_voice_expression_decision(
                 channel="文字",
                 source="普通聊天",
                 result=f"已发送；概率：{item.get('probability_result', '未进入')}",
@@ -134,7 +133,7 @@ class VoiceSwitchRecordComponent:
         user_requested: bool = False,
         confidence: float = 1.0,
     ) -> None:
-        self.context._log_voice_expression_decision(
+        self._log_voice_expression_decision(
             channel=channel,
             source=source,
             reason=reason,

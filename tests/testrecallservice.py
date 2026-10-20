@@ -141,7 +141,7 @@ class RecallServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_recall_preserves_other_session_and_notifies_context_owners(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.remove_recalled_sight_context = Mock()
-        runtime._cancel_proactive_idle_task = Mock()
+        runtime._part_proactive_scope_component._cancel_proactive_idle_task = Mock()
         scope = "platform:FriendMessage:a"
         other = "platform:FriendMessage:b"
         current = Event(unified_msg_origin=scope, message_id="42")
@@ -165,7 +165,7 @@ class RecallServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime._proactive_idle_candidates["following"]["pending_count"], 1)
         self.assertEqual(runtime._proactive_idle_candidates["other"]["recent_messages"],
                          [{"message_id": "42"}])
-        runtime._cancel_proactive_idle_task.assert_called_once_with("current")
+        runtime._part_proactive_scope_component._cancel_proactive_idle_task.assert_called_once_with("current")
         runtime.remove_recalled_sight_context.assert_called_once_with(scope, "42")
 
     async def test_scope_manager_evicts_recall_without_creating_unneeded_services(self):

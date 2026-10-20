@@ -8,6 +8,7 @@ from typing import Any
 
 from ..archive.timeline import rebind_planned_actions
 from ..models import DayRecord, LIFE_ACTION_TYPES, LifeActionIntent, TimelineItem
+from ..prompts import LIFE_ACTION_SCOPE_RULES
 from .dressing import wardrobe_conditions
 from .engine import _resolve_planned_outfit_catalog
 
@@ -15,10 +16,10 @@ from .engine import _resolve_planned_outfit_catalog
 EDIT_ACTION_RULES = """日程编辑同时交付 planned_actions 数组，没有需要执行结算的动作时返回 []。
 每项用 edit_index 绑定本轮 timeline_edits 中 insert/replace 的序号（从 0 开始），不要猜合并后的 timeline_index。
 换装、穿脱鞋或外层、拿放随身配饰必须有 change_outfit；其他需要实际状态变化的准备、饮食、移动等也应填写对应动作，不能只写活动文案。
-每个节点只绑定一项动作；多阶段行为拆成独立节点。duration_minutes 是实际耗时，不是自动完成的倒计时；效果要等执行回执确认。
+复合节点按实际先后绑定多项动作，各 target 只描述本步骤；所有步骤有执行回执后节点才完成。duration_minutes 是该步骤实际耗时，不是自动完成的倒计时。
 change_outfit 从本轮衣橱候选选 catalog_reference_ids，填写 scene_category 和 outfit_components；局部调整保留主体服装。没有可用衣物依据时不要虚构换装。
 planned_actions 格式：[{"edit_index":0,"action_type":"rest|drink|meal|cook|order_food|purchase|move|travel|work|study|chore|exercise|groom|change_outfit|social|chat|photo|video","target":"具体目标","duration_minutes":5,"preconditions":[],"effects":[],"payload":{},"evidence":"准备这项动作的依据"}]。
-只安排计划，不把动作写成已完成；媒体和共同活动仍须真实交付或参与证据。"""
+只安排计划，不把动作写成已完成；媒体和共同活动仍须真实交付或参与证据。\n""" + LIFE_ACTION_SCOPE_RULES
 
 
 async def itinerary_wardrobe_context(
@@ -43,7 +44,6 @@ async def compile_edited_actions(
         return "缺少结构化 planned_actions，尚不能确认日程的执行安排"
     edits = result.get("timeline_edits") or []
     compiled = []
-    used = set()
     for raw in raw_actions:
         if not isinstance(raw, dict):
             return "日程动作格式无效"
@@ -65,10 +65,9 @@ async def compile_edited_actions(
             and (timeline[i].day_offset or 0) == (original.day_offset or 0)
         ]
         matches = exact or matches
-        if len(matches) != 1 or matches[0] in used:
-            return "动作对应节点不唯一或已绑定其他动作"
+        if len(matches) != 1:
+            return "动作对应节点不唯一"
         index = matches[0]
-        used.add(index)
         action = LifeActionIntent.from_value(raw)
         if (
             action.action_type not in LIFE_ACTION_TYPES
@@ -93,7 +92,7 @@ async def compile_edited_actions(
         return issue
     for action in compiled:
         item = timeline[action["timeline_index"]]
-        item.duration_minutes = action["duration_minutes"]
+        item.duration_minutes = sum(step["duration_minutes"] for step in compiled if step["timeline_index"] == action["timeline_index"])
         item.execution_state = "planned"
         item.execution_reason = "等待结合当前生活状态实际执行"
     result["_planned_life_actions"] = compiled

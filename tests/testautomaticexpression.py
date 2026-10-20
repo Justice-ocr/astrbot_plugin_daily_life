@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from runtimehelpers import EmojiAssetRecord, Event, RuntimeAsyncHelpers
 from core.models import ExpressionIntentRecord
+from core.runtime.reply import SemanticSegmentPlan
 
 
 class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
@@ -19,7 +20,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
         runtime.config.chat_style.private_casual_max_chars = 10
         runtime.config.emoji.send_cooldown_seconds = 600
         runtime._chat_style_natural_segment_delay_seconds = lambda *args, **kwargs: 0
-        runtime._semantic_segment_delay_seconds = lambda *args, **kwargs: 0
+        runtime._part_semantic_segment_runtime_component._semantic_segment_delay_seconds = lambda *args, **kwargs: 0
         asset = EmojiAssetRecord(
             id=1, file_hash="smile", file_path="https://example.com/smile.png",
             label="偷笑", description="捂嘴偷笑", emotions=["开心"], status="ready",
@@ -49,12 +50,10 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                     event.set_result(event.chain_result([
                         types.SimpleNamespace(text="少贫嘴，你又逗我开心啦。"),
                     ]))
-                    event._daily_life_enrichment_seconds = 7.99
-
-                    async def slow_plan(*args, **kwargs):
-                        await asyncio.Event().wait()
-
-                    runtime._semantic_segment_plan_text = slow_plan
+                    runtime._part_semantic_segment_runtime_component._semantic_segment_plan_text = AsyncMock(return_value=SemanticSegmentPlan(
+                        (), source="semantic_timeout", valid=False,
+                        reason="表达判断达到配置上限，本轮保留文字。",
+                    ))
                 elif case == "style_disabled":
                     runtime.config.chat_style.enabled = False
                 await runtime.apply_semantic_segment_before_send(event)
@@ -82,7 +81,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
             await release.wait()
             return asset
 
-        runtime._select_emoji_asset_for_intent = select
+        runtime._part_proactive_gesture_component._select_emoji_asset_for_intent = select
         event = self._reply_event(runtime)
         self.assertTrue(await asyncio.wait_for(runtime.send_semantic_emoji_if_needed(event), 0.1))
         await asyncio.wait_for(started.wait(), 0.2)
@@ -99,7 +98,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
         self.assertEqual(len(provider.prompts), 1)
         self.assertEqual(event.sent_messages, [])
-        self.assertFalse(await runtime._emoji_send_cooldown_active(event.unified_msg_origin))
+        self.assertFalse(await runtime._part_proactive_gesture_component._emoji_send_cooldown_active(event.unified_msg_origin))
 
     async def test_recall_or_switch_change_during_selection_prevents_delivery(self):
         for condition in ("recall", "disabled"):
@@ -114,7 +113,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                         runtime.config.emoji.send_on_regular_reply = False
                     return asset
 
-                runtime._select_emoji_asset_for_intent = select
+                runtime._part_proactive_gesture_component._select_emoji_asset_for_intent = select
                 await runtime.send_semantic_emoji_if_needed(event)
                 await asyncio.gather(*list(runtime._background_scheduler.tasks))
                 self.assertEqual(event.sent_messages, [])
@@ -128,7 +127,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
             self._reply_event(runtime, "m2", "先别说这个")
             return asset
 
-        runtime._select_emoji_asset_for_intent = select
+        runtime._part_proactive_gesture_component._select_emoji_asset_for_intent = select
         await runtime._send_proactive_emoji_if_needed(
             event.unified_msg_origin,
             {"reply_text": "你又逗我", "expression_intent": {"send_emoji": True}},
@@ -167,11 +166,11 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
         await runtime.archive.save_expression_intent(ExpressionIntentRecord.from_value({
             "scope": scope, "send_emoji": True, "emoji_id": 0, "created_at": now, "emoji_intent": "偷笑",
         }))
-        self.assertFalse(await runtime._emoji_send_cooldown_active(scope))
+        self.assertFalse(await runtime._part_proactive_gesture_component._emoji_send_cooldown_active(scope))
         await runtime.archive.save_expression_intent(ExpressionIntentRecord.from_value({
             "scope": scope, "send_emoji": True, "emoji_id": 1, "created_at": now, "emoji_intent": "偷笑",
         }))
-        self.assertTrue(await runtime._emoji_send_cooldown_active(scope))
+        self.assertTrue(await runtime._part_proactive_gesture_component._emoji_send_cooldown_active(scope))
 
     async def test_queued_or_slow_emoji_expires(self):
         for queued in (False, True):
@@ -186,7 +185,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                     finally:
                         cancelled.set()
 
-                runtime._select_emoji_asset_for_intent = AsyncMock(side_effect=select)
+                runtime._part_proactive_gesture_component._select_emoji_asset_for_intent = AsyncMock(side_effect=select)
                 gate = runtime._background_scheduler.normal_gate
                 if queued:
                     for _ in range(4):
@@ -199,7 +198,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                         gate.release()
                 await asyncio.wait_for(asyncio.gather(*list(runtime._background_scheduler.tasks)), 0.3)
                 self.assertEqual(event.sent_messages, [])
-                self.assertEqual(runtime._select_emoji_asset_for_intent.await_count, 0 if queued else 1)
+                self.assertEqual(runtime._part_proactive_gesture_component._select_emoji_asset_for_intent.await_count, 0 if queued else 1)
                 self.assertEqual(cancelled.is_set(), not queued)
 
     async def test_concurrent_regular_and_proactive_emoji_share_cooldown(self):
@@ -216,7 +215,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
             await both_selected.wait()
             return asset
 
-        runtime._select_emoji_asset_for_intent = select
+        runtime._part_proactive_gesture_component._select_emoji_asset_for_intent = select
         await runtime.send_semantic_emoji_if_needed(event)
         await asyncio.wait_for(runtime._send_proactive_emoji_if_needed(
             event.unified_msg_origin,

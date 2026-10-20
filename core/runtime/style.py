@@ -54,10 +54,8 @@ class ChatStyleRuntimeComponentContext(Protocol):
 
     _CHAT_STYLE_MAX_DELAY_SECONDS: Any
     _CHAT_STYLE_PENDING_SEGMENTS_ATTR: Any
-    _build_chat_style_decision_hint: Any
     _chat_style_astrbot_send_config: Any
     _chat_style_clean_inline_markdown: Any
-    _chat_style_clean_segment_plans: Any
     _chat_style_compact_text: Any
     _chat_style_context: Any
     _chat_style_copy_text_component: Any
@@ -67,9 +65,7 @@ class ChatStyleRuntimeComponentContext(Protocol):
     _chat_style_natural_segment_delay_seconds: Any
     _chat_style_pending_segments: Any
     _chat_style_pending_trace: Any
-    _chat_style_punctuation_cleaning_active: Any
     _chat_style_result_is_text_only: Any
-    _chat_style_segment_chain: Any
     _chat_style_should_keep_default_send: Any
     _chat_style_text_component_text: Any
     _chat_style_text_is_structural: Any
@@ -77,7 +73,6 @@ class ChatStyleRuntimeComponentContext(Protocol):
     _chat_style_unwrap_t2i_prose_fences: Any
     _event_is_group_message: Any
     _event_session_id: Any
-    _note_chat_style_segmented_send: Any
     _plan_chat_style_natural_segments: Any
     _replace_text_result: Any
     _replace_text_result_with_segments: Any
@@ -233,7 +228,7 @@ class ChatStyleRuntimeComponent:
         context = self.context._chat_style_context(event)
         if event is not None:
             setattr(event, "_daily_life_chat_style_context", context)
-        return self.context._build_chat_style_decision_hint(event, context)
+        return self._build_chat_style_decision_hint(event, context)
 
     @staticmethod
     def _chat_style_text_is_structural(text: str) -> bool:
@@ -961,7 +956,7 @@ class ChatStyleRuntimeComponent:
 
             style = getattr(getattr(self.context, "config", None), "chat_style", None)
             cleanup_enabled = bool(getattr(style, "punctuation_cleanup_enabled", True))
-            configured_cleanup_applies = self.context._chat_style_punctuation_cleaning_active(
+            configured_cleanup_applies = self._chat_style_punctuation_cleaning_active(
                 event, source_text
             )
             source_segments = [
@@ -1075,7 +1070,7 @@ class ChatStyleRuntimeComponent:
                 text_from_item=lambda item: self.context._chat_style_text_component_text(
                     item
                 ).strip(),
-                build_message=lambda index, chain: self.context._chat_style_segment_chain(
+                build_message=lambda index, chain: self._chat_style_segment_chain(
                     event, result, chain[index]
                 ),
                 delay_seconds=lambda index: (
@@ -1127,7 +1122,7 @@ class ChatStyleRuntimeComponent:
             scheduler = getattr(self.context, "schedule_pending_chat_state_refresh", None)
             if callable(scheduler):
                 scheduler(event)
-            self.context._note_chat_style_segmented_send(event)
+            self._note_chat_style_segmented_send(event)
             emoji_sender = getattr(self.context, "send_semantic_emoji_if_needed", None)
             if callable(emoji_sender):
                 await emoji_sender(event)
@@ -1178,11 +1173,11 @@ class ChatStyleRuntimeComponent:
             reply_text,
             self.context._chat_style_limit_for_event(event),
         )
-        plans = self.context._chat_style_clean_segment_plans(event, plans, reply_text)
+        plans = self._chat_style_clean_segment_plans(event, plans, reply_text)
         if self.context._replace_text_result_with_segments(event, plans):
             changed = True
             reply_text = "\n".join(segment.text for segment in plans)
-        elif plans and self.context._chat_style_punctuation_cleaning_active(event, reply_text):
+        elif plans and self._chat_style_punctuation_cleaning_active(event, reply_text):
             cleaned_text = plans[0].text
             if cleaned_text != reply_text:
                 if self.context._replace_text_result(event, cleaned_text):

@@ -212,22 +212,36 @@ class ToolContractTest(unittest.IsolatedAsyncioTestCase):
                     "type": "string"
                 }
                 checked = ArgumentCheckedTool(original)
-                error = checked.argument_error(
-                    {"prompt": "两个人在街边合影", "friend_scene_category": "street_walk"}
-                )
-                result = json.loads(error)
-                self.assertFalse(result["executed"])
-                self.assertEqual(result["issues"][0]["path"], ["friend_scene_category"])
-                self.assertEqual(result["issues"][0]["rule"], "enum")
-                self.assertEqual(
-                    result["issues"][0]["allowed_values"],
-                    ["", "home", "sleep", "outdoor", "public", "mixed"],
-                )
+                for invalid in ("street_walk", "", " "):
+                    error = checked.argument_error(
+                        {"prompt": "两个人在街边合影", "friend_scene_category": invalid}
+                    )
+                    result = json.loads(error)
+                    self.assertFalse(result["executed"])
+                    self.assertEqual(result["issues"][0]["path"], ["friend_scene_category"])
+                    self.assertEqual(result["issues"][0]["rule"], "enum")
+                    self.assertEqual(
+                        result["issues"][0]["allowed_values"],
+                        ["home", "sleep", "outdoor", "public", "mixed"],
+                    )
                 self.assertNotIn("enum", original.parameters["properties"]["friend_scene_category"])
+                self.assertIsNone(checked.argument_error({"prompt": "居家随手自拍"}))
+                self.assertNotIn("friend_scene_category", checked.parameters["required"])
                 for category in result["issues"][0]["allowed_values"]:
                     self.assertIsNone(checked.argument_error(
                         {"prompt": "两个人在街边合影", "friend_scene_category": category}
                     ))
+                voice_parameters = tool_argument_parameters(original, include_preface=False)
+                self.assertEqual(
+                    voice_parameters["properties"]["friend_scene_category"]["enum"],
+                    ["home", "sleep", "outdoor", "public", "mixed"],
+                )
+                self.assertIsNone(validate_tool_arguments(
+                    name, voice_parameters, {"prompt": "居家随手自拍"}
+                ))
+                self.assertIsNotNone(validate_tool_arguments(
+                    name, voice_parameters, {"prompt": "居家随手自拍", "friend_scene_category": ""}
+                ))
 
     async def test_invalid_call_never_reaches_executor_and_valid_retry_does(self):
         calls = []
