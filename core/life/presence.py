@@ -698,6 +698,7 @@ def sync_kernel_from_day(
     ]
     kernel["agency"] = {
         "run_status": _text((world.get("run") or {}).get("status"), 40) or "idle",
+        "observation_state": _text((world.get("run") or {}).get("observation_state"), 40) or "observed",
         "current_action_id": _text(
             ((world.get("run") or {}).get("action") or {}).get("action_id"), 180
         ),
@@ -737,7 +738,7 @@ def kernel_context(world: dict[str, Any]) -> str:
         f"- 情绪：{affect.get('mood') or '未记录'}；心情 {_score(affect.get('mood_score'), 50):.0f}/100；压力 {_score(affect.get('stress'), 50):.0f}/100；稳定度 {_score(affect.get('stability'), 50):.0f}/100。",
         f"- 注意力：回应余力 {_score(attention.get('capacity'), 50):.0f}/100；开放度 {_score(attention.get('openness'), 50):.0f}/100；观看姿态 {attention.get('watch_state') or '未记录'}。",
         f"- 社交电量：{_score(social.get('battery'), 50):.0f}/100；最近会话：{social.get('last_scope') or '无'}。",
-        f"- 自主性：{agency.get('run_status') or '空闲'}；当前行动编号：{agency.get('current_action_id') or '无'}；自身目标：{agency.get('goal_count', 0)} 个。",
+        f"- 自主性：{agency.get('run_status') or '空闲'}；观察状态：{agency.get('observation_state') or 'observed'}；当前行动编号：{agency.get('current_action_id') or '无'}；自身目标：{agency.get('goal_count', 0)} 个。",
     ]
     experience = learning_context(world)
     if experience:

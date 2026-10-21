@@ -47,6 +47,8 @@ def execution_evidence(day) -> dict:
             "action_type": run["action"].get("action_type"),
             "target": run["action"].get("target"),
             "status": run.get("status"),
+            "observation_state": run.get("observation_state", "observed"),
+            "observed_at": run.get("observed_at", ""),
         }
     outcomes = settlements(day)
     recent = []

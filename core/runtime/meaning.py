@@ -15,6 +15,7 @@ from ..life.tools import extract_json_from_text
 from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..search.cache import SingleFlight, TimedCache
 from .markers import LOG_PREFIX
+from .recallrank import fuse_memory_routes, memory_identity
 
 
 class MeaningService:
@@ -180,12 +181,8 @@ class MeaningService:
         return " ".join(filter(None, (str(item.title or ""), str(item.content or ""))))
 
     @staticmethod
-    def _memory_source_key(item: Any) -> tuple[str, ...]:
-        source_table = str(getattr(item, "source_table", "") or "")
-        source_id = str(getattr(item, "source_id", "") or "")
-        if source_table and source_id:
-            return (item.scope, str(item.category).split(":", 1)[0], source_table, source_id)
-        return (str(item.id),)
+    def _memory_source_key(item: Any) -> tuple:
+        return memory_identity(item)
 
     def start_memory_index(self) -> bool:
         """后台分批补齐历史记忆向量；不占用本轮聊天的召回预算。"""
@@ -458,22 +455,24 @@ class MeaningService:
         }
         try:
             ranked = await self._meaning_rank_with_embeddings(
-                query, groups, {"long_term_memory": limit}, minimum_similarity=0.62, cached_only=True,
+                query, groups, {"long_term_memory": min(36, limit * 3)}, minimum_similarity=0.62, cached_only=True,
             )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 长期记忆向量检索降级：{type(exc).__name__}")
             return None
-        result = []
-        seen.clear()
         lexical_versions = [by_source[self._memory_source_key(item)] for item in lexical]
-        for item in [*ranked["long_term_memory"], *lexical_versions]:
-            identity = str(getattr(item, "id", "") or "")
-            if identity not in seen:
-                seen.add(identity)
-                result.append(item)
-            if len(result) >= limit:
-                break
-        return result
+        semantic = ranked["long_term_memory"]
+        related = []
+        reader = getattr(self._archive(), "get_related_long_term_memories", None)
+        if callable(reader) and scopes:
+            anchors = fuse_memory_routes([(1.0, lexical_versions), (1.0, semantic)], min(limit, 8))
+            related = await reader(
+                [item.id for item in anchors], scopes=scopes, categories=categories,
+                limit=min(24, limit * 2),
+            )
+        return fuse_memory_routes(
+            [(1.0, lexical_versions), (1.0, semantic), (0.35, related)], limit,
+        )
 
     async def _meaning_rank_with_model(
         self,

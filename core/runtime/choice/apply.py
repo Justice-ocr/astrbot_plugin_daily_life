@@ -17,16 +17,12 @@ from ..markers import LOG_PREFIX
 
 from typing import Protocol
 
-RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS = 15.0
-
-
 class ResponseGateApplyComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _continuous_turn_trim_messages: Any
     _event_is_group_message: Any
     _event_message_id: Any
-    _get_proactive_provider: Any
     _response_gate_clear_wait: Any
     _response_gate_continuation_reason: Any
     _response_gate_current_state: Any
@@ -58,6 +54,7 @@ class ResponseGateApplyComponentContext(Protocol):
     continuous_turn_message_count: Any
     continuous_turn_messages: Any
     evaluate_response_gate: Any
+    get_text_provider: Any
     note_conversation_turn_decision: Any
     raw_config: Any
     record_observed_private_user_message: Any
@@ -159,11 +156,9 @@ class ResponseGateApplyComponent:
         pending_count: int,
         wait_state: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        provider_getter = getattr(self.context, "_get_proactive_provider", None)
-        if not callable(provider_getter):
-            return None
+        provider_id = self.context.config.response_gate.provider
         try:
-            provider = await provider_getter()
+            provider = await self.context.get_text_provider(provider_id)
         except Exception as exc:
             logger.debug(
                 f"{LOG_PREFIX} 随心回复语义模型不可用：{type(exc).__name__}: {exc}"
@@ -244,7 +239,7 @@ JSON 输出要求：
 本地状态分：{score:.3f}
 本地状态依据：{"；".join(reasons) or "无"}"""
         session_id = f"daily_life_response_gate_{uuid.uuid4().hex[:8]}"
-        provider_id = str(getattr(self.context.config.proactive, "provider", "") or "")
+        timeout_seconds = self.context.config.response_gate.semantic_timeout_seconds
         started = time.monotonic()
         try:
             raw = await asyncio.wait_for(
@@ -255,7 +250,7 @@ JSON 输出要求：
                     empty_retries=0,
                     primary_provider_id=provider_id,
                 ),
-                timeout=RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
             payload = extract_json_from_text(raw)
             if not isinstance(payload, dict):
@@ -294,8 +289,8 @@ JSON 输出要求：
             self.context._response_gate_semantic_metrics["timeout"] += 1
             logger.warning(
                 f"{LOG_PREFIX} 随心回复语义裁定超过 "
-                f"{RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS:g} 秒，改用本地状态判断；"
-                "可在闲时回复设置中选择响应更快的模型"
+                f"{timeout_seconds:g} 秒，改用本地状态判断；"
+                "可为随心回复选择响应更快的模型"
             )
             return None
         except Exception as exc:

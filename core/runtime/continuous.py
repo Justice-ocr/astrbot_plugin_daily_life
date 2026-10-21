@@ -12,6 +12,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..life.body import ContinuousBody, instant, project_body
+from ..life.continuity import observation_pending
 from ..life.actionchain import actions as ordered_actions, ready as action_ready
 from ..life.achievement import apply_reviews
 from ..life.interests import apply_interest_updates, bind_interest
@@ -86,7 +87,11 @@ def next_decision_time(day, world, now):
         float(run.get("action", {}).get("duration_minutes", 5))
         - float(run.get("active_seconds") or 0) / 60,
     )
-    minutes = min(30, remaining) if run.get("status") == "running" else 5
+    minutes = (
+        min(30, remaining)
+        if run.get("status") == "running" and not observation_pending(run)
+        else 5
+    )
     due = now + datetime.timedelta(minutes=minutes)
     for item in day.timeline:
         if item.execution_state in _TERMINAL_STATES:
@@ -197,7 +202,7 @@ class ContinuousLifeService:
         seconds = max(0.0, (now - previous).total_seconds()) if previous else 0.0
         run = world.get("run")
         activity = "idle"
-        sleeping = False
+        sleeping = bool(world.get("sleeping")) if observation_pending(run) else False
         intensity = 1.0
         observer_id = self._observer_id
         restarted = previous is not None and world.get("observer_id") != observer_id
@@ -205,21 +210,24 @@ class ContinuousLifeService:
             body.uncertain_minutes += seconds / 60
             body.advance(min(seconds / 60, 120))
             if isinstance(run, dict) and run["status"] == "running":
-                run["status"] = "paused"
+                run["observation_state"] = "pending"
                 run["observation_gap"] = True
-                run["reason"] = "存在未观测的运行间隔，等待重新判断，不补造完成经历"
+                run.setdefault("observed_at", body.updated_at)
+                sleeping = bool(world.get("sleeping"))
                 record_event(
                     world,
-                    kind="action_pause",
+                    kind="observation_gap",
                     source_id=f"{run['action']['action_id']}:observation_gap:{now.isoformat()}",
                     at=now,
-                    summary="因未观测的运行间隔暂停行动",
+                    summary="行动观察中断，保留最后确认状态，等待重新确认进展",
                     evidence_ids=[run["action"]["action_id"]],
                 )
             world["observation_gap_at"] = now.isoformat()
             world.pop("next_decision_at", None)
             seconds = 0
         world["observer_id"] = observer_id
+        if observation_pending(run):
+            body.uncertain_minutes += seconds / 60
         if isinstance(run, dict) and run["status"] == "running":
             action = attached_action(day, run)
             cancelled = action is None or (
@@ -250,7 +258,10 @@ class ContinuousLifeService:
                     status="cancelled" if cancelled else "paused",
                     reason=reason,
                     changed_at=now.isoformat(),
+                    observation_state="observed",
+                    observed_at=now.isoformat(),
                 )
+                sleeping = False
                 world.pop("next_decision_at", None)
                 record_event(
                     world,
@@ -260,8 +271,11 @@ class ContinuousLifeService:
                     summary=reason,
                     evidence_ids=[run["action"]["action_id"]],
                 )
-            else:
+            elif not observation_pending(run):
                 run["action"] = action.as_dict()
+                run["observed_at"] = (
+                    max(now, previous).isoformat() if previous else now.isoformat()
+                )
                 remaining = max(
                     0,
                     action.duration_minutes * 60
@@ -304,7 +318,7 @@ class ContinuousLifeService:
         project_body(day, body)
         if day.state is not None and world.get("sleeping") and not sleeping:
             day.state.sleep.depth = "awake"
-        if sleeping and day.state is not None:
+        if sleeping and day.state is not None and not observation_pending(run):
             day.state.sleep.depth = (
                 "deep_sleep"
                 if float(run.get("active_seconds") or 0) >= 2700
@@ -716,8 +730,11 @@ class ContinuousLifeService:
                 if not valid:
                     action = None
         expected_revision = int(snapshot.get("revision") or 0)
-        resume_valid = True
-        if decision == "resume" and snapshot.get("run"):
+        resume_valid = False
+        if snapshot.get("run") and (
+            decision == "resume"
+            or decision == "continue" and observation_pending(snapshot["run"])
+        ):
             resumed = attached_action(day, snapshot["run"])
             resume_valid = (
                 resumed is not None and (await self._validate_action(resumed, day=day))[0]
@@ -796,7 +813,10 @@ class ContinuousLifeService:
                 elif decision == "pause" and current["status"] == "running":
                     current.update(status="paused", reason=reason)
                     transition_event = "pause"
-                elif decision == "resume" and current["status"] == "paused":
+                elif (
+                    decision == "resume" and current["status"] == "paused"
+                    or decision in {"resume", "continue"} and observation_pending(current)
+                ):
                     resumed = attached_action(latest, current)
                     if (
                         resume_valid
@@ -812,12 +832,16 @@ class ContinuousLifeService:
                             latest.state,
                         )
                     ):
+                        transition_event = (
+                            "reconfirmed" if observation_pending(current) else "resume"
+                        )
                         current.update(status="running", reason=reason)
-                        transition_event = "resume"
                     else:
                         return False
                 if transition_event:
                     current["changed_at"] = now.isoformat()
+                    current["observation_state"] = "observed"
+                    current["observed_at"] = now.isoformat()
                     record_event(
                         world,
                         kind=f"action_{transition_event}",
@@ -898,6 +922,8 @@ class ContinuousLifeService:
                     "date": latest.date,
                     "action": action.as_dict(),
                     "status": "running",
+                    "observation_state": "observed",
+                    "observed_at": now.isoformat(),
                     "started_at": now.isoformat(),
                     "active_seconds": 0.0,
                     "reason": reason,
@@ -942,11 +968,12 @@ class ContinuousLifeService:
                 bind_interest(world, world["run"], payload)
             synchronize_run(latest, world, now)
             running = world.get("run") or {}
-            world["sleeping"] = (
-                running.get("status") == "running"
-                and running.get("action", {}).get("action_type") == "rest"
-                and running.get("rest_kind") == "sleep"
-            )
+            if not observation_pending(running):
+                world["sleeping"] = (
+                    running.get("status") == "running"
+                    and running.get("action", {}).get("action_type") == "rest"
+                    and running.get("rest_kind") == "sleep"
+                )
             world["next_decision_at"] = next_decision_time(
                 latest, world, now
             ).isoformat()
@@ -1014,6 +1041,8 @@ class ContinuousLifeService:
                     status="paused",
                     reason="已实际回应对话，短暂醒来后重新判断睡眠安排",
                     changed_at=now.isoformat(),
+                    observation_state="observed",
+                    observed_at=now.isoformat(),
                 )
                 record_event(
                     world,

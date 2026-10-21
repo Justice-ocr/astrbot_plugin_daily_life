@@ -18,6 +18,21 @@ RUN_STATUS_LABELS = {
 }
 
 
+def observation_pending(run: dict[str, Any] | None) -> bool:
+    """运行观察待确认不等同于生活行动被打断。"""
+    return bool(
+        run
+        and run.get("status") == "running"
+        and run.get("observation_state") == "pending"
+    )
+
+
+def run_status_label(run: dict[str, Any]) -> str:
+    if observation_pending(run):
+        return "最近确认，当前进展待确认"
+    return RUN_STATUS_LABELS.get(run.get("status"), "待确认")
+
+
 def execution_context(world: dict[str, Any]) -> str:
     sections = [
         kernel_context(world),
@@ -29,10 +44,10 @@ def execution_context(world: dict[str, Any]) -> str:
         action = run.get("action", {})
         sections.append(
             f"当前自主行动：{action.get('target') or action.get('action_type')}；"
-            f"{RUN_STATUS_LABELS.get(run.get('status'), '待确认')}；"
+            f"{run_status_label(run)}；"
             f"实际累计 {nonnegative(run.get('active_seconds')) / 60:.1f}/"
             f"{action.get('duration_minutes', 0)} 分钟；{run.get('reason', '')}。"
-            "进行中和暂停均不能说已经做完，计划也不能覆盖当前实际行动。"
+            "进行中、暂停和进展待确认均不能说已经做完，计划也不能覆盖当前实际行动。"
         )
         payload = action.get("payload")
         next_step = payload.get("next_step") if isinstance(payload, dict) else None
@@ -63,6 +78,8 @@ def project_world(day, world: dict[str, Any]) -> None:
     day.meta["continuous_sleeping"] = "true" if world.get("sleeping") else "false"
     if day.state is not None:
         run = world.get("run") or {}
+        if observation_pending(run):
+            return
         if world.get("sleeping"):
             day.state.sleep.depth = (
                 "deep_sleep"

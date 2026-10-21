@@ -236,6 +236,12 @@ const LIFE_ACTION_TYPE_LABELS = {
 const CONTINUOUS_ACTION_STATUS_LABELS = {
   running: "进行中", paused: "暂停", ready: "等待确认", settling: "收尾中", failed: "未完成", cancelled: "已取消",
 };
+function continuousObservationPending(run) {
+  return run?.status === "running" && run.observation_state === "pending";
+}
+function continuousActionStatusLabel(run) {
+  return continuousObservationPending(run) ? "进展待确认" : CONTINUOUS_ACTION_STATUS_LABELS[run?.status] || "待确认";
+}
 const COGNITION_LAYER_LABELS = {
   transient: "短时情绪",
   daily: "日级情绪",
@@ -1441,8 +1447,11 @@ function renderRealtimeDayFacts(clock = currentClockDate()) {
   el.scheduleIntentText.textContent = clean(currentScheduleIntentText(day, clock), TODAY_FACT_EMPTY_TEXT.scheduleIntentText);
   const run = state.status?.continuous_life?.run;
   if (run && ["running", "paused", "ready", "settling"].includes(run.status)) {
-    const statusLabel = CONTINUOUS_ACTION_STATUS_LABELS[run.status];
-    el.currentActivity.textContent = `${clean(run.action?.target, "当前行动")} · ${statusLabel}`;
+    const statusLabel = continuousActionStatusLabel(run);
+    const target = clean(run.action?.target, "当前行动");
+    el.currentActivity.textContent = continuousObservationPending(run)
+      ? `最近确认：${target}`
+      : `${target} · ${statusLabel}`;
     const actionLabel = run.rest_kind === "sleep" && run.action?.action_type === "rest"
       ? "睡眠"
       : LIFE_ACTION_TYPE_LABELS[run.action?.action_type] || "当前行动";
@@ -1855,9 +1864,9 @@ function renderLifecycle(status) {
   if (run) {
     const record = node("div", "record");
     const title = node("div", "record-title");
-    title.append(node("span", "", clean(run.action?.target, "当前行动")), node("span", "muted", CONTINUOUS_ACTION_STATUS_LABELS[run.status] || "待确认"));
+    title.append(node("span", "", clean(run.action?.target, "当前行动")), node("span", "muted", continuousActionStatusLabel(run)));
     record.append(title, recordLines([
-      `已进行 ${(Number(run.active_seconds || 0) / 60).toFixed(1)} 分钟 · 计划 ${Number(run.action?.duration_minutes || 0)} 分钟`,
+      `已确认 ${(Number(run.active_seconds || 0) / 60).toFixed(1)} 分钟 · 计划 ${Number(run.action?.duration_minutes || 0)} 分钟`,
       relationshipText(run.reason),
     ]));
     records.push(record);

@@ -8,6 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from support import (
+    DailyLifeRuntime,
+    DayRecord,
+    LifeArchive,
+    LifeSettings,
+    LifeState,
+    make_composer,
+)
 from componentfixtures import StyleCatalogComponent
 from core.life.body import ContinuousBody
 from core.life.domain import LifeDomainService
@@ -22,14 +30,6 @@ from core.life.wardrobe import synchronize_outfit_components_for_scene
 from core.media.picture.polling import ImageTaskFailed
 from core.models import LifeActionIntent, TimelineItem, WeatherInfo
 from core.runtime.background import BackgroundTaskScheduler
-from support import (
-    DailyLifeRuntime,
-    DayRecord,
-    LifeArchive,
-    LifeSettings,
-    LifeState,
-    make_composer,
-)
 
 
 class Runtime(DailyLifeRuntime):
@@ -865,6 +865,123 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime.call_text_model.assert_awaited_once()
         await self.runtime.check_wardrobe_life()
+        self.runtime.call_text_model.assert_awaited_once()
+
+    async def test_quiet_hours_preserve_wear_and_care_then_resume_review(self):
+        self.runtime.now = self.now.replace(hour=1)
+        item = await self.item()
+        await self.day([item.id], at=self.runtime.now)
+        self.archive.advance_wardrobe_care = AsyncMock(
+            wraps=self.archive.advance_wardrobe_care
+        )
+        self.runtime.call_text_model.return_value = "{}"
+
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.archive.advance_wardrobe_care.assert_awaited_once()
+        self.runtime.get_persona_text.assert_not_awaited()
+        self.runtime.call_text_model.assert_not_awaited()
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        self.assertTrue(snapshot["items"][str(item.id)]["currently_worn"])
+        self.assertEqual(snapshot["profile_revision"], 0)
+        self.assertIsNone(self.runtime.wardrobe_life._review_retry_after)
+        self.assertTrue((await self.archive.get_day("2026-10-08")).meta["wardrobe_context"])
+
+        self.runtime.now = self.now.replace(hour=6, minute=30)
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.runtime.call_text_model.assert_awaited_once()
+        self.assertEqual(
+            (await self.archive.get_wardrobe_snapshot())["profile_revision"], 1
+        )
+
+    async def test_existing_wardrobe_jobs_continue_in_quiet_hours(self):
+        self.runtime.now = self.now.replace(hour=1)
+        await self.day([])
+        for name, automatic in (("manual", False), ("automatic", True)):
+            await self.archive.enqueue_wardrobe_job(
+                name,
+                {"automatic": automatic, "requirement": "秋季衣服", "count": 1},
+                at=str(self.runtime.now),
+            )
+        self.runtime.wardrobe_life._run_wardrobe_job = AsyncMock()
+
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.assertEqual(
+            {call.args[0] for call in self.runtime.wardrobe_life._run_wardrobe_job.await_args_list},
+            {"manual", "automatic"},
+        )
+        self.runtime.call_text_model.assert_not_awaited()
+
+    async def test_queued_review_checks_quiet_hours_when_it_starts(self):
+        self.runtime.now = self.now.replace(hour=23, minute=59)
+        await self.day([])
+        gate = self.runtime.background.normal_gate
+        for _ in range(4):
+            await gate.acquire()
+        await self.runtime.check_wardrobe_life()
+        self.assertIn("wardrobe-review", self.runtime.background.keys)
+        self.runtime.now = self.now.replace(hour=0, minute=1) + datetime.timedelta(days=1)
+        for _ in range(4):
+            gate.release()
+
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.runtime.get_persona_text.assert_not_awaited()
+        self.runtime.call_text_model.assert_not_awaited()
+        self.assertIsNone(self.runtime.wardrobe_life._review_retry_after)
+
+    async def test_review_preparation_cannot_start_a_model_request_in_quiet_hours(self):
+        self.runtime.now = self.now.replace(hour=23, minute=59)
+        await self.day([])
+
+        async def provider(_provider_id):
+            self.runtime.now += datetime.timedelta(minutes=2)
+            return object()
+
+        self.runtime.get_text_provider.side_effect = provider
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.runtime.call_text_model.assert_not_awaited()
+        self.runtime.close_text_session.assert_awaited_once()
+        self.assertEqual(
+            (await self.archive.get_wardrobe_snapshot())["profile_revision"], 0
+        )
+
+    async def test_review_returning_in_quiet_hours_does_not_save_a_new_decision(self):
+        self.runtime.now = self.now.replace(hour=23, minute=59)
+        await self.day([])
+
+        async def model(*_args, **_kwargs):
+            self.runtime.now += datetime.timedelta(minutes=2)
+            return "{}"
+
+        self.runtime.call_text_model.side_effect = model
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+
+        self.runtime.call_text_model.assert_awaited_once()
+        self.runtime.close_text_session.assert_awaited_once()
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        self.assertEqual(snapshot["profile_revision"], 0)
+        self.assertEqual(snapshot["jobs"], [])
+
+    async def test_wardrobe_quiet_hours_follow_configuration_changes(self):
+        await self.day([])
+        self.runtime.config.state.quiet_hours = "11:00-13:00"
+        self.runtime.call_text_model.return_value = "{}"
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
+        self.runtime.call_text_model.assert_not_awaited()
+
+        self.runtime.config.state.quiet_hours = ""
+        await self.runtime.check_wardrobe_life()
+        await asyncio.gather(*list(self.runtime.background.tasks))
         self.runtime.call_text_model.assert_awaited_once()
 
     async def test_queued_manual_job_recovers_when_autonomous_life_is_disabled(self):

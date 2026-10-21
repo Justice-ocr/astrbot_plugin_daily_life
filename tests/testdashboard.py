@@ -2467,6 +2467,50 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DailyLifeDashboardStaticTest(unittest.TestCase):
+    def test_current_activity_preserves_last_confirmation_without_false_pause(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+import fs from "node:fs";
+import vm from "node:vm";
+const app = fs.readFileSync("pages/dashboard/app.js", "utf8");
+const labels = app.slice(app.indexOf("const CONTINUOUS_ACTION_STATUS_LABELS ="), app.indexOf("const COGNITION_LAYER_LABELS ="));
+const render = app.slice(app.indexOf("function renderRealtimeDayFacts("), app.indexOf("function renderTodayWeekPlan("));
+const context = {
+  state: { status: { day: {}, continuous_life: { run: {
+    status: "running", observation_state: "pending", rest_kind: "sleep",
+    action: { action_type: "rest", target: "顺着困意在被窝里安睡" },
+  } } } },
+  el: { currentActivity: {}, scheduleIntentText: {} },
+  currentClockDate: () => new Date(), currentTimelinePair: () => ({ current: null }),
+  currentScheduleIntentText: () => "居家", clean: (value, fallback) => value || fallback,
+  CURRENT_ACTIVITY_EMPTY_TEXT: "暂无当前活动",
+  TODAY_FACT_EMPTY_TEXT: { scheduleIntentText: "暂无活动状态" },
+  LIFE_ACTION_TYPE_LABELS: { rest: "休息" },
+};
+vm.createContext(context);
+vm.runInContext(labels + render, context);
+context.renderRealtimeDayFacts();
+if (context.el.currentActivity.textContent !== "最近确认：顺着困意在被窝里安睡"
+    || context.el.scheduleIntentText.textContent !== "睡眠 · 进展待确认") {
+  throw new Error("观察中断不应显示成角色暂停睡眠或已确认仍在执行");
+}
+context.state.status.continuous_life.run.observation_state = "observed";
+context.renderRealtimeDayFacts();
+if (context.el.currentActivity.textContent !== "顺着困意在被窝里安睡 · 进行中") {
+  throw new Error("重新确认后未恢复当前生活展示");
+}
+context.state.status.continuous_life.run.status = "paused";
+context.renderRealtimeDayFacts();
+if (context.el.scheduleIntentText.textContent !== "睡眠 · 暂停") {
+  throw new Error("真实生活打断仍需显示为暂停");
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"], cwd=root, input=script,
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_missing_day_distinguishes_generation_and_failure_on_first_load(self):
         root = Path(__file__).resolve().parents[1]
         script = self._dashboard_dom_mock_script() + """

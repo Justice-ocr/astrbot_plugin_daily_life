@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .memorypolicy import unprotected_memory_clause
+
 from ..models import (
     LongTermMemoryRecord,
     MemoryConflictRecord,
@@ -1136,11 +1138,12 @@ class LongTermMemoryArchiveComponent:
             deleted = 0
             for sql, params in (
                 (
-                    """
-                    DELETE FROM long_term_memories
-                    WHERE status <> 'active'
-                       OR (expires_at <> '' AND expires_at < DATE('now', 'localtime'))
-                       OR (date <> '' AND date < ? AND weight < 3)
+                    f"""
+                    DELETE FROM long_term_memories AS m
+                    WHERE (m.status <> 'active'
+                       OR (m.expires_at <> '' AND m.expires_at < DATE('now', 'localtime'))
+                       OR (m.date <> '' AND m.date < ? AND m.weight < 3))
+                       AND {unprotected_memory_clause()}
                     """,
                     (cutoff_date,),
                 ),

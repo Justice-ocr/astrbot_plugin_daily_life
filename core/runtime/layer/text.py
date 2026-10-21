@@ -10,6 +10,7 @@ from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import format_physiological_rhythm_prompt
+from ...life.continuity import observation_pending, run_status_label
 from ...life.restdelay import format_rest_delay_hint, is_rest_activity
 from ...life.tools import (
     build_time_context,
@@ -250,6 +251,8 @@ class LayerTextComponent:
                 label = "已确认完成"
             elif execution_state in {"skipped", "cancelled", "expired"}:
                 label = "已跳过或取消"
+            elif item is run_item and observation_pending(run):
+                label = "最近确认，当前进展待确认"
             elif item is run_item and run["status"] == "running":
                 label = "正在进行"
             elif item is run_item and run["status"] == "paused":
@@ -332,7 +335,9 @@ class LayerTextComponent:
         run_act = data.timeline[run_index] if run_index is not None and run_index < len(data.timeline) else None
         next_time = timeline_item_datetime(next_act, data.date, meta=data.meta)
         next_hint = f" | 🔜 待办: {next_time:%m-%d %H:%M} {next_act.activity}" if next_act and next_time else ""
-        if run_act is not None and run["status"] == "running":
+        if run_act is not None and observation_pending(run):
+            activity = f"最近确认的行动: {run_act.activity}；当前进展待确认"
+        elif run_act is not None and run["status"] == "running":
             if is_rest_activity(run_act):
                 activity = f"当前休息进程: {run_act.activity}；是否已入睡应结合实时状态和最新对话，不能仅凭日程断言"
             else:
@@ -390,9 +395,7 @@ class LayerTextComponent:
             except (ValueError, TypeError):
                 execution = {}
             if execution.get("status") in {"running", "paused", "ready", "settling"}:
-                from ...life.continuity import RUN_STATUS_LABELS
-
-                activity = f"{execution['action']['target']}（{RUN_STATUS_LABELS[execution['status']]}）"
+                activity = f"{execution['action']['target']}（{run_status_label(execution)}）"
         parts = [
             "\n\n<daily_life>",
             "\n[UseRule] 以下内容是角色日常生活背景。按当前话题自然引用有依据的细节，"

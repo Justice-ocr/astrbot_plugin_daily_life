@@ -1120,14 +1120,18 @@ class DailyLifePlugin(Star):
         mode: str = "search",
         category: str = "",
         limit: int = 5,
+        memory_id: int = 0,
+        offset: int = 0,
     ):
         """
         检索当前角色已经沉淀的长期生活记忆，用于回答用户追问、确认偏好、查找纠偏、人物关系、生活事件或最近影响判断的依据。
         Args:
             query(string): 自然语言检索内容，例如“最近别总出门”“他喜欢什么生活节奏”“好友相关记忆”。
-            mode(string): search 按内容检索；recent 查看最近沉淀的长期记忆。
+            mode(string): search 按内容检索；recent 查看近期记忆；evidence 按记忆编号查看原话。
             category(string): 可选分类过滤，例如 correction、short_term、relationship、chat_summary、feedback、expression。
             limit(int): 返回条数，默认 5，最多 12。
+            memory_id(int): evidence 模式使用检索返回的记忆编号，禁止猜测。
+            offset(int): 原话分页起点，首次为 0，后续使用 next_offset。
         """
         return await self.runtime.life_memory_search(
             event,
@@ -1135,6 +1139,8 @@ class DailyLifePlugin(Star):
             mode=str(mode or "search").strip(),
             category=str(category or "").strip(),
             limit=self._tool_int(limit, 5),
+            memory_id=self._tool_int(memory_id, 0),
+            offset=self._tool_int(offset, 0),
         )
 
     @filter.llm_tool(name="life_web_search")

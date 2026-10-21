@@ -12,6 +12,7 @@ from .routine import DAILY_SQL
 from .vows import COMMITMENT_SQL
 from .world import WORLD_SQL
 from .textile import TEXTILE_SQL
+from .mnemonics import RECOLLECTION_SQL
 
 SCHEMA_GROUPS = (
     CORE_SQL,
@@ -26,6 +27,7 @@ SCHEMA_GROUPS = (
     CONVERSATION_SQL,
     COGNITION_SQL,
     DOMAIN_SQL,
+    RECOLLECTION_SQL,
     INDEX_SQL,
     COGNITION_INDEX_SQL,
     DOMAIN_INDEX_SQL,

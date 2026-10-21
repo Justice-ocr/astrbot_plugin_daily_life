@@ -212,6 +212,7 @@ class DailyLifeRuntime:
             archive=lambda: self.archive,
             config=lambda: self.config,
             now=lambda: self._runtime_now(),
+            in_quiet_hours=lambda now: self._state_refresh_in_quiet_hours(now),
             resolve_target=lambda now: self.resolve_injection_target(now),
             schedule_background=lambda *args, **kwargs: self._schedule_background_task(*args, **kwargs),
             persona=lambda: self.get_persona_text(),
@@ -659,9 +660,12 @@ class DailyLifeRuntime:
         mode: str = "search",
         category: str = "",
         limit: int = 5,
+        memory_id: int = 0,
+        offset: int = 0,
     ) -> str:
         return await self.life_memory.search_text(
-            event, query=query, mode=mode, category=category, limit=limit
+            event, query=query, mode=mode, category=category, limit=limit,
+            memory_id=memory_id, offset=offset,
         )
 
     async def build_heuristic_memory_context(
@@ -1391,14 +1395,6 @@ class DailyLifeRuntime:
 
 
     prepare_visual_media_from_event = ComponentCall("_part_emoji_gather_component", EmojiGatherComponent, "prepare_visual_media_from_event")
-
-
-    _visual_media_source_looks_like_gif = staticmethod(EmojiGatherComponent._visual_media_source_looks_like_gif)
-
-
-
-    _read_visual_media_header = staticmethod(EmojiGatherComponent._read_visual_media_header)
-
 
 
     _append_gif_visual_summary = staticmethod(EmojiGatherComponent._append_gif_visual_summary)

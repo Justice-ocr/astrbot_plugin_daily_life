@@ -83,6 +83,20 @@ class RuntimeStateTest(unittest.TestCase):
         running = runtime.build_hidden_activity_hint(day, now, False)[1]
         self.assertIn("正在: 一起看电影", running)
         run = json.loads(day.meta["continuous_execution"])
+        run["observation_state"] = "pending"
+        run["action"]["target"] = "一起看电影"
+        day.meta["continuous_execution"] = json.dumps(run)
+        pending = runtime.build_hidden_activity_hint(day, now, False)[1]
+        self.assertIn("最近确认的行动: 一起看电影", pending)
+        self.assertIn("当前进展待确认", pending)
+        self.assertNotIn("暂停", pending)
+        event = Event(unified_msg_origin="test:FriendMessage:1")
+        hidden = runtime.build_hidden_life_context(day, now, False, expression_event=event)
+        self.assertIn("最近确认，当前进展待确认", hidden)
+        expression = json.loads(expression_context_for_event(event))
+        self.assertIn("当前进展待确认", expression["activity"])
+        self.assertNotIn("暂停", expression["activity"])
+        run["observation_state"] = "observed"
         run["status"] = "paused"
         day.meta["continuous_execution"] = json.dumps(run)
         self.assertIn("当前行动已暂停: 一起看电影", runtime.build_hidden_activity_hint(day, now, False)[1])

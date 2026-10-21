@@ -175,7 +175,7 @@ class ContinuousDecisionService:
 只输出 JSON：
 {"decision":"start|continue|pause|resume|cancel|wait", "action_id":"候选动作编号或空", "new_actions":[{"owner":"self","action_type":"内部动作类型","target":"本步骤的具体行动","timeline_index":null,"duration_minutes":10,"payload":{}}], "rest_kind":"break|sleep", "reason":"当前事实依据", "goal_id":"可选已有目标编号", "step_id":"可选可继续阶段编号", "new_goals":[{"owner":"self","source_id":"来源编号","title":"自身长期目标","reason":"为什么想做","skill":"可选练习能力名称","steps":[{"id":"阶段编号","title":"具体练习阶段","action_type":"内部动作类型","required_minutes":60,"depends_on":[]}]}], "goal_updates":[{"goal_id":"已有目标编号","status":"active|blocked|abandoned","evidence_id":"来源编号","reason":"原因","remaining_steps":[]}]}
 模型只选择和解释，执行器负责时间、前置条件、库存、完成回执及进度。时间轴是计划，不能因为时间过去就声称完成。
-有运行中动作时优先 continue；新证据使其不合适时 pause/cancel。暂停动作可 resume，未观测的停机时间不算执行时间。
+有运行中动作时优先 continue；新证据使其不合适时 pause/cancel。暂停动作可 resume。observation_state=pending 只表示当前进展待确认，不是行动被打断的证据；复核后用 continue 确认继续追踪，未观测的时间不算执行时间。
 start 优先引用候选 action_id；即时行动用 new_actions 按实际先后拆成独立类型与耗时的步骤，每个 target 只描述本步骤，后续步骤仍是未执行计划、开始前重新判断。已有计划用其 action_id，不重复创建同一节点的动作；即时行动没有节点时 timeline_index 填 null，执行器会把实际开始的步骤加入时间轴。所有行动只属于当前角色，不替用户执行，不发消息、不生图、不拍视频、不调用现实采购或支付。
 同一次判断同步审视实际行动与剩余日程：timeline_updates=[{"timeline_index":0,"operation":"reschedule|skip|cancel","at":"改期的完整本地日期时间","reason":"依据事实解释调整","source_ids":["allowed_source_ids 中的编号"]}]，无需调整返回 []。候选包含未来计划，提前执行须先将对应节点 reschedule 到现在；自主行动改变作息或安排时，同步顺延、跳过或取消受影响且未执行的节点，避免再重复执行。已有运行中行动也需复核后续安排。只调整 protected=false 的节点，不改变活动内容，不修改已发生事实，不把未做事项记为完成；已确认约定和延后休息安排保留，实际行动应与之协调。
 内部类型：rest, drink, meal, cook, order_food, purchase, move, travel, work, study, chore, exercise, groom, change_outfit。

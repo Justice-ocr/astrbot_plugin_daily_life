@@ -19,8 +19,26 @@ MAX_TILE_SIDE = 384
 DECODE_TIMEOUT_SECONDS = 3.0
 
 
+def is_animated_gif(source: str) -> bool:
+    """按文件内容确认 GIF 是否有第二帧，不根据文件名或平台标签猜测。"""
+    data = _gif_data(str(source or "").strip())
+    if data is None:
+        return False
+    with Image.open(BytesIO(data)) as animation:
+        if animation.format != "GIF":
+            return False
+        width, height = animation.size
+        if width * height <= 0 or width * height > MAX_SOURCE_PIXELS:
+            raise ValueError("GIF 画面尺寸超出识别限制")
+        try:
+            animation.seek(1)
+        except EOFError:
+            return False
+        return True
+
+
 def prepare_animated_image(source: str) -> tuple[str, str]:
-    """把 GIF 的顺序采样帧转换为 JPEG 输入，普通图片保持原来源。"""
+    """多帧 GIF 转为顺序采样图，单帧 GIF 转为静态 PNG，其余保持原来源。"""
     source = str(source or "").strip()
     started = time.monotonic()
     data = _gif_data(source)
@@ -57,6 +75,12 @@ def prepare_animated_image(source: str) -> tuple[str, str]:
         count = len(timestamps)
         if not count:
             raise ValueError("GIF 没有可用画面")
+        if count == 1:
+            animation.seek(0)
+            output = BytesIO()
+            animation.convert("RGBA").save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}", ""
         if count <= MAX_SAMPLE_FRAMES:
             indices = list(range(count))
         else:

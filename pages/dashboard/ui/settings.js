@@ -262,6 +262,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       fields: [
         "response_gate_config.group_enabled",
         "response_gate_config.private_enabled",
+        "response_gate_config.semantic_timeout_seconds",
         "response_gate_config.group_talk_frequency",
         "response_gate_config.private_talk_frequency",
         "response_gate_config.min_interval_seconds",
@@ -279,6 +280,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       fields: [
         "proactive_config.group_enabled",
         "proactive_config.private_enabled",
+        "proactive_config.semantic_timeout_seconds",
         "proactive_config.talk_frequency",
         "proactive_config.private_talk_frequency",
         "proactive_config.idle_minutes",

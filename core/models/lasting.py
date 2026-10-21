@@ -26,6 +26,8 @@ class LongTermMemoryRecord:
     created_at: str = ""
     updated_at: str = ""
     score: float = 0.0
+    # 仅属于本次召回，不覆盖归档原文，也不参与向量内容和证据强度计算。
+    recall_context: str = ""
 
     @staticmethod
     def from_value(value: Any) -> "LongTermMemoryRecord | None":

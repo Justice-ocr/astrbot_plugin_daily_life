@@ -12,7 +12,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -66,7 +66,8 @@ PREVIOUS_V20_SCHEMA_FINGERPRINT = "43e2b090847b932c95ad312a19ad66a6c109b7283b295
 
 PREVIOUS_V21_SCHEMA_FINGERPRINT = "1dcab14830e01b324d3bac191506af09e1fc2fc092effb4ab6eb04e4405d4cdf"
 PREVIOUS_V22_SCHEMA_FINGERPRINT = "b8f268ce4aba19b956f1a14e4a9b567227a6d011390d62c6ef8a8c2ea716e066"
-CURRENT_SCHEMA_FINGERPRINT = "a05e55bdfdab44033c105d6c2bb560da7e2beeb50721344f8193815c6ead4ed7"
+PREVIOUS_V26_SCHEMA_FINGERPRINT = "a05e55bdfdab44033c105d6c2bb560da7e2beeb50721344f8193815c6ead4ed7"
+CURRENT_SCHEMA_FINGERPRINT = "4cc377da1c900fc3f7c36666665b888512c6203a61b9076d1c9684df7c8c30f2"
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -140,7 +141,8 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V20_SCHEMA_FINGERPRINT: 20,
     PREVIOUS_V21_SCHEMA_FINGERPRINT: 21,
     PREVIOUS_V22_SCHEMA_FINGERPRINT: 22,
-    CURRENT_SCHEMA_FINGERPRINT: 23,
+    PREVIOUS_V26_SCHEMA_FINGERPRINT: 23,
+    CURRENT_SCHEMA_FINGERPRINT: 27,
 }
 
 
@@ -915,6 +917,27 @@ def _migrate_expression_feedback_mirrors(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_memory_recollection(conn: sqlite3.Connection) -> None:
+    # 固定此版本的 DDL，避免后续模型调整改变历史迁移。
+    statements = (
+        "CREATE TABLE IF NOT EXISTS memory_source_messages ("
+        "summary_id INTEGER NOT NULL, event_key TEXT NOT NULL, session_id TEXT NOT NULL, "
+        "message_id TEXT NOT NULL DEFAULT '', role TEXT NOT NULL, "
+        "sender_name TEXT NOT NULL DEFAULT '', occurred_at TEXT NOT NULL, "
+        "message_text TEXT NOT NULL, PRIMARY KEY(summary_id, event_key), "
+        "FOREIGN KEY(summary_id) REFERENCES chat_summaries(id) ON DELETE CASCADE)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_source_message "
+        "ON memory_source_messages(session_id, message_id)",
+        "CREATE TABLE IF NOT EXISTS memory_fact_links (memory_id INTEGER NOT NULL, "
+        "fact_id INTEGER NOT NULL, PRIMARY KEY(memory_id, fact_id), "
+        "FOREIGN KEY(memory_id) REFERENCES long_term_memories(id) ON DELETE CASCADE, "
+        "FOREIGN KEY(fact_id) REFERENCES temporal_facts(id) ON DELETE CASCADE)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_fact_link_fact ON memory_fact_links(fact_id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -942,6 +965,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     24: _migrate_clock_only_active_timelines,
     25: _migrate_food_preparation_status,
     26: _migrate_expression_feedback_mirrors,
+    27: _migrate_memory_recollection,
 }
 
 

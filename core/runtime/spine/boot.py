@@ -329,6 +329,12 @@ class SpineBootComponent:
         self.context.rhythm.start()
         self.context._runtime_initialized = True
         self.context.meaning.start_memory_index()
+        consolidator = getattr(self.context.archive, "consolidate_living_memories", None)
+        if callable(consolidator):
+            self.context._schedule_background_task(
+                consolidator(), label="记忆脉络整理", key="startup_memory_consolidation",
+                category="memory",
+            )
         voice_call = getattr(self.context, "voice_call", None)
         start_voice_call = getattr(voice_call, "start_if_enabled", None)
         if callable(start_voice_call):

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
 from astrbot.api import logger
 
 from .markers import LOG_PREFIX
 from ..epistemic import knowledge_label
+from ..models import LongTermMemoryRecord
+from .recallrank import fuse_memory_routes
 
 
 class MemoryRepository(Protocol):
@@ -84,8 +88,41 @@ class LifeMemoryService:
                 date = str(getattr(item, "date", "") or "").strip()
                 bits = [bit for bit in (f"记忆编号 {getattr(item, 'id', 0)}", date, source_table, source_id) if bit]
                 source = f"（来源：{' / '.join(bits)}）" if bits else ""
+            validity = str(getattr(item, "recall_context", "") or "")
+            if validity:
+                content = f"【历史摘要】{content}；【时效核对】{validity}"
             lines.append(f"- {label}：{content}{source}；{knowledge_label(item)}")
         return "\n".join(lines)
+
+    async def _complete_recall(
+        self, hits: list[Any], *, scopes: list[str], categories: list[str], limit: int,
+        include_related: bool = False,
+    ) -> list[Any]:
+        """数据库补充也使用短预算，语义接口缓慢时仍能正常聊天。"""
+        if not hits or not scopes:
+            return hits
+        archive = self._archive()
+        try:
+            async with asyncio.timeout(0.3):
+                reader = getattr(archive, "get_related_long_term_memories", None)
+                if include_related and callable(reader):
+                    related = await reader(
+                        [item.id for item in hits], scopes=scopes, categories=categories,
+                        limit=min(24, limit * 2),
+                    )
+                    hits = fuse_memory_routes([(1.0, hits), (0.35, related)], limit)
+                checker = getattr(archive, "get_memory_recall_context", None)
+                if callable(checker):
+                    notes = await checker([item.id for item in hits], scopes=scopes)
+                    hits = [replace(item, recall_context=notes.get(item.id, ""))
+                            if isinstance(item, LongTermMemoryRecord) else item for item in hits]
+        except TimeoutError:
+            # 没有完成事实核对时，不能把未经检查的旧摘要作为当前事实注入。
+            return []
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 记忆核对暂不可用：{type(exc).__name__}")
+            return []
+        return hits
 
     async def search(
         self,
@@ -123,18 +160,23 @@ class LifeMemoryService:
                         )
                     if semantic is not None:
                         logger.debug(f"{LOG_PREFIX} 长期记忆语义召回：{len(semantic)} 条")
-                        return semantic
+                        return await self._complete_recall(
+                            semantic, scopes=scopes, categories=categories, limit=limit,
+                        )
                 except Exception as exc:
                     logger.debug(
                         f"{LOG_PREFIX} 长期记忆语义召回降级：{type(exc).__name__}"
                     )
-            return lexical
+            return await self._complete_recall(
+                lexical, scopes=scopes, categories=categories, limit=limit, include_related=True,
+            )
         if str(mode or "").strip().lower() in {"recent", "time"}:
-            return await self._archive().list_recent_long_term_memories(
+            hits = await self._archive().list_recent_long_term_memories(
                 scopes=scopes,
                 categories=categories,
                 limit=limit,
             )
+            return await self._complete_recall(hits, scopes=scopes, categories=categories, limit=limit)
         return []
 
     async def search_text(
@@ -144,7 +186,17 @@ class LifeMemoryService:
         mode: str = "search",
         category: str = "",
         limit: int = 5,
+        memory_id: int = 0,
+        offset: int = 0,
     ) -> str:
+        if mode == "evidence":
+            reader = getattr(self._archive(), "read_memory_evidence", None)
+            if not callable(reader) or memory_id <= 0:
+                return "请先检索记忆，再使用返回的记忆编号查看原话。"
+            result = await reader(
+                memory_id, scopes=self._event_memory_scopes(event), offset=offset,
+            )
+            return json.dumps(result, ensure_ascii=False)
         hits = await self.search(
             query,
             event=event,
@@ -155,7 +207,7 @@ class LifeMemoryService:
         if not hits:
             return "没有检索到相关长期记忆。"
         body = self._format_memory_hits(hits, include_source=True, limit=limit)
-        return f"长期记忆检索结果：\n{body}"
+        return f"长期记忆检索结果：\n{body}\n需要核对原话时可用 evidence 模式及记忆编号分页读取。"
 
     async def build_context(
         self, event: Any, message: str = "", limit: int = 4
@@ -199,6 +251,7 @@ class LifeMemoryService:
         return (
             "\n[HiddenLongTermMemory]\n"
             "以下是根据本轮真实消息检索到的相关长期记忆，只作为内部判断依据；不要逐字复述给用户。\n"
+            "摘要是历史记录，当前事实以时效核对为准；需核对原话时可用 life_memory_search 的 evidence 模式。\n"
             f"{body}\n"
         )
 

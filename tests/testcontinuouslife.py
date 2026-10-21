@@ -641,7 +641,7 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
             (await self.archive.get_day(self.runtime.date)).meta,
         )
 
-    async def test_restart_gap_pauses_and_does_not_credit_unobserved_time(self):
+    async def test_restart_gap_preserves_action_without_crediting_unobserved_time(self):
         await self.start(duration=5)
         await self.tick()
         await self.archive.aclose()
@@ -651,10 +651,32 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.runtime.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
-        self.assertEqual(world["run"]["status"], "paused")
+        self.assertEqual(world["run"]["status"], "running")
+        self.assertEqual(world["run"]["observation_state"], "pending")
         self.assertEqual(world["run"]["active_seconds"], 60)
         self.assertEqual(world["body"]["uncertain_minutes"], 180)
         self.assertEqual(await self.archive.get_life_action_outcomes(), [])
+
+        await self.tick()
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(world["run"]["active_seconds"], 60)
+        self.assertEqual(world["body"]["uncertain_minutes"], 181)
+        day = await self.archive.get_day(self.runtime.date)
+        await self.runtime.continuous_life._apply_continuous_decision(
+            day, world, {"decision": "continue", "reason": "确认仍在练习"}, self.runtime.now
+        )
+        confirmed = await self.archive.get_continuous_life()
+        self.assertEqual(confirmed["run"]["observation_state"], "observed")
+        self.assertEqual(confirmed["run"]["active_seconds"], 60)
+        self.assertTrue(confirmed["run"]["observation_gap"])
+        kinds = [event["kind"] for event in confirmed["kernel"]["events"]]
+        self.assertIn("observation_gap", kinds)
+        self.assertIn("action_reconfirmed", kinds)
+        self.assertNotIn("action_pause", kinds)
+        await self.tick()
+        self.assertEqual(
+            (await self.archive.get_continuous_life())["run"]["active_seconds"], 120
+        )
 
     async def test_quick_restart_also_requires_reconfirming_the_action(self):
         await self.start(duration=5)
@@ -662,9 +684,91 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         other = Runtime(self.archive, self.runtime.now + datetime.timedelta(seconds=10))
         await other.continuous_life._check_continuous_life_once()
         world = await self.archive.get_continuous_life()
-        self.assertEqual(world["run"]["status"], "paused")
+        self.assertEqual(world["run"]["status"], "running")
+        self.assertEqual(world["run"]["observation_state"], "pending")
         self.assertEqual(world["run"]["active_seconds"], 60)
         self.assertAlmostEqual(world["body"]["uncertain_minutes"], 10 / 60)
+
+    async def test_observer_gap_preserves_last_confirmed_sleep_until_real_reply(self):
+        await self.start("rest", duration=360, rest_kind="sleep")
+        for _ in range(46):
+            await self.tick()
+        before = await self.archive.get_continuous_life()
+        self.assertTrue(before["sleeping"])
+        self.assertEqual(
+            (await self.archive.get_day(self.runtime.date)).state.sleep.depth, "deep_sleep"
+        )
+
+        await self.tick(4)
+        await self.tick()
+        world = await self.archive.get_continuous_life()
+        self.assertTrue(world["sleeping"])
+        self.assertEqual(world["run"]["status"], "running")
+        self.assertEqual(world["run"]["observation_state"], "pending")
+        self.assertEqual(world["run"]["active_seconds"], before["run"]["active_seconds"])
+        day = await self.archive.get_day(self.runtime.date)
+        self.assertEqual(day.state.sleep.depth, "deep_sleep")
+        self.assertIn("当前进展待确认", day.meta["continuous_life_context"])
+        self.assertNotIn("暂停", world["run"]["reason"])
+        self.assertEqual(await self.archive.get_life_action_outcomes(), [])
+
+        await self.runtime.note_continuous_chat_exchange(
+            SimpleNamespace(message_id="wake-after-gap", unified_msg_origin="current-chat")
+        )
+        awake = await self.archive.get_continuous_life()
+        self.assertFalse(awake["sleeping"])
+        self.assertEqual(awake["run"]["status"], "paused")
+        self.assertEqual(awake["run"]["observation_state"], "observed")
+        self.assertEqual(awake["run"]["active_seconds"], before["run"]["active_seconds"])
+        self.assertEqual(
+            (await self.archive.get_day(self.runtime.date)).state.sleep.depth, "awake"
+        )
+
+    async def test_reconfirmation_must_pass_action_validation(self):
+        await self.start(duration=5)
+        await self.tick(4)
+        world = await self.archive.get_continuous_life()
+        day = await self.archive.get_day(self.runtime.date)
+        with patch.object(
+            self.runtime.continuous_life, "_validate_action",
+            AsyncMock(return_value=(False, "当前条件不再满足")),
+        ):
+            await self.runtime.continuous_life._apply_continuous_decision(
+                day, world, {"decision": "continue", "reason": "继续练习"}, self.runtime.now
+            )
+        after = await self.archive.get_continuous_life()
+        self.assertEqual(after["run"]["observation_state"], "pending")
+        self.assertEqual(after["run"]["active_seconds"], 0)
+        self.assertEqual(await self.archive.get_life_action_outcomes(), [])
+
+    async def test_pending_sleep_does_not_deepen_from_unobserved_time(self):
+        await self.start("rest", duration=360, rest_kind="sleep")
+        await self.tick()
+        before = await self.archive.get_continuous_life()
+        await self.tick(60)
+        world = await self.archive.get_continuous_life()
+        self.assertTrue(world["sleeping"])
+        self.assertEqual(world["run"]["active_seconds"], before["run"]["active_seconds"])
+        self.assertEqual(
+            (await self.archive.get_day(self.runtime.date)).state.sleep.depth, "light_sleep"
+        )
+        self.assertEqual(world["kernel"]["agency"]["observation_state"], "pending")
+
+    async def test_decision_before_a_gap_does_not_reconfirm_unobserved_progress(self):
+        await self.start(duration=5)
+        day = await self.archive.get_day(self.runtime.date)
+        world = await self.archive.get_continuous_life()
+        self.runtime.now += datetime.timedelta(minutes=4)
+        await self.runtime.continuous_life._apply_continuous_decision(
+            day, world, {"decision": "continue", "reason": "继续练习"}, self.runtime.now
+        )
+        await self.runtime.continuous_life._check_continuous_life_once()
+        after = await self.archive.get_continuous_life()
+        self.assertEqual(after["run"]["observation_state"], "pending")
+        self.assertEqual(after["run"]["active_seconds"], 0)
+        self.assertNotIn(
+            "action_reconfirmed", [event["kind"] for event in after["kernel"]["events"]]
+        )
 
     async def test_resume_does_not_count_pause_time(self):
         await self.start(duration=3)

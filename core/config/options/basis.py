@@ -95,6 +95,7 @@ class StateSettings:
 @dataclass(slots=True)
 class ProactiveReplySettings:
     provider: str = ""
+    semantic_timeout_seconds: float = 30.0
     group_enabled: bool = False
     private_enabled: bool = False
     talk_frequency: float = 0.35
@@ -118,6 +119,9 @@ class ProactiveReplySettings:
             return ProactiveReplySettings()
         return ProactiveReplySettings(
             provider=as_str(data.get("provider", "")).strip(),
+            semantic_timeout_seconds=as_float(
+                data.get("semantic_timeout_seconds", 30.0), 30.0, 1.0, 300.0
+            ),
             group_enabled=as_bool(data.get("group_enabled", False), False),
             private_enabled=as_bool(data.get("private_enabled", False), False),
             talk_frequency=as_float(data.get("talk_frequency", 0.35), 0.35, 0.0, 1.0),
@@ -158,8 +162,10 @@ class ProactiveReplySettings:
 
 @dataclass(slots=True)
 class ResponseGateSettings:
+    provider: str = ""
     group_enabled: bool = True
     private_enabled: bool = True
+    semantic_timeout_seconds: float = 15.0
     group_talk_frequency: float = 0.45
     private_talk_frequency: float = 0.65
     min_interval_seconds: int = 12
@@ -174,8 +180,12 @@ class ResponseGateSettings:
         if not isinstance(data, dict):
             return ResponseGateSettings()
         return ResponseGateSettings(
+            provider=as_str(data.get("provider", "")).strip(),
             group_enabled=as_bool(data.get("group_enabled", True), True),
             private_enabled=as_bool(data.get("private_enabled", True), True),
+            semantic_timeout_seconds=as_float(
+                data.get("semantic_timeout_seconds", 15.0), 15.0, 1.0, 120.0
+            ),
             group_talk_frequency=as_float(
                 data.get("group_talk_frequency", 0.45), 0.45, 0.0, 1.0
             ),

@@ -177,7 +177,7 @@
         "description": "静默时段",
         "type": "string",
         "default": "00:00-06:30",
-        "hint": "可填写 00:00-06:30 这类时间段；静默时段暂停自发回访、闲时主动消息与主动通话邀请，内部生活、身体变化和状态巡检继续运行。正常聊天、已约定联系和媒体交付不受影响；留空表示不限制主动联系。"
+        "hint": "如 00:00-06:30，暂停自发回访、闲时主动消息、主动通话邀请和例行衣橱判断。内部生活、正常聊天、约定联系与已有媒体任务照常；留空不限制。"
       }
     }
   },
@@ -650,6 +650,24 @@
         "default": true,
         "hint": "开启后私聊普通消息会先判断是否适合回复；关闭后私聊恢复框架正常回复流程。"
       },
+      "provider": {
+        "description": "随心回复",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定判断收到消息后立即回复、等待或保持安静使用的模型；留空使用当前默认模型。"
+      },
+      "semantic_timeout_seconds": {
+        "description": "随心回复裁定超时（秒）",
+        "type": "float",
+        "default": 15.0,
+        "slider": {
+          "min": 1,
+          "max": 120,
+          "step": 1
+        },
+        "hint": "随心回复语义裁定的最长等待时间；超时后按本地状态继续处理。"
+      },
       "group_talk_frequency": {
         "description": "群聊回复意愿",
         "type": "float",
@@ -768,7 +786,18 @@
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "指定闲时回复裁定和短回复生成使用的模型；留空则使用当前默认模型。"
+        "hint": "指定闲时回复裁定和短回复生成使用的模型；留空使用当前默认模型。"
+      },
+      "semantic_timeout_seconds": {
+        "description": "闲时回复裁定超时（秒）",
+        "type": "float",
+        "default": 30.0,
+        "slider": {
+          "min": 1,
+          "max": 300,
+          "step": 1
+        },
+        "hint": "包含准备、裁定、短回复生成和校验的总等待上限；超时跳过本次，不发送过时内容。"
       },
       "talk_frequency": {
         "description": "闲时频率",

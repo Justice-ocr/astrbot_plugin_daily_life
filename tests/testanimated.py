@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from support import DailyLifeRuntime, LifeSettings, Provider
-from core.sight.animated import prepare_animated_image
+from core.sight.animated import is_animated_gif, prepare_animated_image
 from PIL import Image
 
 
@@ -24,6 +24,34 @@ def gif_bytes(colors, durations=100):
 
 
 class AnimatedImageTest(unittest.TestCase):
+    def test_single_frame_gif_is_static_and_keeps_original_resolution(self):
+        data = gif_bytes(["red"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "static.gif"
+            path.write_bytes(data)
+            for source in (
+                str(path), path.as_uri(),
+                "data:image/gif;base64," + base64.b64encode(data).decode("ascii"),
+                "base64://" + base64.b64encode(data).decode("ascii"),
+            ):
+                with self.subTest(source_type=source.split(":", 1)[0]):
+                    self.assertFalse(is_animated_gif(source))
+                    prepared, hint = prepare_animated_image(source)
+                    self.assertEqual(hint, "")
+                    self.assertTrue(prepared.startswith("data:image/png;base64,"))
+                    with Image.open(BytesIO(base64.b64decode(prepared.split(",", 1)[1]))) as image:
+                        self.assertEqual(image.size, (80, 60))
+                        self.assertEqual(image.getpixel((40, 30)), (255, 0, 0, 255))
+
+    def test_animation_detection_uses_frames_instead_of_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            animation = root / "animation.jpg"
+            animation.write_bytes(gif_bytes(["red", "blue"]))
+            self.assertTrue(is_animated_gif(str(animation)))
+            for source in (str(root / "missing.gif"), "https://example.test/image.gif"):
+                self.assertFalse(is_animated_gif(source))
+
     def test_mislabeled_gif_preserves_frame_order_and_timestamps(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "incoming.jpg"

@@ -66,6 +66,32 @@ def _schema_leaf_paths(spec: dict, path: str) -> set[str]:
 
 
 class LifeSettingsTest(unittest.TestCase):
+    def test_idle_reply_timeout_is_separate_from_gate_and_general_timeout(self):
+        self.assertEqual(
+            LifeSettings.from_dict({}).proactive.semantic_timeout_seconds, 30.0
+        )
+        for value, expected in (("45", 45.0), (0, 1.0), (999, 300.0), (None, 30.0)):
+            with self.subTest(value=value):
+                config = LifeSettings.from_dict({
+                    "rhythm_config": {"llm_timeout_seconds": 300},
+                    "response_gate_config": {"semantic_timeout_seconds": 8},
+                    "proactive_config": {"semantic_timeout_seconds": value},
+                })
+                self.assertEqual(config.proactive.semantic_timeout_seconds, expected)
+                self.assertEqual(config.response_gate.semantic_timeout_seconds, 8)
+                self.assertEqual(config.llm_timeout_seconds, 300)
+
+    def test_response_gate_timeout_defaults_and_bounds(self):
+        self.assertEqual(
+            LifeSettings.from_dict({}).response_gate.semantic_timeout_seconds, 15.0
+        )
+        for value, expected in (("30", 30.0), (0, 1.0), (999, 120.0), (None, 15.0)):
+            with self.subTest(value=value):
+                config = LifeSettings.from_dict({
+                    "response_gate_config": {"semantic_timeout_seconds": value},
+                })
+                self.assertEqual(config.response_gate.semantic_timeout_seconds, expected)
+
     def test_chat_style_prompt_does_not_special_case_old_builtin_wording(self):
         prompt = (
             "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
@@ -1414,7 +1440,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(voice_items["expression_provider"]["_special"], "select_provider")
         self.assertEqual(voice_items["expression_provider"]["default"], "")
         self.assertEqual(voice_items["expression_timeout_seconds"]["default"], 8)
-        self.assertIn("独立请求", voice_items["expression_provider"]["hint"])
+        self.assertIn("判断普通聊天的文字或语音表达", voice_items["expression_provider"]["hint"])
         self.assertIn("speaker_source", voice_items)
         self.assertIn("speaker_id", voice_items)
         self.assertIn("speech_rate", voice_items)
@@ -1616,13 +1642,13 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.4.8", metadata)
+        self.assertIn("version: 1.4.9", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.4.8", readme)
-        self.assertIn("v1.4.8 更新说明", readme)
+        self.assertIn("version-1.4.9", readme)
+        self.assertIn("v1.4.9 更新说明", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
-        self.assertIn("不读取联网灵感或固定风格池", readme)
+        self.assertIn("自主补衣与审美", readme)
         self.assertIn("日历与季节事实", readme)
         self.assertIn("生活背景 → 创意衣橱", readme)
         self.assertIn("文本输入在本地连续编辑", readme)
@@ -1631,6 +1657,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.4.9 · 2026-10-21", changelog)
         self.assertIn("v1.4.8 · 2026-10-20", changelog)
         self.assertIn("v1.4.7 · 2026-10-16", changelog)
         self.assertIn("v1.4.6 · 2026-10-16", changelog)
@@ -1685,6 +1712,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.4.9"), changelog.index("v1.4.8"))
         self.assertLess(changelog.index("v1.4.8"), changelog.index("v1.4.7"))
         self.assertLess(changelog.index("v1.4.7"), changelog.index("v1.4.6"))
         self.assertLess(changelog.index("v1.4.6"), changelog.index("v1.4.5"))

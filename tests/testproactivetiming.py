@@ -2,8 +2,10 @@
 
 import asyncio
 import datetime
+import json
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, call
 
 from runtimehelpers import Event, LifeSettings, RuntimeAsyncHelpers
 
@@ -157,6 +159,9 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
     async def test_timeout_cancels_model_and_closes_session(self):
         runtime, _ = self._make_proactive_runtime([])
         runtime._init_response_gate_state()
+        runtime.config = LifeSettings.from_dict({
+            "response_gate_config": {"semantic_timeout_seconds": 1},
+        })
         cancelled = asyncio.Event()
 
         async def model(*args, **kwargs):
@@ -167,14 +172,76 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
 
         runtime.call_text_model = model
         runtime.close_text_session = AsyncMock()
-        with patch("core.runtime.choice.apply.RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS", 0.02):
-            result = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
+        result = await asyncio.wait_for(
+            runtime._part_response_gate_apply_component._response_gate_semantic_decision(
                 self.private_event(), score=0.9, reasons=[], pending_count=1, wait_state=None,
-            )
+            ),
+            timeout=2,
+        )
         self.assertIsNone(result)
         self.assertTrue(cancelled.is_set())
         self.assertEqual(runtime._response_gate_semantic_metrics["timeout"], 1)
         runtime.close_text_session.assert_awaited_once()
+
+    async def test_gate_timeout_is_independent_of_segmentation_timeout(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime._init_response_gate_state()
+        runtime.config = LifeSettings.from_dict({
+            "response_gate_config": {"semantic_timeout_seconds": 2},
+            "chat_style_config": {"semantic_timeout_seconds": 0.3},
+        })
+
+        async def model(*args, **kwargs):
+            await asyncio.sleep(1.05)
+            return '{"action":"observe","confidence":0.95}'
+
+        runtime.call_text_model = model
+        decision = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
+            self.private_event(), score=0.9, reasons=[], pending_count=1, wait_state=None,
+        )
+        self.assertEqual(decision["action"], "observe")
+        self.assertEqual(runtime._response_gate_semantic_metrics["timeout"], 0)
+
+    async def test_gate_and_idle_models_are_selected_and_called_independently(self):
+        for gate_id, idle_id in (
+            ("gate-model", "idle-model"),
+            ("shared-model", "shared-model"),
+            ("", "idle-model"),
+        ):
+            with self.subTest(gate=gate_id, idle=idle_id):
+                runtime, _ = self._make_proactive_runtime([])
+                runtime._init_response_gate_state()
+                runtime.config.response_gate.provider = gate_id
+                runtime.config.proactive.provider = idle_id
+                providers = {key: object() for key in {gate_id, idle_id}}
+                runtime.get_text_provider = AsyncMock(side_effect=lambda key: providers[key])
+                runtime.call_text_model = AsyncMock(side_effect=[
+                    '{"action":"observe","confidence":0.95}',
+                    '{"should_reply":false,"decision":"observe","confidence":0.95}',
+                ])
+                runtime.close_text_session = AsyncMock()
+                runtime._proactive_readiness_check = AsyncMock(return_value={"should_evaluate": True})
+                runtime._build_proactive_prompt = AsyncMock(return_value="闲时回复语义裁定")
+                runtime._part_proactive_flow_component._record_proactive_decision = AsyncMock()
+
+                decision = await runtime._part_response_gate_apply_component._response_gate_semantic_decision(
+                    self.private_event(), score=0.9, reasons=[], pending_count=1, wait_state=None,
+                )
+                idle = await runtime.evaluate_proactive_reply(
+                    self.private_event(), now=datetime.datetime(2026, 5, 24, 12),
+                )
+
+                self.assertEqual(decision["action"], "observe")
+                self.assertEqual(idle["decision"], "observe")
+                self.assertEqual(runtime.get_text_provider.await_args_list, [call(gate_id), call(idle_id)])
+                self.assertEqual(runtime.call_text_model.await_count, 2)
+                gate_call, idle_call = runtime.call_text_model.await_args_list
+                self.assertIs(gate_call.args[0], providers[gate_id])
+                self.assertIs(idle_call.args[0], providers[idle_id])
+                self.assertEqual(gate_call.kwargs["primary_provider_id"], gate_id)
+                self.assertEqual(idle_call.kwargs["primary_provider_id"], idle_id)
+                self.assertNotEqual(gate_call.args[2], idle_call.args[2])
+                self.assertEqual(runtime.close_text_session.await_count, 2)
 
     async def test_stale_semantic_result_cannot_change_interaction(self):
         runtime, _ = self._make_proactive_runtime([])
@@ -204,6 +271,180 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         )
         self.assertIn('"role": "assistant"', provider.prompts[0])
         self.assertIn("那我们晚上再聊", provider.prompts[0])
+
+
+class IdleReplyTimeoutTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
+    now = datetime.datetime(2026, 5, 24, 12)
+    proposal = (
+        '{"should_reply":true,"expression_review":{"passed":true},"confidence":0.95,'
+        '"benefit":90,"timeliness":90,"continuity":90,"disruption":10,"uncertainty":10,'
+        '"decision":"reply","reply_text":"刚看到一张那个电影的幕后照","reason":"有新进展"}'
+    )
+
+    def make_runtime(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime.config.proactive.semantic_timeout_seconds = 1
+        runtime._proactive_readiness_check = AsyncMock(return_value={"should_evaluate": True})
+        runtime._build_proactive_prompt = AsyncMock(return_value="闲时回复裁定")
+        runtime._read_recent_context_messages = AsyncMock(return_value=[])
+        runtime.call_text_model = AsyncMock(return_value=self.proposal)
+        runtime.close_text_session = AsyncMock()
+        runtime._part_proactive_flow_component._record_proactive_decision = AsyncMock()
+        runtime.composer._build_person_fact_context = AsyncMock()
+        runtime.composer._audit_person_payload = AsyncMock(return_value=SimpleNamespace(
+            unresolved=False, payload=json.loads(self.proposal),
+        ))
+        event = Event(
+            sender_id="10001",
+            unified_msg_origin="aiocqhttp:FriendMessage:10001",
+            message_id="m1",
+        )
+        event.message_str = "刚才的电影还挺值得聊聊"
+        return runtime, event
+
+    async def test_timeout_covers_preparation_model_and_both_audits(self):
+        for stage in (
+            "interaction", "readiness", "provider", "prompt", "model",
+            "person_audit", "continuity_audit",
+        ):
+            with self.subTest(stage=stage):
+                runtime, event = self.make_runtime()
+                entered = asyncio.Event()
+                cancelled = asyncio.Event()
+
+                async def blocked(*args, **kwargs):
+                    entered.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cancelled.set()
+
+                if stage == "interaction":
+                    runtime.resolve_interaction_context = blocked
+                elif stage == "readiness":
+                    runtime._proactive_readiness_check = blocked
+                elif stage == "provider":
+                    runtime._get_proactive_provider = blocked
+                elif stage == "prompt":
+                    runtime._build_proactive_prompt = blocked
+                elif stage == "model":
+                    runtime.call_text_model = blocked
+                elif stage == "person_audit":
+                    runtime.composer._audit_person_payload = blocked
+                else:
+                    runtime._read_recent_context_messages = AsyncMock(return_value=[
+                        {"role": "user", "content": event.message_str},
+                    ])
+                    runtime._audit_proactive_continuity = blocked
+
+                task = asyncio.create_task(runtime.evaluate_proactive_reply(event, now=self.now))
+                await asyncio.wait_for(entered.wait(), 0.5)
+                self.assertFalse(task.done())
+                result = await asyncio.wait_for(task, 1.5)
+                self.assertEqual(result["reason_code"], "evaluation_timeout")
+                self.assertFalse(result["should_reply"])
+                self.assertEqual(result["reply_text"], "")
+                self.assertTrue(cancelled.is_set())
+                self.assertEqual(runtime.context.sent_messages, [])
+                if stage in {"prompt", "model", "person_audit", "continuity_audit"}:
+                    runtime.close_text_session.assert_awaited_once()
+                else:
+                    runtime.close_text_session.assert_not_awaited()
+
+    async def test_generation_and_audit_share_one_deadline(self):
+        runtime, event = self.make_runtime()
+        audit_entered = asyncio.Event()
+        audit_cancelled = asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            await asyncio.sleep(0.65)
+            return self.proposal
+
+        async def audit(*args, **kwargs):
+            audit_entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                audit_cancelled.set()
+
+        runtime.call_text_model = generate
+        runtime.composer._audit_person_payload = audit
+        started = asyncio.get_running_loop().time()
+        result = await runtime.evaluate_proactive_reply(event, now=self.now)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        self.assertTrue(audit_entered.is_set())
+        self.assertTrue(audit_cancelled.is_set())
+        self.assertEqual(result["reason_code"], "evaluation_timeout")
+        self.assertLess(elapsed, 1.5)
+        runtime._part_proactive_flow_component._record_proactive_decision.assert_not_awaited()
+        runtime.close_text_session.assert_awaited_once()
+
+    async def test_timeout_abandons_candidate_without_sending_and_new_turn_can_succeed(self):
+        runtime, event = self.make_runtime()
+
+        async def blocked(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        runtime.call_text_model = blocked
+        runtime.note_proactive_activity(event, now=self.now)
+        await runtime.evaluate_idle_proactive_candidates(
+            now=self.now + datetime.timedelta(minutes=61),
+        )
+        scope = event.unified_msg_origin
+        self.assertNotIn(scope, runtime._proactive_idle_candidates)
+        self.assertEqual(runtime.context.sent_messages, [])
+        state = runtime._proactive_lifecycle_snapshot(scope)
+        self.assertEqual(state["state"], "abandoned")
+        self.assertIn("超时", state["reason"])
+        self.assertEqual(await runtime.archive.get_life_episodes(10), [])
+
+        runtime.call_text_model = AsyncMock(return_value=self.proposal)
+        result = await runtime.evaluate_proactive_reply(event, now=self.now)
+        self.assertTrue(result["should_reply"])
+        self.assertEqual(result["reply_text"], json.loads(self.proposal)["reply_text"])
+
+    async def test_unload_cancellation_propagates_and_closes_session(self):
+        runtime, event = self.make_runtime()
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def blocked(*args, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        runtime.call_text_model = blocked
+        task = asyncio.create_task(runtime.evaluate_proactive_reply(event, now=self.now))
+        await asyncio.wait_for(entered.wait(), 0.5)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(cancelled.is_set())
+        runtime.close_text_session.assert_awaited_once()
+
+    async def test_stuck_cleanup_does_not_keep_timed_out_turn_alive(self):
+        runtime, event = self.make_runtime()
+        cancelled = asyncio.Event()
+
+        async def blocked(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        async def cleanup(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        runtime.call_text_model = blocked
+        runtime.close_text_session = cleanup
+        result = await asyncio.wait_for(
+            runtime.evaluate_proactive_reply(event, now=self.now), 2.5,
+        )
+        self.assertEqual(result["reason_code"], "evaluation_timeout")
+        self.assertTrue(cancelled.is_set())
 
 
 if __name__ == "__main__":

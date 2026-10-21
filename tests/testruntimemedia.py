@@ -47,6 +47,29 @@ class FrameworkStopEvent(Event):
 
 
 class RuntimeMediaTest(unittest.TestCase):
+    def test_media_context_distinguishes_unobserved_progress_from_real_pause(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        action = {
+            "status": "running", "observation_state": "pending",
+            "target": "拉好薄被继续安睡", "action_type": "rest", "timeline_index": 0,
+        }
+        day = DayRecord(
+            date="2026-10-21", state=LifeState(),
+            timeline=[TimelineItem(time="00:30", activity="拉好薄被继续安睡")],
+            meta={"_media_director_actual_action": action},
+        )
+        now = datetime.datetime(2026, 10, 21, 1)
+        pending = runtime._media_director_context_text(day, now, False)
+        self.assertIn("最近确认，当前进展待确认", pending)
+        self.assertIn("最近确认的活动（当前进展待确认）", pending)
+        self.assertNotIn("正在执行", pending)
+        self.assertNotIn("当前活动：拉好薄被继续安睡", pending)
+        action.update(status="paused", observation_state="observed")
+        paused = runtime._media_director_context_text(day, now, False)
+        self.assertIn("已暂停的活动：拉好薄被继续安睡", paused)
+        self.assertNotIn("当前活动：拉好薄被继续安睡", paused)
+
     def test_hidden_context_can_include_expression_channel_when_voice_enabled(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
@@ -3991,6 +4014,74 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             self.assertFalse(bridged)
             self.assertEqual(request.image_urls, [str(source_path)])
+
+    async def test_single_frame_qq_gif_keeps_image_when_visual_analysis_is_pending(self):
+        from PIL import Image
+        from unittest.mock import AsyncMock
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        gather = runtime._part_emoji_gather_component
+        gather._wait_for_gif_visual_context = AsyncMock(
+            side_effect=AssertionError("静态图片不应等待动图识别")
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            runtime.data_path = tmp_root / "daily_life.db"
+            source_path = tmp_root / "incoming.gif"
+            Image.new("RGB", (300, 300), "blue").save(source_path, format="GIF")
+            event = Event(message_id="m-static-qq-gif")
+            event.message_items = [{"type": "image", "data": {
+                "path": str(source_path), "file": "qq-image.gif",
+                "url": "https://example.test/qq-image.gif",
+                "sub_type": 13, "summary": "[动画表情]",
+            }}]
+            event.message_obj.message = event.message_items
+            await runtime.prepare_visual_media_from_event(event)
+            pending = asyncio.get_running_loop().create_future()
+            setattr(event, runtime._GIF_CONTEXT_FUTURE_ATTR, pending)
+            request = ProviderRequest(
+                image_urls=[str(source_path)],
+                extra_user_content_parts=[{"type": "text", "text": "看这张图片"}],
+            )
+
+            self.assertFalse(await runtime.bridge_animated_visual_for_llm_request(event, request))
+            self.assertEqual(request.image_urls, [str(source_path)])
+            self.assertEqual(request.extra_user_content_parts, [{"type": "text", "text": "看这张图片"}])
+            gather._wait_for_gif_visual_context.assert_not_awaited()
+            pending.cancel()
+
+    async def test_animated_bridge_preserves_single_frame_gif_in_mixed_images(self):
+        from PIL import Image
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            runtime.data_path = tmp_root / "daily_life.db"
+            static_path = tmp_root / "static.gif"
+            animated_path = tmp_root / "animated.jpg"
+            Image.new("RGB", (40, 40), "green").save(static_path, format="GIF")
+            frames = [Image.new("RGB", (40, 40), color) for color in ("red", "blue")]
+            frames[0].save(animated_path, format="GIF", save_all=True, append_images=frames[1:], duration=100)
+            event = Event(message_id="m-mixed-gif")
+            event.message_items = [
+                {"type": "image", "path": str(static_path)},
+                {"type": "image", "path": str(animated_path)},
+            ]
+            event.message_obj.message = event.message_items
+            await runtime.prepare_visual_media_from_event(event)
+            entries = getattr(event, runtime._PREPARED_VISUAL_MEDIA_ATTR)
+            runtime._visual_context_summary_cache()[entries[1]["fingerprint"]] = "小猫在挥手"
+            request = ProviderRequest(
+                image_urls=[str(static_path), str(animated_path), "quoted-static.jpg"],
+                extra_user_content_parts=[{"type": "image_url", "image_url": {"url": str(static_path)}}],
+            )
+
+            self.assertTrue(await runtime.bridge_animated_visual_for_llm_request(event, request))
+            self.assertEqual(request.image_urls, [str(static_path), "quoted-static.jpg"])
+            self.assertIn({"type": "image_url", "image_url": {"url": str(static_path)}}, request.extra_user_content_parts)
+            self.assertIn("小猫在挥手", request.extra_user_content_parts[-1].text)
 
     async def test_file_component_uses_async_get_file_without_reading_file_property(
         self,

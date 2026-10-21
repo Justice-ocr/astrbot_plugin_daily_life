@@ -6,13 +6,13 @@ import inspect
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 
 from ....clock import now as life_now
 from ....models import EmojiAssetRecord
+from ....sight.animated import is_animated_gif
 from ...markers import LOG_PREFIX
 from ...foreground import foreground_budget
 
@@ -53,11 +53,9 @@ class EmojiGatherComponentContext(Protocol):
     _media_fingerprint: Any
     _media_payload_from_item_async: Any
     _message_media_payload: Any
-    _read_visual_media_header: Any
     _schedule_background_task: Any
     _visual_context_summary_cache: Any
     _visual_media_has_durable_source: Any
-    _visual_media_source_looks_like_gif: Any
     _visual_media_sources: Any
     archive: Any
     contact_resolver: Any
@@ -208,17 +206,6 @@ class EmojiGatherComponent:
         setattr(event, self.context._PREPARED_VISUAL_MEDIA_ATTR, prepared)
         return prepared
 
-    @staticmethod
-    def _visual_media_source_looks_like_gif(source: str) -> bool:
-        value = str(source or "").strip()
-        if not value:
-            return False
-        if value.lower().startswith("data:image/gif"):
-            return True
-        parsed = urlparse(value)
-        path = parsed.path if parsed.scheme else value.split("?", 1)[0]
-        return Path(path).suffix.lower() == ".gif"
-
     async def _prepared_visual_media_is_gif(self, entry: dict[str, Any]) -> bool:
         payload = dict(entry.get("payload") or {})
         sources = [
@@ -232,24 +219,16 @@ class EmojiGatherComponent:
         return False
 
     async def _visual_media_source_is_gif(self, source: str) -> bool:
+        """只有已确认的多帧 GIF 才走动图桥接，未知来源保留原图输入。"""
         value = str(source or "").strip()
-        if self.context._visual_media_source_looks_like_gif(value):
-            return True
-        if not value or value.startswith(("http://", "https://", "base64://")):
+        if not value or value.startswith(("http://", "https://")):
             return False
         if value.startswith("file://"):
             value = self.context._local_path_from_file_uri(value)
-        path = Path(value).expanduser()
         try:
-            header = await asyncio.to_thread(self.context._read_visual_media_header, path)
+            return await asyncio.to_thread(is_animated_gif, value)
         except (OSError, ValueError):
             return False
-        return header.startswith((b"GIF87a", b"GIF89a"))
-
-    @staticmethod
-    def _read_visual_media_header(path: Path) -> bytes:
-        with path.open("rb") as handle:
-            return handle.read(6)
 
     async def _run_visual_context_task(
         self,

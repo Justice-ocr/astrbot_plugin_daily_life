@@ -26,6 +26,7 @@ from .acquaintances import AcquaintanceArchiveComponent
 from .summaries import SummaryArchiveComponent
 from .perception import PerceptionArchiveComponent
 from .longterm import LongTermMemoryArchiveComponent
+from .recollection import RecollectionArchiveComponent
 from .experience.episodes import EpisodeArchiveComponent
 from .experience.selection import LifeDecisionArchiveComponent
 from .experience.emotions import EmotionArchiveComponent
@@ -888,6 +889,12 @@ class LifeArchive:
 
     cleanup_long_term_memories = ComponentCall("_part_long_term_memory_archive_component", LongTermMemoryArchiveComponent, "cleanup_long_term_memories")
 
+    save_memory_sources = ComponentCall("_part_recollection_archive_component", RecollectionArchiveComponent, "save_memory_sources")
+    get_memory_recall_context = ComponentCall("_part_recollection_archive_component", RecollectionArchiveComponent, "get_memory_recall_context")
+    get_related_long_term_memories = ComponentCall("_part_recollection_archive_component", RecollectionArchiveComponent, "get_related_long_term_memories")
+    read_memory_evidence = ComponentCall("_part_recollection_archive_component", RecollectionArchiveComponent, "read_memory_evidence")
+    consolidate_living_memories = ComponentCall("_part_recollection_archive_component", RecollectionArchiveComponent, "consolidate_living_memories")
+
     _compose_life_episode = ComponentCall("_part_episode_archive_component", EpisodeArchiveComponent, "_compose_life_episode")
 
     save_life_episode = ComponentCall("_part_episode_archive_component", EpisodeArchiveComponent, "save_life_episode")
@@ -1281,6 +1288,10 @@ class LifeArchive:
     @cached_property
     def _part_long_term_memory_archive_component(self):
         return LongTermMemoryArchiveComponent(self)
+
+    @cached_property
+    def _part_recollection_archive_component(self):
+        return RecollectionArchiveComponent(self)
 
     @cached_property
     def _part_episode_archive_component(self):

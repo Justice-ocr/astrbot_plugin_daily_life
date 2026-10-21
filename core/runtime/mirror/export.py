@@ -83,6 +83,8 @@ class SnapshotExportComponent:
                     "source": "continuous_executor",
                     "action_id": str(action.get("action_id") or ""),
                     "started_at": str(run.get("started_at") or ""),
+                    "observation_state": run.get("observation_state", "observed"),
+                    "observed_at": str(run.get("observed_at") or ""),
                 }
         body = object_value("continuous_body")
         return {

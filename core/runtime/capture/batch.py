@@ -1008,6 +1008,7 @@ class ChatMemoryBatchComponent:
             成功写入或确认的事实记录。
         """
 
+        payload["_evidenced_fact_ids"] = []
         writer = getattr(self.context.archive, "write_temporal_fact", None)
         current_reader = getattr(self.context.archive, "get_current_temporal_fact", None)
         evidence_saver = getattr(self.context.archive, "add_fact_evidence_signal", None)
@@ -1169,6 +1170,9 @@ class ChatMemoryBatchComponent:
             if fact is None:
                 continue
             saved.append(fact)
+            if epistemic == "reported" and getattr(fact, "status", "") != "uncertain":
+                # 重复陈述可沿用既有事实版本，但仍保留本批摘要与它的联系。
+                payload.setdefault("_evidenced_fact_ids", []).append(int(fact.id))
             signal = str(raw.get("evidence_signal") or "").strip().lower()
             if (
                 operation != "NONE"
@@ -1437,6 +1441,9 @@ class ChatMemoryBatchComponent:
             raise ValueError("模型标记值得保存，但没有给出有效摘要")
         saved = await self.context.archive.save_chat_summary(summary)
         saved_records = await self.context._save_experience_payload(payload, meta, saved)
+        source_saver = getattr(self.context.archive, "save_memory_sources", None)
+        if callable(source_saver):
+            await source_saver(saved.id, rows, fact_ids=payload.get("_evidenced_fact_ids", []))
         if callable(getattr(self.context.archive, "link_memory_episode", None)):
             await link_batch_episode(self.context.archive, payload, batch, saved.id)
         saved_records["memory_targets"] = await self._save_batch_memory_targets(

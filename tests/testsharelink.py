@@ -306,6 +306,13 @@ class ShareLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(facts["body"]["energy"], 48)
         self.assertNotIn("must-not-export", json.dumps(facts))
         self.assertNotIn("private-reason", json.dumps(facts))
+        run = json.loads(day.meta["continuous_execution"])
+        run.update(status="running", observation_state="pending", observed_at="2026-10-08T12:00:00")
+        day.meta["continuous_execution"] = json.dumps(run)
+        current = SnapshotExportComponent._share_current_facts(day)["current_action"]
+        self.assertEqual(current["status"], "running")
+        self.assertEqual(current["observation_state"], "pending")
+        self.assertEqual(current["observed_at"], "2026-10-08T12:00:00")
         day.meta["residence_context_stale"] = "true"
         self.assertIs(SnapshotExportComponent._share_current_facts(day)["valid"], False)
 

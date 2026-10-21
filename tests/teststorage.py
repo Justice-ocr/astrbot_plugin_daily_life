@@ -17,6 +17,7 @@ from core.archive.ddl import iter_schema_sql
 from core.archive import DayRevisionConflict
 from core.archive.migrations import (
     CURRENT_SCHEMA_FINGERPRINT,
+    MIGRATIONS,
     infer_schema_version,
     schema_fingerprint,
 )
@@ -1235,8 +1236,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             for script in iter_schema_sql():
                 conn.executescript(script)
             self.assertEqual(schema_fingerprint(conn), CURRENT_SCHEMA_FINGERPRINT)
-            # v24 至 v26 只清理数据，结构指纹仍指向最早安全版本 v23。
-            self.assertEqual(infer_schema_version(conn), 23)
+            self.assertEqual(infer_schema_version(conn), SCHEMA_VERSION)
             conn.commit()
             conn.close()
 
@@ -1383,20 +1383,24 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 reopened.close()
 
-    def test_unversioned_current_schema_runs_data_cleanup_migration(self):
+    def test_unversioned_v26_schema_runs_data_cleanup_and_recollection_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             conn = sqlite3.connect(db_path)
             for script in iter_schema_sql():
                 conn.executescript(script)
+            conn.execute("DROP TABLE memory_fact_links")
+            conn.execute("DROP TABLE memory_source_messages")
             conn.commit()
             conn.close()
 
             migration_order = []
             migrations = {}
+            originals = dict(MIGRATIONS)
             for version in range(2, SCHEMA_VERSION + 1):
                 def migrate(connection, target=version):
                     migration_order.append(target)
+                    originals[target](connection)
                 migrations[version] = migrate
 
             with (
@@ -1411,7 +1415,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(metadata["schema_version"], str(SCHEMA_VERSION))
                 self.assertNotIn("migration_marker", metadata)
-                self.assertEqual(migration_order, [24, 25, 26])
+                self.assertEqual(migration_order, list(range(24, SCHEMA_VERSION + 1)))
             finally:
                 archive.close()
 

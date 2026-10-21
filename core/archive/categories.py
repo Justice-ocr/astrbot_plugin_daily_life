@@ -80,6 +80,7 @@ WORLD_CLEAR_ORDER = (
 )
 
 CONVERSATION_TABLES = (
+    "memory_source_messages",
     "conversation_receipts",
     "chat_memory_messages",
     "chat_memory_sessions",
@@ -92,6 +93,7 @@ CONVERSATION_TABLES = (
     "session_mid_summaries",
 )
 CONVERSATION_CLEAR_ORDER = (
+    "memory_source_messages",
     "conversation_receipts",
     "chat_memory_batches",
     "chat_memory_sessions",
@@ -174,6 +176,7 @@ MEDIA_CLEAR_ORDER = (
 )
 
 LONG_TERM_TABLES = (
+    "memory_fact_links",
     "memory_vectors",
     "long_term_memories",
     "memory_episode_clusters",
@@ -184,6 +187,7 @@ LONG_TERM_TABLES = (
     "memory_decision_links",
 )
 LONG_TERM_CLEAR_ORDER = (
+    "memory_fact_links",
     "memory_vectors",
     "memory_decision_links",
     "memory_conflicts",
@@ -387,7 +391,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
             StorageTableGroup(
                 "summaries",
                 "聊天摘要",
-                ("chat_summaries", "chat_summary_people", "session_mid_summaries"),
+                ("chat_summaries", "chat_summary_people", "session_mid_summaries", "memory_source_messages"),
             ),
             StorageTableGroup(
                 "group_awareness",
@@ -491,7 +495,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
                 "entities", "实体索引", ("memory_entities", "memory_entity_links")
             ),
             StorageTableGroup(
-                "quality", "冲突关联", ("memory_conflicts", "memory_decision_links")
+                "quality", "冲突关联", ("memory_conflicts", "memory_decision_links", "memory_fact_links")
             ),
         ),
     ),

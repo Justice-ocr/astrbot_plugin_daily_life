@@ -96,6 +96,10 @@ class SpinePulseComponent:
         proactive_scene_count = await self._consolidate_proactive_behavior_scenes(
             today_str
         )
+        recollection = {"consolidated": 0, "dormant": 0}
+        consolidator = getattr(self.context.archive, "consolidate_living_memories", None)
+        if callable(consolidator):
+            recollection = await consolidator(today=today_str)
         applied_count = sum(
             1 for item in corrections if bool(getattr(item, "applied", False))
         )
@@ -116,13 +120,16 @@ class SpinePulseComponent:
         summary = (
             f"已应用记忆纠错 {applied_count} 条，未应用纠错 {pending_count} 条；"
             f"待观察回复效果 {pending_reply_count} 条；可用表情素材 {ready_emoji_count} 个；"
-            f"行为经验归纳 {proactive_scene_count} 组。"
+            f"行为经验归纳 {proactive_scene_count} 组；"
+            f"经历整理 {recollection['consolidated']} 组，过期琐事收起 {recollection['dormant']} 条。"
         )
         saved = await self.context.archive.save_memory_maintenance(
             MemoryMaintenanceRecord(
                 date=today_str,
                 summary=summary,
                 corrected_count=applied_count,
+                merged_count=recollection["consolidated"],
+                pruned_count=recollection["dormant"],
                 reason="夜间复盘后自动检查长期记忆、回复效果与表达素材。",
             )
         )

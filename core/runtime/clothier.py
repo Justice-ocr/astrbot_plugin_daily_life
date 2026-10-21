@@ -46,6 +46,7 @@ class WardrobeLifeService:
         archive: Callable[[], Any],
         config: Callable[[], Any],
         now: Callable[[], datetime.datetime],
+        in_quiet_hours: Callable[[datetime.datetime], bool],
         resolve_target: Callable[[datetime.datetime], Awaitable[tuple[str, bool]]],
         schedule_background: Callable[..., bool],
         persona: Callable[[], Awaitable[str]],
@@ -65,6 +66,7 @@ class WardrobeLifeService:
         self._archive = archive
         self._config = config
         self._now = now
+        self._in_quiet_hours = in_quiet_hours
         self._resolve_target = resolve_target
         self._schedule_background = schedule_background
         self._persona = persona
@@ -167,7 +169,11 @@ class WardrobeLifeService:
             or profile.get("feedback_key") != feedback_key
         )
         retry_after = self._review_retry_after
-        if (due or changed) and (retry_after is None or now >= retry_after):
+        if (
+            not self._in_quiet_hours(self._now())
+            and (due or changed)
+            and (retry_after is None or now >= retry_after)
+        ):
             self._schedule_background(
                 self._review_wardrobe(
                     day, conditions, snapshot, inventory_key, feedback_key
@@ -193,6 +199,8 @@ class WardrobeLifeService:
         self, day, conditions, snapshot, inventory_key, feedback_key
     ) -> None:
         now = self._now().replace(tzinfo=None)
+        if self._in_quiet_hours(now):
+            return
         self._review_retry_after = now + datetime.timedelta(minutes=5)
         persona = await self._persona()
         persona_id = "persona:" + digest(persona)
@@ -265,7 +273,7 @@ class WardrobeLifeService:
         provider = await self._text_provider(provider_id)
         session = "daily_life_wardrobe_" + uuid.uuid4().hex
         try:
-            if provider is None:
+            if provider is None or self._in_quiet_hours(self._now()):
                 return
             raw = await self._call_text_model(
                 provider,
@@ -360,6 +368,9 @@ class WardrobeLifeService:
                     snapshot["profile"].get("aesthetics", []),
                 ),
             }
+            # 模型返回时可能已进入静默，结束后再按最新状态复核。
+            if self._in_quiet_hours(self._now()):
+                return
             if not await self._archive().save_wardrobe_review(
                 profile,
                 expected_revision=snapshot["profile_revision"],

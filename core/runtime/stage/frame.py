@@ -8,6 +8,7 @@ from astrbot.api import logger
 from ...clock import now as life_now
 from ...life.appearance import current_appearance_values
 from ...life.condition import format_state_prompt
+from ...life.continuity import observation_pending, run_status_label
 from ...life.tools import (
     build_time_context,
     format_timeline_to_text,
@@ -92,6 +93,8 @@ class StageFrameComponent:
                 "action_type": str(actual_action.get("action_type") or "").strip(),
                 "target": str(actual_action.get("target") or "").strip(),
                 "timeline_index": actual_action.get("timeline_index"),
+                "observation_state": run.get("observation_state", "observed"),
+                "observed_at": str(run.get("observed_at") or ""),
             }
         return day, now, using_extended_night if target_date != today else False
 
@@ -204,7 +207,7 @@ class StageFrameComponent:
         if actual_action.get("status") in {"running", "paused", "ready", "settling"}:
             action_target = str(actual_action.get("target") or "").strip()
             if action_target:
-                parts.append(f"正在执行的实际行动：{action_target}")
+                parts.append(f"实际行动（{run_status_label(actual_action)}）：{action_target}")
         if actual_item:
             current_item = actual_item
             place = (
@@ -224,7 +227,16 @@ class StageFrameComponent:
                 if hasattr(current_item, "status")
                 else current_item.get("status", "")
             )
-            parts.append(f"当前活动：{activity or '未知'}{f'（{status}）' if status else ''}")
+            activity_label = (
+                "最近确认的活动（当前进展待确认）"
+                if observation_pending(actual_action)
+                else "已暂停的活动"
+                if actual_action.get("status") == "paused"
+                else "待结算的活动"
+                if actual_action.get("status") in {"ready", "settling"}
+                else "当前活动"
+            )
+            parts.append(f"{activity_label}：{activity or '未知'}{f'（{status}）' if status else ''}")
         elif current_item:
             planned_activity = (
                 getattr(current_item, "activity", "")

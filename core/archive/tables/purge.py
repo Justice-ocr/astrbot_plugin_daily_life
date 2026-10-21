@@ -1,5 +1,7 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS memory_fact_links;
+        DROP TABLE IF EXISTS memory_source_messages;
         DROP TABLE IF EXISTS continuous_life_entries;
         DROP TABLE IF EXISTS conversation_action_items;
         DROP TABLE IF EXISTS fitness_records;

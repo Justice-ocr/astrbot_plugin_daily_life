@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import uuid
 from typing import Any
@@ -323,6 +324,26 @@ class ProactiveFlowComponent:
         event: Any,
         now: datetime.datetime | None = None,
     ) -> dict[str, Any]:
+        """整轮裁定共用一个等待上限，超时后收回本次续话。"""
+        deadline = asyncio.timeout(self.context.config.proactive.semantic_timeout_seconds)
+        try:
+            async with deadline:
+                return await self._evaluate_proactive_reply(event, now=now)
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            logger.debug(f"{LOG_PREFIX} 闲时回复裁定超时，跳过本次")
+            return {
+                **self.context._proactive_skip("闲时回复裁定超时，跳过本次", handled=True),
+                "reason_code": "evaluation_timeout",
+                "reply_text": "",
+            }
+
+    async def _evaluate_proactive_reply(
+        self,
+        event: Any,
+        now: datetime.datetime | None = None,
+    ) -> dict[str, Any]:
         if not self.context._proactive_allowed_for_event(
             event, continuing=bool(getattr(event, "is_proactive_synthetic", False))
         ):
@@ -376,16 +397,16 @@ class ProactiveFlowComponent:
             now
         )
         session_id = f"daily_life_proactive_{uuid.uuid4().hex[:8]}"
-        prompt = await self.context._build_proactive_prompt(
-            event,
-            sender_name,
-            now,
-            day,
-            target_date_str,
-            using_extended_night,
-            readiness,
-        )
         try:
+            prompt = await self.context._build_proactive_prompt(
+                event,
+                sender_name,
+                now,
+                day,
+                target_date_str,
+                using_extended_night,
+                readiness,
+            )
             provider_id = self.context.config.proactive.provider
             text = await self.context.call_text_model(
                 provider,
@@ -469,7 +490,11 @@ class ProactiveFlowComponent:
             logger.warning(f"{LOG_PREFIX} 闲时回复裁定失败：{exc}")
             return self.context._proactive_skip(f"闲时回复裁定失败：{exc}")
         finally:
-            await self.context.close_text_session(session_id)
+            try:
+                async with asyncio.timeout(1):
+                    await self.context.close_text_session(session_id)
+            except TimeoutError:
+                pass
 
     async def evaluate_idle_proactive_candidates(
         self,

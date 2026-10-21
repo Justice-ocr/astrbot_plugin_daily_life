@@ -6,6 +6,7 @@ from typing import Any
 
 from ..clock import TIMEZONE, today as life_today
 from .categories import STORAGE_CATEGORIES, StorageCategory, normalize_storage_category
+from .memorypolicy import unprotected_memory_clause
 
 from typing import Protocol
 
@@ -197,7 +198,9 @@ class StorageArchiveComponent:
                     (cutoff,),
                 ),
                 (
-                    "DELETE FROM temporal_facts WHERE status <> 'active' AND COALESCE(NULLIF(valid_to, ''), updated_at) < ?",
+                    "DELETE FROM temporal_facts WHERE status <> 'active' "
+                    "AND COALESCE(NULLIF(valid_to, ''), updated_at) < ? "
+                    "AND NOT EXISTS (SELECT 1 FROM memory_fact_links l WHERE l.fact_id = temporal_facts.id)",
                     (cutoff,),
                 ),
                 ("DELETE FROM reflections WHERE updated_at < ?", (cutoff,)),
@@ -273,12 +276,17 @@ class StorageArchiveComponent:
                     WHERE summary_id IN (
                         SELECT id FROM chat_summaries
                         WHERE COALESCE(NULLIF(date, ''), created_at) < ?
+                          AND NOT EXISTS (SELECT 1 FROM long_term_memories m
+                              WHERE m.source_table = 'chat_summaries'
+                              AND m.source_id = CAST(chat_summaries.id AS TEXT))
                     )
                     """,
                     (cutoff,),
                 ),
                 (
-                    "DELETE FROM chat_summaries WHERE COALESCE(NULLIF(date, ''), created_at) < ?",
+                    "DELETE FROM chat_summaries WHERE COALESCE(NULLIF(date, ''), created_at) < ? "
+                    "AND NOT EXISTS (SELECT 1 FROM long_term_memories m "
+                    "WHERE m.source_table = 'chat_summaries' AND m.source_id = CAST(chat_summaries.id AS TEXT))",
                     (cutoff,),
                 ),
                 (
@@ -474,19 +482,22 @@ class StorageArchiveComponent:
         return self.context._delete_statements_unlocked(
             (
                 (
-                    """
-                    DELETE FROM long_term_memories
-                    WHERE status <> 'active'
-                       OR (expires_at <> '' AND expires_at < DATE('now', 'localtime'))
-                       OR (date <> '' AND date < ? AND weight < 3)
+                    f"""
+                    DELETE FROM long_term_memories AS m
+                    WHERE (m.status <> 'active'
+                       OR (m.expires_at <> '' AND m.expires_at < DATE('now', 'localtime'))
+                       OR (m.date <> '' AND m.date < ? AND m.weight < 3))
+                       AND {unprotected_memory_clause()}
                     """,
                     (cutoff,),
                 ),
                 (
                     """
                     DELETE FROM memory_episode_clusters
-                    WHERE status <> 'active'
-                       OR COALESCE(NULLIF(last_date, ''), updated_at) < ?
+                    WHERE (status <> 'active'
+                       OR COALESCE(NULLIF(last_date, ''), updated_at) < ?)
+                      AND NOT EXISTS (SELECT 1 FROM memory_episode_cluster_items i
+                          WHERE i.cluster_id = memory_episode_clusters.id)
                     """,
                     (cutoff,),
                 ),
