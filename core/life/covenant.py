@@ -78,8 +78,8 @@ def build_daily_plan_contract(
   }},
   "outfit": "当前实际穿着的详细视觉描述，只写此刻身上的服装和已穿戴/携带的组成；为稍后场景准备但尚未使用的组成属于待用状态，不写入这里，不混入发型、妆容、美甲、动作或剧情",
   "timeline": [
-    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "activity_kind": "rest | other", "status": "当前情绪/状态词", "duration_minutes": 20, "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
-    {{"time": "09:30", "activity": "...", "activity_kind": "rest | other", "status": "...", "duration_minutes": 120, "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
+    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other", "status": "当前情绪/状态词", "duration_minutes": 20, "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
+    {{"time": "09:30", "activity": "...", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other", "status": "...", "duration_minutes": 120, "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
   ],
   "planned_actions": [
     {{
@@ -121,7 +121,7 @@ state 各数值独立表达：精力、压力、忙碌、困意、睡眠质量�
 采用衣橱候选时忠实使用其细节与实际编号；组合上装、下装须引用两者，编号不写入可见正文。每次 change_outfit 独立选择对应场景和编号；局部调整保留主体服装，只有实际换装才生成该动作。
 
 【时间轴与动作】
-时间轴按真实生活需要自然增减，不套固定节点数；每次真实状态或环境变化都应留下节点。duration_minutes 表示该节点主要活动自然持续的分钟数，时间间隔只作参考，不能机械等距。activity_kind 区分休息及其准备与其他活动。
+时间轴按真实生活需要自然增减，不套固定节点数；每次真实状态或环境变化都应留下节点。duration_minutes 表示该节点主要活动自然持续的分钟数，时间间隔只作参考，不能机械等距。activity_kind 按主要行为语义填写；不要只根据地点推断。
 {timeline_prompt}
 活动描述按事情真实发生的顺序连贯呈现主要动作；跨越准备、移动、到达或收尾时交代自然衔接，不要把过程压成并列动作清单。可依据已给出的天气、光线、环境声或身体感受，选取与动作相关的细节；不得为氛围补造事实。简单活动保持简洁；status 记录状态，不代替过程描写。
 {LIFE_ACTION_SCOPE_RULES}

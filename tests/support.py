@@ -668,6 +668,9 @@ class DataManager:
         self.next_emoji_asset_id = 1
         self.style_catalog_items = {}
         self.next_style_catalog_item_id = 1
+        # 测试夹具只保留最小的数字衣橱事实，供衣橱选择逻辑验证“正式拥有且可穿”。
+        # 未调用 adopt_wardrobe_items 的目录项仍然只是候选，不应被当成当前衣物。
+        self.wardrobe_item_states = {}
         self.video_insights = {}
         self.life_terms = {}
         self.next_life_term_id = 1
@@ -2589,6 +2592,43 @@ class DataManager:
             values = [item for item in values if item.source_scope == source_scope]
         values.sort(key=lambda item: (item.preference_score, item.id), reverse=True)
         return values[:limit] if limit > 0 else values
+
+    async def get_wardrobe_snapshot(self):
+        return {
+            "items": {
+                str(item_id): dict(state)
+                for item_id, state in self.wardrobe_item_states.items()
+            },
+            "profile": {},
+            "profile_revision": 0,
+            "events": [],
+            "jobs": [],
+            "recent_jobs": [],
+        }
+
+    async def adopt_wardrobe_items(self, ids, *, event_id="", at="", reason=""):
+        del event_id, at
+        if not reason.strip():
+            return False
+        item_ids = {int(item_id) for item_id in ids if int(item_id or 0) > 0}
+        records = [self.style_catalog_items.get(item_id) for item_id in item_ids]
+        if not item_ids or any(
+            item is None or item.status != "active" or item.kind not in {
+                "outfit", "top", "bottom", "footwear", "accessory"
+            }
+            for item in records
+        ):
+            return False
+        for item_id in item_ids:
+            self.wardrobe_item_states[str(item_id)] = {
+                "ownership": "owned",
+                "condition": "clean",
+                "available": True,
+                "unit_ids": [f"test-unit:{item_id}"],
+                "currently_worn": False,
+                "revision": 0,
+            }
+        return True
 
     async def set_style_catalog_status(self, item_ids, status):
         updated = 0

@@ -288,7 +288,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_autonomous_new_outfit_reference_falls_back_to_active_catalog(self):
+    async def test_missing_outfit_reference_does_not_adopt_an_unreviewed_unique_outfit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             outfit = await archive.upsert_style_catalog_item(
@@ -309,17 +309,21 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "confidence": 0.9,
                 }
             )
+            await archive.adopt_wardrobe_items(
+                [outfit.id, top.id], event_id="fallback-owned", at="2026-10-08 12:00:00",
+                reason="测试可穿候选",
+            )
             try:
                 runtime = _StyleCatalogComposer(archive)
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids([]),
-                    [outfit.id],
+                    [],
                 )
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids(
                         [top.id]
                     ),
-                    [outfit.id],
+                    [top.id],
                 )
             finally:
                 archive.close()
@@ -372,30 +376,34 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "confidence": 0.9,
                 }
             )
+            await archive.adopt_wardrobe_items(
+                [home.id, outdoor.id], event_id="scene-owned", at="2026-10-08 12:00:00",
+                reason="测试场景候选",
+            )
             try:
                 runtime = _StyleCatalogComposer(archive)
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids(
                         [], scene_category="public"
                     ),
-                    [outdoor.id],
+                    [],
                 )
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids(
                         [home.id], scene_category="public"
                     ),
-                    [outdoor.id],
+                    [],
                 )
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids(
                         [], scene_category="home"
                     ),
-                    [home.id],
+                    [],
                 )
             finally:
                 archive.close()
 
-    async def test_autonomous_new_outfit_reference_falls_back_to_separate_pieces(self):
+    async def test_unique_separate_pieces_are_not_assumed_to_form_a_coordinated_outfit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             top = await archive.upsert_style_catalog_item(
@@ -416,11 +424,15 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "confidence": 0.9,
                 }
             )
+            await archive.adopt_wardrobe_items(
+                [top.id, bottom.id], event_id="pieces-owned", at="2026-10-08 12:00:00",
+                reason="测试可穿单品",
+            )
             try:
                 runtime = _StyleCatalogComposer(archive)
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids([]),
-                    [top.id, bottom.id],
+                    [],
                 )
             finally:
                 archive.close()
@@ -429,7 +441,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             for index in range(7):
-                await archive.upsert_style_catalog_item(
+                item = await archive.upsert_style_catalog_item(
                     {
                         "kind": "outfit",
                         "title": f"测试套装{index}",
@@ -438,11 +450,15 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         "confidence": 0.9,
                     }
                 )
+                if index == 0:
+                    outfit_ids = []
+                outfit_ids.append(item.id)
+            owned_ids = list(outfit_ids)
             for index, kind in enumerate(
                 ("top", "bottom", "footwear", "accessory", "hair", "makeup", "nails"),
                 start=20,
             ):
-                await archive.upsert_style_catalog_item(
+                item = await archive.upsert_style_catalog_item(
                     {
                         "kind": kind,
                         "title": f"测试{kind}",
@@ -451,6 +467,12 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         "confidence": 0.9,
                     }
                 )
+                if kind in {"top", "bottom", "footwear", "accessory"}:
+                    owned_ids.append(item.id)
+            await archive.adopt_wardrobe_items(
+                owned_ids, event_id="context-owned", at="2026-10-08 12:00:00",
+                reason="测试正式衣物",
+            )
             runtime = _StyleCatalogComposer(archive)
             try:
                 context = await runtime._style_catalog_context(limit=14)
@@ -468,18 +490,23 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
-                await archive.upsert_style_catalog_item({
+                outside = await archive.upsert_style_catalog_item({
                     "kind": "outfit", "title": "优先外出裙", "description": "外出裙装",
                     "preference_score": 1.0, "source_image_hash": "a" * 64,
+                    "confidence": 0.9,
                 })
                 sleepwear = await archive.upsert_style_catalog_item({
                     "kind": "outfit", "title": "棉质睡衣套装", "description": "棉质家居睡衣",
                     "attributes": {"category": ["睡衣"], "scenes": ["睡眠"]},
-                    "source_image_hash": "b" * 64,
+                    "source_image_hash": "b" * 64, "confidence": 0.9,
                 })
+                await archive.adopt_wardrobe_items(
+                    [outside.id, sleepwear.id], event_id="index-owned", at="2026-10-08 12:00:00",
+                    reason="测试正式衣物",
+                )
                 runtime = _StyleCatalogComposer(archive)
                 context = await runtime._style_catalog_context(limit=1)
-                self.assertIn("其余可选服装简表", context)
+                self.assertIn("其余可穿服装简表", context)
                 self.assertIn(f"#{sleepwear.id} [outfit] 棉质睡衣套装", context)
                 self.assertIn("场景：睡眠", context)
                 self.assertEqual(

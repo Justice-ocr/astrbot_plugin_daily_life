@@ -76,7 +76,8 @@ class CognitionArchiveComponent:
                 "comment_id",
                 "actor_id",
                 "image_sent",
-                "occurred_at",
+                "occurred_at", "scope", "photo_key", "post_context", "conversation",
+                "reply_to_comment_id", "reply_to_author_id",
             )
             if key in receipt
         }
@@ -91,6 +92,43 @@ class CognitionArchiveComponent:
 
         await self.context._run_db(write)
         return True
+
+    async def record_external_activity_receipt(self, receipt: dict) -> bool:
+        """保存原始发送事件；返回是否首次插入，不把重试时间当成发生时间。"""
+        event_id = str(receipt.get("event_id") or "").strip()
+        if not event_id:
+            raise ValueError("活动回执缺少事件 ID")
+        key = "external_activity:" + hashlib.sha256(event_id.encode()).hexdigest()
+
+        def write():
+            cursor = self.context._conn.execute(
+                "INSERT OR IGNORE INTO durable_tasks(task_key, kind, payload_json, status, priority, available_at, max_attempts, result_json, created_at, updated_at, completed_at) VALUES (?, 'external_activity_receipt', ?, 'completed', 0, ?, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                (key, self.context._cognition_json(receipt, default={}), self.context._cognition_now()),
+            )
+            self.context._conn.commit()
+            return bool(cursor.rowcount)
+        return await self.context._run_db(write)
+
+    async def read_share_activity_receipts(self, scope: str, *, limit: int = 24) -> list:
+        """仅向原会话或公开空间返回活动，禁止扩大私聊可见范围。"""
+        def read():
+            rows = self.context._conn.execute(
+                "SELECT kind, payload_json FROM durable_tasks WHERE kind IN ('external_activity_receipt', 'public_activity_receipt') AND status = 'completed' ORDER BY id DESC LIMIT 256"
+            ).fetchall()
+            result = []
+            private = ":FriendMessage:" in scope or ":GroupMessage:" in scope
+            for row in rows:
+                payload = json.loads(row["payload_json"] or "{}")
+                if row["kind"] == "external_activity_receipt":
+                    if not private or payload.get("target_umo") != scope:
+                        continue
+                elif scope != "qzone_broadcast":
+                    continue
+                result.append(payload)
+                if len(result) >= max(1, min(32, limit)):
+                    break
+            return result
+        return await self.context._run_db(read)
 
     _TEMPORAL_SOURCE_PRIORITY = {
         "life_action_receipt": 500,

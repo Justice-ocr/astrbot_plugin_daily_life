@@ -8,7 +8,7 @@ from astrbot.api import logger
 
 from ..sources.platforms import (
     call_bot_action,
-    first_onebot_client,
+    get_onebot_client,
     has_bot_action,
     parse_unified_origin,
 )
@@ -258,13 +258,19 @@ class ReferenceComponent:
         return name
 
     async def _fetch_deep_history(
-        self, target_id: int, is_group: bool, hours: int, max_count: int
+        self,
+        target_id: int,
+        is_group: bool,
+        hours: int,
+        max_count: int,
+        *,
+        target_umo: str = "",
     ) -> list:
         resolver = self.context.contact_resolver
         wait_for_platform = getattr(resolver, "wait_for_platform_ready", None)
         if callable(wait_for_platform):
-            await wait_for_platform()
-        bot = first_onebot_client(self.context.context)
+            await wait_for_platform(target_umo=target_umo)
+        bot = get_onebot_client(self.context.context, target_umo or str(target_id))
         target_type = "群聊" if is_group else "私聊"
         if not bot:
             logger.debug("[日常生活] 未找到可用于获取聊天历史的平台实例。")
@@ -350,9 +356,11 @@ class ReferenceComponent:
         if not target_s:
             return "无"
 
-        _, real_id = parse_unified_origin(target_s)
+        adapter_id, real_id = parse_unified_origin(target_s)
         probe_id = real_id or target_s
-        if probe_id.isdigit():
+        if probe_id.isdigit() and (
+            not adapter_id or get_onebot_client(self.context.context, target_s) is not None
+        ):
             return await self._get_onebot_recent_chats(
                 target_s, is_group, hours, max_count, persona=persona
             )
@@ -387,7 +395,9 @@ class ReferenceComponent:
                 return "无"
             _, real_id = parse_unified_origin(target_id)
             tid = int(real_id or target_id)
-            raw_msgs = await self._fetch_deep_history(tid, is_group, hours, max_count)
+            raw_msgs = await self._fetch_deep_history(
+                tid, is_group, hours, max_count, target_umo=target_id
+            )
             if not raw_msgs:
                 return "无"
 
@@ -397,7 +407,7 @@ class ReferenceComponent:
             target_display_name = ""
             if not is_group:
                 target_profile = await self.context._resolve_reference_user_profile(
-                    target_id_s, persona=persona
+                    target_id, persona=persona
                 )
                 target_display_name = target_profile.get("name", "")
                 if not target_display_name:

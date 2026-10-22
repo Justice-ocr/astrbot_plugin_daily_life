@@ -7,7 +7,7 @@
       "type": "string"
     },
     "default": [],
-    "hint": "可选配置，用于补充平台无法稳定获取的用户称呼，会影响聊天记忆、邀约、备忘录、参考私聊、MemOS 和面板展示。格式：用户标识/会话标识:称呼。QQ 未配置时会尝试获取备注、昵称；个人微信无法稳定获取真实昵称，建议在这里配置称呼。"
+    "hint": "可选配置，用于补充用户称呼。格式：用户标识或完整 UMO:称呼。OneBot 可读取备注、昵称；QQ 官方和个人微信建议配置称呼。"
   },
   "bot_identity_aliases": {
     "title": "角色身份别名",
@@ -44,7 +44,7 @@
           "type": "string"
         },
         "default": [],
-        "hint": "填入群号；个人微信 weixin_oc 仅支持私聊，不支持群聊。"
+        "hint": "OneBot 填群号；QQ 官方填完整 UMO，读取已保存的群聊历史。个人微信仅支持私聊。"
       },
       "reference_users": {
         "title": "参考私聊",
@@ -54,7 +54,7 @@
           "type": "string"
         },
         "default": [],
-        "hint": "填入 QQ 号、个人微信 openid/会话标识，或完整 UMO，个人微信历史来自已保存的消息/会话历史。"
+        "hint": "OneBot 填 QQ 号；QQ 官方填完整 UMO；个人微信填 OpenID 或完整 UMO。QQ 官方和个人微信读取已保存的聊天历史。"
       },
       "history_hours": {
         "description": "历史回溯时间(小时)",

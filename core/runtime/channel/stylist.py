@@ -286,7 +286,7 @@ class RuntimeStyleCatalogComponent:
 - makeup：只写可见妆容；写 finish、base、brows、eyes、cheeks、lips。
 - nails：只写可见美甲；写 shape、length、finish、colors、patterns、designs。
 - 每一类的 description 都必须能脱离原图独立使用；不可见或信息不足时 present=false。
-- outfit、top、bottom 填 scene_categories 数组，只选有视觉依据的 home、sleep、outdoor、public；无法确认时留空，不根据图片背景猜测衣服适用场景。
+- outfit、top、bottom 填 scene_categories 数组；可依据服装本身的结构、类别和覆盖程度填写 home、sleep、outdoor、public，不能根据图片背景猜测。没有足够服装依据时留空。
 - category、colors、patterns、styles、seasons、scenes、weather_fit、activity_fit 等复数字段使用短词数组。
 
 输出要求：

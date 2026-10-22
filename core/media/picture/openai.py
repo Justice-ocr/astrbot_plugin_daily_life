@@ -116,7 +116,7 @@ def build_request(
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
     if siciyuanweilai:
-    # 确保请求在网关侧可追踪且具有幂等性。
+        # 确保请求在网关侧可追踪且具有幂等性。
         request_id = f"daily-life-{uuid4().hex}"
         headers["X-Client-Request-ID"] = request_id
         headers["Idempotency-Key"] = request_id
@@ -263,9 +263,12 @@ def _uses_hosted_gpt_sizes(model: str, api_url: str) -> bool:
     )
 
 
-def uses_async_tasks(route: ImageRoute) -> bool:
-    return route.protocol == "openai" and _uses_hosted_gpt_sizes(
-        route.model, route.api_url
+def uses_async_tasks(route: ImageRoute, *, response_format: str = "url") -> bool:
+    # 异步任务将成品存为 URL；需要图片字节时使用同步接口，避免依赖对象存储。
+    return (
+        response_format == "url"
+        and route.protocol == "openai"
+        and _uses_hosted_gpt_sizes(route.model, route.api_url)
     )
 
 

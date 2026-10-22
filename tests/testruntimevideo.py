@@ -1633,8 +1633,12 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         event.message_str = "还没到吗？"
         reply = "别催啦，我马上到。"
+        saved_history = [
+            {"role": "user", "content": event.message_str},
+            {"role": "assistant", "content": reply},
+        ]
         runtime.context.conversation_manager.conversations[event.unified_msg_origin] = (
-            types.SimpleNamespace(history=[{"role": "assistant", "content": reply}])
+            types.SimpleNamespace(history=saved_history)
         )
         runtime.context.conversation_manager.current_ids[event.unified_msg_origin] = (
             "current"
@@ -1665,12 +1669,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         history = runtime.context.conversation_manager.conversations[
             event.unified_msg_origin
         ].history
-        self.assertEqual(history[0]["role"], "user")
-        self.assertEqual(
-            history[0]["content"][0], {"type": "text", "text": "还没到吗？"}
-        )
-        self.assertIn("User ID: 10001", history[0]["content"][1]["text"])
-        self.assertEqual(history[1], {"role": "assistant", "content": reply})
+        self.assertEqual(history, saved_history)
+        self.assertEqual(runtime.context.conversation_manager.calls, [])
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
     async def test_voice_switch_keeps_active_tool_preface_as_text(self):
@@ -1743,7 +1743,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertTrue(item["pre_send_checked"])
         self.assertIn("工具还在执行中", item["text_reason"])
 
-    async def test_voice_switch_before_send_enriches_existing_user_image_history(self):
+    async def test_voice_switch_before_send_preserves_framework_user_image_history(self):
         provider = Provider([])
 
         class Composer:
@@ -1788,13 +1788,19 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         image_file.write_bytes(b"\x89PNG\r\n\x1a\nvoice-switch")
         image_path = str(image_file)
         reply = "看见啦，好可爱。"
+        saved_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "你看看这张"},
+                    {"type": "text", "text": f"[Image Attachment: path {image_path}]"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}},
+                ],
+            },
+            {"role": "assistant", "content": reply},
+        ]
         runtime.context.conversation_manager.conversations[scope] = (
-            types.SimpleNamespace(
-                history=[
-                    {"role": "user", "content": "你看看这张"},
-                    {"role": "assistant", "content": reply},
-                ]
-            )
+            types.SimpleNamespace(history=saved_history)
         )
         runtime.context.conversation_manager.current_ids[scope] = "current"
         event = Event(unified_msg_origin=scope, sender_id="10001")
@@ -1819,6 +1825,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             history[0]["content"][0], {"type": "text", "text": "你看看这张"}
         )
         self.assertEqual(history[1], {"role": "assistant", "content": reply})
+        self.assertEqual(history, saved_history)
+        self.assertEqual(runtime.context.conversation_manager.calls, [])
 
     async def test_voice_switch_short_wrapped_text_can_still_use_voice(self):
         provider = Provider([])

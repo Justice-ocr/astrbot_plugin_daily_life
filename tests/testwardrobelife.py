@@ -27,6 +27,7 @@ from core.life.dressing import (
     wardrobe_conditions,
 )
 from core.life.wardrobe import synchronize_outfit_components_for_scene
+from core.life.wardrobefit import validate_scene_choices, validate_understanding, wardrobe_targets
 from core.media.picture.polling import ImageTaskFailed
 from core.models import LifeActionIntent, TimelineItem, WeatherInfo
 from core.runtime.background import BackgroundTaskScheduler
@@ -870,6 +871,9 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
     async def test_quiet_hours_preserve_wear_and_care_then_resume_review(self):
         self.runtime.now = self.now.replace(hour=1)
         item = await self.item()
+        await self.archive.save_wardrobe_understanding({item.id: validate_understanding(
+            {"status": "unknown", "confidence": 0}, item
+        )})
         await self.day([item.id], at=self.runtime.now)
         self.archive.advance_wardrobe_care = AsyncMock(
             wraps=self.archive.advance_wardrobe_care
@@ -1427,8 +1431,63 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         changed_plan = json.loads(json.dumps(conditions, ensure_ascii=False))
         changed_plan["upcoming_outings"][0]["activity"] = "去公园散步"
         self.assertNotEqual(suitability_key(conditions), suitability_key(changed_plan))
+        changed_kind = json.loads(json.dumps(conditions, ensure_ascii=False))
+        changed_kind["current_activity"]["activity_kind"] = "exercise"
+        self.assertNotEqual(suitability_key(conditions), suitability_key(changed_kind))
         changed_copy["next_activity"]["place_kind"] = "poi"
         self.assertNotEqual(suitability_key(conditions), suitability_key(changed_copy))
+
+    async def test_scene_gap_uses_outing_and_sleep_activity_types(self):
+        item = await self.item(
+            used=True,
+            attrs={"scene_categories": ["home", "sleep"]},
+        )
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        outing = [{
+            "time": "2026-10-08T18:00:00",
+            "activity": "去书店",
+            "activity_kind": "outdoor",
+            "place_kind": "poi",
+        }]
+
+        sleep = [{
+            "time": "2026-10-08T23:00:00",
+            "activity": "准备睡觉",
+            "activity_kind": "sleep",
+            "place_kind": "home",
+        }]
+        targets = wardrobe_targets({}, outing + sleep)
+        self.assertEqual([t["scene_category"] for t in targets], ["public", "sleep"])
+        choices = validate_scene_choices([
+            {"target_id": targets[0]["id"], "verdict": "missing", "item_ids": [],
+             "considered_ids": [item.id], "confidence": 0.9, "reason": "只有居家睡衣，不适合外出"},
+            {"target_id": targets[1]["id"], "verdict": "fits", "item_ids": [item.id],
+             "confidence": 0.9, "reason": "这套睡衣适合睡眠"},
+        ], targets, [item], snapshot)
+        self.assertEqual([c["verdict"] for c in choices], ["missing", "fits"])
+        self.assertNotEqual(
+            suitability_key({"current_activity": {"activity_kind": "sleep", "place_kind": "home"}}),
+            suitability_key({"current_activity": {"activity_kind": "exercise", "place_kind": "home"}}),
+        )
+
+    async def test_scene_gap_accepts_model_approved_candidate_for_adoption(self):
+        item = await self.item(
+            attrs={"scene_categories": ["outdoor", "public"]},
+        )
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        outing = [{
+            "time": "2026-10-08T18:00:00",
+            "activity": "去书店",
+            "activity_kind": "outdoor",
+            "place_kind": "poi",
+        }]
+        targets = wardrobe_targets({}, outing)
+        choices = validate_scene_choices([
+            {"target_id": targets[0]["id"], "verdict": "fits", "item_ids": [item.id],
+             "confidence": 0.9, "reason": "候选可正式纳入用于外出"},
+        ], targets, [item], snapshot, {item.id})
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0]["item_ids"], [item.id])
 
     def test_wardrobe_review_runs_once_per_day_when_context_is_stable(self):
         due = self.runtime.wardrobe_life._wardrobe_review_due
@@ -1467,7 +1526,8 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         profile = {
             **snapshot["profile"],
-            "review_version": "wardrobe_choice_v1",
+            "review_version": "wardrobe_scene_v3",
+            "catalog_key": digest({}),
             "context_key": suitability_key(conditions),
             "inventory_key": inventory_key,
             "feedback_key": feedback_key,

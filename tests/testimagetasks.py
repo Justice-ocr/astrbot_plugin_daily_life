@@ -298,7 +298,19 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                         await tasks.request_image_task(session, route, _request(route))
                 self.assertEqual(sum(call[0] == "POST" for call in session.calls), 1)
 
-    def _service(self, session, *, mode="text", async_backup=False):
+    @staticmethod
+    def _use_url_responses(service):
+        build_request = service._build_request
+
+        def url_request(route, parts):
+            request = build_request(route, parts)
+            if request.payload is not None:
+                request.payload["response_format"] = "url"
+            return request
+
+        service._build_request = url_request
+
+    def _service(self, session, *, mode="text", async_backup=False, response_format="url"):
         settings = LifeSettings.from_dict(
             {
                 "image_generation_config": {
@@ -327,7 +339,50 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
         ).image_generation
         service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
         service._get_session = AsyncMock(return_value=session)
+        if response_format == "url":
+            self._use_url_responses(service)
         return service
+
+    async def test_inline_image_requests_skip_async_storage_and_keep_channel_failover(self):
+        for mode in ("text", "edit"):
+            for model in ("gpt-image-2", "gpt-image-2.5-flare"):
+                for primary_failed in (False, True):
+                    with self.subTest(mode=mode, model=model, primary_failed=primary_failed):
+                        result = {"data": [{"b64_json": base64.b64encode(b"image").decode()}]}
+                        session = _Session(
+                            ([_Response(502)] if primary_failed else [])
+                            + [_Response(payload=result)]
+                        )
+                        service = self._service(
+                            session, mode=mode, async_backup=True,
+                            response_format="b64_json",
+                        )
+                        for channel in getattr(service.settings, f"{mode}_channels"):
+                            channel.model = model
+                        service._load_reference_image = AsyncMock(
+                            return_value=(b"reference", "image/png")
+                        )
+                        accepted, on_failed = AsyncMock(), AsyncMock()
+                        with service.track_async_tasks(accepted, on_failed=on_failed):
+                            generated = (
+                                await service.edit_image("green apple", "reference.png")
+                                if mode == "edit" else await service.generate_image("green apple")
+                            )
+                        self.assertEqual(generated.path.read_bytes(), b"image")
+                        self.assertEqual(len(session.calls), 2 if primary_failed else 1)
+                        endpoint = "edits" if mode == "edit" else "generations"
+                        for method, url, options in session.calls:
+                            self.assertEqual(method, "POST")
+                            self.assertEqual(url, f"https://api.scywl.cc/v1/images/{endpoint}")
+                            self.assertEqual(options["json"]["response_format"], "b64_json")
+                            self.assertEqual(options["json"]["model"], model)
+                            if mode == "edit":
+                                image_url = options["json"]["images"][0]["image_url"]
+                                self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), b"reference")
+                            else:
+                                self.assertNotIn("images", options["json"])
+                        accepted.assert_not_awaited()
+                        on_failed.assert_not_awaited()
 
     async def test_confirmed_task_failure_tries_next_channel_for_text_and_edit(self):
         for mode in ("text", "edit"):
@@ -473,6 +528,7 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("backup-key", path.read_text())
                 # 模拟重启，配置重新排序；第二通道继续等待时必须持久保存新任务。
                 fresh = GeminiImageService(service.settings, service.data_dir)
+                self._use_url_responses(fresh)
                 fresh._request_routes = AsyncMock(return_value=[third, *reversed(original_routes)])
                 failed = _Response(payload={"status": "failed", "http_status": 502, "error": {"message": "暂时不可用"}})
                 second = _Session([_accepted(task_id="second-task")], [failed, _Response(404)])
@@ -486,6 +542,7 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(session.calls[0][2]["json"]["images"], second.calls[1][2]["json"]["images"])
                 # 再次重启，仅查询第二通道，失败后使用第三通道；不重提第一、第二通道。
                 again = GeminiImageService(service.settings, service.data_dir)
+                self._use_url_responses(again)
                 again._request_routes = fresh._request_routes
                 image = {"data": [{"b64_json": base64.b64encode(b"final-image").decode()}]}
                 final = _Session([_Response(payload=image)], [failed])
@@ -629,6 +686,8 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
     def test_async_protocol_is_limited_to_documented_models_and_hosts(self):
         route = _route()
         self.assertTrue(openai.uses_async_tasks(route))
+        self.assertFalse(openai.uses_async_tasks(route, response_format="b64_json"))
+        self.assertFalse(openai.uses_async_tasks(route, response_format=""))
         route.api_url = "https://api.scywl.cc.untrusted.example/v1"
         self.assertFalse(openai.uses_async_tasks(route))
         route.api_url = "https://api.scywl.cc/v1"

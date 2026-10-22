@@ -75,7 +75,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "title": "棉质睡裙",
                 "description": "浅粉棉质吊带睡裙",
                 "source_image_hash": "d" * 64,
+                "confidence": 0.9,
             }
+        )
+        await archive.adopt_wardrobe_items(
+            [outfit.id], event_id="planned-outfit-owned", at="2026-10-03 12:00:00",
+            reason="测试明确拥有的睡裙",
         )
         action = {
             "action_type": "change_outfit",
@@ -2444,6 +2449,22 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(grounded.meta["outfit_carried_from"], "2026-05-23")
         self.assertEqual(grounded.outfit_history, {"dawn": "浅灰色棉质睡裙，光脚"})
 
+    async def test_daily_generation_keep_preserves_clothing_and_references_after_boundary(self):
+        composer, _, _, archive = make_composer([])
+        previous = DayRecord(date="2026-05-23", outfit="已确认的浅灰色棉质睡裙", meta={
+            "style_catalog_reference_ids": "237", "outfit_fact_confirmed_at": "2026-05-23 22:00:00",
+        })
+        await archive.save_day(previous)
+        day = DayRecord(date="2026-05-24", outfit="模型另写的白色短袖与短裤", meta={
+            "plan_outfit_decision": "keep",
+        }, timeline=[TimelineItem(time="07:00", activity="在家准备早餐")])
+        grounded = await composer._part_daily_engine_component._ground_generated_current_appearance(
+            day, context={"check_time": datetime.datetime(2026, 5, 24, 7, 30), "period": "dawn"},
+        )
+        self.assertEqual(grounded.outfit, previous.outfit)
+        self.assertEqual(grounded.meta["style_catalog_reference_ids"], "237")
+        self.assertEqual(grounded.meta["outfit_fact_confirmed_at"], "2026-05-23 22:00:00")
+
     async def test_daily_generation_uses_generated_appearance_after_node_occurs(self):
         composer, _, _, archive = make_composer([])
         await archive.save_day(
@@ -2703,8 +2724,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已经换装则选择", provider.prompts[0])
         self.assertIn("不复述具体日期、钟点或时间轴编号", provider.prompts[0])
 
-    async def test_autonomous_outfit_change_falls_back_to_active_catalog(self):
-        composer, _, _, archive = make_composer(
+    async def test_autonomous_outfit_change_requires_explicit_single_catalog_choice(self):
+        composer, provider, _, archive = make_composer(
             [
                 '{"outfit_decision":"sleepwear","current_outfit_basis":"stored",'
                 '"scene_category":"sleep","style_pool":"sleep_styles",'
@@ -2713,7 +2734,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"catalog_reference_ids":[],"reason":"准备休息"}'
             ]
         )
-        await archive.upsert_style_catalog_item(
+        outfit = await archive.upsert_style_catalog_item(
             {
                 "kind": "outfit",
                 "title": "衣橱测试睡裙",
@@ -2722,6 +2743,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "confidence": 0.9,
             }
         )
+        await archive.adopt_wardrobe_items(
+            [outfit.id], event_id="fallback-outfit-owned", at="2026-08-16 12:00:00",
+            reason="测试明确拥有的候选",
+        )
         await archive.save_day(
             DayRecord(
                 date="2026-08-16",
@@ -2729,6 +2754,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 timeline=[TimelineItem(time="22:00", activity="准备休息")],
             )
         )
+        provider.responses.append(json.dumps({
+            "outfit_decision": "sleepwear", "current_outfit_basis": "stored",
+            "scene_category": "sleep", "style_pool": "sleep_styles",
+            "component_review": {"main_clothing": "adjust"},
+            "outfit": "米白色缎面蕾丝吊带睡裙",
+            "catalog_reference_ids": [outfit.id], "reason": "准备休息",
+        }))
 
         result = await composer.update_outfit(
             "2026-08-16",
@@ -2740,15 +2772,17 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-08-16")
         self.assertEqual(stored.outfit, "米白色缎面蕾丝吊带睡裙")
         self.assertEqual(stored.meta["style_catalog_reference_ids"], "1")
+        self.assertEqual(len(provider.prompts), 2)
 
     async def test_autonomous_outfit_change_reasks_model_for_ambiguous_catalog(self):
         composer, provider, _, archive = make_composer([])
-        await archive.upsert_style_catalog_item(
+        outdoor = await archive.upsert_style_catalog_item(
             {
                 "kind": "outfit",
                 "title": "外出裙",
                 "description": "日间碎花裙",
                 "source_image_hash": "a" * 64,
+                "confidence": 0.9,
             }
         )
         sleepwear = await archive.upsert_style_catalog_item(
@@ -2757,7 +2791,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "title": "棉质睡衣",
                 "description": "米白色棉质睡衣",
                 "source_image_hash": "b" * 64,
+                "confidence": 0.9,
             }
+        )
+        await archive.adopt_wardrobe_items(
+            [outdoor.id, sleepwear.id], event_id="ambiguous-outfits-owned",
+            at="2026-10-03 12:00:00", reason="测试明确拥有的候选",
         )
         response = {
             "outfit_decision": "sleepwear",
@@ -2793,6 +2832,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "source_image_hash": "b" * 64,
                 "confidence": 0.9,
             }
+        )
+        await archive.adopt_wardrobe_items(
+            [item.id], event_id="authoritative-outfit-owned",
+            at="2026-08-16 12:00:00", reason="测试明确拥有的候选",
         )
         provider.responses.append(
             '{"outfit_decision":"sleepwear","current_outfit_basis":"stored",'
@@ -2873,7 +2916,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         item = await archive.upsert_style_catalog_item({
             "kind": "outfit", "title": "粉色家居套装",
             "description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
-            "source_image_hash": "split-state" * 8,
+            "source_image_hash": "split-state" * 8, "confidence": 0.9,
             "attributes": {
                 "home_description": "粉色背心与短裤，脚穿粉色拖鞋，佩戴细锁骨链",
                 "component_roles": [
@@ -2882,6 +2925,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 ],
             },
         })
+        await archive.adopt_wardrobe_items(
+            [item.id], event_id="split-outfit-owned",
+            at="2026-10-13 20:00:00", reason="测试明确拥有的候选",
+        )
         provider.responses.append(json.dumps({
             "outfit_decision": "sleepwear", "current_outfit_basis": "stored",
             "scene_category": "sleep", "component_review": {"main_clothing": "adjust"},

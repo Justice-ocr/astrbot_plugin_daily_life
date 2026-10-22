@@ -2079,7 +2079,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         generated = await service.edit_image("换成雨夜窗边", str(reference))
 
         self.assertTrue(generated.path.exists())
-        self.assertEqual(calls.pop(0)[0], "https://api.scywl.cc/v1/images/edits/async")
         self.assertEqual(calls[0][0], "https://api.scywl.cc/v1/images/edits")
         self.assertIsNotNone(calls[0][2])
         self.assertIsNone(calls[0][3])

@@ -1203,7 +1203,9 @@ class GeminiImageService:
         request = self._build_request(route, parts)
         if require_reference and request.reference_image_count <= 0:
             raise ValueError("图生图请求没有可上传的参考图，已终止请求")
-        if openai.uses_async_tasks(route):
+        if openai.uses_async_tasks(
+            route, response_format=(request.payload or {}).get("response_format", "")
+        ):
             listener = getattr(self, "_task_listener", None)
             failure_listener = getattr(self, "_task_failure_listener", None)
             async def accepted(task_id, accepted_route):

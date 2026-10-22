@@ -9,6 +9,7 @@ from typing import Any
 from .actionchain import execution_evidence
 from .calendar import format_season_context
 from .tools import get_current_timeline_status
+from ..models import TIMELINE_ACTIVITY_KINDS
 
 CONDITION_LABELS = {
     "clean": "干净可穿",
@@ -27,6 +28,8 @@ def digest(value: Any) -> str:
 
 
 def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
+    from .curation import upcoming_outfit_plans
+
     current, following = get_current_timeline_status(
         day.timeline, now, day.date, meta=day.meta
     )
@@ -62,6 +65,18 @@ def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
         ),
         "current_activity": activity(current),
         "next_activity": activity(following),
+        "upcoming_outings": [
+            plan for plan in upcoming_outfit_plans(day, now)
+            if plan.get("place_kind") in {"poi", "generic", "transit"}
+        ],
+        "upcoming_scene_plans": [
+            plan for plan in upcoming_outfit_plans(day, now)
+            if plan.get("place_kind") in {"poi", "generic", "transit"}
+            or (
+                plan.get("activity_kind") == "sleep"
+                and plan.get("place_kind") in {"", "none", "home"}
+            )
+        ],
         "actual_execution": execution_evidence(day),
         "current_place": day.meta.get("current_place", ""),
         "current_outfit": day.outfit,
@@ -94,8 +109,14 @@ def suitability_key(conditions: dict) -> str:
 
     def activity_context(value: Any) -> dict:
         item = value if isinstance(value, dict) else {}
+        raw_kind = str(item.get("activity_kind") or "").strip().lower()
+        activity_kind = (
+            raw_kind
+            if raw_kind in TIMELINE_ACTIVITY_KINDS and raw_kind != "other"
+            else ""
+        )
         result = {
-            "activity_kind": "rest" if item.get("activity_kind") == "rest" else "",
+            "activity_kind": activity_kind,
             "place_kind": str(item.get("place_kind") or "").strip().lower(),
         }
         if result["place_kind"] == "none":
@@ -145,6 +166,7 @@ def suitability_key(conditions: dict) -> str:
             "current_activity": activity_context(conditions.get("current_activity")),
             "next_activity": activity_context(conditions.get("next_activity")),
             "upcoming_outings": conditions.get("upcoming_outings", []),
+            "upcoming_scene_plans": conditions.get("upcoming_scene_plans", []),
         }
     )
 
@@ -316,7 +338,8 @@ def wardrobe_fact_text(snapshot: dict) -> str:
 WARDROBE_REVIEW_RULES = """你是当前角色的数字衣橱生活执行者。只返回结构化决策，不扮演用户。
 根据实际天气、室内外活动、身体记录、自身审美和可用衣物选择；季节只是背景，天气未知时不编造温度。
 先保留合适的当前穿搭，再考虑已有单品叠穿和鞋饰调整；干净适配的喜欢衣物允许复穿，不为轮换强制换新。
-逐条判断视觉资料适配，仅能推断视觉厚薄与可能的用途，不能编造面料成分、精确保暖温度或真实试穿体感。
+衣物用途已分批整理并缓存。本轮 suitability 只返回与当前选择有关的单品适配，不假装逐条评估了整个衣橱；仅能推断视觉厚薄与可能的用途，不能编造面料成分、精确保暖温度或真实试穿体感。
+对 targets 分别给出 scene_choices，必须区分当前与未来用途。fits 代表已判断整套协调、适合该活动和天气的完整套装或上下装组合，不是单品各自可穿就算搭配成功。outfit_basis 为 current 时以当前实际穿着为基础，item_ids 只列调整的单品（不调整可为空）；selection 则列出完整主体服装，鞋饰按需补充。已有候选能组合采用时同时填 adopt_ids 和理由。missing 只能在审视所有可用主体衣物及可纳入候选后给出，considered_ids 列出实际评估过的主体衣物；资料不足用 unknown，不能把未知当作适配或缺衣。保持适配当前穿着优先，未来组合只作准备。
 衣橱选择 acquisition 可以 keep（复穿）、remix（已有单品尝试新组合）、consider（先记下想法）、generate（现在设计并生成新造型）。每次说明自己的具体理由，允许什么都不添。
 生成动机 motive 分 need（实际衣物需求）、interest（自身审美探索）、occasion（为已确认的角色安排准备）。已有可穿衣服不阻止有理由的审美探索，也不要求每天轮换或等衣物全部不合适。一次新鲜想法不是稳定偏好，不能杜撰过去一直喜欢。
 每次 generate 用 evidence_ids 引用本轮 sources 的依据；interest 应来自自身人设、已形成的审美或支持中的自身兴趣，不能只凭他人建议。occasion 引用 upcoming_plan，说明具体用途，不虚构双方已确认同行；need 结合 conditions 或实际穿护记录。requirement 写完整视觉搭配目标，difference 说明与现有候选的具体区别和复用价值。
@@ -328,6 +351,7 @@ item_ids 只引用本轮真实衣物，remix 必须能实际取用。acquisition
 用户反馈是他人的建议，自身偏好由角色人设和经历决定；不机械服从所有赞美，不凭一次选择永久定型。修订旧软偏好时在 replaces 引用旧 preference_id；仅允许修订同来源偏好，其他人的反馈不能改写角色自身审美。
 返回 JSON：
 {"suitability":[{"item_id":1,"verdict":"suitable|layering|unsuitable|unknown","score":0.0,"reason":"依据","confidence":0.0}],
+ "scene_choices":[{"target_id":"输入 targets 的 id","verdict":"fits|missing|unknown","outfit_basis":"current|selection","item_ids":[],"considered_ids":[],"reason":"整套适配或确实缺衣的依据","confidence":0.8}],
  "adopt_ids":[],"adopt_reason":"正式纳入数字衣橱的理由或空",
  "acquisition":{"decision":"keep|remix|consider|generate","motive":"need|interest|occasion","key":"同一想法跨日复用的标识；保持现状可留空","requirement":"完整造型要求或空","reason":"此刻自己的选择与原因","difference":"新造型与已有衣物的区别及用途；不生成可留空","item_ids":[],"evidence_ids":[]},
  "care":[{"item_ids":[],"decision":"dirty|washing|stored|clean","duration_minutes":30,"drying_minutes":120,"reason":"实际依据","evidence_ids":[]}],

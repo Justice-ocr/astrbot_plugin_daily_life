@@ -109,9 +109,12 @@ class ProactiveSendComponent:
         if expires_at is not None and life_now() >= expires_at:
             return False
         token = getattr(event, "_daily_life_proactive_send_token", None)
-        return self.context.media_request_is_current_turn(event) and (
-            token is None or self._proactive_chat_snapshot(token[0]) == token[1]
-        )
+        if not self.context.media_request_is_current_turn(event) or (
+            token is not None and self._proactive_chat_snapshot(token[0]) != token[1]
+        ):
+            return False
+        gate = getattr(self.context, "share_contact_gate", None)
+        return gate is None or gate.allow_life(event)
 
     async def _send_proactive_voice_call_invite(
         self,

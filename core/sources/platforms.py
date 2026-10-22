@@ -3,6 +3,7 @@ from typing import Any
 
 
 ONEBOT_TYPES = {"aiocqhttp", "onebot", "cqhttp"}
+QQ_OFFICIAL_TYPES = {"qq_official", "qq_official_webhook"}
 WEIXIN_OC_TYPE = "weixin_oc"
 
 
@@ -133,6 +134,13 @@ def is_weixin_oc_event(event: Any) -> bool:
     return any(is_weixin_oc_platform(name) for name in event_platform_names(event))
 
 
+def is_qq_official_event(event: Any) -> bool:
+    return any(
+        name.strip().lower() in QQ_OFFICIAL_TYPES
+        for name in event_platform_names(event)
+    )
+
+
 def find_onebot_platform_instance(context: Any) -> Any:
     for instance in iter_platform_instances(context):
         platform_type = get_platform_type(instance).lower()
@@ -152,6 +160,9 @@ def parse_unified_origin(origin: str) -> tuple[str, str]:
 def get_onebot_client(
     context: Any, target_umo: str = "", event: Any = None, adapter_id: str = ""
 ) -> Any:
+    # 平台身份明确时不能因目标恰好是数字，就跨到另一个 OneBot 实例查询。
+    if event and event_platform_names(event) and not is_onebot_event(event):
+        return None
     if event and is_onebot_event(event):
         bot = getattr(event, "bot", None)
         if bot:
@@ -167,14 +178,20 @@ def get_onebot_client(
     for target_adapter_id in (adapter_id, umo_adapter_id):
         if not target_adapter_id:
             continue
-        for instance in iter_platform_instances(context):
-            if get_platform_id(instance) != target_adapter_id:
-                continue
+        matches = [
+            instance
+            for instance in iter_platform_instances(context)
+            if get_platform_id(instance) == target_adapter_id
+        ]
+        if matches:
+            if len(matches) != 1:
+                return None
+            instance = matches[0]
             if not is_onebot_platform(get_platform_type(instance)):
-                continue
-            bot = get_platform_client(instance)
-            if bot:
-                return bot
+                return None
+            return get_platform_client(instance)
+        if not is_onebot_platform(target_adapter_id):
+            return None
 
     probe = real_id or target_s
     if str(probe).isdigit():

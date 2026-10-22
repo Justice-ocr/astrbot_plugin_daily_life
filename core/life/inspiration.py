@@ -82,8 +82,9 @@ class StyleCatalogComponent:
 
     @staticmethod
     def _style_catalog_attributes(item: Any) -> dict[str, Any]:
-        attributes = getattr(item, "attributes", {}) or {}
-        return attributes if isinstance(attributes, dict) else {}
+        from .wardrobefit import item_traits
+
+        return item_traits(item)
 
     @classmethod
     def _style_catalog_scene_role(cls, item: Any) -> str:
@@ -279,25 +280,100 @@ class StyleCatalogComponent:
         )
 
     async def _style_catalog_has_clothing_candidates(self) -> bool:
+        return await self._style_catalog_has_eligible_clothing()
+
+    async def _style_catalog_has_eligible_clothing(
+        self, *, scene_category: object = "", conditions: dict | None = None
+    ) -> bool:
         getter = getattr(self.context.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return False
         try:
-            if await getter(kind="outfit", status="active", limit=1):
+            items = await getter(status="active", limit=500)
+            snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
+            snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
+            outfits = [
+                item for item in items or []
+                if item.kind == "outfit"
+                and self._style_catalog_item_eligible(
+                    item, snapshot, scene_category=scene_category, conditions=conditions
+                )
+            ]
+            if outfits:
                 return True
-            tops = await getter(kind="top", status="active", limit=1)
-            bottoms = await getter(kind="bottom", status="active", limit=1)
+            tops = [
+                item for item in items or []
+                if item.kind == "top"
+                and self._style_catalog_item_eligible(
+                    item, snapshot, scene_category=scene_category, conditions=conditions
+                )
+            ]
+            bottoms = [
+                item for item in items or []
+                if item.kind == "bottom"
+                and self._style_catalog_item_eligible(
+                    item, snapshot, scene_category=scene_category, conditions=conditions
+                )
+            ]
             return bool(tops and bottoms)
         except Exception:
             return False
 
+    async def _style_catalog_has_active_clothing(self) -> bool:
+        getter = getattr(self.context.archive, "get_style_catalog_items", None)
+        if not callable(getter):
+            return False
+        try:
+            items = await getter(status="active", limit=500)
+        except Exception:
+            return False
+        return any(
+            str(getattr(item, "kind", "") or "").strip().lower()
+            in STYLE_CATALOG_CLOTHING_KINDS
+            for item in items or []
+        )
+
+    @staticmethod
+    def _style_catalog_item_eligible(
+        item: Any,
+        snapshot: dict,
+        *,
+        scene_category: object = "",
+        conditions: dict | None = None,
+    ) -> bool:
+        """判断衣物是否能在当前时刻直接采用；未知资料不会伪装成已拥有。"""
+        kind = str(getattr(item, "kind", "") or "").strip().lower()
+        if kind in STYLE_CATALOG_CLOTHING_KINDS:
+            states = snapshot.get("items") or {}
+            state = states.get(str(getattr(item, "id", 0) or 0)) or {}
+            if state.get("ownership") != "owned" or not state.get("available"):
+                return False
+        if not StyleCatalogComponent._style_catalog_scene_compatible(item, scene_category):
+            return False
+        if conditions:
+            from .dressing import suitability_key
+
+            profile = snapshot.get("profile") or {}
+            key = suitability_key(conditions)
+            if profile.get("context_key") == key:
+                verdict = (profile.get("suitability") or {}).get(
+                    str(getattr(item, "id", 0) or 0), {}
+                ).get("verdict")
+                if verdict == "unsuitable":
+                    return False
+        return True
+
     async def _style_catalog_resolve_new_outfit_reference_ids(
-        self, value: object, *, scene_category: object = ""
+        self,
+        value: object,
+        *,
+        scene_category: object = "",
+        conditions: dict | None = None,
     ) -> list[int]:
         """修复自主换装漏填或只填半套时的衣橱引用。
 
-        模型提供的完整引用优先；引用缺失时只补齐唯一可用的完整套装，
-        或唯一的上装与下装组合。多套可选时必须由模型重新判断。
+        模型提供的完整引用优先；引用缺失时，只采用同一生活条件下
+        已明确判断适配的唯一完整组合，不凭单品数量拼凑搭配。
         """
 
         item_ids = self.context._style_catalog_reference_ids(value)
@@ -305,6 +381,7 @@ class StyleCatalogComponent:
         if not callable(getter):
             return item_ids
         complete_selection_seen = False
+        snapshot = await self._style_catalog_snapshot()
         if item_ids:
             try:
                 selected = await getter(
@@ -324,7 +401,12 @@ class StyleCatalogComponent:
                 complete_selection_seen
                 and len(selected or []) >= len(item_ids)
                 and all(
-                    self.context._style_catalog_scene_compatible(item, scene_category)
+                    self._style_catalog_item_eligible(
+                        item,
+                        snapshot,
+                        scene_category=scene_category,
+                        conditions=conditions,
+                    )
                     for item in selected or []
                     if str(getattr(item, "kind", "") or "").strip().lower()
                     in STYLE_CATALOG_CLOTHING_KINDS
@@ -332,40 +414,44 @@ class StyleCatalogComponent:
             ):
                 return item_ids
 
-        try:
-            outfits = await getter(kind="outfit", status="active", limit=64)
-            outfit_ids = [
-                int(getattr(outfit, "id", 0) or 0)
-                for outfit in outfits or []
-                if self.context._style_catalog_scene_compatible(outfit, scene_category)
-                and int(getattr(outfit, "id", 0) or 0) > 0
+        from .dressing import suitability_key
+        from .wardrobefit import understanding_key
+
+        profile = snapshot.get("profile") or {}
+        if conditions and profile.get("context_key") == suitability_key(conditions):
+            matches = [
+                choice for choice in profile.get("scene_choices", [])
+                if choice.get("current") and choice.get("verdict") == "fits"
+                and choice.get("scene_category") == scene_category
+                and choice.get("item_ids") and not choice.get("current_outfit")
             ]
-            if len(outfit_ids) == 1:
-                return outfit_ids
-            if outfit_ids:
-                return []
-            tops = await getter(kind="top", status="active", limit=64)
-            bottoms = await getter(kind="bottom", status="active", limit=64)
-            tops = [
-                item for item in tops or []
-                if self.context._style_catalog_scene_compatible(item, scene_category)
-            ]
-            bottoms = [
-                item for item in bottoms or []
-                if self.context._style_catalog_scene_compatible(item, scene_category)
-            ]
-            top = tops[0] if len(tops) == 1 else None
-            bottom = bottoms[0] if len(bottoms) == 1 else None
-            top_id = int(getattr(top, "id", 0) or 0) if top else 0
-            bottom_id = int(getattr(bottom, "id", 0) or 0) if bottom else 0
-            if top_id > 0 and bottom_id > 0:
-                return [top_id, bottom_id]
-        except Exception:
-            return item_ids
+            if len(matches) == 1:
+                match = matches[0]
+                approved = await getter(status="active", ids=match["item_ids"], limit=len(match["item_ids"]))
+                if len(approved) == len(match["item_ids"]) and all(
+                    match.get("item_bases", {}).get(str(item.id)) == understanding_key(item)
+                    and self._style_catalog_item_eligible(
+                        item, snapshot, scene_category=scene_category, conditions=conditions
+                    ) for item in approved
+                ):
+                    return list(match["item_ids"])
         return [] if complete_selection_seen else item_ids
 
+    async def _style_catalog_snapshot(self) -> dict:
+        getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
+        if not callable(getter):
+            return {}
+        try:
+            return await getter()
+        except Exception:
+            return {}
+
     async def _style_catalog_new_outfit_selection(
-        self, value: object, *, scene_category: object = ""
+        self,
+        value: object,
+        *,
+        scene_category: object = "",
+        conditions: dict | None = None,
     ) -> tuple[dict[str, Any], str]:
         """校验新穿搭是否真正采用了启用中的衣橱服装。"""
 
@@ -388,18 +474,25 @@ class StyleCatalogComponent:
             if complete_selection
             else {}
         )
-        snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
-        snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
-        if complete_selection and snapshot.get("items"):
+        snapshot = await self._style_catalog_snapshot()
+        if complete_selection:
             for item in items:
                 if item.kind not in STYLE_CATALOG_CLOTHING_KINDS:
                     continue
-                state = snapshot.get("items", {}).get(str(item.id), {})
-                if not state.get("available"):
-                    return {}, "所选衣物尚未正式纳入数字衣橱，或处于待洗、清洗、晾晒状态；请使用可穿衣物，缺口由后台补充"
+                if not self._style_catalog_item_eligible(
+                    item, snapshot, scene_category=scene_category, conditions=conditions
+                ):
+                    return {}, "所选衣物尚未正式纳入数字衣橱、正在洗护或不适合此场景；请改用已拥有且可穿的衣物，缺口由后台补充"
         if complete_selection and appearance.get("outfit"):
             return appearance, ""
-        if not await self.context._style_catalog_has_clothing_candidates():
+        if not await self._style_catalog_has_eligible_clothing(
+            scene_category=scene_category, conditions=conditions
+        ):
+            if await self._style_catalog_has_active_clothing():
+                return (
+                    {},
+                    "衣橱资料中暂时没有正式拥有、可穿且适合此场景的完整搭配；先保留当前穿着，等待补齐或选择其他已拥有衣物",
+                )
             return {}, ""
         return (
             {},
@@ -407,7 +500,10 @@ class StyleCatalogComponent:
             "或同时选择上装与下装，并把采用编号写入 catalog_reference_ids",
         )
 
-    async def _style_catalog_context(self, *, limit: int = 10, conditions: dict | None = None) -> str:
+    async def _style_catalog_context(
+        self, *, limit: int = 10, conditions: dict | None = None,
+        scene_category: object = "",
+    ) -> str:
         getter = getattr(self.context.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return ""
@@ -422,7 +518,29 @@ class StyleCatalogComponent:
             state = snapshot.get("items", {}).get(str(item.id))
             if state:
                 item.attributes["wardrobe"] = state
-        candidates = reviewed_candidates(candidates, snapshot.get("profile", {}) if conditions else {}, suitability_key(conditions) if conditions else "")
+        # 全天规划保留各场景可穿衣物，当前换装才应用本轮适配裁定。
+        current_conditions = conditions if scene_category else None
+        candidates = reviewed_candidates(
+            candidates,
+            snapshot.get("profile", {}) if conditions else {},
+            suitability_key(conditions) if conditions else "",
+        )
+        unavailable_clothing_count = sum(
+            1
+            for item in candidates
+            if item.kind in STYLE_CATALOG_CLOTHING_KINDS
+            and not self._style_catalog_item_eligible(
+                item, snapshot, scene_category=scene_category, conditions=current_conditions
+            )
+        )
+        candidates = [
+            item
+            for item in candidates
+            if item.kind not in STYLE_CATALOG_CLOTHING_KINDS
+            or self._style_catalog_item_eligible(
+                item, snapshot, scene_category=scene_category, conditions=current_conditions
+            )
+        ]
         grouped = {
             kind: [item for item in candidates if getattr(item, "kind", "") == kind]
             for kind in STYLE_CATALOG_KINDS
@@ -448,20 +566,32 @@ class StyleCatalogComponent:
                     added = True
             if not added:
                 break
-        if not items:
+        if not items and not unavailable_clothing_count:
             return ""
         lines = [
-            "## 👗 视觉衣橱候选",
-            "以下来自已学习或生成的造型资料。候选、正式拥有与当前穿着分别记录，不能把生成或收藏说成已经穿上。",
-            "保持当前穿搭时不采用候选；自主产生新穿搭且存在合适服装候选时，具体服装必须从本轮候选中选择，长期偏好只用于排序，不能直接变成衣服。",
+            "## 👗 数字衣橱",
+            "服装编号只列正式拥有、当前可穿的衣物；按目标活动、场景和天气选择，未拥有或待洗的资料不能当作可穿候选。",
+            "保持当前穿搭时不采用候选；自主换装优先从本轮可穿衣物中选择完整套装或上、下装组合，长期偏好只用于排序。",
             "新穿搭可以采用一条完整套装，也可以同时组合上装与下装，再按需选择鞋袜和配饰；不要只选半套，也不要同时选取语义重复的整套与单品。catalog_reference_ids 填正整数数组，例如 [1, 102]；# 仅用于展示编号。",
             "完整候选中的可拆卸组成按结构化场景角色进入当前或延后状态；当前场景只写已经穿着或携带的组成，不把待用组成混入可见穿搭。",
-            "先保留适配的当前穿搭，已有单品优先叠穿；干净、舒适且适合天气的喜欢衣服可自然复穿。正在洗护或仅为候选的衣物不能直接穿上；不足时保留缺口交给后台补充。",
+            "先保留适配的当前穿搭，已有单品优先叠穿；干净、舒适且适合天气的衣物可自然复穿。场景、活动、身体和天气不合适时换用其他可穿衣物；衣橱无适配完整搭配时交由后台评估补充。",
             "发型、妆容和美甲按需独立选择，无需每类都选；不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
             "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
         ]
+        if unavailable_clothing_count:
+            lines.append(
+                f"另有 {unavailable_clothing_count} 条服装资料当前不具备直接穿用条件，本轮不提供其编号。"
+            )
         lines.append(wardrobe_fact_text(snapshot))
+        profile = snapshot.get("profile") or {}
+        if conditions and profile.get("context_key") == suitability_key(conditions):
+            choices = [
+                {key: c.get(key) for key in ("scene_category", "plan", "verdict", "outfit_basis", "current_outfit", "item_ids", "reason")}
+                for c in profile.get("scene_choices", [])
+            ]
+            if choices:
+                lines.append("已核实的场景搭配（未来安排仅作准备，换装仍以当前活动为准）：" + json.dumps(choices, ensure_ascii=False))
         lines.extend(self.context._style_catalog_item_line(item) for item in items)
         detailed_ids = {item.id for item in items}
         clothing_index = [
@@ -469,7 +599,7 @@ class StyleCatalogComponent:
             if item.kind in STYLE_CATALOG_CLOTHING_KINDS and item.id not in detailed_ids
         ]
         if clothing_index:
-            lines.append("其余可选服装简表：可按类别、用途和场景选择编号；采用后系统会读取该候选的完整外观，不能另造衣服。")
+            lines.append("其余可穿服装简表：可按类别、用途和场景选择编号；采用后读取完整外观。")
             for item in clothing_index:
                 attributes = self.context._style_catalog_attributes(item)
                 category = "、".join(self.context._style_catalog_list(attributes.get("category"), 4))

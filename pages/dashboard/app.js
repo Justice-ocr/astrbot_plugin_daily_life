@@ -128,6 +128,10 @@ const MEMO_EMPTY_TEXT = "暂无备忘录";
 const CURRENT_ACTIVITY_EMPTY_TEXT = "暂无当前活动";
 const METER_EMPTY_TEXT = "暂无数据";
 const TIMELINE_TIME_EMPTY_TEXT = "未定";
+const LIFE_DOMAIN_FINISHED_STATUSES = new Set([
+  "elapsed", "simulated", "completed", "confirmed", "done", "failed",
+  "skipped", "rejected", "expired", "canceled", "cancelled", "delivery_failed",
+]);
 const TIMELINE_EXECUTION_LABELS = {
   planned: "待进行",
   active: "进行中",
@@ -1127,6 +1131,10 @@ function domainTimelineGroupKey(item, kind, title, status, source) {
   return JSON.stringify([date, kind, title, status, source]);
 }
 
+function domainRecordFinished(item = {}) {
+  return LIFE_DOMAIN_FINISHED_STATUSES.has(text(item.status).trim().toLowerCase());
+}
+
 export function domainTimelineGroups(domains = {}) {
   const items = Array.isArray(domains.timeline) ? domains.timeline : [];
   const groups = new Map();
@@ -1146,11 +1154,14 @@ export function domainTimelineGroups(domains = {}) {
       title,
       status,
       source,
+      finished: domainRecordFinished(item),
       occurredAt: clean(item.occurred_at || item.date, ""),
       count: 1,
     });
   });
-  return [...groups.values()];
+  return [...groups.values()].sort((a, b) => (
+    Number(a.finished) - Number(b.finished) || a.occurredAt.localeCompare(b.occurredAt)
+  ));
 }
 
 function renderDomainTimeline(domains = {}) {
@@ -1305,15 +1316,17 @@ function renderDomainFitness(domains = {}) {
 
 function renderDomainActions(domains = {}) {
   const items = Array.isArray(domains.conversation_actions) ? domains.conversation_actions : [];
-  return items.map((item) => domainRecord(
-    clean(item.title, "行动项"),
-    enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
-    [
-      `负责人：${enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, "未定")}`,
-      item.due_at ? `截止：${clean(item.due_at)}` : "",
-      item.source_session_label ? `来源会话：${clean(item.source_session_label)}` : "",
-    ]
-  ));
+  return [...items]
+    .sort((a, b) => Number(domainRecordFinished(a)) - Number(domainRecordFinished(b)))
+    .map((item) => domainRecord(
+      clean(item.title, "行动项"),
+      enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
+      [
+        `负责人：${enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, "未定")}`,
+        item.due_at ? `截止：${clean(item.due_at)}` : "",
+        item.source_session_label ? `来源会话：${clean(item.source_session_label)}` : "",
+      ]
+    ));
 }
 
 function renderDomains(status = {}) {

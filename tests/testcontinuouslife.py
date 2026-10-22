@@ -425,6 +425,71 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime.now += datetime.timedelta(minutes=minutes)
         await self.runtime.continuous_life._check_continuous_life_once()
 
+    async def test_clock_updates_survive_completed_action_replay(self):
+        day = await self.archive.get_day(self.runtime.date)
+        specs = [
+            ("00:10", "收拾桌面", "chore", "daily_plan"),
+            ("00:20", "多煮一份面", "cook", "commitment"),
+            ("00:35", "一起吃面", "meal", "commitment"),
+            ("00:50", "整理练习笔记", "study", "daily_plan"),
+            ("01:30", "给植物浇水", "chore", "daily_plan"),
+        ]
+        day.timeline = [
+            TimelineItem(time=at, activity=title, duration_minutes=5)
+            for at, title, _, _ in specs
+        ]
+        actions = [
+            LifeActionIntent(
+                action_id=f"clock-replay:{index}", action_type=kind,
+                target=title, timeline_index=index, duration_minutes=5, source=source,
+            )
+            for index, (_, title, kind, source) in enumerate(specs)
+        ]
+        day.timeline[0].execution_state = "completed"
+        day.timeline[0].execution_evidence = "已执行并收好桌面"
+        day.meta.update(
+            planned_life_actions=json.dumps([action.as_dict() for action in actions]),
+            auto_life_next_check_at="2026-10-07 02:00",
+            auto_outfit_context="stable",
+        )
+        await self.archive.save_day(day)
+        await self.runtime.composer.settle_completed_planned_actions(day, now=self.now)
+
+        def start(latest, world):
+            latest.timeline[3].execution_state = "active"
+            world["run"] = {
+                "date": day.date, "status": "running",
+                "action": actions[3].as_dict(), "reason": "正在整理笔记",
+                "started_at": "2026-10-07T00:50:00", "active_seconds": 60,
+            }
+
+        await self.archive.mutate_continuous_life(day.date, start)
+        runtime = self.runtime
+        runtime.reconcile_due_commitments_for_day = AsyncMock(return_value=False)
+        runtime.refresh_state_for_day = AsyncMock()
+        runtime._schedule_outfit_scene_sync_needed = lambda *_: False
+        runtime._synchronize_outfit_with_schedule = lambda *_: False
+        runtime._part_refresh_component._outfit_context_signature = lambda *_: "stable"
+
+        for _ in range(2):
+            updated = await runtime._run_autonomous_life_check(
+                day.date, self.now, source="auto", detail="状态巡检",
+                status_reason="timeline_execution", update_weather=False,
+            )
+            stored = await self.archive.get_day(day.date)
+            expected = ["completed", "elapsed", "elapsed", "active", "planned"]
+            self.assertEqual([item.execution_state for item in updated.timeline], expected)
+            self.assertEqual([item.execution_state for item in stored.timeline], expected)
+            sessions = {
+                item["action_id"]: item["status"]
+                for item in await self.archive.get_activity_sessions(limit=0)
+            }
+            self.assertEqual([sessions[action.action_id] for action in actions], expected)
+            self.assertEqual(await self.archive.get_life_action_receipts(
+                action_id=actions[1].action_id
+            ), [])
+        runtime.refresh_state_for_day.assert_not_awaited()
+
     async def test_no_chat_action_runs_and_completes_with_process_evidence(self):
         run = await self.start()
         action_id = run["action"]["action_id"]

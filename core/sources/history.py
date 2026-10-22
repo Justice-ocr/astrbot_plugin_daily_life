@@ -78,7 +78,12 @@ class SavedHistoryReader:
 
         try:
             records = []
-            for user_id in self._history_user_ids(adapter_id, real_id):
+            user_ids = self._history_user_ids(adapter_id, real_id)
+            if target_umo.split(":", 2)[1] == "GroupMessage":
+                user_ids.insert(0, target_umo)
+            else:
+                user_ids.append(target_umo)
+            for user_id in dict.fromkeys(user_ids):
                 records = await get_history(
                     platform_id=adapter_id,
                     user_id=user_id,

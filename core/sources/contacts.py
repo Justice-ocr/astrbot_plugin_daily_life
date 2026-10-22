@@ -9,6 +9,7 @@ from .platforms import (
     call_bot_action,
     get_onebot_client,
     is_onebot_event,
+    is_qq_official_event,
     is_weixin_oc_event,
     parse_unified_origin,
 )
@@ -64,7 +65,7 @@ class ContactNameResolver:
             persona_name = await self.get_persona_user_name()
             if persona_name:
                 return persona_name
-        else:
+        elif is_onebot_event(event_source):
             onebot_name = await self.get_onebot_nickname(target_uid, event=event_source)
             if onebot_name:
                 return onebot_name
@@ -76,7 +77,9 @@ class ContactNameResolver:
         )
         if sender_name:
             return sender_name
-        return default if is_weixin_oc_event(event_source) else sender_id or default
+        if is_weixin_oc_event(event_source) or is_qq_official_event(event_source):
+            return default
+        return sender_id or default
 
     def cached_event_sender(self, event: Any, default: str = "用户") -> str:
         """前台注入只读取已有资料，不等待平台连接或联系人 API。"""
@@ -103,7 +106,9 @@ class ContactNameResolver:
         )
         if event_name:
             return event_name
-        return default if is_weixin_oc_event(source) else sender_id or default
+        if is_weixin_oc_event(source) or is_qq_official_event(source):
+            return default
+        return sender_id or default
 
     def get_relationship_alias(self, target_uid: str, event: Any = None) -> str:
         aliases = self._normalize_relationship_aliases()
@@ -393,7 +398,13 @@ class ContactNameResolver:
                 item_s = str(item or "").strip().replace("：", ":", 1)
                 if ":" not in item_s:
                     continue
-                key_s, value_s = [part.strip() for part in item_s.split(":", 1)]
+                parts = item_s.split(":", 3)
+                if len(parts) == 4 and parts[1] in {
+                    "FriendMessage", "GroupMessage", "OtherMessage"
+                }:
+                    key_s, value_s = ":".join(parts[:3]).strip(), parts[3].strip()
+                else:
+                    key_s, value_s = [part.strip() for part in item_s.split(":", 1)]
             if key_s and value_s:
                 aliases[key_s] = value_s
         return aliases

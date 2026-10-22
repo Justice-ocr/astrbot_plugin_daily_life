@@ -17,8 +17,6 @@ class VoiceSwitchComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _SEMANTIC_SEGMENT_PENDING_ATTR: Any
-    _append_turn_history: Any
-    _event_user_history_text: Any
     _is_active_agent_intermediate_result: Any
     _judge_voice_switch_channel: Any
     _mark_voice_switch_channel: Any
@@ -135,12 +133,7 @@ class VoiceSwitchComponent:
         if not isinstance(receipt, dict):
             return False
         delattr(event, "_daily_life_pending_voice_receipt")
-        await self.context._append_turn_history(
-            receipt["scope"],
-            event,
-            self.context._event_user_history_text(event),
-            receipt["text"],
-        )
+        # 普通聊天由 AstrBot 保存原始回复，语音切换只改变发送形式，不再追加历史。
         await self.context._note_voice_expression_decision(
             event=event,
             channel="语音",

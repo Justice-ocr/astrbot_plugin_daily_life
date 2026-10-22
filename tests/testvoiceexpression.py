@@ -1,7 +1,9 @@
 """语义分段与语音判断的独立模型、并发、超时及取消回归。"""
 
 import asyncio
+import copy
 import json
+import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +27,44 @@ class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
         event.message_str = "耳机戴好了"
         runtime.mark_voice_switch_available(event)
         return source, runtime, event, synthesize
+
+    async def test_voice_receipt_does_not_rewrite_framework_conversation(self):
+        for saved_state in ("saved", "newer_turn", "not_saved"):
+            with self.subTest(saved_state=saved_state):
+                source, runtime, event, synthesize = self.setup_reply()
+                manager = runtime.context.conversation_manager
+                scope = event.unified_msg_origin
+                saved_history = [
+                    {"role": "user", "content": event.message_str},
+                    {"role": "assistant", "content": source},
+                ]
+                if saved_state == "newer_turn":
+                    saved_history.append({"role": "user", "content": "那你早点睡"})
+                if saved_state != "not_saved":
+                    manager.current_ids[scope] = "current"
+                    manager.conversations[scope] = types.SimpleNamespace(
+                        history=copy.deepcopy(saved_history)
+                    )
+                # 发送形式经过清洗、分段，和框架保存的原始回复不同。
+                spoken = "我也已经躺下啦\n想听你说晚安"
+                event.set_result(event.chain_result([types.SimpleNamespace(text=spoken)]))
+                event._daily_life_expression_plan = VoiceExpressionPlan(
+                    channel="voice", confidence=0.95
+                )
+                runtime._note_voice_expression_decision = AsyncMock()
+
+                self.assertTrue(await runtime.apply_voice_switch_before_send(event))
+                self.assertTrue(await runtime.note_voice_switch_message_sent(event))
+                self.assertFalse(await runtime.note_voice_switch_message_sent(event))
+
+                synthesize.assert_awaited_once()
+                self.assertEqual(synthesize.await_args.args, (spoken,))
+                runtime._note_voice_expression_decision.assert_awaited_once()
+                self.assertEqual(manager.calls, [])
+                if saved_state == "not_saved":
+                    self.assertEqual(manager.conversations, {})
+                else:
+                    self.assertEqual(manager.conversations[scope].history, saved_history)
 
     async def test_same_provider_still_receives_two_concurrent_distinct_requests(self):
         source, runtime, event, synthesize = self.setup_reply()

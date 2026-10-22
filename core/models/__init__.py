@@ -1,4 +1,5 @@
 from .agenda import (
+    TIMELINE_ACTIVITY_KINDS,
     TIMELINE_EXECUTION_STATES,
     TIMELINE_TERMINAL_STATES,
     DayRecord,
@@ -173,6 +174,7 @@ __all__ = [
     "TemporaryExpressionStateRecord",
     "TemporalFactRecord",
     "TIMELINE_EXECUTION_STATES",
+    "TIMELINE_ACTIVITY_KINDS",
     "TIMELINE_TERMINAL_STATES",
     "TimelineItem",
     "deduplicate_timeline_items",

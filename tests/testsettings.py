@@ -918,7 +918,7 @@ class LifeSettingsTest(unittest.TestCase):
             schema["relationship_aliases"]["description"], "本地用户称呼映射"
         )
         self.assertIn(
-            "聊天记忆、邀约、备忘录、参考私聊、MemOS 和面板展示",
+            "用户标识或完整 UMO:称呼",
             schema["relationship_aliases"]["hint"],
         )
         self.assertNotIn(
@@ -1642,10 +1642,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.4.9", metadata)
+        self.assertIn("version: 1.5.0", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.4.9", readme)
-        self.assertIn("v1.4.9 更新说明", readme)
+        self.assertIn("version-1.5.0", readme)
+        self.assertIn("v1.5.0 更新说明", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("自主补衣与审美", readme)
@@ -1657,6 +1657,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.5.0 · 2026-10-22", changelog)
         self.assertIn("v1.4.9 · 2026-10-21", changelog)
         self.assertIn("v1.4.8 · 2026-10-20", changelog)
         self.assertIn("v1.4.7 · 2026-10-16", changelog)
@@ -1712,6 +1713,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.5.0"), changelog.index("v1.4.9"))
         self.assertLess(changelog.index("v1.4.9"), changelog.index("v1.4.8"))
         self.assertLess(changelog.index("v1.4.8"), changelog.index("v1.4.7"))
         self.assertLess(changelog.index("v1.4.7"), changelog.index("v1.4.6"))

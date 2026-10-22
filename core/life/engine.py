@@ -41,6 +41,8 @@ _CURRENT_APPEARANCE_META_KEYS = (
     "outfit_scene_category",
     "outfit_style_pool",
     "outfit_components",
+    "style_catalog_reference_ids",
+    "outing_outfit_reserve",
     "style",
     "hair_style",
     "hair",
@@ -120,7 +122,11 @@ class DailyEngineComponentContext(Protocol):
 
 
 async def _resolve_planned_outfit_catalog(
-    host: DailyEngineComponentContext, result: dict, *, manual_extra: bool
+    host: DailyEngineComponentContext,
+    result: dict,
+    *,
+    manual_extra: bool,
+    conditions: dict | None = None,
 ) -> str:
     """校验并展开计划换装的衣橱引用；不写数据库。"""
     for raw_action in result.get("planned_actions") or []:
@@ -182,12 +188,15 @@ async def _resolve_planned_outfit_catalog(
                     action_appearance.pop("outfit_components", None)
             action_issue = ""
         else:
+            selection_kwargs = {"scene_category": action_scene_category}
+            if conditions is not None:
+                selection_kwargs["conditions"] = conditions
             (
                 action_appearance,
                 action_issue,
             ) = await host._style_catalog_new_outfit_selection(
                 action_reference_ids,
-                scene_category=action_scene_category,
+                **selection_kwargs,
             )
         if action_issue:
             host._set_validation_issue("style_catalog_required")
@@ -380,6 +389,7 @@ class DailyEngineComponent:
             "recent_chats": recent_chats,
             "world_context": world_context,
             "style_catalog_context": style_catalog_context,
+            "wardrobe_conditions": wardrobe_weather,
             "due_commitments": due_commitments,
             "prompt": prompt,
             "manual_extra": self.context._normalize_extra(extra),
@@ -473,6 +483,7 @@ class DailyEngineComponent:
                 await self.context._style_catalog_resolve_new_outfit_reference_ids(
                     current_reference_ids,
                     scene_category=current_scene_category,
+                    conditions=context.get("wardrobe_conditions"),
                 )
             )
             # 将自动修复后的编号回写到结构化结果，确保日程元数据和后续
@@ -484,6 +495,7 @@ class DailyEngineComponent:
             ) = await self.context._style_catalog_new_outfit_selection(
                 current_reference_ids,
                 scene_category=current_scene_category,
+                conditions=context.get("wardrobe_conditions"),
             )
             if catalog_issue:
                 self.context._set_validation_issue("style_catalog_required")
@@ -511,7 +523,10 @@ class DailyEngineComponent:
                     catalog_appearance.pop("outfit_components", None)
 
         planned_issue = await _resolve_planned_outfit_catalog(
-            self.context, result, manual_extra=context["manual_extra"]
+            self.context,
+            result,
+            manual_extra=context["manual_extra"],
+            conditions=context.get("wardrobe_conditions"),
         )
         if planned_issue:
             return None, planned_issue
@@ -710,7 +725,8 @@ class DailyEngineComponent:
             if (item_time := timeline_item_datetime(item, day.date)) is not None
         )
         confirmed_at = check_time.strftime("%Y-%m-%d %H:%M:%S")
-        if has_occurred_timeline:
+        keep_previous = day.meta.get("plan_outfit_decision") == "keep"
+        if has_occurred_timeline and not keep_previous:
             day.meta["outfit_fact_source"] = "daily_generation"
             day.meta["outfit_fact_confirmed_at"] = confirmed_at
             day.meta["outfit_fact_evidence"] = "当日日程已覆盖当前时刻"

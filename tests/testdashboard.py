@@ -2596,8 +2596,12 @@ const groups = mod.domainTimelineGroups({
     { date: "2026-08-25", kind: "activity", title: "同一活动", status: "completed", source: "daily_plan", occurred_at: "2026-08-25 21:00:00" },
   ],
 });
-if (groups.length !== 2 || groups[0].count !== 2 || groups[1].count !== 1) {
+if (groups.length !== 2 || groups[0].count !== 1 || groups[1].count !== 2) {
   throw new Error(`总览合并范围不正确：${JSON.stringify(groups)}`);
+}
+if (groups[0].occurredAt !== "2026-08-25 21:00:00"
+    || groups[1].occurredAt !== "2026-08-26 21:00:00") {
+  throw new Error("总览没有按记录时间正序展示");
 }
 if (groups[0].source !== "daily_plan") {
   throw new Error("默认日程来源没有保留供渲染判断");

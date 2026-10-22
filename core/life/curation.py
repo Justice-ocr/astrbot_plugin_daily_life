@@ -30,6 +30,7 @@ def upcoming_outfit_plans(day, now) -> list[dict]:
         {
             "time": at.isoformat(),
             "activity": item.activity,
+            "activity_kind": item.activity_kind,
             "place": item.place,
             "place_kind": item.place_kind,
             "day_offset": item.day_offset,

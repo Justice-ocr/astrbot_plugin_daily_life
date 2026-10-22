@@ -21,6 +21,13 @@ TIMELINE_EXECUTION_STATES = frozenset(
 TIMELINE_TERMINAL_STATES = frozenset(
     {"completed", "expired", "skipped", "cancelled"}
 )
+TIMELINE_ACTIVITY_KINDS = frozenset(
+    {
+        "rest", "sleep", "personal_care", "meal", "cooking", "work", "study",
+        "exercise", "chore", "social", "outdoor", "travel", "photo", "video",
+        "other",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -69,8 +76,8 @@ class TimelineItem:
             activity_kind=(
                 kind
                 if (kind := str(raw.get("activity_kind") or "").strip().lower())
-                in {"rest", "other"}
-                else ""
+                in TIMELINE_ACTIVITY_KINDS
+                else "other" if kind else ""
             ),
             status=str(raw.get("status") or "").strip(),
             duration_minutes=min(

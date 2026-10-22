@@ -540,6 +540,24 @@ class DailyLifePlugin(Star):
         async with self._external_runtime_lease() as runtime:
             return await describe_share_video(runtime, str(source or ""))
 
+    async def plan_share_voice(self, text: str, target_umo: str = "") -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.plan_share_voice(str(text or ""), str(target_umo or ""))
+
+    async def search_share_memories(self, query: str, target_umo: str = "", *, limit: int = 4) -> list:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.search_share_memories(str(query or ""), str(target_umo or ""), limit=limit)
+
+    async def coordinate_share_contact(
+        self, target_umo: str, *, owner: str, action: str = "reserve", expected: str | None = None
+    ) -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.coordinate_share_contact(target_umo, owner=owner, action=action, expected=expected)
+
+    async def record_external_activity_receipt(self, receipt: dict) -> bool:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.record_external_activity_receipt(dict(receipt))
+
     async def record_public_activity(self, receipt: dict) -> bool:
         async with self._external_runtime_lease() as runtime:
             return await runtime.record_public_activity(dict(receipt))

@@ -223,6 +223,41 @@ class StyleCatalogArchiveComponent:
 
         return await self.context._run_db(read)
 
+    async def save_wardrobe_understanding(self, records: dict[int, dict]) -> int:
+        """合并后台用途理解；资料已被编辑或删除时丢弃旧结果。"""
+        from ..life.wardrobefit import understanding_key
+
+        def write() -> int:
+            changed = 0
+            self.context._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for item_id, understanding in records.items():
+                    row = self.context._conn.execute(
+                        "SELECT * FROM style_catalog_items WHERE id=? AND status='active'",
+                        (item_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    item = self.context._compose_style_catalog_item(row)
+                    if understanding.get("basis") != understanding_key(item):
+                        continue
+                    attrs = json.loads(row["attributes_json"] or "{}")
+                    if attrs.get("wardrobe_understanding") == understanding:
+                        continue
+                    attrs["wardrobe_understanding"] = understanding
+                    self.context._conn.execute(
+                        "UPDATE style_catalog_items SET attributes_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (json.dumps(attrs, ensure_ascii=False), item_id),
+                    )
+                    changed += 1
+                self.context._conn.commit()
+                return changed
+            except BaseException:
+                self.context._conn.rollback()
+                raise
+
+        return await self.context._run_db(write)
+
     async def get_style_catalog_item(
         self, item_id: int
     ) -> StyleCatalogItemRecord | None:

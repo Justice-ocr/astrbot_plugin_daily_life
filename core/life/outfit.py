@@ -523,7 +523,9 @@ class OutfitComponent:
         current_outfit = format_outfit_components(current_components)
         persona = await self.context._get_persona()
         wardrobe_weather = wardrobe_conditions(old_data, current_time, residence=str(getattr(getattr(self.context.config, 'domains', None), 'home_address', '') or ''))
-        style_catalog_context = await self.context._style_catalog_context(limit=14, conditions=wardrobe_weather)
+        style_catalog_context = await self.context._style_catalog_context(
+            limit=14, conditions=wardrobe_weather, scene_category=current_scene_category
+        )
         catalog_has_clothing = await self.context._style_catalog_has_clothing_candidates()
         instruction_text = str(instruction or "").strip()
         normalized_instruction_source = (
@@ -581,6 +583,7 @@ class OutfitComponent:
                 catalog_backed=catalog_has_clothing
             ),
             "style_catalog_context": style_catalog_context,
+            "wardrobe_conditions": wardrobe_weather,
         }
 
     async def _outfit_appearance_context(self, *, catalog_backed: bool = False) -> str:
@@ -712,8 +715,11 @@ class OutfitComponent:
             else:
                 appearance.pop("outfit_components", None)
         elif requires_catalog_clothing and not context.get("instruction"):
+            selection_kwargs = {"scene_category": scene_category}
+            if context.get("wardrobe_conditions") is not None:
+                selection_kwargs["conditions"] = context["wardrobe_conditions"]
             resolved_ids = await self.context._style_catalog_resolve_new_outfit_reference_ids(
-                reference_ids, scene_category=scene_category
+                reference_ids, **selection_kwargs,
             )
             if resolved_ids != reference_ids:
                 logger.info(
@@ -722,7 +728,7 @@ class OutfitComponent:
                 )
                 reference_ids = resolved_ids
             appearance, issue = await self.context._style_catalog_new_outfit_selection(
-                reference_ids, scene_category=scene_category
+                reference_ids, **selection_kwargs,
             )
             if issue:
                 logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{issue}")

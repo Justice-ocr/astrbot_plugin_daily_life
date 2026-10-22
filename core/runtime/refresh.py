@@ -338,6 +338,7 @@ class RefreshComponent:
             str(temperature_bucket),
             pending_outfit,
             component_signature,
+            str((data.meta or {}).get("wardrobe_selection_key") or ""),
         )
         return "|".join(values)
 
@@ -535,8 +536,11 @@ class RefreshComponent:
                 timeline_end=(data.meta or {}).get("life_window_end"),
                 meta=data.meta,
             )
+            if execution_changed:
+                # 回执结算会重新读取数据库，先保存时钟校准，避免新状态被旧记录覆盖。
+                await self.context.archive.save_day(data)
             planning_changed = await self._settle_timeline_planning(data, now)
-            if execution_changed or planning_changed:
+            if planning_changed:
                 await self.context.archive.save_day(data)
             state_due = self._auto_life_check_due(data, now)
             state_changed = False

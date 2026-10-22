@@ -382,12 +382,12 @@ class GarmentArchiveComponent:
         raw = str(day.meta.get("style_catalog_reference_ids") or "")
         ids = [int(v) for v in raw.split(",") if v.strip().isdigit()]
         at = str(day.meta.get("outfit_fact_confirmed_at") or "")
-        if not ids or not at or not event_id:
+        if not at or not event_id or (not ids and not day.outfit.strip()):
             return False
         # 同一穿着回执可能来自换装结算、外观更新和定时核对，只计一次经历。
         receipt_id = (
             "wear:"
-            + hashlib.sha256(encode([day.date, at, sorted(ids)]).encode()).hexdigest()[
+            + hashlib.sha256(encode([day.date, at, sorted(ids), day.outfit if not ids else ""]).encode()).hexdigest()[
                 :24
             ]
         )
@@ -401,7 +401,7 @@ class GarmentArchiveComponent:
             )
         )
         if (
-            latest.get("style_catalog_reference_ids") != raw
+            latest.get("style_catalog_reference_ids", "") != raw
             or latest.get("outfit_fact_confirmed_at") != at
         ):
             return False
@@ -412,7 +412,7 @@ class GarmentArchiveComponent:
                 "SELECT unit_id FROM wardrobe_links WHERE catalog_id=?", (i,)
             )
         }
-        if not units:
+        if ids and not units:
             return False
         prior = self.context._conn.execute(
             "SELECT payload_json FROM wardrobe_events WHERE kind='wear' ORDER BY occurred_at DESC LIMIT 1"
@@ -427,7 +427,8 @@ class GarmentArchiveComponent:
                     (i,),
                 )
             }
-            if previous.get("day") == day.date and units == previous_units:
+            if (previous.get("day") == day.date and units == previous_units
+                    and (units or previous.get("outfit") == day.outfit)):
                 return False
         if not self.context._wardrobe_event_unlocked(
             receipt_id,
@@ -528,8 +529,9 @@ class GarmentArchiveComponent:
                         for r in jobs
                     )
                     since = (instant(at) - datetime.timedelta(hours=24)).isoformat(sep=" ")
+                    from ..life.wardrobefit import generation_conflicts
                     recent = any(
-                        unpack(r["payload_json"]).get("automatic")
+                        generation_conflicts(generation["payload"], unpack(r["payload_json"]))
                         and (unpack(r["progress_json"]).get("submitted_at")
                              or unpack(r["payload_json"]).get("requested_at", "")) >= since
                         for r in jobs
@@ -717,12 +719,14 @@ class GarmentArchiveComponent:
         return await self.context._run_db(write)
 
     async def wardrobe_auto_requested_since(
-        self, since: str, *, exclude: str = ""
+        self, since: str, *, exclude: str = "", payload: dict | None = None
     ) -> bool:
+        from ..life.wardrobefit import generation_conflicts
+
         def read():
             return any(
                 row[0] != exclude
-                and unpack(row[1]).get("automatic")
+                and generation_conflicts(payload or {}, unpack(row[1]))
                 and (
                     unpack(row[2]).get("submitted_at")
                     or unpack(row[1]).get("requested_at", "")

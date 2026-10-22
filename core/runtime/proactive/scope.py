@@ -303,6 +303,9 @@ class ProactiveScopeComponent:
         key = self.context._proactive_scope_key(event)
         if not key:
             return
+        previous = self.context._proactive_last_reply_at.get(key)
+        if isinstance(previous, datetime.datetime) and previous >= now:
+            return
         self.context._proactive_last_reply_at[key] = now
         self.context._reset_proactive_air_state(key)
 

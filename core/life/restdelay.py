@@ -16,7 +16,7 @@ REST_DELAY_MAX_MINUTES = 120
 
 
 def is_rest_activity(item: Any) -> bool:
-    return str(getattr(item, "activity_kind", "") or "").strip().lower() == "rest"
+    return str(getattr(item, "activity_kind", "") or "").strip().lower() in {"rest", "sleep"}
 
 
 def _rest_targets(data: DayRecord, now: datetime.datetime, target_times: list[str]) -> list[Any]:
@@ -29,7 +29,7 @@ def _rest_targets(data: DayRecord, now: datetime.datetime, target_times: list[st
     return [
         item for time, _, item in timed
         if item.time in selected
-        and str(getattr(item, "activity_kind", "") or "").strip().lower() in {"", "rest"}
+        and str(getattr(item, "activity_kind", "") or "").strip().lower() in {"", "rest", "sleep"}
         and item.execution_state not in TIMELINE_TERMINAL_STATES
         and now - datetime.timedelta(hours=6) <= time <= now + datetime.timedelta(minutes=60)
     ]

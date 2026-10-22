@@ -9,6 +9,13 @@ from ..clock import today as life_today
 from typing import Protocol
 
 
+_CONVERSATION_ACTION_ORDER = (
+    "CASE WHEN status IN ('elapsed', 'simulated', 'completed', 'confirmed', 'done', "
+    "'failed', 'skipped', 'rejected', 'expired', 'canceled', 'cancelled', "
+    "'delivery_failed') THEN 1 ELSE 0 END, due_at, id DESC"
+)
+
+
 class DomainArchiveComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
@@ -772,7 +779,7 @@ class DomainArchiveComponent:
         self, limit: int = 20
     ) -> list[dict[str, Any]]:
         return await self.context._get_domain_rows(
-            "conversation_action_items", "status, due_at, id DESC", limit
+            "conversation_action_items", _CONVERSATION_ACTION_ORDER, limit
         )
 
     async def get_unified_life_timeline(self, limit: int = 60) -> list[dict[str, Any]]:
@@ -953,7 +960,7 @@ class DomainArchiveComponent:
                 "chore_records": chore_records,
                 "fitness": fitness,
                 "conversation_actions": rows(
-                    "conversation_action_items", "status, due_at, id DESC", limit
+                    "conversation_action_items", _CONVERSATION_ACTION_ORDER, limit
                 ),
             }
 

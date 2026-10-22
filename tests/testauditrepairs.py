@@ -11,23 +11,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from core.life.future import future_outfit_timing_issue
+from core.life.planner import LifeBackgroundComposer
+from core.media import GeminiImageService
+from core.media.picture import polling
+from core.runtime.spine.boot import RuntimeServices
+from core.runtime.voice.modality import VoiceExpressionPlan
 from runtimehelpers import (
     Context,
     DailyLifeRuntime,
+    DayRecord,
     Event,
     LifeArchive,
     LifeSettings,
     Provider,
-    DayRecord,
     TimelineItem,
 )
-from core.life.future import future_outfit_timing_issue
-from core.life.planner import LifeBackgroundComposer
-from core.runtime.spine.boot import RuntimeServices
-from core.runtime.voice.modality import VoiceExpressionPlan
-from core.media import GeminiImageService
-from core.media.picture import polling
-from testimagetasks import _Session, _Response, _route, _request, _accepted
+from testimagetasks import _accepted, _request, _Response, _route, _Session
 
 
 class _Rhythm:
@@ -372,6 +372,15 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
                 service = GeminiImageService(self.runtime.config.image_generation, Path(self.directory.name))
                 service._request_routes = AsyncMock(return_value=[route, backup])
                 service._get_session = AsyncMock(return_value=session)
+                build_request = service._build_request
+
+                # 本场景验证 URL 异步任务的回执和恢复，而非内联图片请求。
+                def url_request(selected_route, parts):
+                    request = build_request(selected_route, parts)
+                    request.payload["response_format"] = "url"
+                    return request
+
+                service._build_request = url_request
                 self.runtime.media = types.SimpleNamespace(image=service)
                 event = Event(unified_msg_origin="aiocqhttp:FriendMessage:audit", sender_id="audit")
                 work = service._generate_image_result(
@@ -614,8 +623,9 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
     async def test_actual_image_recovery_download_uses_current_key_and_only_get(self):
         import base64
         import io
-        from PIL import Image
+
         from core.media.base import normalize_openai_base_url
+        from PIL import Image
 
         service = GeminiImageService(
             self.runtime.config.image_generation, Path(self.directory.name)

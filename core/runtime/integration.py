@@ -337,6 +337,46 @@ class ExternalActivityService:
         self._mark_proactive_sent = mark_proactive_sent
         self._note_proactive_bot = note_proactive_bot
         self._schedule_memos = schedule_memos
+        self._receipt_lock = asyncio.Lock()
+        self._applied_receipts: set[str] = set()
+
+    async def record_external_activity_receipt(self, receipt: dict) -> bool:
+        event_id = str(receipt.get("event_id") or "").strip()
+        scope = str(receipt.get("target_umo") or "").strip()
+        text = str(receipt.get("content") or "").strip()
+        if not event_id or not scope or not text:
+            return False
+        try:
+            occurred_at = datetime.datetime.fromisoformat(str(receipt["occurred_at"]))
+            occurred_at = (occurred_at.replace(tzinfo=TIMEZONE) if occurred_at.tzinfo is None else occurred_at.astimezone(TIMEZONE)).replace(tzinfo=None)
+        except (KeyError, ValueError, TypeError):
+            return False
+        if occurred_at > life_now() + datetime.timedelta(minutes=5):
+            return False
+        async with self._receipt_lock:
+            first = await self._archive().record_external_activity_receipt(receipt)
+            # A stable original time also makes the semantic memory queue idempotent
+            # if cancellation occurs after persistence but before acknowledgement.
+            media = {"image": "图片", "video": "视频", "audio": "语音"}.get(receipt.get("media_kind"), "")
+            await self._capture_proactive_reply(scope, text, media=media, now=occurred_at)
+            if event_id not in self._applied_receipts:
+                event = ProactiveSyntheticEvent(message=text, target_scope=scope)
+                self._mark_proactive_sent(event, occurred_at)
+                if life_now() - occurred_at < datetime.timedelta(minutes=5):
+                    self._note_structured_bot(scope, text, media=media)
+                    self._note_proactive_bot(event, occurred_at)
+                self._applied_receipts.add(event_id)
+                if len(self._applied_receipts) > 1024:
+                    self._applied_receipts = {event_id}
+            if first and receipt.get("sync_memory"):
+                description = str(receipt.get("image_description") or "").strip()
+                memory = text + (f"\n[已发送媒体: {description}]" if description else "")
+                self._schedule_memos(
+                    self._external_activity_memos_meta(scope), [memory],
+                    reason=str(receipt.get("reason") or "外部主动活动"),
+                    user_message=str(receipt.get("reason") or ""), marker=memory,
+                )
+            return True
 
     async def record_public_activity(self, receipt: dict) -> bool:
         """公开发布不等于私聊，也不能视为行动已完成。"""
@@ -364,7 +404,13 @@ class ExternalActivityService:
                 kind="public_activity",
                 source_id=hashlib.sha256(str(receipt["event_id"]).encode()).hexdigest(),
                 at=occurred_at,
-                summary=str(receipt["content"])[:240],
+                summary=(
+                    "；".join(
+                        [f"动态：{str((receipt.get('post_context') or {}).get('content') or '')[:70]}"]
+                        + [f"{str(row.get('author_name') or row.get('author_id') or '评论者')[:30]}：{str(row.get('content') or '')[:70]}" for row in (receipt.get("conversation") or [])[-2:] if isinstance(row, dict)]
+                        + [f"我：{str(receipt['content'])[:100]}"]
+                    )
+                )[:300],
                 evidence_ids=[str(receipt["event_id"])],
             )
 

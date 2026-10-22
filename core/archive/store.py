@@ -385,6 +385,8 @@ class LifeArchive:
 
     get_style_catalog_items = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "get_style_catalog_items")
 
+    save_wardrobe_understanding = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "save_wardrobe_understanding")
+
     get_style_catalog_counts = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "get_style_catalog_counts")
 
     get_style_catalog_item = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "get_style_catalog_item")
@@ -522,6 +524,10 @@ class LifeArchive:
     _dedupe_chore_definitions = staticmethod(DomainArchiveComponent._dedupe_chore_definitions)
 
     _domain_unified_timeline = staticmethod(DomainArchiveComponent._domain_unified_timeline)
+
+    record_external_activity_receipt = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "record_external_activity_receipt")
+
+    read_share_activity_receipts = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "read_share_activity_receipts")
 
     record_public_activity = ComponentCall("_part_cognition_archive_component", CognitionArchiveComponent, "record_public_activity")
 

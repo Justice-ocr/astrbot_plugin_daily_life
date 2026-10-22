@@ -599,6 +599,30 @@ class DailyLifeRuntime:
         return self.share_expression.clean_share_punctuation(text, scene=scene)
 
     @cached_property
+    def share_contact_gate(self):
+        from .sharegate import ShareContactGate
+        return ShareContactGate(self)
+
+    async def plan_share_voice(self, text: str, target_umo: str = "") -> dict:
+        from dataclasses import asdict
+        import json
+        from .voice.modality import VoiceExpressionPlanner
+        context = await self.get_share_context(target_umo)
+        facts = {key: context[key] for key in ("current_facts", "subject", "share_guidance", "conversation_timing") if key in context}
+        plan = await VoiceExpressionPlanner(self).plan(
+            text, scope=target_umo,
+            expression_context="这是主动分享；没有用户要求必须语音。" + json.dumps(facts, ensure_ascii=False)[:4000],
+        )
+        return asdict(plan)
+
+    async def search_share_memories(self, query: str, target_umo: str = "", *, limit: int = 4) -> list:
+        from .sharememory import search_share_memories
+        return await search_share_memories(self, query, target_umo, limit)
+
+    async def coordinate_share_contact(self, target_umo: str, **kwargs) -> dict:
+        return await self.share_contact_gate.coordinate(target_umo, **kwargs)
+
+    @cached_property
     def external_activity(self) -> ExternalActivityService:
         return ExternalActivityService(
             archive=lambda: self.archive,
@@ -609,6 +633,9 @@ class DailyLifeRuntime:
             note_proactive_bot=self.note_proactive_bot_reply,
             schedule_memos=self.schedule_memos_selected_items,
         )
+
+    async def record_external_activity_receipt(self, receipt: dict) -> bool:
+        return await self.external_activity.record_external_activity_receipt(receipt)
 
     async def record_public_activity(self, receipt: dict) -> bool:
         return await self.external_activity.record_public_activity(receipt)

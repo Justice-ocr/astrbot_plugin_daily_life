@@ -27,6 +27,11 @@ from ..life.dressing import (
     wardrobe_conditions,
     wardrobe_fact_text,
 )
+from ..life.wardrobefit import (
+    CLOTHING_KINDS, TRAIT_FIELDS, UNDERSTANDING_RULES,
+    generation_need, item_traits, understanding_current, understanding_key,
+    validate_scene_choices, validate_understanding, wardrobe_targets,
+)
 from ..life.tools import extract_json_from_text
 from ..media.picture.polling import ImageTaskFailed
 from ..media.picture.routes import task_reference
@@ -34,7 +39,7 @@ from ..outcome import ToolResultText
 from ..paths import path_is_file
 from ..prompts import cache_friendly_prompt
 
-_WARDROBE_REVIEW_VERSION = "wardrobe_choice_v1"
+_WARDROBE_REVIEW_VERSION = "wardrobe_scene_v3"
 
 
 class WardrobeLifeService:
@@ -85,23 +90,17 @@ class WardrobeLifeService:
         self._observer = "wardrobe:" + uuid.uuid4().hex
         self._recovered = False
         self._review_retry_after: datetime.datetime | None = None
+        self._understanding_retry_after: datetime.datetime | None = None
 
     def _wardrobe_owner(self) -> str:
         return self._observer
 
     def _wardrobe_conditions(self, day, now) -> dict:
-        conditions = wardrobe_conditions(
+        return wardrobe_conditions(
             day,
             now,
             residence=str(self._config().domains.home_address or ""),
         )
-        conditions["upcoming_outings"] = [
-            plan
-            for plan in upcoming_outfit_plans(day, now)
-            if str(plan.get("place_kind") or "").strip().lower()
-            in {"poi", "generic", "transit"}
-        ]
-        return conditions
 
     async def check_wardrobe_life(self) -> None:
         """每轮仅读取状态、推进洗护并排队，不等待模型或生成接口。"""
@@ -154,6 +153,12 @@ class WardrobeLifeService:
             }
         )
         profile = snapshot["profile"]
+        items = await self._archive().get_style_catalog_items(status="active", limit=500)
+        pending_understanding = [
+            item for item in items
+            if item.kind in CLOTHING_KINDS and not understanding_current(item)
+        ]
+        catalog_key = digest({item.id: understanding_key(item) for item in items})
         feedback_key = digest(
             [
                 e["event_id"]
@@ -167,11 +172,30 @@ class WardrobeLifeService:
             or profile.get("context_key") != suitability_key(conditions)
             or profile.get("inventory_key") != inventory_key
             or profile.get("feedback_key") != feedback_key
+            or profile.get("catalog_key") != catalog_key
+            or profile.get("scene_review_complete") is False
+            or (
+                profile.get("acquisition", {}).get("status") == "waiting"
+                and not any(
+                    job["payload"].get("automatic")
+                    and job["status"] not in {"failed", "cancelled"}
+                    for job in snapshot["jobs"]
+                )
+            )
         )
         retry_after = self._review_retry_after
         if (
+            pending_understanding and not self._in_quiet_hours(self._now())
+            and (self._understanding_retry_after is None or now >= self._understanding_retry_after)
+        ):
+            self._schedule_background(
+                self._understand_wardrobe(pending_understanding),
+                label="衣物用途整理", key="wardrobe-understanding", category="normal",
+            )
+        if (
             not self._in_quiet_hours(self._now())
             and (due or changed)
+            and not pending_understanding
             and (retry_after is None or now >= retry_after)
         ):
             self._schedule_background(
@@ -188,6 +212,56 @@ class WardrobeLifeService:
                 date, lambda latest: latest.meta.update(wardrobe_context=text)
             )
             await self._notify_status("wardrobe")
+
+    async def _understand_wardrobe(self, items) -> None:
+        """旧资料分批补齐并缓存，后续仅处理新增或实际修改过的衣物。"""
+        self._understanding_retry_after = self._now().replace(tzinfo=None) + datetime.timedelta(minutes=5)
+        provider_id = str(self._config().outfit.provider or "")
+        provider = await self._text_provider(provider_id)
+        if provider is None:
+            return
+        try:
+            for start in range(0, len(items), 16):
+                if self._in_quiet_hours(self._now()):
+                    return
+                batch = items[start:start + 16]
+                session = "daily_life_wardrobe_traits_" + uuid.uuid4().hex
+                try:
+                    raw = await self._call_text_model(
+                        provider,
+                        cache_friendly_prompt(UNDERSTANDING_RULES, json.dumps([
+                            {"item_id": item.id, "kind": item.kind,
+                             "description": item.description,
+                             "attributes": {k: (item.attributes or {}).get(k) for k in TRAIT_FIELDS}}
+                            for item in batch
+                        ], ensure_ascii=False)),
+                        session, empty_retries=0, primary_provider_id=provider_id,
+                        timeout_seconds=45,
+                    )
+                    result = extract_json_from_text(raw)
+                    records = {}
+                    allowed = {item.id: item for item in batch}
+                    for value in result.get("items", []) if isinstance(result, dict) else []:
+                        if not isinstance(value, dict):
+                            continue
+                        try:
+                            item = allowed.get(int(value.get("item_id")))
+                        except (TypeError, ValueError):
+                            continue
+                        record = validate_understanding(value, item) if item else None
+                        if record:
+                            records[item.id] = record
+                    await self._archive().save_wardrobe_understanding(records)
+                    if len(records) != len(batch):
+                        return
+                finally:
+                    await self._close_text_session(session)
+            self._understanding_retry_after = None
+            await self.check_wardrobe_life()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"[日常生活] 衣物资料整理未完成：{type(exc).__name__}")
 
     @staticmethod
     def _wardrobe_review_due(profile: dict, now: datetime.datetime) -> bool:
@@ -207,6 +281,7 @@ class WardrobeLifeService:
         sources = {persona_id: {"kind": "persona", "text": persona}}
         sources["conditions:" + suitability_key(conditions)] = {"kind": "conditions", **conditions}
         upcoming = upcoming_outfit_plans(day, now)
+        targets = wardrobe_targets(conditions, upcoming)
         for item in upcoming:
             sources["plan:" + digest(item)] = {"kind": "upcoming_plan", **item}
         for point in snapshot["profile"].get("aesthetics", []):
@@ -233,26 +308,14 @@ class WardrobeLifeService:
                     "evidence": item.execution_evidence,
                 }
         items = await self._archive().get_style_catalog_items(status="active", limit=500)
-        fields = {
-            "seasons",
-            "weather_fit",
-            "thickness",
-            "category",
-            "scenes",
-            "styles",
-            "scene_categories",
-            "material_appearance",
-            "wardrobe",
-            "component_roles",
-            "home_presence",
-        }
+        fields = set(TRAIT_FIELDS)
         facts = [
             {
                 "id": i.id,
                 "kind": i.kind,
                 "description": i.description[:280],
                 "attributes": {
-                    **{k: v for k, v in i.attributes.items() if k in fields},
+                    **{k: v for k, v in item_traits(i).items() if k in fields},
                     "wardrobe": snapshot["items"].get(str(i.id), {}),
                 },
                 "preference_score": i.preference_score,
@@ -263,6 +326,7 @@ class WardrobeLifeService:
             "persona": persona,
             "wardrobe": facts,
             "conditions": conditions,
+            "targets": targets,
             "sources": sources,
             "existing_aesthetics": snapshot["profile"].get("aesthetics", []),
             "acquisition_history": snapshot["profile"].get("acquisition_history", []),
@@ -298,6 +362,10 @@ class WardrobeLifeService:
             if upcoming_outfit_plans(latest, now) != upcoming:
                 return
             current_snapshot = await self._archive().get_wardrobe_snapshot()
+            latest_items = await self._archive().get_style_catalog_items(status="active", limit=500)
+            catalog_key = digest({item.id: understanding_key(item) for item in items})
+            if catalog_key != digest({item.id: understanding_key(item) for item in latest_items}):
+                return
             current_inventory_key = digest(
                 {
                     k: {field: v.get(field) for field in ("ownership", "condition")}
@@ -333,7 +401,53 @@ class WardrobeLifeService:
                         "confidence": confidence,
                         "reason": str(fit.get("reason") or "")[:240],
                     }
-            choice = validate_wardrobe_choice(result.get("acquisition"), sources, snapshot["items"])
+            choice = validate_wardrobe_choice(
+                result.get("acquisition"), sources, snapshot["items"]
+            )
+            adopt_reason = str(result.get("adopt_reason") or "").strip()
+            adopt_ids = {
+                item_id
+                for item_id in self._style_item_ids(result.get("adopt_ids", []))
+                if item_id in allowed
+                and allowed[item_id].confidence >= 0.72
+            } if adopt_reason else set()
+            scene_choices = validate_scene_choices(
+                result.get("scene_choices"), targets, items, snapshot, adopt_ids,
+                current_ids=self._style_item_ids(str(conditions.get("current_ids") or "").split(",")),
+                current_outfit=str(conditions.get("current_outfit") or "") if conditions.get("outfit_confirmed_at") else "",
+            )
+            approved_ids = {i for c in scene_choices if c["verdict"] == "fits" for i in c["item_ids"]}
+            adopt_ids &= approved_ids
+            gap = next((c for c in scene_choices if c["verdict"] == "missing"), None)
+            if choice["decision"] == "generate" and choice.get("motive") == "need" and not gap:
+                choice.update(decision="consider", status="decided")
+            if gap and choice["decision"] in {"", "keep", "remix", "consider"}:
+                scene_category = gap["scene_category"]
+                evidence_id = "conditions:" + suitability_key(conditions)
+                gap_key = "scene-gap:" + digest(
+                    {
+                        "target": gap["id"],
+                        "residence": conditions.get("residence"),
+                    }
+                )
+                choice = validate_wardrobe_choice(
+                    {
+                        "decision": "generate",
+                        "motive": "need",
+                        "key": gap_key,
+                        "requirement": (
+                            "为已安排的"
+                            + ("外出" if scene_category in {"outdoor", "public"} else "当前活动")
+                            + "准备一套适合此场景与天气、可重复使用的完整日常穿搭"
+                        ),
+                        "reason": gap["reason"],
+                        "difference": "补足目标场景与天气适配的完整组合，保留已有审美并避免重复已有衣物。",
+                        "item_ids": [],
+                        "evidence_ids": [evidence_id],
+                    },
+                    sources,
+                    snapshot["items"],
+                )
             generation = None
             if choice["decision"] == "generate" and choice["status"] == "decided":
                 if self._config().image_generation.creative_wardrobe.enabled:
@@ -346,6 +460,7 @@ class WardrobeLifeService:
                             "aesthetics": snapshot["profile"].get("aesthetics", []),
                             "reason": choice["reason"], "difference": choice["difference"],
                             "motive": choice["motive"], "idea_key": choice["key"],
+                            "verified_need": generation_need(choice, scene_choices, conditions),
                             "evidence_ids": choice["evidence_ids"], "count": 1,
                             "requested_at": now.isoformat(sep=" "),
                         },
@@ -355,6 +470,9 @@ class WardrobeLifeService:
             profile = {
                 **snapshot["profile"],
                 "suitability": suitability,
+                "scene_choices": scene_choices,
+                "scene_review_complete": len(scene_choices) == len(targets),
+                "catalog_key": catalog_key,
                 "review_version": _WARDROBE_REVIEW_VERSION,
                 "acquisition": choice,
                 "context_key": suitability_key(conditions),
@@ -378,19 +496,21 @@ class WardrobeLifeService:
                 generation=generation,
             ):
                 return
-            adopt = [
-                i
-                for i in self._style_item_ids(result.get("adopt_ids", []))
-                if i in allowed
-                and suitability.get(str(i), {}).get("verdict")
-                in {"suitable", "layering"}
-            ]
-            if adopt and result.get("adopt_reason"):
+            if adopt_ids and adopt_reason:
                 await self._archive().adopt_wardrobe_items(
-                    adopt,
-                    event_id="adopt:" + digest([adopt, profile["context_key"]]),
+                    sorted(adopt_ids),
+                    event_id="adopt:" + digest([sorted(adopt_ids), profile["context_key"]]),
                     at=now.isoformat(sep=" "),
-                    reason=str(result["adopt_reason"])[:300],
+                    reason=adopt_reason[:300],
+                )
+            ready_choices = [c for c in scene_choices if c["verdict"] == "fits"]
+            if ready_choices:
+                selection_key = digest([
+                    {key: c[key] for key in ("id", "item_ids")}
+                    for c in ready_choices
+                ])
+                await self._archive().mutate_day(
+                    day.date, lambda latest: latest.meta.update(wardrobe_selection_key=selection_key)
                 )
             for care in (
                 result.get("care", []) if isinstance(result.get("care"), list) else []
@@ -438,7 +558,10 @@ class WardrobeLifeService:
                 )
             if snapshot["profile"].get("acquisition", {}).get("reason") != saved_choice.get("reason"):
                 logger.info(f"[日常生活] 衣橱选择：{wardrobe_choice_text(saved_choice)}")
-            self._review_retry_after = None
+            self._review_retry_after = (
+                None if profile["scene_review_complete"]
+                else now + datetime.timedelta(minutes=10)
+            )
             await self._notify_status("wardrobe")
         except asyncio.CancelledError:
             raise
@@ -556,6 +679,51 @@ class WardrobeLifeService:
                         )
                         return
                     else:
+                        if automatic and self._in_quiet_hours(self._now()):
+                            await save("pending", error="静默期间保留补衣安排", release=True)
+                            return
+                        need = payload.get("verified_need") or {}
+                        if automatic and need:
+                            check_now = self._now().replace(tzinfo=None)
+                            check_date, _ = await self._resolve_target(check_now)
+                            latest_day = await self._archive().get_day(check_date)
+                            latest_conditions = self._wardrobe_conditions(latest_day, check_now) if latest_day else {}
+                            if latest_day is None or need.get("target_id") not in {
+                                target["id"] for target in wardrobe_targets(
+                                    latest_conditions,
+                                    upcoming_outfit_plans(latest_day, check_now),
+                                )
+                            }:
+                                await save("cancelled", error="对应生活安排已变化，取消尚未提交的补衣", release=True)
+                                return
+                            latest_snapshot = await self._archive().get_wardrobe_snapshot()
+                            latest_profile = latest_snapshot["profile"]
+                            latest_items = await self._archive().get_style_catalog_items(status="active", limit=500)
+                            reviewed = (
+                                latest_profile.get("context_key") == suitability_key(latest_conditions)
+                                and latest_profile.get("inventory_key") == digest({
+                                    k: {field: v.get(field) for field in ("ownership", "condition")}
+                                    for k, v in latest_snapshot["items"].items()
+                                })
+                                and latest_profile.get("catalog_key") == digest({
+                                    item.id: understanding_key(item) for item in latest_items
+                                })
+                            )
+                            latest_choice = next((
+                                choice for choice in latest_profile.get("scene_choices", [])
+                                if choice.get("id") == need.get("target_id")
+                            ), {}) if reviewed else {}
+                            if latest_choice.get("verdict") == "fits":
+                                await save("cancelled", error="已有搭配已满足需求，取消尚未提交的补衣", release=True)
+                                return
+                            if latest_choice.get("verdict") != "missing":
+                                await save("pending", error="等待按最新生活条件复核补衣", release=True)
+                                await self.check_wardrobe_life()
+                                return
+                            payload["conditions"] = latest_conditions
+                            payload["verified_need"] = generation_need(
+                                payload, [latest_choice], latest_conditions,
+                            )
                         if mode == "image_to_image" and not reference:
                             try:
                                 reference = str(
@@ -594,6 +762,7 @@ class WardrobeLifeService:
                                 - datetime.timedelta(hours=24)
                             ).isoformat(sep=" "),
                             exclude=job_id,
+                            payload=payload,
                         ):
                             await save(
                                 "pending",
@@ -635,6 +804,9 @@ class WardrobeLifeService:
                                 {
                                     "conditions": payload.get("conditions", {}),
                                     "aesthetics": payload.get("aesthetics", []),
+                                    "target": payload.get("verified_need", {}),
+                                    "reason": payload.get("reason", ""),
+                                    "difference": payload.get("difference", ""),
                                 },
                                 ensure_ascii=False,
                             )
@@ -727,6 +899,10 @@ class WardrobeLifeService:
                 await save("planned")
             await save("completed", release=True)
             await self._notify_status("wardrobe")
+            if automatic:
+                # 仅让已验证入橱的新衣进入选择链路，穿着事实仍由换装回执结算。
+                self._review_retry_after = None
+                await self.check_wardrobe_life()
         except asyncio.CancelledError:
             current = progress.get("current") or {}
             status = (

@@ -449,7 +449,7 @@ class InviteComponent:
   "alternative_time": "可选改约时间或空字符串",
   "impact": "这次邀约对今日状态、社交意愿或后续日程的影响",
   "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
-  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
+  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other，依据主要行为判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-1.0, "evidence": "依据"}}],
   "life_events": [{{"title": "邀约相关生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}]
 }}
@@ -656,7 +656,7 @@ JSON 输出要求：
   "shared_activity": true/false,
   "reason": "是否进入当天生活的依据",
   "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
-  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
+  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other，依据主要行为判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "outfit_instruction": "承诺中明确确认的穿搭要求或空字符串",
   "outfit_effective_time": "HH:MM 或空字符串",
   "impact": "这项安排对当天生活的实际影响"
