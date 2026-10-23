@@ -69,6 +69,7 @@ class SettingsCommandComponent:
         review_provider = config.lifecycle.provider or default_provider
         invite_provider = config.invite.provider or default_provider
         vision_provider = config.vision.provider or default_provider
+        emoji_provider = config.emoji_vision.provider or default_provider
         daily_keep = (
             f"{config.storage.daily_keep_days} 天"
             if config.storage.daily_keep_days
@@ -100,7 +101,7 @@ class SettingsCommandComponent:
 👔 穿搭感知: {outfit_aware}
 🏃 活动感知: {activity_aware}
 🫧 实时状态: {state_status}（{config.state.refresh_minutes} 分钟巡检状态与穿搭{quiet_hours}）
-🧠 模型: 生成 {generation_provider} · 状态 {state_provider} · 穿搭 {outfit_provider} · 复盘 {review_provider} · 邀约 {invite_provider} · 视觉 {vision_provider}
+🧠 模型: 生成 {generation_provider} · 状态 {state_provider} · 穿搭 {outfit_provider} · 复盘 {review_provider} · 邀约 {invite_provider} · 图片理解 {vision_provider} · 表情识别 {emoji_provider}
 ⏰ 生活背景生成时间: {config.schedule_time}
 🗃️ 数据保留: 每日 {daily_keep} · 聊天留意 {conversation_keep} · 媒体理解 {media_keep} · 复盘 {review_keep}"""
         )

@@ -11,6 +11,7 @@ class ModelCallOptions:
     primary_provider_id: str = ""
     propagate_non_retryable: bool = False
     timeout_seconds: float | None = None
+    system_prompt: str | None = None
 
 
 class ModelGateway:
@@ -69,6 +70,8 @@ class ModelGateway:
             kwargs["propagate_non_retryable"] = True
         if options.timeout_seconds is not None:
             kwargs["timeout_seconds"] = options.timeout_seconds
+        if options.system_prompt is not None:
+            kwargs["system_prompt"] = options.system_prompt
         return await self._composer._call_llm_text(
             provider,
             prompt,

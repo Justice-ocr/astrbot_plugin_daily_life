@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
-import json
 import uuid
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
+from ....contextbudget import compact_json
 from ....life.tools import extract_json_from_text
 from ....prompts import (
     CORE_JSON_OUTPUT_RULES,
@@ -14,8 +15,7 @@ from ....prompts import (
 )
 from ...markers import LOG_PREFIX
 from ..boundary import format_speaker_boundary
-
-from typing import Any, Protocol
+from .attestation import audit_cache, audit_key
 
 
 class PacketComponentContext(Protocol):
@@ -109,6 +109,7 @@ JSON 输出要求：
 {{
   "needs_revision": true/false,
   "interaction_checked": true/false,
+  "checked_target_ids": ["已逐一校验的 memory_targets.profile_id"],
   "reason": "如果需要修正，简短说明冲突点；不需要则写空字符串",
   "revised": {{
     "brief": "可选，修正后的一句话摘要",
@@ -149,6 +150,7 @@ JSON 输出要求：
 - interaction_mode 只能由消息完整语义证明。按消息发生顺序审阅，较晚且更明确的当前陈述优先；私聊、群聊、role、平台、收到消息和历史回复形式都不是远程交流证据。
 - interaction_mode 候选与最新明确证据冲突时，needs_revision=true，并在 revised.temporal_facts 返回修正后的完整列表；新的事实必须引用真正支持结论的 source_message_id。没有可靠证据时删除该候选，不保留猜测。
 - 输出内容必须站在我的第一人称体验写，不要写成工具或平台视角。"""
+        fixed += "\n同时逐一审阅 memory_targets：依据各目标自身的 persona_hint 和同批消息核对人物归属及经历，不能把当前角色的人设套给对方；修正仍放 revised.memory_targets 完整列表。checked_target_ids 仅列真正完成该检查的明确 profile_id，没有人设线索或证据不足时不列。"
         dynamic = f"""当前角色：{current_role_label}
 记录视角：当前角色第一人称
 消息发送者：{sender_name}
@@ -162,7 +164,7 @@ JSON 输出要求：
 人物边界：
 {speaker_boundary}
 原始提炼结果 JSON：
-{json.dumps(payload, ensure_ascii=False, indent=2)}"""
+{compact_json(payload)}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="待审阅聊天记忆")
 
     def _merge_memory_payload_revision(self, payload: dict, revision: dict) -> dict:
@@ -225,8 +227,13 @@ JSON 输出要求：
         prompt = self._build_memory_payload_calibration_prompt(
             payload, meta, persona_hint
         )
+        provider_id = self.context.config.memory.provider
+        cache = audit_cache(self.context)
+        key = audit_key("packet", payload, meta, persona_hint, provider_id)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
         try:
-            provider_id = self.context.config.memory.provider
             text = await self.context.call_text_model(
                 provider,
                 prompt,
@@ -235,9 +242,20 @@ JSON 输出要求：
                 primary_provider_id=provider_id,
             )
             revision = extract_json_from_text(text)
-            if not isinstance(revision, dict):
+            if (not isinstance(revision, dict) or not isinstance(revision.get("needs_revision"), bool)
+                    or (revision["needs_revision"] and not isinstance(revision.get("revised"), dict))):
                 return payload
-            calibrated = self._merge_memory_payload_revision(payload, revision)
+            calibrated = copy.deepcopy(self._merge_memory_payload_revision(payload, revision))
+            # 校验凭据仅留在本地服务，不接受提炼模型在待保存数据中自填的标志。
+            checked = revision.get("checked_target_ids")
+            checked = {str(item) for item in checked} if isinstance(checked, list) else set()
+            for target in calibrated.get("memory_targets") or []:
+                if not isinstance(target, dict):
+                    continue
+                hint = str(target.get("persona_hint") or "").strip()
+                if hint and str(target.get("profile_id") or "") in checked:
+                    target_key = audit_key("target", target, meta, hint, provider_id)
+                    cache.put(target_key, target)
             has_interaction_candidate = any(
                 isinstance(item, dict)
                 and str(item.get("predicate") or "").strip() == "interaction_mode"
@@ -264,6 +282,7 @@ JSON 输出要求：
                 logger.debug(
                     f"{LOG_PREFIX} 已语义校准聊天记忆：{meta.get('sender_name') or meta.get('sender_profile_id') or '未知'}"
                 )
+            cache.put(key, calibrated)
             return calibrated
         except Exception as e:
             logger.debug(f"{LOG_PREFIX} 聊天记忆语义校准跳过：{e}")

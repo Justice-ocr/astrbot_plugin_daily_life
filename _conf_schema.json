@@ -171,7 +171,7 @@
           "max": 240,
           "step": 5
         },
-        "hint": "后台按此间隔检查实时状态；稳定时会自动延长刷新间隔。聊天、邀约和日程变化也会触发检查，但不会无条件重复调用模型。"
+        "hint": "实时状态、衣橱、自主行动和目标兴趣共用的例行检查间隔；稳定时复用已有判断，场景、身体需求或约定变化时及时复核。动作结算与媒体任务不受此间隔限制。"
       },
       "quiet_hours": {
         "description": "静默时段",
@@ -243,6 +243,13 @@
         "_special": "select_provider",
         "default": "",
         "hint": "指定聊天记忆提炼使用的模型；留空则使用当前默认模型。"
+      },
+      "ranking_provider": {
+        "description": "记忆语义重排",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定记忆候选语义重排使用的模型；留空使用当前默认模型。"
       },
       "embedding_provider": {
         "description": "语义向量",
@@ -591,6 +598,13 @@
         "default": "",
         "hint": "指定语义分段使用的模型；留空则使用当前默认模型。"
       },
+      "task_reply_provider": {
+        "description": "任务失败表达",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定后台任务失败后自然回复使用的模型；留空使用当前默认模型。"
+      },
       "semantic_max_segments": {
         "description": "语义分段数量",
         "type": "int",
@@ -788,6 +802,13 @@
         "default": "",
         "hint": "指定闲时回复裁定和短回复生成使用的模型；留空使用当前默认模型。"
       },
+      "contact_provider": {
+        "description": "共同活动联系",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定共同活动行前联系判断与内容生成使用的模型；留空使用当前默认模型。"
+      },
       "semantic_timeout_seconds": {
         "description": "闲时回复裁定超时（秒）",
         "type": "float",
@@ -833,7 +854,7 @@
         "hint": "同一个群聊最后一条可参考消息后，至少安静多久才允许进入闲时回复裁定。"
       },
       "private_idle_minutes": {
-        "description": "私聊沉默(分钟)",
+        "description": "私聊联系参考间隔(分钟)",
         "type": "int",
         "default": 60,
         "slider": {
@@ -841,7 +862,7 @@
           "max": 1440,
           "step": 5
         },
-        "hint": "同一个私聊最后一条可参考消息后，至少安静多久才允许进入闲时回复或私聊回访裁定。"
+        "hint": "私聊重新考虑联系的参考节奏，会结合当时的忙碌、困倦、交流余力和日程转场提前或延后，不是固定静默门槛，也不代表到点发送。闲时续话与私聊回访共用这一判断。"
       },
       "cooldown_minutes": {
         "description": "群聊冷却(分钟)",
@@ -971,24 +992,95 @@
     }
   },
   "vision_config": {
-    "description": "视觉",
+    "description": "图片理解",
     "type": "object",
-    "hint": "配置图片和表情素材识别使用的模型。",
+    "hint": "理解聊天图片内容；与表情素材识别分别调用。",
     "items": {
       "provider": {
-        "description": "视觉信息",
+        "description": "图片理解",
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "指定图片上下文和表情素材识别使用的视觉模型；留空则使用当前默认模型。"
+        "hint": "指定聊天图片、GIF 的内容理解使用的模型；留空使用当前默认模型。"
+      },
+      "enabled": {
+        "description": "启用图片理解",
+        "type": "bool",
+        "default": true,
+        "hint": "为聊天图片和 GIF 补充内容理解；关闭后不影响 AstrBot 主模型自身的图片输入。"
+      },
+      "max_images_per_message": {
+        "description": "单条消息识别上限",
+        "type": "int",
+        "default": 3,
+        "slider": {"min": 1, "max": 10, "step": 1},
+        "hint": "每条消息按附件顺序理解前几张图片，与表情素材识别上限独立。"
+      },
+      "detail_level": {
+        "description": "理解详细程度",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "brief", "detailed"],
+        "option_labels": {"auto": "自动", "brief": "简要", "detailed": "详细"},
+        "hint": "自动模式结合本条消息的问题决定重点与详略；也可固定为简要或详细。"
+      },
+      "gif_sample_frames": {
+        "description": "GIF 采样帧数",
+        "type": "int",
+        "default": 8,
+        "slider": {"min": 2, "max": 16, "step": 1},
+        "hint": "GIF 理解最多采样的画面数，包含首尾帧；帧数越多，画面越密集。"
+      },
+      "timeout_seconds": {
+        "description": "图片理解超时（秒）",
+        "type": "int",
+        "default": 45,
+        "slider": {
+          "min": 5,
+          "max": 300,
+          "step": 5
+        },
+        "hint": "图片与 GIF 内容理解的最长等待时间，包含预处理和备用模型尝试。"
+      }
+    }
+  },
+  "emoji_vision_config": {
+    "description": "表情识别",
+    "type": "object",
+    "hint": "用于表情素材收集、导入和复核，不影响聊天图片内容理解。",
+    "items": {
+      "provider": {
+        "description": "表情识别",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定判断表情是否可入库及提取标签使用的模型；留空使用当前默认模型。"
+      },
+      "timeout_seconds": {
+        "description": "表情识别超时（秒）",
+        "type": "int",
+        "default": 45,
+        "slider": {
+          "min": 5,
+          "max": 300,
+          "step": 5
+        },
+        "hint": "表情素材识别的最长等待时间，包含预处理和备用模型尝试。"
       }
     }
   },
   "emoji_config": {
-    "description": "表情库",
+    "description": "视觉",
     "type": "object",
-    "hint": "控制聊天表情自动收集、可用容量、素材大小、匹配候选和缓存清理。",
+    "hint": "配置图片理解与表情收集、识别和发送。",
     "items": {
+      "selection_provider": {
+        "description": "自动表情选择",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定从表情库中选择合适表情使用的模型；留空使用当前默认模型。"
+      },
       "collect_chat_emojis": {
         "description": "自动收集表情",
         "type": "bool",
@@ -1067,11 +1159,11 @@
         },
         "hint": "缓存文件没有被任何表情记录引用后，至少保留多少小时再清理。"
       },
-      "auto_send_enabled": {
-        "description": "自动发表情",
+      "send_enabled": {
+        "description": "启用表情发送",
         "type": "bool",
         "default": true,
-        "hint": "控制普通回复和主动消息是否按语义自动附加表情；关闭后仍可使用表情工具。"
+        "hint": "统一控制自动附加和表情工具发送；自动附加场景可在下方分别设置。"
       },
       "send_on_regular_reply": {
         "description": "普通回复附加表情",
@@ -1096,12 +1188,6 @@
         "type": "bool",
         "default": true,
         "hint": "主动承诺提醒发送后，是否允许附加一张表情。"
-      },
-      "tool_send_enabled": {
-        "description": "允许表情工具发送",
-        "type": "bool",
-        "default": true,
-        "hint": "控制 life_emoji_send 工具是否可以主动发送表情；不受自动发表情开关影响。"
       },
       "send_cooldown_seconds": {
         "description": "表情发送冷却（秒）",
@@ -2122,6 +2208,13 @@
         "default": false,
         "hint": "开启后，模型可以调用工具生成并发送视频。"
       },
+      "prompt_provider": {
+        "description": "视频提示词提取",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定视频画面、动态与声音描述提取使用的模型；留空使用当前默认模型。"
+      },
       "base_url": {
         "description": "接口地址",
         "type": "string",
@@ -2603,6 +2696,13 @@
         "type": "bool",
         "default": true,
         "hint": "关闭后保留已有数据，但不再写入新的领域记录。"
+      },
+      "action_provider": {
+        "description": "自主生活行动规划",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定自主生活行动选择与目标复核使用的模型；留空使用当前默认模型。"
       },
       "activity_tracking_enabled": {
         "description": "记录活动会话",

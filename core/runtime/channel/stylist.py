@@ -6,7 +6,7 @@ import secrets
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -29,8 +29,6 @@ from ...outcome import ToolResultText
 from ...paths import STYLE_CATALOG_DIR_NAME, path_exists, runtime_data_root
 from ...prompts import cache_friendly_prompt
 from ..markers import LOG_PREFIX
-
-from typing import Protocol
 
 _STYLE_KINDS = {"auto", "both", *STYLE_CATALOG_KIND_SET}
 _STYLE_ITEM_KINDS = STYLE_CATALOG_KIND_SET
@@ -820,7 +818,7 @@ class RuntimeStyleCatalogComponent:
         return ToolResultText(
             self.context._style_catalog_result_text(
                 saved,
-                heading=f"已生成并加入视觉衣橱候选（{selected_mode}）：",
+                heading=f"已生成并收入视觉衣橱（{selected_mode}）：",
             )
             + suffix,
             status="ok",
@@ -897,7 +895,7 @@ class RuntimeStyleCatalogComponent:
     def _style_catalog_result_text(
         items: list[StyleCatalogItemRecord],
         *,
-        heading: str = "已加入视觉衣橱候选：",
+        heading: str = "已收入视觉衣橱：",
     ) -> str:
         if not items:
             return "图片中没有足够清晰、可保存的衣橱信息。"
@@ -913,7 +911,7 @@ class RuntimeStyleCatalogComponent:
                 for item in group
             ]
             lines.append(f"- {'；'.join(parts)}")
-        lines.append("这些只是造型候选，不代表当前已经换上。")
+        lines.append("衣橱资料已保存，实际穿戴会随生活需要自然安排。")
         return "\n".join(lines)
 
     async def life_style_learn(
@@ -1068,7 +1066,7 @@ class RuntimeStyleCatalogComponent:
             for item_kind in STYLE_CATALOG_KINDS
         ]
         inventory_summary = (
-            f"视觉衣橱库存：共 {total_count} 个已启用候选；"
+            f"视觉衣橱库存：共 {total_count} 个已启用条目；"
             f"{'、'.join(inventory_parts)}。"
         )
         query_total = counts.get(normalized_kind, 0) if normalized_kind else total_count
@@ -1078,10 +1076,10 @@ class RuntimeStyleCatalogComponent:
         if not items:
             if total_count > 0 and normalized_kind:
                 label = STYLE_CATALOG_KIND_LABELS[normalized_kind]
-                return f"{inventory_summary}\n当前没有已启用的{label}候选。"
+                return f"{inventory_summary}\n当前没有已启用的{label}条目。"
             return (
-                f"{inventory_summary}\n视觉衣橱还没有可用候选。"
-                "用户可发送或上传图片学习，也可明确要求调用 life_style_generate 创意生成候选。"
+                f"{inventory_summary}\n视觉衣橱还没有可用条目。"
+                "用户可发送或上传图片学习，也可明确要求调用 life_style_generate 创意生成新造型。"
             )
         shown_count = len(items)
         if normalized_kind:
@@ -1089,18 +1087,18 @@ class RuntimeStyleCatalogComponent:
             display_summary = (
                 f"当前查询：{label}共 {query_total} 个，已显示 {shown_count} 个。"
             )
-            heading = f"{label}候选："
+            heading = f"{label}条目："
         else:
             display_summary = (
                 f"当前展示：全部类别按偏好排序的前 {shown_count} 个条目，"
                 f"总计 {query_total} 个；这不是各分类的完整清单。"
             )
-            heading = "视觉衣橱候选："
+            heading = "视觉衣橱条目："
         remaining_hint = ""
         if shown_count < query_total:
             remaining_hint = (
                 f"\n还有 {query_total - shown_count} 个未展示；"
-                "不得据此声称衣橱只有当前这些候选。"
+                "不得据此声称衣橱只有当前这些条目。"
             )
         return (
             f"{inventory_summary}\n{display_summary}\n"
@@ -1115,7 +1113,8 @@ class RuntimeStyleCatalogComponent:
         items: list[StyleCatalogItemRecord],
         feedback: str,
     ) -> dict[str, Any]:
-        provider = await self.context.get_text_provider()
+        provider_id = self.context.config.outfit.provider
+        provider = await self.context.get_text_provider(provider_id)
         if not provider:
             raise RuntimeError("文本模型不可用")
         item_text = "\n".join(
@@ -1138,7 +1137,9 @@ class RuntimeStyleCatalogComponent:
         prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="衣橱反馈")
         session_id = f"daily_life_style_feedback_{uuid.uuid4().hex[:8]}"
         try:
-            text = await self.context.call_text_model(provider, prompt, session_id)
+            text = await self.context.call_text_model(
+                provider, prompt, session_id, primary_provider_id=provider_id
+            )
             payload = extract_json_from_text(text)
             return payload if isinstance(payload, dict) else {}
         finally:

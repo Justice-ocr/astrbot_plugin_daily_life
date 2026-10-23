@@ -100,7 +100,8 @@ async def compile_edited_actions(
 
 
 def apply_edited_timeline(
-    day: DayRecord, timeline: list[TimelineItem], decision: dict
+    day: DayRecord, timeline: list[TimelineItem], decision: dict,
+    *, commitment_id: int = 0,
 ) -> None:
     """日程和动作一起提交，保留未改动动作的编号，解除已替换动作的绑定。"""
     try:
@@ -121,6 +122,10 @@ def apply_edited_timeline(
     except (ValueError, TypeError):
         rebound = []
     additions = copy.deepcopy(decision.get("_planned_life_actions") or [])
+    if commitment_id > 0:
+        for action in additions:
+            # 排程归属只用于跟踪整项安排，不代表某个准备动作已兑现承诺。
+            action.setdefault("payload", {})["schedule_commitment_id"] = commitment_id
     replaced = {item["timeline_index"] for item in additions}
     kept = (
         [

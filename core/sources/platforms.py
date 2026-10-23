@@ -3,7 +3,7 @@ from typing import Any
 
 
 ONEBOT_TYPES = {"aiocqhttp", "onebot", "cqhttp"}
-QQ_OFFICIAL_TYPES = {"qq_official", "qq_official_webhook"}
+QQ_OFFICIAL_TYPES = {"qq_official"}
 WEIXIN_OC_TYPE = "weixin_oc"
 
 

@@ -11,6 +11,7 @@ class LifeDomainSettings:
     """生活领域运行设置。"""
 
     enabled: bool = True
+    action_provider: str = ""
     activity_tracking_enabled: bool = True
     simulate_internal_actions: bool = True
     location_enabled: bool = True
@@ -30,6 +31,7 @@ class LifeDomainSettings:
         raw = data if isinstance(data, dict) else {}
         return LifeDomainSettings(
             enabled=as_bool(raw.get("enabled"), True),
+            action_provider=as_str(raw.get("action_provider", "")).strip(),
             activity_tracking_enabled=as_bool(
                 raw.get("activity_tracking_enabled"), True
             ),

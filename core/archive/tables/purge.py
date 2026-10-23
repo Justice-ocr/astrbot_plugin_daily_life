@@ -103,6 +103,7 @@ PRAGMA foreign_keys = OFF;
         DROP TABLE IF EXISTS places;
         DROP TABLE IF EXISTS days;
         DROP TABLE IF EXISTS conversation_receipts;
+        DROP TABLE IF EXISTS conversation_arrivals;
         DROP TABLE IF EXISTS meta;
         PRAGMA foreign_keys = ON;
 """

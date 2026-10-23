@@ -15,6 +15,7 @@ from typing import Protocol
 class StageVoiceComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
+    config: Any
     _media_director_call: Any
     _media_director_context_text: Any
     _media_director_current_day: Any
@@ -77,7 +78,8 @@ JSON 字段：
                 f"原始视频要求（最终视频需求，必须回应）：{original_prompt}"
             )
             payload = await self.context._media_director_call(
-                cache_friendly_prompt(fixed, dynamic, dynamic_title="视频生成请求")
+                cache_friendly_prompt(fixed, dynamic, dynamic_title="视频生成请求"),
+                provider_id=self.context.config.video_generation.prompt_provider,
             )
             prompt = self._media_video_prompt_from_payload(payload)
             logger.debug(f"{LOG_PREFIX} 视频智能提取：{prompt[:180]}")

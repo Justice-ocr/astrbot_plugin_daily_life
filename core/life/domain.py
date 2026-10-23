@@ -93,6 +93,9 @@ class LifeDomainService:
         repaired_actions = await self._repair_committed_action_records()
         repaired_recipes = await self._repair_committed_recipe_records()
         repaired_items = await self._repair_conversation_action_items()
+        reconcile = getattr(self.archive, "reconcile_scheduled_commitments", None)
+        if callable(reconcile):
+            repaired_items += await reconcile()
         if repaired_actions or repaired_recipes or repaired_items:
             logger.debug(
                 "[日常生活] 生活实况记录已自愈："
@@ -480,7 +483,12 @@ class LifeDomainService:
     ) -> None:
         """把显式计划动作同步为活动会话，不分析活动文案。"""
 
-        if not self.settings.enabled or not self.settings.activity_tracking_enabled:
+        if not self.settings.enabled:
+            return
+        reconcile = getattr(self.archive, "reconcile_scheduled_commitments", None)
+        if callable(reconcile):
+            await reconcile(now=now)
+        if not self.settings.activity_tracking_enabled:
             return
         import json
 

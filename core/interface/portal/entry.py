@@ -4,10 +4,9 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, Protocol
 
 from astrbot.api import logger
-
-from typing import Any, Protocol
 
 try:
     from quart import has_app_context as _quart_has_app_context
@@ -48,6 +47,8 @@ class PortalBaseComponent:
 
     @staticmethod
     def _page_public_error(exc: Exception) -> str:
+        if getattr(exc, "code", None) == 413:
+            return "上传内容超过服务器大小限制，请缩小文件后重试"
         message = " ".join(str(exc).split())
         if isinstance(exc, (ValueError, RuntimeError)) and any(
             "\u4e00" <= char <= "\u9fff" for char in message
@@ -109,8 +110,11 @@ class PortalBaseComponent:
         ):
             raise ValueError("没有收到上传文件")
         content_length = int(getattr(_quart_request, "content_length", 0) or 0)
-        if content_length > max_bytes + 1024 * 1024:
+        request_limit = max_bytes + 1024 * 1024
+        if content_length > request_limit:
             raise ValueError("上传文件超过大小限制")
+        # 按请求覆盖 Quart 的默认限制，为 multipart 头部预留空间。
+        _quart_request.max_content_length = request_limit
         files = await _quart_request.files
         upload = files.get("file") if files else None
         if upload is None:
@@ -242,7 +246,9 @@ class PortalBaseComponent:
                 timeout = float(str(args.get("timeout") or "25"))
             except ValueError:
                 timeout = 25.0
-            version = await self.context.runtime.wait_page_status_changed(since, timeout)
+            version = await self.context.runtime.wait_page_status_changed(
+                since, timeout
+            )
             # 运行时计数器仅在当前进程有效。插件重载后计数器可能减小，
             # 而已打开的页面仍传入原先较大的版本号，此时返回最新快照。
             if version < since:

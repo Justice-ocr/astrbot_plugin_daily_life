@@ -19,7 +19,7 @@ class MeaningServiceTest(unittest.IsolatedAsyncioTestCase):
         self.archive = DataManager()
         self.config = types.SimpleNamespace(
             embedding_provider="embedding", semantic_ranking_model_enabled=False,
-            provider="memory",
+            provider="memory", ranking_provider="ranking",
         )
         self.model = "model-a"
         self.provider = types.SimpleNamespace(
@@ -29,6 +29,7 @@ class MeaningServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.scheduler = BackgroundTaskScheduler(normal_limit=1)
         self.call_model = AsyncMock()
+        self.text_provider = AsyncMock(return_value=object())
         self.close_session = AsyncMock()
         self.service = self.make_service()
         self.service._MEMORY_INDEX_REQUEST_INTERVAL_SECONDS = 0
@@ -38,7 +39,7 @@ class MeaningServiceTest(unittest.IsolatedAsyncioTestCase):
             embedding_providers=lambda: [self.provider],
             memory_config=lambda: self.config,
             archive=lambda: self.archive,
-            memory_provider=AsyncMock(return_value=object()),
+            text_provider=self.text_provider,
             call_text_model=self.call_model,
             close_text_session=self.close_session,
             schedule_background=self.scheduler.schedule,

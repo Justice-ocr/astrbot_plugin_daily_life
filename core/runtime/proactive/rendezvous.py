@@ -3,11 +3,11 @@ from __future__ import annotations
 import datetime
 import json
 import uuid
-from typing import Any
+from typing import Any, NoReturn, Protocol
 
 from astrbot.api import logger
 
-from ...clock import TIMEZONE
+from ...clock import local_datetime
 from ...clock import now as life_now
 from ...life.tools import timeline_item_datetime
 from ...models import CommitmentRecord
@@ -19,10 +19,8 @@ from ...prompts import (
 )
 from ...sources.dispatch import PermanentScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
-from ..markers import LOG_PREFIX
 from ..continuous import planned_actions
-
-from typing import Protocol
+from ..markers import LOG_PREFIX
 
 
 def preparation_facts(day: Any) -> dict:
@@ -37,13 +35,34 @@ def preparation_facts(day: Any) -> dict:
     }
 
 
+def bound_activity_has_started(
+    day: Any, activity: Any, now: datetime.datetime
+) -> bool:
+    """只核对原先绑定的活动，不把后续无关节点当作新的联系目标。"""
+    if not isinstance(activity, dict) or not activity.get("starts_at"):
+        return False
+    for item in day.timeline:
+        point = timeline_item_datetime(item, day.date, meta=day.meta)
+        if (
+            point is not None
+            and point <= now
+            and point.isoformat(timespec="seconds") == activity["starts_at"]
+            and all(
+                getattr(item, field) == activity.get("item", {}).get(field)
+                for field in ("time", "activity", "place", "place_kind")
+            )
+        ):
+            return True
+    return False
+
+
 class SharedActivityContactComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
     _current_proactive_persona: Any
     _audit_proactive_continuity: Any
     _format_recent_context_messages: Any
-    _get_proactive_provider: Any
+    get_text_provider: Any
     _proactive_commitment_relationship: Any
     _proactive_send_is_current: Any
     _proactive_voice_capability: Any
@@ -91,6 +110,19 @@ class SharedActivityContactComponent:
                         )
                     day = days[commitment.trigger_date]
                     if (
+                        day is not None
+                        and progress.get("commitment") == commitment.as_dict()
+                        and bound_activity_has_started(day, progress.get("activity"), now)
+                    ):
+                        await self.context.archive.finalize_durable_task(
+                            current_task.id,
+                            {
+                                "outcome": "expired",
+                                "reason": "对应共同活动已经开始，不再补发行前联系",
+                                "progress": progress,
+                            },
+                        )
+                    elif (
                         progress.get("commitment") != commitment.as_dict()
                         or day is None
                         or progress.get("timeline")
@@ -222,7 +254,8 @@ class SharedActivityContactComponent:
         now: datetime.datetime,
     ) -> dict:
         scope = commitment.source_session
-        provider = await self.context._get_proactive_provider()
+        provider_id = self.context.config.proactive.contact_provider
+        provider = await self.context.get_text_provider(provider_id)
         if not provider:
             raise RuntimeError("没有可用的共同活动联系裁定模型")
         persona = await self.context._current_proactive_persona(scope)
@@ -240,7 +273,7 @@ class SharedActivityContactComponent:
 1. 约定原文、最近真实交流是共同参与和确认程度的依据。单方计划、随口提议、媒体交付不得变成共同活动；日程文案不能证明对方同意。
 2. 从候选中选择与约定对应的真正活动，activity_index 必须使用候选 index；准备、换装、交通、返回不能误当作共同活动的开始。已取消、改期到无对应节点、已经开始或准备联系已失去意义时 skip。
 3. 结合活动所需准备、已确认路程、双方状态、互动方式和最近聊天，决定 contact_at。看电影前可以商量吃喝或准备播放；出门前可以确认会合、带什么或是否准备好。这些只是语义示例，不是固定活动清单或必须提及的事项。不要统一提前固定分钟。
-4. contact_at 必须是当前时间至选定活动开始前的完整日期时间。需要稍后联系就 wait；现在自然合适则 send，即使刚确认、距离开始很近也可以。上次安排的联系时间已经到达且仍有必要时，优先履行，不要仅因时间过去而反复推迟。
+4. 需要稍后联系就 wait，contact_at 填写晚于当前时间且早于选定活动开始的完整日期时间；现在自然合适则 send，contact_at 留空，由程序记录实际联系时间，即使刚确认、距离开始很近也可以。上次安排的联系时间已经到达且仍有必要时，优先履行，不要仅因时间过去而反复推迟。
 5. 已经商量清楚准备、已经催过、对方明确不需要提醒，或此时正在交流同一准备事项且再单独联系会重复，就 skip。普通聊天或对方刚出现不等于准备事项已完成。改期可重新选择活动和时机。
 6. send 只说一条顺着近期对话、人设和关系的简短闲聊，可以半句接话或一个具体问题；不要求凑字数，不复述整段日程，不写客服通知。不要为了显得贴心硬加清单、解释和甜腻称呼。
 7. 不补造现有零食、库存、已经准备好、已经出门、到达、对方反应或共同活动已完成；可以提议或询问。只协商准备，不能重新许下未经确认的拍照、视频和其他交付。
@@ -251,7 +284,7 @@ class SharedActivityContactComponent:
 {CORE_EMOJI_DELIVERY_RULES}
 
 只返回严格 JSON：
-{{"decision":"wait|send|skip","activity_index":0,"contact_at":"YYYY-MM-DD HH:MM:SS","message_goal":"本次要协调的具体事项","reply_text":"仅 send 时填写","reason":"证据和时机依据","expression_intent":{{"channel":"text|voice","confidence":0.0,"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
+{{"decision":"wait|send|skip","activity_index":0,"contact_at":"仅 wait 时填写 YYYY-MM-DD HH:MM:SS","message_goal":"本次要协调的具体事项","reply_text":"仅 send 时填写","reason":"证据和时机依据","expression_intent":{{"channel":"text|voice","confidence":0.0,"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
 skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
 """
         dynamic = f"""当前时间：{now.strftime("%Y-%m-%d %H:%M:%S")}
@@ -274,7 +307,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 provider,
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="共同活动行前协调"),
                 session_id,
-                primary_provider_id=self.context.config.proactive.provider,
+                primary_provider_id=provider_id,
                 propagate_non_retryable=True,
                 strict=True,
             )
@@ -286,7 +319,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                     recent_context=self.context._format_recent_context_messages(recent, now=now),
                     life_context=life_context,
                     provider=provider,
-                    provider_id=self.context.config.proactive.provider,
+                    provider_id=provider_id,
                 )
                 if not valid:
                     return {"decision": "reconsider", "reason": reason or "准备状态尚未得到执行证据支持"}
@@ -337,24 +370,11 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 "reason": "等待对应生活日生成",
             }
         previous_activity = task.result.get("progress", {}).get("activity", {})
-        if isinstance(previous_activity, dict) and previous_activity.get("starts_at"):
-            for item in day.timeline:
-                point = timeline_item_datetime(item, day.date, meta=day.meta)
-                if (
-                    point is not None
-                    and point <= now
-                    and point.isoformat(timespec="seconds")
-                    == previous_activity.get("starts_at")
-                    and all(
-                        getattr(item, field)
-                        == previous_activity.get("item", {}).get(field)
-                        for field in ("time", "activity", "place", "place_kind")
-                    )
-                ):
-                    return {
-                        "outcome": "expired",
-                        "reason": "对应共同活动已经开始，不转向无关节点",
-                    }
+        if bound_activity_has_started(day, previous_activity, now):
+            return {
+                "outcome": "expired",
+                "reason": "对应共同活动已经开始，不转向无关节点",
+            }
         candidates = self.context._shared_activity_candidates(day, now)
         if not candidates:
             return {"outcome": "expired", "reason": "已无尚未开始的活动"}
@@ -409,8 +429,34 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             }
         if choice == "skip":
             return {"outcome": "skipped", "reason": reason}
+        finished_at = life_now()
+        selected = None
+
+        async def reject(reason: str) -> NoReturn:
+            # 保留具体边界和上次裁定，让有次数上限的任务重试获得纠错依据。
+            progress = {
+                **task.result.get("progress", {}),
+                "review_issue": reason,
+                "rejected_decision": {
+                    key: decision.get(key)
+                    for key in ("decision", "activity_index", "contact_at")
+                },
+                "judged_at": now.isoformat(timespec="seconds"),
+                "checked_at": finished_at.isoformat(timespec="seconds"),
+            }
+            if selected is not None:
+                progress.update(
+                    activity=selected,
+                    commitment=commitment.as_dict(),
+                    timeline=self.context._shared_activity_timeline(day),
+                )
+            await self.context.archive.update_durable_task_progress(
+                task.id, owner=task.lease_owner, progress=progress,
+            )
+            raise ValueError(reason)
+
         if choice not in {"wait", "send"}:
-            raise ValueError("共同活动裁定缺少有效动作")
+            await reject("共同活动裁定缺少有效动作")
         index = decision.get("activity_index")
         selected = (
             next((item for item in candidates if item["index"] == index), None)
@@ -418,24 +464,25 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             else None
         )
         if selected is None:
-            raise ValueError("共同活动必须绑定真实的尚未开始节点")
+            if type(index) is int and 0 <= index < len(day.timeline):
+                point = timeline_item_datetime(day.timeline[index], day.date, meta=day.meta)
+                if point is not None and point <= finished_at:
+                    return {"outcome": "expired", "reason": "对应共同活动已经开始，不再补发行前联系"}
+            await reject("共同活动必须绑定候选中的尚未开始节点")
         starts_at = datetime.datetime.fromisoformat(selected["starts_at"])
-        try:
-            contact_at = datetime.datetime.fromisoformat(
-                str(decision.get("contact_at") or "")
-            )
-        except ValueError as exc:
-            raise ValueError("共同活动联系时间无效") from exc
-        if contact_at.tzinfo is not None:
-            contact_at = contact_at.astimezone(TIMEZONE).replace(tzinfo=None)
-        if not now <= contact_at < starts_at:
-            raise ValueError("联系时间必须在判断时刻至活动开始之前")
-        finished_at = life_now()
         if finished_at >= starts_at:
             return {
                 "outcome": "expired",
                 "reason": "判断期间活动开始，不再补发行前联系",
             }
+        # 是否现在联系由模型裁定；实际时刻由时钟记录，不要求模型复述精确秒数。
+        contact_at = finished_at
+        if choice == "wait":
+            contact_at = local_datetime(decision.get("contact_at"))
+            if contact_at is None:
+                await reject("稍后联系必须填写有效的完整日期时间")
+            if not now < contact_at < starts_at:
+                await reject("稍后联系时间必须晚于判断时刻且早于活动开始")
         progress = {
             "activity": selected,
             "contact_at": contact_at.isoformat(timespec="seconds"),
@@ -445,18 +492,14 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             "timeline": self.context._shared_activity_timeline(day),
         }
         if choice == "wait":
-            if contact_at <= now:
-                raise ValueError("等待裁定必须指定尚未到达的联系时间")
             return {
                 "retry_at": max(contact_at, finished_at).strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": reason,
                 "progress": progress,
             }
-        if contact_at > finished_at:
-            raise ValueError("现在发送不能指定未来联系时间")
         reply_text = str(decision.get("reply_text") or "").strip()
         if not reply_text:
-            raise ValueError("共同活动联系正文为空")
+            await reject("共同活动联系正文为空")
         if source_event is not None:
             source_event._daily_life_proactive_expires_at = starts_at
         try:

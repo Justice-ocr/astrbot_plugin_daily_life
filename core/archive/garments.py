@@ -1,16 +1,15 @@
 """独立保存数字衣物，视觉资料复核不会覆盖拥有、穿着或洗护事实。"""
+
 from __future__ import annotations
 
-import datetime
 import copy
-import json
+import datetime
 import hashlib
-from typing import Any
+import json
+from typing import Any, Protocol
 
 from ..clock import TIMEZONE
 from ..models import STYLE_CATALOG_CLOTHING_KINDS
-
-from typing import Protocol
 
 
 def instant(value):
@@ -57,7 +56,7 @@ class GarmentArchiveComponent:
 
     def _wardrobe_bootstrap_unlocked(self) -> None:
         rows = self.context._conn.execute(
-            "SELECT id,kind,source_image_hash,last_used_at FROM style_catalog_items"
+            "SELECT id,kind,source_image_hash,last_used_at,created_at,attributes_json FROM style_catalog_items"
         ).fetchall()
         groups: dict[str, set[str]] = {}
         for row in rows:
@@ -66,6 +65,18 @@ class GarmentArchiveComponent:
             row["unit_id"]: dict(row)
             for row in self.context._conn.execute("SELECT * FROM wardrobe_units")
         }
+        legacy_units = {
+            key
+            for key, unit in units.items()
+            if unit["ownership"] == "candidate"
+            and unit["revision"] == 0
+            and unit["condition"] == "clean"
+            and not unit["acquired_at"]
+            and not unit["changed_at"]
+            and not unpack(unit["payload_json"])
+        }
+        recoveries: dict[str, tuple[tuple[bool, bool], dict]] = {}
+        care_conditions = {"clean", "worn", "dirty", "washing", "drying", "stored"}
         links = {
             (row[0], row[1])
             for row in self.context._conn.execute(
@@ -75,14 +86,32 @@ class GarmentArchiveComponent:
         for row in rows:
             if row["kind"] not in STYLE_CATALOG_CLOTHING_KINDS:
                 continue
+            attributes = unpack(row["attributes_json"])
+            saved = attributes.get("wardrobe")
+            saved = saved if isinstance(saved, dict) else {}
+            # 确认入库后才建立拥有关系；生成的候选方案仍需复核。
+            admitted = (
+                not attributes.get("wardrobe_job")
+                or saved.get("ownership") == "owned"
+                or bool(row["last_used_at"])
+            )
+            saved_units = (
+                {
+                    unit["unit_id"]: unit
+                    for unit in saved.get("units", [])
+                    if isinstance(unit, dict) and isinstance(unit.get("unit_id"), str)
+                }
+                if isinstance(saved.get("units"), list)
+                else {}
+            )
+            piece_roles = groups[row["source_image_hash"]] | {
+                role
+                for role in ("top", "bottom")
+                if row["source_image_hash"] + ":" + role in saved_units
+            }
             roles = (
-                [
-                    role
-                    for role in ("top", "bottom")
-                    if role in groups[row["source_image_hash"]]
-                ]
-                if row["kind"] == "outfit"
-                and {"top", "bottom"} & groups[row["source_image_hash"]]
+                [role for role in ("top", "bottom") if role in piece_roles]
+                if row["kind"] == "outfit" and {"top", "bottom"} & piece_roles
                 else [row["kind"]]
             )
             old_key = row["source_image_hash"] + ":outfit"
@@ -103,46 +132,78 @@ class GarmentArchiveComponent:
             for role in roles:
                 key = row["source_image_hash"] + ":" + role
                 if key not in units:
-                    self.context._conn.execute(
-                        "INSERT INTO wardrobe_units(unit_id,ownership,acquired_at,changed_at) VALUES(?,?,?,?)",
-                        (
-                            key,
-                            "owned" if row["last_used_at"] else "candidate",
-                            row["last_used_at"],
-                            row["last_used_at"],
-                        ),
+                    # 仅在本地没有对应事实时，恢复该单品的准确事实。
+                    facts = saved_units.get(key, saved)
+                    condition = facts.get("condition", "clean")
+                    if (
+                        not isinstance(condition, str)
+                        or condition not in care_conditions
+                    ):
+                        condition = "clean"
+                    try:
+                        revision = max(0, int(facts.get("revision", 0)))
+                    except (ValueError, TypeError, OverflowError):
+                        revision = 0
+                    owned = admitted or facts.get("ownership") == "owned"
+                    acquired_at = (
+                        str(facts.get("acquired_at") or row["created_at"] or "")
+                        if owned
+                        else ""
                     )
-                    units[key] = {
-                        "ownership": "owned" if row["last_used_at"] else "candidate",
-                        "revision": 0,
+                    unit = {
+                        "ownership": "owned" if owned else "candidate",
+                        "condition": condition,
+                        "acquired_at": acquired_at,
+                        "changed_at": str(facts.get("changed_at") or acquired_at),
+                        "revision": revision,
+                        "payload_json": encode(
+                            facts.get("payload")
+                            if isinstance(facts.get("payload"), dict)
+                            else {}
+                        ),
                     }
-                if parent and units[key]["revision"] == 0:
+                    if parent and key not in saved_units:
+                        unit = dict(parent)
+                        if parent.get("unit_id") in legacy_units:
+                            legacy_units.add(key)
                     self.context._conn.execute(
-                        "UPDATE wardrobe_units SET ownership=?,condition=?,acquired_at=?,changed_at=?,revision=?,payload_json=? WHERE unit_id=?",
+                        "INSERT INTO wardrobe_units(unit_id,ownership,condition,acquired_at,changed_at,revision,payload_json) VALUES(?,?,?,?,?,?,?)",
                         (
-                            parent["ownership"],
-                            parent["condition"],
-                            parent["acquired_at"],
-                            parent["changed_at"],
-                            parent["revision"],
-                            parent["payload_json"],
                             key,
+                            unit["ownership"],
+                            unit["condition"],
+                            unit["acquired_at"],
+                            unit["changed_at"],
+                            unit["revision"],
+                            unit["payload_json"],
                         ),
                     )
-                    units[key] = dict(parent)
+                    units[key] = unit
                 if (row["id"], key) not in links:
                     self.context._conn.execute(
                         "INSERT OR IGNORE INTO wardrobe_links VALUES(?,?)",
                         (row["id"], key),
                     )
                     links.add((row["id"], key))
-                # 历史采用记录仅用于首次建立拥有事实，不覆盖洗护状态。
-                if row["last_used_at"] and units[key]["ownership"] == "candidate":
+                facts = saved_units.get(key, saved)
+                if (
+                    key in legacy_units
+                    and isinstance(facts.get("condition"), str)
+                    and facts["condition"] in care_conditions
+                ):
+                    priority = (key in saved_units, row["kind"] == role)
+                    if key not in recoveries or priority >= recoveries[key][0]:
+                        recoveries[key] = (priority, facts)
+                # 修复旧版入库记录，不虚构穿着经历或重置洗护状态。
+                if (
+                    admitted or saved_units.get(key, {}).get("ownership") == "owned"
+                ) and units[key]["ownership"] == "candidate":
                     self.context._conn.execute(
-                        "UPDATE wardrobe_units SET ownership='owned', acquired_at=CASE WHEN acquired_at='' THEN ? ELSE acquired_at END WHERE unit_id=?",
-                        (row["last_used_at"], key),
+                        "UPDATE wardrobe_units SET ownership='owned', acquired_at=CASE WHEN acquired_at='' THEN ? ELSE acquired_at END, revision=revision+1 WHERE unit_id=?",
+                        (row["created_at"] or row["last_used_at"], key),
                     )
                     units[key]["ownership"] = "owned"
+                    units[key]["revision"] += 1
             if roles != ["outfit"] and (row["id"], old_key) in links:
                 self.context._conn.execute(
                     "DELETE FROM wardrobe_links WHERE catalog_id=? AND unit_id=?",
@@ -153,6 +214,33 @@ class GarmentArchiveComponent:
                     (old_key, old_key),
                 )
                 links.discard((row["id"], old_key))
+
+        # 旧版恢复会创建空占位记录；应优先采用单品事实，而非套装摘要。
+        for key, (_, facts) in recoveries.items():
+            try:
+                revision = max(0, int(facts.get("revision", 0)))
+            except (ValueError, TypeError, OverflowError):
+                revision = 0
+            acquired_at = str(facts.get("acquired_at") or "")
+            self.context._conn.execute(
+                "UPDATE wardrobe_units SET condition=?, changed_at=CASE WHEN ?!='' THEN ? ELSE changed_at END, "
+                "acquired_at=CASE WHEN ownership='owned' AND ?!='' THEN ? ELSE acquired_at END, "
+                "payload_json=?, revision=MAX(revision,?)+1 WHERE unit_id=?",
+                (
+                    facts["condition"],
+                    str(facts.get("changed_at") or ""),
+                    str(facts.get("changed_at") or ""),
+                    acquired_at,
+                    acquired_at,
+                    encode(
+                        facts.get("payload")
+                        if isinstance(facts.get("payload"), dict)
+                        else {}
+                    ),
+                    revision,
+                    key,
+                ),
+            )
 
     def _wardrobe_item_state_unlocked(self, item_id: int) -> dict:
         rows = self.context._conn.execute(
@@ -172,6 +260,7 @@ class GarmentArchiveComponent:
             "clean",
         )
         return {
+            "version": 2,
             "ownership": "owned" if owned else "candidate",
             "condition": condition,
             "available": owned and conditions <= {"clean", "worn", "stored"},
@@ -180,12 +269,26 @@ class GarmentArchiveComponent:
                 unpack(row["payload_json"]).get("wearing") for row in rows
             ),
             "revision": sum(row["revision"] for row in rows),
+            "units": [
+                {
+                    "unit_id": row["unit_id"],
+                    "ownership": row["ownership"],
+                    "condition": row["condition"],
+                    "acquired_at": row["acquired_at"],
+                    "changed_at": row["changed_at"],
+                    "revision": row["revision"],
+                    "payload": unpack(row["payload_json"]),
+                }
+                for row in sorted(rows, key=lambda unit: unit["unit_id"])
+            ],
         }
 
     def _wardrobe_action_issue_unlocked(self, raw_ids, *, retained_ids=()) -> str:
         """在世界结算事务内复核衣物，防止判断后被送洗。"""
         self.context._wardrobe_bootstrap_unlocked()
-        if not self.context._conn.execute("SELECT 1 FROM wardrobe_links LIMIT 1").fetchone():
+        if not self.context._conn.execute(
+            "SELECT 1 FROM wardrobe_links LIMIT 1"
+        ).fetchone():
             return ""
         ids = (
             [int(v) for v in raw_ids if str(v).isdigit()]

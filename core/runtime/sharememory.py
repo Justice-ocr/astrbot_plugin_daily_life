@@ -25,8 +25,8 @@ async def search_share_memories(runtime, query, scope, limit=4):
         return []
     archive = runtime.archive
     candidates = []
-    # Long-term memory already filters superseded sources, expiry, and inactive facts.
-    # Its generic SQL also admits global rows, so enforce exact ownership here.
+    # 长期记忆已过滤被取代的来源、过期记录和无效事实。
+    # 通用 SQL 也会返回全局记录，因此此处必须严格校验归属。
     if private:
         memories = await archive.search_long_term_memories(
             str(query)[:240], scopes=[scope], limit=16

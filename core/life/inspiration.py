@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from ..models import (
     STYLE_CATALOG_CARRY_MODES,
@@ -10,8 +10,6 @@ from ..models import (
     STYLE_CATALOG_KIND_LABELS,
     STYLE_CATALOG_KINDS,
 )
-
-from typing import Protocol
 
 
 class StyleCatalogComponentContext(Protocol):
@@ -270,8 +268,10 @@ class StyleCatalogComponent:
         wardrobe = attributes.get("wardrobe") or {}
         if wardrobe:
             from .dressing import CONDITION_LABELS
-            details.append("衣物归属：" + ("正式拥有" if wardrobe.get("ownership") == "owned" else "灵感候选"))
+            details.append("衣物归属：" + ("正式拥有" if wardrobe.get("ownership") == "owned" else "待核验，尚未入橱"))
             details.append("穿护状态：" + CONDITION_LABELS.get(wardrobe.get("condition"), "未知"))
+            if wardrobe.get("currently_worn"):
+                details.append("实际穿着：正在穿着")
         suffix = f"；{'；'.join(details)}" if details else ""
         heading = title or f"{kind}候选"
         return (
@@ -541,6 +541,15 @@ class StyleCatalogComponent:
                 item, snapshot, scene_category=scene_category, conditions=current_conditions
             )
         ]
+        profile = snapshot.get("profile") or {}
+        reviewed = bool(conditions and profile.get("context_key") == suitability_key(conditions))
+        preferred_ids = {
+            item_id for choice in profile.get("scene_choices", [])
+            if reviewed and (not scene_category or choice.get("scene_category") == scene_category)
+            for item_id in choice.get("item_ids", [])
+        }
+        # 先呈现已核实场景方案；其余继续保留语义适配与偏好顺序。
+        candidates.sort(key=lambda item: item.id not in preferred_ids)
         grouped = {
             kind: [item for item in candidates if getattr(item, "kind", "") == kind]
             for kind in STYLE_CATALOG_KINDS
@@ -594,10 +603,24 @@ class StyleCatalogComponent:
                 lines.append("已核实的场景搭配（未来安排仅作准备，换装仍以当前活动为准）：" + json.dumps(choices, ensure_ascii=False))
         lines.extend(self.context._style_catalog_item_line(item) for item in items)
         detailed_ids = {item.id for item in items}
-        clothing_index = [
+        remaining_clothing = [
             item for item in candidates
             if item.kind in STYLE_CATALOG_CLOTHING_KINDS and item.id not in detailed_ids
         ]
+        # 简表按结构化用途轮流取样，避免大量同类上装挤掉少见的睡眠、运动等衣物。
+        buckets = {}
+        for item in remaining_clothing:
+            attributes = self.context._style_catalog_attributes(item)
+            bucket = (item.kind, tuple(self.context._style_catalog_list(attributes.get("scenes"), 4)))
+            buckets.setdefault(bucket, []).append(item)
+        clothing_index = []
+        while buckets and len(clothing_index) < 32:
+            for bucket in list(buckets):
+                clothing_index.append(buckets[bucket].pop(0))
+                if not buckets[bucket]:
+                    del buckets[bucket]
+                if len(clothing_index) >= 32:
+                    break
         if clothing_index:
             lines.append("其余可穿服装简表：可按类别、用途和场景选择编号；采用后读取完整外观。")
             for item in clothing_index:
@@ -610,6 +633,8 @@ class StyleCatalogComponent:
                 weather = "、".join(self.context._style_catalog_list(attributes.get("weather_fit"), 4))
                 state = attributes.get("wardrobe") or {}
                 lines.append(f"- #{item.id} [{item.kind}] {title}；类别：{category}；场景：{scenes}；材质：{material}；季节：{seasons}；天气适配：{weather}；归属：{state.get('ownership','candidate')}；状态：{state.get('condition','unknown')}")
+        if len(remaining_clothing) > len(clothing_index):
+            lines.append(f"本轮展示相关候选，另有 {len(remaining_clothing) - len(clothing_index)} 件可穿衣物未展开；未展示不代表衣橱缺少此类衣物，补衣以完整衣橱的场景评估为准。")
         return "\n".join(lines)
 
     async def _style_catalog_reference_appearance(

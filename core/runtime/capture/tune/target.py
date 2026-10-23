@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
-import json
 import uuid
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
+from ....contextbudget import compact_json
 from ....life.tools import extract_json_from_text
 from ....prompts import (
     CORE_JSON_OUTPUT_RULES,
@@ -13,8 +14,7 @@ from ....prompts import (
     cache_friendly_prompt,
 )
 from ...markers import LOG_PREFIX
-
-from typing import Any, Protocol
+from .attestation import audit_cache, audit_key
 
 
 class TargetComponentContext(Protocol):
@@ -95,7 +95,7 @@ JSON 输出要求：
 现实互动方式：{meta.get("interaction_mode_label") or "未知"}
 目标人物在人设中的线索：{self.context._str_payload(persona_hint)}
 原始目标记忆 JSON：
-{json.dumps(target, ensure_ascii=False, indent=2)}"""
+{compact_json(target)}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="待审阅目标记忆")
 
     def _merge_memory_target_revision(self, target: dict, revision: dict) -> dict:
@@ -132,6 +132,12 @@ JSON 输出要求：
         persona_hint = self.context._str_payload(persona_hint)
         if not persona_hint or not self._memory_target_has_saveable_context(target):
             return target
+        provider_id = self.context.config.memory.provider
+        cache = audit_cache(self.context)
+        key = audit_key("target", target, meta, persona_hint, provider_id)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
         provider = await self.context._get_memory_provider()
         if not provider:
             return target
@@ -149,9 +155,11 @@ JSON 输出要求：
                 primary_provider_id=provider_id,
             )
             revision = extract_json_from_text(text)
-            if not isinstance(revision, dict):
+            if (not isinstance(revision, dict) or not isinstance(revision.get("needs_revision"), bool)
+                    or (revision["needs_revision"] and not isinstance(revision.get("revised"), dict))):
                 return target
             calibrated = self._merge_memory_target_revision(target, revision)
+            cache.put(key, calibrated)
             if calibrated != target and bool(revision.get("needs_revision")):
                 logger.debug(
                     f"{LOG_PREFIX} 已语义校准目标记忆：{target.get('name') or target.get('profile_id') or '未知'}"

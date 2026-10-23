@@ -12,7 +12,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -66,8 +66,15 @@ PREVIOUS_V20_SCHEMA_FINGERPRINT = "43e2b090847b932c95ad312a19ad66a6c109b7283b295
 
 PREVIOUS_V21_SCHEMA_FINGERPRINT = "1dcab14830e01b324d3bac191506af09e1fc2fc092effb4ab6eb04e4405d4cdf"
 PREVIOUS_V22_SCHEMA_FINGERPRINT = "b8f268ce4aba19b956f1a14e4a9b567227a6d011390d62c6ef8a8c2ea716e066"
-PREVIOUS_V26_SCHEMA_FINGERPRINT = "a05e55bdfdab44033c105d6c2bb560da7e2beeb50721344f8193815c6ead4ed7"
-CURRENT_SCHEMA_FINGERPRINT = "4cc377da1c900fc3f7c36666665b888512c6203a61b9076d1c9684df7c8c30f2"
+PREVIOUS_V26_SCHEMA_FINGERPRINT = (
+    "a05e55bdfdab44033c105d6c2bb560da7e2beeb50721344f8193815c6ead4ed7"
+)
+PREVIOUS_V27_SCHEMA_FINGERPRINT = (
+    "4cc377da1c900fc3f7c36666665b888512c6203a61b9076d1c9684df7c8c30f2"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "6431c08ea940c9eb9c175f009b6cf52d2e9e90282aba0ae643f2fae4ffa98682"
+)
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -142,7 +149,8 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V21_SCHEMA_FINGERPRINT: 21,
     PREVIOUS_V22_SCHEMA_FINGERPRINT: 22,
     PREVIOUS_V26_SCHEMA_FINGERPRINT: 23,
-    CURRENT_SCHEMA_FINGERPRINT: 27,
+    PREVIOUS_V27_SCHEMA_FINGERPRINT: 27,
+    CURRENT_SCHEMA_FINGERPRINT: 28,
 }
 
 
@@ -938,6 +946,16 @@ def _migrate_memory_recollection(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migrate_conversation_arrivals(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_arrivals (
+            scope TEXT NOT NULL,
+            received_at REAL NOT NULL,
+            PRIMARY KEY(scope, received_at)
+        )
+    """)
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -966,6 +984,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     25: _migrate_food_preparation_status,
     26: _migrate_expression_feedback_mirrors,
     27: _migrate_memory_recollection,
+    28: _migrate_conversation_arrivals,
 }
 
 

@@ -157,6 +157,17 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertEqual(runtime.semantic_segment_status()["metrics"]["planning_failed"], 0)
         self.assertEqual(event._daily_life_enrichment_seconds, 7.99)
 
+    def test_compact_boundaries_preserve_unicode_and_reject_ambiguous_or_missing_text(self):
+        runtime = self._runtime("{}")
+        validate = runtime._part_semantic_segment_runtime_component._semantic_segment_validate_payload
+        source = "刚下雨啦🌧️我去关窗，等会儿一起看电影"
+        plan = validate({"segments": [{"end_after": "刚下雨啦🌧️"}, {"end_after": "等会儿一起看电影"}]}, source)
+        self.assertIsNotNone(plan)
+        self.assertEqual("".join(p.text for p in plan.segments), source)
+        self.assertIsNone(validate({"segments": [{"end_after": "刚下雨啦🌧️"}]}, source))
+        self.assertIsNone(validate({"segments": [{"end_after": "晚安"}]}, "晚安，晚安"))
+        self.assertIsNone(validate({"segments": [{"end_after": "没有的原文"}]}, source))
+
     def test_configured_timeout_is_the_only_segmentation_deadline(self):
         source = "我有点想你啦"
         for seconds in (8, 12):
@@ -239,14 +250,16 @@ class SemanticSegmentTest(unittest.TestCase):
                         changed = asyncio.run(asyncio.wait_for(decorate(), 0.2))
 
                     self.assertFalse(changed)
-                    self.assertEqual(runtime.composer._call_llm_text.await_count, 2)
-                    self.assertEqual(completed, [True, True])
+                    expected_calls = 1 if probability == 0 else 2
+                    self.assertEqual(runtime.composer._call_llm_text.await_count, expected_calls)
+                    self.assertEqual(completed, [True] * expected_calls)
                     item = runtime._voice_switch_round_store()[event.unified_msg_origin]
                     synthesize.assert_not_awaited()
                     draw.assert_not_called()
                     self.assertEqual(event.get_result().chain[0].text, "我有点想你啦")
                     self.assertNotIn("probability_result", item)
-                    self.assertEqual(item["text_reason"], "表达判断超时。")
+                    if probability:
+                        self.assertEqual(item["text_reason"], "表达判断超时。")
 
     def test_model_text_decision_precedes_probability(self):
         source = "晚点我再跟你说。"
@@ -304,7 +317,11 @@ class SemanticSegmentTest(unittest.TestCase):
 
                 with patch("core.runtime.voice.limit.random.random", return_value=draw):
                     self.assertEqual(asyncio.run(decorate()), expected)
-                self.assertEqual(len(runtime.composer.prompts), 2)
+                self.assertEqual(len(runtime.composer.prompts), 1 if cooldown else 2)
+                if cooldown:
+                    synthesize.assert_not_awaited()
+                    self.assertFalse(any("待判断表达" in p for p in runtime.composer.prompts))
+                    continue
                 prompt = next(p for p in runtime.composer.prompts if "待判断表达" in p)
                 self.assertIn("困倦 85/100", prompt)
                 self.assertIn("工作时只收文字", prompt)

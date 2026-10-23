@@ -47,7 +47,7 @@ class DailyClimateComponent:
         cache = self.context.__dict__.setdefault("_weather_condition_cache", {})
         flags = cache.get(condition)
         if flags is None:
-            provider_id = self.context._task_provider_id()
+            provider_id = self.context._task_provider_id(self.context.config.state.provider)
             provider = await self.context._get_provider(provider_id)
             if provider is None:
                 return weather_data

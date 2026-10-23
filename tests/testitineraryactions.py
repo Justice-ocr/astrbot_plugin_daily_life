@@ -10,6 +10,29 @@ from core.prompts import LIFE_ACTION_SCOPE_RULES
 
 
 class ItineraryActionsTest(unittest.IsolatedAsyncioTestCase):
+    def test_commitment_schedule_links_cover_new_steps_without_retagging_other_plans(self):
+        day = DayRecord(date="2026-10-23", timeline=[
+            TimelineItem(time="18:00", activity="原有晚饭"),
+        ], meta={"planned_life_actions": json.dumps([
+            {"action_id": "dinner", "timeline_index": 0, "payload": {}},
+        ])})
+        timeline = [
+            TimelineItem(time="15:00", activity="准备出门"),
+            TimelineItem(time="15:10", activity="一起散步"),
+            day.timeline[0],
+        ]
+        decision = {"_planned_life_actions": [
+            {"action_id": f"invite:{index}", "timeline_index": index, "payload": {}}
+            for index in (0, 1)
+        ]}
+        apply_edited_timeline(day, timeline, decision, commitment_id=424)
+        actions = json.loads(day.meta["planned_life_actions"])
+        linked = [item for item in actions if item["payload"].get("schedule_commitment_id") == 424]
+        self.assertEqual({item["timeline_index"] for item in linked}, {0, 1})
+        self.assertEqual(next(item for item in actions if item["action_id"] == "dinner")["payload"], {})
+        self.assertNotIn("schedule_commitment_id", decision["_planned_life_actions"][0]["payload"])
+        self.assertTrue(all("commitment_links" not in item["payload"] for item in linked))
+
     async def test_compound_edit_preserves_order_and_individual_durations(self):
         composer, _, _, _ = make_composer([])
         timeline = [TimelineItem(time="18:00", activity="做饭后吃晚饭")]

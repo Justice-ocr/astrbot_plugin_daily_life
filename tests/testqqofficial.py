@@ -20,21 +20,19 @@ class QQOfficialTest(unittest.IsolatedAsyncioTestCase):
     async def test_numeric_official_ids_do_not_query_onebot_contacts(self):
         onebot = ActionBot({"get_stranger_info": {"nickname": "另一个平台的人"}})
         context = types.SimpleNamespace(platform_manager=PlatformManager(onebot))
-        for platform_type in ("qq_official", "qq_official_webhook"):
-            with self.subTest(platform=platform_type):
-                event = Event(
-                    sender_id="123456",
-                    sender_name="官方昵称",
-                    platform_name=platform_type,
-                    unified_msg_origin=f"{platform_type}:FriendMessage:123456",
-                )
-                resolver = ContactNameResolver(context, {})
-                self.assertEqual(await resolver.resolve_event_sender(event), "官方昵称")
-                self.assertIsNone(
-                    get_onebot_client(context, event.unified_msg_origin, event)
-                )
-                self.assertIsNone(get_onebot_client(context, event.unified_msg_origin))
-                await resolver.close()
+        event = Event(
+            sender_id="123456",
+            sender_name="官方昵称",
+            platform_name="qq_official",
+            unified_msg_origin="qq_official:FriendMessage:123456",
+        )
+        resolver = ContactNameResolver(context, {})
+        self.assertEqual(await resolver.resolve_event_sender(event), "官方昵称")
+        self.assertIsNone(
+            get_onebot_client(context, event.unified_msg_origin, event)
+        )
+        self.assertIsNone(get_onebot_client(context, event.unified_msg_origin))
+        await resolver.close()
         self.assertEqual(onebot.calls, [])
 
     async def test_official_openid_is_not_used_as_display_name(self):
@@ -66,47 +64,42 @@ class QQOfficialTest(unittest.IsolatedAsyncioTestCase):
         await resolver.close()
 
     async def test_official_reference_uses_saved_history_for_numeric_and_open_ids(self):
-        for platform_type in ("qq_official", "qq_official_webhook"):
-            for is_group in (False, True):
-                for target_id in ("123456", "OFFICIAL_OPENID"):
-                    with self.subTest(
-                        platform=platform_type, group=is_group, target=target_id
-                    ):
-                        kind = "GroupMessage" if is_group else "FriendMessage"
-                        scope = f"官方实例:{kind}:{target_id}"
-                        onebot = ActionBot({"get_friend_msg_history": {"messages": []}})
-                        composer, *_ = make_composer()
-                        composer.context.platform_manager = PlatformManager(
-                            instances=[
-                                PlatformInstance(onebot),
-                                PlatformInstance(object(), "官方实例", platform_type),
-                            ]
-                        )
-                        record = types.SimpleNamespace(
-                            content={"type": "user", "message": "明天一起去看展吧"},
-                            sender_id=target_id,
-                            sender_name="阿林",
-                            created_at=datetime.datetime.now(),
-                        )
-                        composer.context.message_history_manager = (
-                            PlatformHistoryManager(
-                                {
-                                    ("官方实例", scope): [record],
-                                }
-                            )
-                        )
-                        composer.contact_resolver = ContactNameResolver(
-                            composer.context, {}
-                        )
-                        result = await composer._get_recent_chats(
-                            scope,
-                            is_group=is_group,
-                            hours=24,
-                            max_count=10,
-                        )
-                        self.assertIn("阿林: 明天一起去看展吧", result)
-                        self.assertEqual(onebot.calls, [])
-                        await composer.contact_resolver.close()
+        for is_group in (False, True):
+            for target_id in ("123456", "OFFICIAL_OPENID"):
+                with self.subTest(group=is_group, target=target_id):
+                    kind = "GroupMessage" if is_group else "FriendMessage"
+                    scope = f"官方实例:{kind}:{target_id}"
+                    onebot = ActionBot({"get_friend_msg_history": {"messages": []}})
+                    composer, *_ = make_composer()
+                    composer.context.platform_manager = PlatformManager(
+                        instances=[
+                            PlatformInstance(onebot),
+                            PlatformInstance(object(), "官方实例", "qq_official"),
+                        ]
+                    )
+                    record = types.SimpleNamespace(
+                        content={"type": "user", "message": "明天一起去看展吧"},
+                        sender_id=target_id,
+                        sender_name="阿林",
+                        created_at=datetime.datetime.now(),
+                    )
+                    composer.context.message_history_manager = PlatformHistoryManager(
+                        {
+                            ("官方实例", scope): [record],
+                        }
+                    )
+                    composer.contact_resolver = ContactNameResolver(
+                        composer.context, {}
+                    )
+                    result = await composer._get_recent_chats(
+                        scope,
+                        is_group=is_group,
+                        hours=24,
+                        max_count=10,
+                    )
+                    self.assertIn("阿林: 明天一起去看展吧", result)
+                    self.assertEqual(onebot.calls, [])
+                    await composer.contact_resolver.close()
 
     async def test_scoped_onebot_reference_uses_selected_account(self):
         first = ActionBot({})

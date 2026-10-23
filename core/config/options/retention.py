@@ -25,6 +25,7 @@ class CommitmentSettings:
 class MemorySettings:
     enabled: bool = True
     provider: str = ""
+    ranking_provider: str = ""
     embedding_provider: str = ""
     private_message_threshold: int = 8
     group_message_threshold: int = 20
@@ -46,6 +47,7 @@ class MemorySettings:
         return MemorySettings(
             enabled=as_bool(data.get("enabled", True), True),
             provider=as_str(data.get("provider", "")).strip(),
+            ranking_provider=as_str(data.get("ranking_provider", "")).strip(),
             embedding_provider=as_str(data.get("embedding_provider", "")).strip(),
             private_message_threshold=as_int(
                 data.get("private_message_threshold", 8), 8, 2, 100

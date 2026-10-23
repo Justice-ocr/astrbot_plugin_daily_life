@@ -1,5 +1,5 @@
-import asyncio
 import ast
+import asyncio
 import inspect
 import json
 import sys
@@ -9,11 +9,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from support import Event  # noqa: F401
-from astrbot.core.agent.tool import FunctionTool
+from support import Event
+
+# isort: split
+
 from core.runtime.tooling import (
-    ArgumentCheckedTool,
     TOOL_PREFACE_REQUIRED_NAMES,
+    TOOL_RESULT_ONLY_NAMES,
+    ArgumentCheckedTool,
     guard_tool_arguments,
     install_tool_argument_checks,
     prepare_tool_argument_checks,
@@ -22,6 +25,9 @@ from core.runtime.tooling import (
     validate_tool_arguments,
 )
 from core.runtime.voicecall.toolbridge import VoiceCallToolBridge
+from mcp.types import CallToolResult, ImageContent, TextContent
+
+from astrbot.core.agent.tool import FunctionTool
 
 
 class ImageTool(FunctionTool):
@@ -63,7 +69,7 @@ class ToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names - TOOL_PREFACE_REQUIRED_NAMES, {
             "life_query", "life_memory_search", "life_style_catalog",
             "life_web_research_status", "life_voice_generate", "life_emoji_send",
-        })
+        } | TOOL_RESULT_ONLY_NAMES)
         self.assertTrue(TOOL_PREFACE_REQUIRED_NAMES <= names)
 
     def test_actions_require_nonblank_preface_but_reads_do_not(self):
@@ -71,10 +77,6 @@ class ToolContractTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("校验不能执行实际操作")
 
         read_actions = {
-            "life_shared_activity": ("action", ["list"], "start"),
-            "life_object": ("action", ["list", "get", "history"], "record"),
-            "life_commitment": ("action", ["list"], "add"),
-            "life_wardrobe_manage": ("operation", ["query"], "washing"),
             "life_review": ("action", ["show"], "generate"),
         }
         for name in sorted(TOOL_PREFACE_REQUIRED_NAMES):
@@ -133,6 +135,152 @@ class ToolContractTest(unittest.IsolatedAsyncioTestCase):
                 None, prompt="自拍", preface="我拍给你看。")]
         self.assertEqual(valid, ["已受理"])
         self.assertEqual(calls, [(tool, {"prompt": "自拍"})])
+
+    async def test_local_updates_execute_without_a_preface(self):
+        async def handler(event, detail=""):
+            raise AssertionError("No live writes in tests")
+
+        calls = []
+        module = types.ModuleType("astrbot.core.astr_agent_tool_exec")
+
+        class Executor:
+            @classmethod
+            async def execute(cls, original, context, **kwargs):
+                calls.append((original.name, kwargs))
+                yield CallToolResult(content=[TextContent(type="text", text="saved")])
+
+        module.FunctionToolExecutor = Executor
+        with patch.dict(sys.modules, {module.__name__: module}):
+            for name in sorted(TOOL_RESULT_ONLY_NAMES):
+                checked = ArgumentCheckedTool(
+                    FunctionTool(
+                        name=name,
+                        description="Update",
+                        handler=handler,
+                        parameters={
+                            "type": "object",
+                            "properties": {"detail": {"type": "string"}},
+                        },
+                    )
+                )
+                self.assertNotIn("preface", checked.parameters["properties"])
+                result = [item async for item in checked.call(None, detail="明天散步")]
+                self.assertEqual(result[0].content[0].text, "saved")
+                self.assertEqual(calls[-1], (name, {"detail": "明天散步"}))
+
+    async def test_delivery_context_uses_only_sent_prefaces_and_preserves_tool_result(
+        self,
+    ):
+        from componentfixtures import VoiceSwitchComponent
+
+        class Runtime(VoiceSwitchComponent):
+            send_ok = True
+
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(self, scope, text, **kwargs):
+                if not self.send_ok:
+                    return False
+                await kwargs["source_event"].send(text)
+                return True
+
+        async def handler(event):
+            raise AssertionError("No live tools in tests")
+
+        original = FunctionTool(
+            name="life_route_plan",
+            description="Route",
+            handler=handler,
+            parameters={"type": "object", "properties": {}},
+        )
+        checked = ArgumentCheckedTool(original)
+        raw = CallToolResult(
+            content=[
+                TextContent(type="text", text='{"status":"failed","reason":"offline"}'),
+                ImageContent(type="image", data="aGVsbG8=", mimeType="image/png"),
+            ],
+            isError=True,
+            structuredContent={"status": "failed"},
+        )
+        module = types.ModuleType("astrbot.core.astr_agent_tool_exec")
+
+        class Executor:
+            @classmethod
+            async def execute(cls, original, context, **kwargs):
+                yield raw
+
+        module.FunctionToolExecutor = Executor
+        runtime = Runtime()
+        delivered_event = None
+        with patch.dict(sys.modules, {module.__name__: module}):
+            for send_ok in (True, False):
+                runtime.send_ok = send_ok
+                event = Event()
+                runtime._part_silent_tool_preface_component._remember_tool_preface(
+                    event, event.chain_result(["我先看看路线。"])
+                )
+                await runtime.handle_llm_tool_start(
+                    event, checked, {"preface": "我看看怎么走。"}
+                )
+                context = types.SimpleNamespace(
+                    context=types.SimpleNamespace(event=event),
+                    messages=[
+                        types.SimpleNamespace(role="system", content="角色原有设定")
+                    ],
+                )
+                (result,) = [
+                    item
+                    async for item in checked.call(context, preface="我看看怎么走。")
+                ]
+                self.assertTrue(result.isError)
+                self.assertEqual(result.structuredContent, {"status": "failed"})
+                self.assertEqual(result.content[:2], raw.content)
+                self.assertEqual(len(raw.content), 2)
+                self.assertIs(result, raw)
+                if send_ok:
+                    delivered_event = event
+                    content = context.messages[0].content
+                    self.assertEqual(content[0].text, "角色原有设定")
+                    self.assertTrue(content[-1]._no_save)
+                    self.assertIn("我先看看路线。", content[-1].text)
+                    self.assertNotIn("我看看怎么走。", content[-1].text)
+                    self.assertIn("失败", content[-1].text)
+                else:
+                    self.assertEqual(context.messages[0].content, "角色原有设定")
+            context = types.SimpleNamespace(
+                context=types.SimpleNamespace(event=Event()), messages=[]
+            )
+            (result,) = [
+                item async for item in checked.call(context, preface="我看看怎么走。")
+            ]
+            self.assertIs(result, raw)
+            self.assertEqual(context.messages, [])
+            context.context.event = delivered_event
+            from core.runtime.reaction import ToolReactionService
+
+            for status, outcome in (("sent", "success"), ("pending", "pending")):
+                raw = CallToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps({"status": status}))
+                    ]
+                )
+                (result,) = [
+                    item
+                    async for item in checked.call(context, preface="我看看怎么走。")
+                ]
+                self.assertIs(result, raw)
+                self.assertEqual(
+                    ToolReactionService._tool_reaction_outcome(
+                        "life_image_generate", result
+                    ),
+                    outcome,
+                )
+                self.assertEqual(len(context.messages), 1)
+                self.assertEqual(context.messages[0].role, "system")
+                self.assertEqual(len(context.messages[0].content), 1)
+                self.assertIn("我先看看路线。", context.messages[0].content[0].text)
 
     def test_rejects_reason_only_without_exposing_value(self):
         original = ImageTool()

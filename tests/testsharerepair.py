@@ -3,7 +3,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import support  # noqa: F401
 from core.archive import LifeArchive
@@ -195,4 +195,64 @@ class ShareRepairTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await gate.coordinate("a", owner="share")
         self.assertFalse(result["allowed"])
+        self.assertTrue(result["retryable"])
+        self.assertNotIn("a", gate.leases)
+
+    async def test_outgoing_fallback_does_not_invalidate_prepared_share(self):
+        runtime, gate = self.gate()
+        now = life_now()
+        with patch("core.runtime.sharegate.life_now", return_value=now):
+            first = await gate.coordinate("a", owner="share")
+            # 长时间生成导致租约过期，期间由其他任务发送备用内容。
+            gate.leases["a"] = ("share", 0)
+            self.assertTrue(gate.allow_life(types.SimpleNamespace(unified_msg_origin="a")))
+            gate.leases["a"] = (gate.leases["a"][0], 0)
+            runtime.archive.get_conversation_receipt_before.return_value = (
+                now.replace(tzinfo=TIMEZONE).timestamp() - 30
+            )
+            result = await gate.coordinate(
+                "a", owner="share", action="check", expected=first["snapshot"]
+            )
+            self.assertFalse(result["allowed"])
+            self.assertTrue(result["retryable"])
+            self.assertFalse(result.get("stale"))
+            self.assertNotIn("a", gate.leases)
+        with patch(
+            "core.runtime.sharegate.life_now",
+            return_value=now + datetime.timedelta(seconds=91),
+        ):
+            runtime._media_chat_tokens[("b", "user")] = "other-chat"
+            result = await gate.coordinate(
+                "a", owner="share", action="check", expected=first["snapshot"]
+            )
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["snapshot"], first["snapshot"])
+
+    async def test_busy_contact_can_retry_with_the_same_snapshot(self):
+        runtime, gate = self.gate()
+        first = await gate.coordinate("a", owner="share")
+        await gate.coordinate("a", owner="share", action="release")
+        await gate.coordinate("a", owner="other")
+        result = await gate.coordinate(
+            "a", owner="share", action="check", expected=first["snapshot"]
+        )
+        self.assertTrue(result["retryable"])
+        self.assertEqual(gate.leases["a"][0], "other")
+        await gate.coordinate("a", owner="other", action="release")
+        self.assertTrue((await gate.coordinate(
+            "a", owner="share", action="check", expected=first["snapshot"]
+        ))["allowed"])
+
+    async def test_new_incoming_message_still_invalidates_during_contact_cooldown(self):
+        runtime, gate = self.gate()
+        first = await gate.coordinate("a", owner="share")
+        runtime.archive.get_conversation_receipt_before.return_value = (
+            life_now().replace(tzinfo=TIMEZONE).timestamp() - 30
+        )
+        runtime._media_chat_tokens[("a", "user")] = "new-message"
+        result = await gate.coordinate(
+            "a", owner="share", action="check", expected=first["snapshot"]
+        )
+        self.assertTrue(result["stale"])
+        self.assertFalse(result.get("retryable"))
         self.assertNotIn("a", gate.leases)

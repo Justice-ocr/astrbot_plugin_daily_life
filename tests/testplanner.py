@@ -5402,7 +5402,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 {"time": "13:06", "activity": "收拾餐具并擦净料理台", "status": "平稳"},
                 {"time": "14:12", "activity": "午后看书", "status": "安静"},
                 {"time": "15:24", "activity": "起身喝水舒展肩颈", "status": "舒展"},
-                {"time": "16:38", "activity": "更换衣服后出门", "status": "轻快"},
+                {"time": "16:38", "activity": "更换衣服后出门", "status": "轻快", "place_kind": "transit"},
                 {"time": "18:02", "activity": "在街边慢慢散步", "status": "放松"},
                 {"time": "19:07", "activity": "回家整理照片", "status": "满足"},
                 {"time": "20:33", "activity": "吃过晚饭后收拾桌面", "status": "安稳"},
@@ -5416,7 +5416,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "action_type": "change_outfit",
-                    "timeline_index": 8,
+                    "timeline_index": 9,
                     "target": "日间外出穿搭",
                 },
             ],
@@ -5427,12 +5427,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(ok)
-        self.assertIn("持续日间活动", reason)
+        self.assertIn("首次外出", reason)
         self.assertEqual(
             composer._last_validation_issue_code, "daytime_outfit_transition"
         )
 
-        payload["planned_actions"][1]["timeline_index"] = 1
+        payload["planned_actions"][1]["timeline_index"] = 8
         ok, reason = composer._validate_daily_payload(
             payload, expected_coverage="full_day"
         )

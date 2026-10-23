@@ -56,6 +56,7 @@ class ConversationTimingService:
         self._session_id = session_id
         self._is_group = is_group
         self._receipts: dict[str, list[float]] = {}
+        self._arrivals: dict[str, list[float]] = {}
 
     def note_conversation_incoming(self, event: Any) -> None:
         if (
@@ -68,14 +69,43 @@ class ConversationTimingService:
         now = time.time()
         created = event_time(event, "created_at")
         # AstrBot 在事件构造时记录 created_at，优先使用它排除前置钩子的等待。
-        setattr(event, RECEIVED_AT, created if 0 < created <= now else now)
+        received = created if 0 < created <= now else now
+        setattr(event, RECEIVED_AT, received)
+        scope = self._session_id(event)
+        if scope:
+            self._arrivals[scope] = sorted(
+                set(self._arrivals.pop(scope, []) + [received])
+            )[-32:]
+            while len(self._arrivals) > 512:
+                self._arrivals.pop(next(iter(self._arrivals)))
+
+    async def record_conversation_arrival(self, event: Any) -> None:
+        if (
+            event is None
+            or getattr(event, "is_proactive_synthetic", False)
+            or self._is_self_message(event)
+        ):
+            return
+        received = event_time(event, RECEIVED_AT)
+        scope = self._session_id(event)
+        writer = getattr(self._archive(), "save_conversation_arrival", None)
+        if not received or not scope or not callable(writer):
+            return
+        try:
+            await writer(scope, received)
+        except Exception:
+            logger.warning(
+                "[对话时间] 接收时间持久化失败，本次继续使用内存时间戳。"
+            )
 
     def clear_conversation_timing(self) -> None:
         self._receipts.clear()
+        self._arrivals.clear()
 
     def evict_scopes(self, aliases: set[str]) -> None:
         for alias in aliases:
             self._receipts.pop(alias, None)
+            self._arrivals.pop(alias, None)
 
     def note_conversation_sent(
         self, scope: str, sent_at: float, source_event: Any = None
@@ -125,6 +155,18 @@ class ConversationTimingService:
                 previous = await reader(scope, started)
             except Exception:
                 logger.warning("[对话时间] 暂时无法读取历史发送时间，不推测对话间隔。")
+        previous_incoming = max(
+            (t for t in self._arrivals.get(scope, []) if t < started), default=0.0
+        )
+        reader = getattr(self._archive(), "get_conversation_arrival_before", None)
+        if not previous_incoming and callable(reader):
+            try:
+                previous_incoming = await reader(scope, started)
+            except Exception:
+                logger.warning(
+                    "[对话时间] 暂时无法读取历史接收时间，不推测对话间隔。"
+                )
+
         def stamp(value: float) -> str:
             return datetime.datetime.fromtimestamp(value, TIMEZONE).isoformat(timespec="seconds")
 
@@ -138,8 +180,23 @@ class ConversationTimingService:
             ))
         else:
             lines.append("上次成功发送时间：无可核实记录，间隔未知")
-        if self._is_group(event):
-            lines.append("范围：群聊消息记录，不能把群内发送间隔归因于当前发言者。")
+        group = self._is_group(event)
+        if 0 < previous_incoming < started:
+            subject = "群内" if group else "对方"
+            lines.extend(
+                (
+                    f"本轮之前，{subject}上次发来消息：{stamp(previous_incoming)}",
+                    f"{subject}两次发来消息相隔：{format_elapsed(started - previous_incoming)}（{int(started - previous_incoming)}秒）",
+                )
+            )
+            if previous > previous_incoming:
+                lines.append("期间我有发送消息；这不代表对方在此期间回复过。")
+        else:
+            lines.append("对方此前发来消息的时间：无可核实记录，间隔未知")
+        if group:
+            lines.append(
+                "范围：群聊消息记录，不能把群内收发间隔归因于当前发言者；不据此判断这个人迟回。"
+            )
         context = "\n".join(lines)
         setattr(event, "_daily_life_conversation_timing_context", context)
         return context

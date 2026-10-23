@@ -44,7 +44,7 @@ class ProactiveGestureComponentContext(Protocol):
     _emoji_timestamp: Any
     _event_message_id: Any
     _event_session_id: Any
-    _get_proactive_provider: Any
+    get_text_provider: Any
     _proactive_bool: Any
     _proactive_scope_key: Any
     _proactive_send_is_current: Any
@@ -74,8 +74,11 @@ class ProactiveGestureComponent:
         settings = getattr(getattr(self.context, "config", None), "emoji", None)
         return getattr(settings, name, default)
 
+    def _emoji_send_allowed(self) -> bool:
+        return bool(self._emoji_config_value("send_enabled", True))
+
     def _emoji_auto_send_allowed(self, source: str) -> bool:
-        if not bool(self._emoji_config_value("auto_send_enabled", True)):
+        if not self._emoji_send_allowed():
             return False
         source_field = {
             "regular_reply": "send_on_regular_reply",
@@ -84,9 +87,6 @@ class ProactiveGestureComponent:
             "proactive_commitment": "send_on_commitment",
         }.get(str(source or "").strip())
         return source_field is None or bool(self._emoji_config_value(source_field, True))
-
-    def _emoji_tool_send_allowed(self) -> bool:
-        return bool(self._emoji_config_value("tool_send_enabled", True))
 
     def _emoji_send_cooldown_seconds(self) -> int:
         try:
@@ -270,9 +270,9 @@ class ProactiveGestureComponent:
             if callable(marker):
                 marker(event, "life_emoji_send", outcome)
 
-        if not self._emoji_tool_send_allowed():
+        if not self._emoji_send_allowed():
             mark_outcome("fallback")
-            return "表情工具已关闭。"
+            return "表情发送已关闭。"
         scope = self._emoji_scope(event)
         if not scope:
             mark_outcome("fallback")
@@ -322,6 +322,9 @@ class ProactiveGestureComponent:
         if skip_reason:
             mark_outcome("fallback")
             return skip_reason
+        if not self._emoji_send_allowed():
+            mark_outcome("fallback")
+            return "表情发送已关闭。"
         if not await self.context.send_message_if_not_recalled(
             scope,
             chain,
@@ -756,7 +759,8 @@ class ProactiveGestureComponent:
             return None
         intent = dict(intent)
         await self._attach_recent_expression_intents(intent, scope=scope)
-        provider = await self.context._get_proactive_provider()
+        provider_id = self.context.config.emoji.selection_provider
+        provider = await self.context.get_text_provider(provider_id)
         if not provider:
             return None
         candidate_assets = await self._semantic_emoji_candidates(assets, intent)
@@ -812,7 +816,6 @@ JSON 输出要求：
 {json.dumps(candidates, ensure_ascii=False)}"""
         session_id = f"daily_life_emoji_pick_{uuid.uuid4().hex[:8]}"
         try:
-            provider_id = self.context.config.proactive.provider
             text = await self.context.call_text_model(
                 provider,
                 cache_friendly_prompt(fixed, dynamic),

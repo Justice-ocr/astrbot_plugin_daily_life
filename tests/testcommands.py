@@ -125,6 +125,7 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
                     "rhythm_config": {"llm_provider": "generation-model"},
                     "memory_config": {"provider": "memory-model"},
                     "vision_config": {"provider": "vision-model"},
+                    "emoji_vision_config": {"provider": "emoji-model"},
                 }
             ),
             _get_curr_period=lambda: "afternoon",
@@ -136,7 +137,8 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
         event = Event()
         result = await center.query_life(event, target="config")
 
-        self.assertIn("视觉 vision-model", result)
+        self.assertIn("图片理解 vision-model", result)
+        self.assertIn("表情识别 emoji-model", result)
 
     async def test_life_tools_unclear_actions_return_user_facing_help(self):
         center = DailyLifeCommandCenter(types.SimpleNamespace())

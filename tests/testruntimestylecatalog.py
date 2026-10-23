@@ -7,12 +7,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
+from componentfixtures import (
+    LifecycleComponent,
+    RuntimeStyleCatalogComponent,
+    StyleCatalogComponent,
+)
 from core.archive import LifeArchive
 from core.life.appearance import format_life_preference_context
-from componentfixtures import StyleCatalogComponent
-from componentfixtures import LifecycleComponent
 from core.models import PreferenceRecord
-from componentfixtures import RuntimeStyleCatalogComponent
 from PIL import Image
 
 
@@ -190,7 +192,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
                 result = await runtime.life_style_catalog_list(None, kind="outfit")
 
-                self.assertIn("共 15 个已启用候选", result)
+                self.assertIn("共 15 个已启用条目", result)
                 self.assertIn("套装 11", result)
                 self.assertIn("发型 4", result)
                 self.assertIn("当前查询：套装共 11 个，已显示 11 个", result)
@@ -216,10 +218,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
                 result = await runtime.life_style_catalog_list(None, limit=3)
 
-                self.assertIn("共 5 个已启用候选", result)
+                self.assertIn("共 5 个已启用条目", result)
                 self.assertIn("前 3 个条目，总计 5 个", result)
                 self.assertIn("这不是各分类的完整清单", result)
-                self.assertIn("不得据此声称衣橱只有当前这些候选", result)
+                self.assertIn("不得据此声称衣橱只有当前这些条目", result)
                 self.assertIn("必须重新调用 life_style_catalog", result)
             finally:
                 archive.close()
@@ -512,6 +514,27 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     await runtime._style_catalog_resolve_new_outfit_reference_ids([]), []
                 )
+            finally:
+                archive.close()
+
+    async def test_large_catalog_has_bounded_candidates_without_hiding_rare_scene(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = LifeArchive(f"{directory}/life.db")
+            try:
+                ids = []
+                for index in range(90):
+                    item = await archive.upsert_style_catalog_item({
+                        "kind": "outfit", "title": f"普通套装{index}", "description": "完整日常套装",
+                        "source_image_hash": f"{index + 1:064x}", "confidence": 0.9,
+                        "attributes": {"scenes": ["睡眠" if index == 89 else "日常"]},
+                    })
+                    ids.append(item.id)
+                await archive.adopt_wardrobe_items(ids, event_id="large-owned", at="2026-10-08 12:00:00", reason="正式衣物")
+                context = await _StyleCatalogComposer(archive)._style_catalog_context(limit=1)
+                brief = context.split("其余可穿服装简表", 1)[1]
+                self.assertEqual(sum(line.startswith("- #") for line in brief.splitlines()), 32)
+                self.assertIn(f"#{ids[-1]} [套装] 普通套装89", context)
+                self.assertIn("未展示不代表衣橱缺少此类衣物", context)
             finally:
                 archive.close()
 
@@ -921,7 +944,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 )
                 items = await archive.get_style_catalog_items(limit=10)
 
-                self.assertIn("已加入视觉衣橱候选", str(result))
+                self.assertIn("已收入视觉衣橱", str(result))
+                self.assertEqual(next(item for item in items if item.kind == "outfit").attributes["wardrobe"]["ownership"], "owned")
                 self.assertIn("美甲", str(result))
                 self.assertEqual(
                     {item.kind for item in items},

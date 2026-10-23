@@ -664,14 +664,15 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_model_semantic_memory_ranking_honors_zero_limit(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
-            {"memory_config": {"provider": "memory-model"}}
+            {"memory_config": {"provider": "memory-model", "ranking_provider": "rank-model"}}
         )
         provider = Provider([])
         closed_sessions = []
 
-        runtime._get_memory_provider = lambda: async_return(provider)
+        runtime.get_text_provider = AsyncMock(return_value=provider)
 
         async def call_text_model(*args, **kwargs):
+            self.assertEqual(kwargs["primary_provider_id"], "rank-model")
             return '{"selected":{"summaries":[0],"events":[1,0]}}'
 
         async def close_text_session(session_id):
@@ -693,6 +694,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
 
         self.assertEqual(selected, {"summaries": [], "events": ["事件二"]})
+        runtime.get_text_provider.assert_awaited_once_with("rank-model")
         self.assertEqual(len(closed_sessions), 1)
 
     async def test_life_memory_context_uses_one_semantic_ranking_call(self):
@@ -1749,6 +1751,10 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                         "reason": "双方已经确认同行",
                         "outfit_instruction": "适合傍晚同行的外出穿搭",
                         "outfit_effective_time": "17:10",
+                        "_planned_life_actions": [
+                            {"action_id": f"shared:{index}", "timeline_index": index, "payload": {}}
+                            for index in (1, 2)
+                        ],
                     },
                 )
 
@@ -1775,6 +1781,10 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertTrue(markers[str(commitment.id)].startswith("v2:applied:"))
         pending = json.loads(stored.meta["pending_commitment_outfit"])
         self.assertEqual(pending["effective_time"], "17:10")
+        self.assertEqual(
+            [item["payload"]["schedule_commitment_id"] for item in json.loads(stored.meta["planned_life_actions"])],
+            [commitment.id, commitment.id],
+        )
         self.assertEqual(
             (await archive.get_commitment(commitment.id)).status, "scheduled"
         )

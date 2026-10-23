@@ -292,6 +292,7 @@ def _install_stubs():
     modules["astrbot.core"].html_renderer = _HtmlRenderer()
     modules["astrbot.api.event.filter"].EventMessageType = _EventMessageType
     modules["astrbot.core.agent.message"].TextPart = _TextPart
+    modules["astrbot.core.agent.message"].Message = types.SimpleNamespace
     modules["astrbot.core.agent.tool"].FunctionTool = _FunctionTool
     modules["astrbot.core.provider.entities"].ProviderRequest = _ProviderRequest
     modules["astrbot.core.star.context"].Context = object
@@ -331,6 +332,7 @@ def _install_stubs():
 
 _install_stubs()
 
+from componentfixtures import DailyLifeDashboardComponent  # noqa: E402
 from core.archive import LifeArchive  # noqa: E402
 from core.archive.categories import (  # noqa: E402
     STORAGE_CATEGORIES,
@@ -340,7 +342,6 @@ from core.archive.promises import _COMMITMENT_SOURCE_PRIORITY  # noqa: E402
 from core.clock import today as life_today  # noqa: E402
 from core.config.options import LifeSettings  # noqa: E402
 from core.interface import DailyLifeCommandCenter  # noqa: E402
-from componentfixtures import DailyLifeDashboardComponent  # noqa: E402
 from core.life import LifeBackgroundComposer  # noqa: E402
 from core.life.tools import (  # noqa: E402
     get_current_timeline_status,

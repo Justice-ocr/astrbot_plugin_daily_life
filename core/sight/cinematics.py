@@ -4,7 +4,7 @@ import asyncio
 import copy
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from astrbot.api import logger
@@ -22,8 +22,6 @@ from .native import (
 )
 from .provider import get_sight_provider
 from .sample import prepare_sample_video_source
-
-from typing import Protocol
 
 
 class NativeSightComponentContext(Protocol):
@@ -253,6 +251,7 @@ class NativeSightComponent:
                             "cached_content_token_count": usage.get(
                                 "cachedContentTokenCount"
                             ),
+                            "candidates_token_count": usage.get("candidatesTokenCount"),
                         }
                     },
                     kind="video_understanding",

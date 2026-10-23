@@ -8,6 +8,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from runtimehelpers import EmojiAssetRecord, Event, RuntimeAsyncHelpers
+
+# isort: split
+
 from core.models import ExpressionIntentRecord
 from core.runtime.reply import SemanticSegmentPlan
 
@@ -136,6 +139,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
         self.assertEqual(event.sent_messages, [])
 
     async def test_idle_delivery_accepts_same_scene_and_rejects_changed_scene(self):
+        now = datetime.datetime(2026, 5, 24, 12)
         for latest_mode in ("co_present", "remote"):
             with self.subTest(latest_mode=latest_mode):
                 runtime, _ = self._make_proactive_runtime([])
@@ -144,6 +148,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                     "target_scope": scope, "message": "一起看电影", "message_id": "m1",
                     "sender_id": "10001", "sender_name": "阿林", "platform_name": "aiocqhttp",
                     "is_group": False, "recent_messages": [], "pending_count": 1,
+                    "last_activity_at": now - datetime.timedelta(hours=3),
                 }
                 runtime._proactive_idle_candidates[scope] = candidate
                 runtime.evaluate_proactive_reply = AsyncMock(return_value={
@@ -155,7 +160,7 @@ class AutomaticExpressionTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestC
                 runtime.voice_call = types.SimpleNamespace(proactive_invite_available=lambda scope: True)
                 runtime._send_proactive_message = AsyncMock(return_value=True)
                 runtime._send_proactive_voice_call_invite = AsyncMock()
-                await runtime._evaluate_idle_candidate(scope, candidate, datetime.datetime(2026, 5, 24, 12))
+                await runtime._evaluate_idle_candidate(scope, candidate, now)
                 self.assertEqual(runtime._send_proactive_message.await_count, int(latest_mode == "co_present"))
                 runtime._send_proactive_voice_call_invite.assert_not_awaited()
 

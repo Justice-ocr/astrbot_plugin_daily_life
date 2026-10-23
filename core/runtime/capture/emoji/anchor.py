@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ....config.options.basis import EmojiSettings
+from ....sight.visual import image_summary_limit
 
 from typing import Protocol
 
@@ -27,7 +28,6 @@ class EmojiBaseComponentContext(Protocol):
     archive: Any
     config: Any
     data_path: Any
-    get_text_provider: Any
     update_structured_message_visual_summary: Any
 
 
@@ -129,10 +129,6 @@ class EmojiBaseComponent:
             or await self._emoji_ready_asset_count(exclude_hash=exclude_hash)
             < self.context._emoji_max_ready_count()
         )
-
-    async def _get_vision_provider(self):
-        provider_id = self.context.config.vision.provider
-        return await self.context.get_text_provider(provider_id)
 
     def _emoji_asset_cache_dir(self, *, create: bool = True) -> Path | None:
         data_path = getattr(self.context, "data_path", None)
@@ -359,12 +355,16 @@ class EmojiBaseComponent:
             summary = self.context._str_payload(payload.get("caption"))
         if not summary:
             summary = self.context._str_payload(payload.get("description"))
-        return self.context._compact_visual_context_summary(summary)
+        return self.context._compact_visual_context_summary(
+            summary, max_chars=image_summary_limit(self.context.config.vision.detail_level)
+        )
 
     @classmethod
-    def _compact_visual_context_summary(cls, summary: str) -> str:
+    def _compact_visual_context_summary(
+        cls, summary: str, *, max_chars: int | None = None
+    ) -> str:
         text = " ".join(str(summary or "").split())
-        limit = max(int(cls.VISUAL_CONTEXT_SUMMARY_MAX_CHARS), 40)
+        limit = max(int(max_chars or cls.VISUAL_CONTEXT_SUMMARY_MAX_CHARS), 40)
         if len(text) <= limit:
             return text
         return f"{text[:limit].rstrip()}..."

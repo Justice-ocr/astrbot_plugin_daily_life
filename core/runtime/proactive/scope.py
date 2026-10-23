@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from typing import Any
+import hashlib
+from typing import Any, Protocol
 
+from ...clock import local_datetime
 from ...clock import now as life_now
 from ...config.options.cast import as_bool
-from ...life.tools import build_time_context
+from ...life.tools import build_time_context, timeline_item_datetime
 from .procontext import ProactiveSyntheticEvent
-
-from typing import Protocol
 
 
 class ProactiveScopeComponentContext(Protocol):
@@ -30,6 +30,8 @@ class ProactiveScopeComponentContext(Protocol):
     _proactive_feedback_watches: Any
     _proactive_idle_candidates: Any
     _proactive_idle_seconds: Any
+    _proactive_current_day: Any
+    _refresh_private_proactive_timing: Any
     _proactive_idle_tasks: Any
     _proactive_is_self_message: Any
     _proactive_last_reply_at: Any
@@ -113,6 +115,13 @@ class ProactiveScopeComponent:
         self, candidate: dict[str, Any], now: datetime.datetime
     ) -> float:
         due_at = candidate.get("next_evaluation_at")
+        opportunity_at = candidate.get("private_opportunity_at")
+        if isinstance(opportunity_at, datetime.datetime):
+            due_at = (
+                max(due_at, opportunity_at)
+                if isinstance(due_at, datetime.datetime)
+                else opportunity_at
+            )
         if not isinstance(due_at, datetime.datetime):
             last_activity_at = candidate.get("last_activity_at")
             if not isinstance(last_activity_at, datetime.datetime):
@@ -138,11 +147,32 @@ class ProactiveScopeComponent:
             return False
         self._cancel_proactive_idle_task(key)
         revision = int(candidate.get("revision") or 0)
-        delay = self._proactive_candidate_delay_seconds(candidate, now or life_now())
+        scheduled_at = now or life_now()
 
         async def runner() -> None:
             try:
-                await asyncio.sleep(delay)
+                check_at = scheduled_at
+                while True:
+                    if (
+                        self.context._proactive_idle_candidates.get(key) is not candidate
+                        or not self.context._proactive_chat_enabled(
+                            bool(candidate.get("is_group"))
+                        )
+                    ):
+                        return
+                    await self.context._refresh_private_proactive_timing(
+                        candidate, check_at
+                    )
+                    if self.context._proactive_idle_candidates.get(key) is not candidate:
+                        return
+                    delay = self._proactive_candidate_delay_seconds(candidate, check_at)
+                    # 此处仅刷新本地生活事实；语义评估等待合适时机再进行。
+                    if not candidate.get("is_group") and delay > 5 * 60:
+                        await asyncio.sleep(5 * 60)
+                        check_at = life_now()
+                        continue
+                    await asyncio.sleep(delay)
+                    break
                 current = self.context._proactive_idle_candidates.get(key)
                 if (
                     not isinstance(current, dict)
@@ -271,6 +301,91 @@ class ProactiveScopeComponent:
         )
         return max(1, int(minutes or 30)) * 60
 
+    async def _refresh_private_proactive_timing(
+        self, candidate: dict[str, Any], now: datetime.datetime
+    ) -> None:
+        """结合当前生活节奏，重新评估私聊联系时机。
+
+        Args:
+            candidate: 对话时间锚点及可变的调度元数据。
+            now: 生活时区的当前时间。
+        """
+        if candidate.get("is_group"):
+            return
+        anchor = local_datetime(candidate.get("last_activity_at"))
+        if anchor is None:
+            return
+        scope = str(candidate.get("target_scope") or candidate.get("key") or "")
+        reference = self.context._proactive_idle_seconds(candidate)
+        # 同一会话在轮询和重载时保持相同的随机变化值。
+        seed = hashlib.blake2s(
+            f"{scope}|{anchor.isoformat()}".encode(), digest_size=8
+        ).digest()
+        variation = int.from_bytes(seed, "big") / (2**64 - 1)
+        rest_seconds = max(5 * 60, int(reference * 0.15))
+        _, _, day = await self.context._proactive_current_day(now)
+        state = getattr(day, "state", None)
+        values = state.as_dict() if hasattr(state, "as_dict") else state
+        values = values if isinstance(values, dict) else {}
+        # 避免旧状态导致今天的联系时机无故提前或推迟。
+        updated_at = local_datetime(values.get("updated_at"))
+        if (
+            updated_at is not None
+            and not 0 <= (now - updated_at).total_seconds() <= 3 * 3600
+        ):
+            values = {}
+        levels = {}
+        for name in ("busyness", "sleepiness", "interaction_capacity", "social"):
+            value = values.get(name)
+            levels[name] = (
+                max(0.0, min(1.0, float(value) / 100))
+                if isinstance(value, (int, float))
+                else 0.5
+            )
+        rhythm = (
+            1.0
+            + 0.7 * (levels["busyness"] - 0.5)
+            + 0.6 * (levels["sleepiness"] - 0.5)
+            - 0.4 * (levels["interaction_capacity"] - 0.5)
+            - 0.3 * (levels["social"] - 0.5)
+        )
+        delay = max(rest_seconds, int(reference * (0.7 + 0.8 * variation) * rhythm))
+        due_at = anchor + datetime.timedelta(seconds=delay)
+        reason = "结合当前生活节奏，留出一段自然的聊天间隔再考虑联系"
+        occupied = (
+            levels["busyness"] >= 0.75
+            or levels["sleepiness"] >= 0.8
+            or levels["interaction_capacity"] <= 0.25
+        )
+        if occupied:
+            reason = "当前忙碌、困倦或交流余力较低，晚些再考虑联系"
+        elif day:
+            # 计划中的活动切换只提供重新评估的机会，不能作为活动完成的证据。
+            transitions = []
+            for item in getattr(day, "timeline", []) or []:
+                execution = str(
+                    item.get("execution_state", "")
+                    if isinstance(item, dict)
+                    else getattr(item, "execution_state", "")
+                )
+                if execution in {"cancelled", "skipped", "expired"}:
+                    continue
+                transition = timeline_item_datetime(
+                    item, day.date, meta=getattr(day, "meta", None)
+                )
+                if transition is not None and transition > anchor:
+                    opportunity = max(
+                        anchor + datetime.timedelta(seconds=rest_seconds),
+                        transition
+                        + datetime.timedelta(seconds=60 + int(variation * 4 * 60)),
+                    )
+                    transitions.append(opportunity)
+            if transitions and min(transitions) < due_at:
+                due_at = min(transitions)
+                reason = "日程来到新的时间窗口，结合实际进展考虑是否有值得分享的话"
+        candidate["private_opportunity_at"] = due_at
+        candidate["timing_reason"] = reason
+
     def _proactive_observe_hold_seconds(self) -> int:
         return 5 * 60
 
@@ -389,8 +504,14 @@ class ProactiveScopeComponent:
             "last_activity_at": now,
             "last_bot_reply_at": (previous or {}).get("last_bot_reply_at"),
             "observe_hold_until": None,
-            "next_evaluation_at": now
-            + datetime.timedelta(seconds=self.context._proactive_idle_seconds(event)),
+            "next_evaluation_at": (
+                now
+                + datetime.timedelta(
+                    seconds=self.context._proactive_idle_seconds(event)
+                )
+                if self.context._event_is_group_message(event)
+                else None
+            ),
             "recent_messages": recent_messages,
             "pending_count": min(
                 self.context._AIR_MAX_RECENT_MESSAGES,
@@ -464,9 +585,18 @@ class ProactiveScopeComponent:
             candidate = dict(candidate)
             candidate["last_bot_reply_at"] = reply_at
             candidate["last_activity_at"] = reply_at
-            candidate["next_evaluation_at"] = reply_at + datetime.timedelta(
-                seconds=self.context._proactive_idle_seconds(candidate)
+            candidate["next_evaluation_at"] = (
+                reply_at
+                + datetime.timedelta(
+                    seconds=self.context._proactive_idle_seconds(candidate)
+                )
+                if candidate.get("is_group")
+                else None
             )
+            candidate.pop("private_opportunity_at", None)
+            candidate.pop("timing_reason", None)
+            candidate.pop("idle_observe_count", None)
+            candidate.pop("evaluation_in_progress", None)
             candidate["observe_hold_until"] = None
             candidate["state"] = "after_ordinary_reply"
             candidate["decision"] = ""

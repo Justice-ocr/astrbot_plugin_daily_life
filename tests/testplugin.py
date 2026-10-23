@@ -29,12 +29,9 @@ if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
 
 from astrbot_plugin_daily_life import main as plugin_module  # noqa: E402
-from componentfixtures import SemanticSegmentRuntimeComponent  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.sender import (  # noqa: E402
     ExpressiveSendMessageTool,
 )
-from componentfixtures import VoiceSwitchComponent  # noqa: E402
-from core.runtime.voice import preface as fixture_voice_preface_module  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.voice import (  # noqa: E402
     preface as voice_preface_module,
 )
@@ -44,6 +41,11 @@ from astrbot_plugin_daily_life.core.runtime.voice.preface import (  # noqa: E402
     tool_reply_policy,
 )  # noqa: E402
 from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
+from componentfixtures import (  # noqa: E402
+    SemanticSegmentRuntimeComponent,
+    VoiceSwitchComponent,
+)
+from core.runtime.voice import preface as fixture_voice_preface_module  # noqa: E402
 
 
 @contextmanager
@@ -1694,7 +1696,6 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         with patched_follow_up_runners({}) as follow_up:
             samples = (
                 ("accept_user_invite", "等下哦，我看看今天的安排。"),
-                ("add_memo_for_tomorrow", "等下哦，我记一下。"),
                 ("life_image_generate", "我拍一张现在的生活照给你看。"),
                 ("life_photo_suite_generate", "我给你多拍几张，等我一下。"),
                 ("life_video_generate", "我生成一段街角短视频。"),
@@ -1720,7 +1721,43 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(state["preface_sent"])
                 self.assertEqual(state["preface_channel"], "聊天表达")
 
-        self.assertEqual(len(runtime.expression_calls), 6)
+        self.assertEqual(len(runtime.expression_calls), 5)
+
+    async def test_local_updates_reply_after_result_without_sending_buffered_claims(
+        self,
+    ):
+        class Runtime(VoiceSwitchComponent):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+        runtime = Runtime()
+        for name in (
+            "add_memo_for_tomorrow",
+            "life_shared_activity",
+            "life_object",
+            "life_memory_correct",
+            "life_commitment",
+            "life_wardrobe_manage",
+        ):
+            for final_text in ("记住啦，明天一起去。", "这次没能保存好，稍后再试。"):
+                with self.subTest(tool=name, final=final_text):
+                    event = Event()
+                    component = runtime._part_silent_tool_preface_component
+                    component._remember_tool_preface(
+                        event, event.chain_result(["记着呢，已经写好了。"])
+                    )
+                    tool = types.SimpleNamespace(name=name)
+                    await runtime.handle_llm_tool_start(event, tool)
+                    self.assertEqual(event.sent_messages, [])
+                    await runtime.handle_llm_tool_respond(event, tool)
+                    event.set_result(event.chain_result([final_text]))
+                    self.assertFalse(runtime.suppress_final_silent_tool_result(event))
+                    self.assertEqual(event.get_result().chain, [final_text])
+                    self.assertFalse(
+                        getattr(event, "_daily_life_delivered_tool_prefaces", [])
+                    )
+                    self.assertNotIn(event.unified_msg_origin, component._tool_reply_round_store())
 
     async def test_runtime_delivers_direct_tool_prefaces_and_deduplicates_in_parallel(self):
         class Runtime(VoiceSwitchComponent):
@@ -1830,6 +1867,12 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             {
                 "life_voice_generate",
                 "life_emoji_send",
+                "add_memo_for_tomorrow",
+                "life_shared_activity",
+                "life_object",
+                "life_memory_correct",
+                "life_commitment",
+                "life_wardrobe_manage",
             },
         )
         self.assertTrue(tool_reply_policy("life_voice_generate").replaces_text)
@@ -1919,6 +1962,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         plugin.runtime = types.SimpleNamespace(
             note_recalled_message=lambda event: False,
             note_conversation_incoming=lambda event: calls.append(("received", event)),
+            record_conversation_arrival=lambda event: record_async(
+                calls, "arrival_saved", event
+            ),
             prepare_visual_media_from_event=lambda event: record_async(
                 calls, "prepare", event
             ),
@@ -1952,7 +1998,17 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [name for name, _ in calls],
-            ["received", "prepare", "structured", "emoji", "visual", "video", "memory", "bili"],
+            [
+                "received",
+                "arrival_saved",
+                "prepare",
+                "structured",
+                "emoji",
+                "visual",
+                "video",
+                "memory",
+                "bili",
+            ],
         )
 
     async def test_message_hook_persists_memory_and_schedules_emoji_capture(self):
@@ -2760,8 +2816,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不能提前答应或拒绝", invite_doc)
         self.assertIn("Args:", memo_doc)
         self.assertIn("memo_details(string)", memo_doc)
-        self.assertIn("简短、自然的等待语", memo_doc)
-        self.assertIn("不能声称已经记录成功", memo_doc)
+        self.assertIn("不先发等待语", memo_doc)
+        self.assertIn("记录成功才确认", memo_doc)
         self.assertIn("target(string)", query_doc)
         self.assertIn("action(string)", adjust_doc)
         self.assertIn("action(string)", commitment_doc)

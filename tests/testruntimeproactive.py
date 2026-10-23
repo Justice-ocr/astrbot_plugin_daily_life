@@ -175,6 +175,7 @@ class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
             "target_scope": "aiocqhttp:GroupMessage:20001",
             "message": "刚才那个话题",
             "message_id": "m-proactive-switch",
+            "last_activity_at": datetime.datetime(2026, 7, 16, 21, 0),
             "sender_id": "10001",
             "sender_name": "测试用户",
             "platform_name": "aiocqhttp",
@@ -3583,11 +3584,15 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(intents, [])
         self.assertEqual(len(provider.prompts), 1)
 
-    async def test_life_emoji_send_uses_current_message_when_tool_args_are_empty(self):
+    async def test_life_emoji_send_uses_current_message_with_all_auto_scenes_disabled(self):
         runtime, provider = self._make_proactive_runtime(
             ['{"emoji_id": 1, "reason": "当前消息明确要求亲亲表情"}'],
             provider_id="proactive-model",
         )
+        runtime.config.emoji.send_on_regular_reply = False
+        runtime.config.emoji.send_on_proactive_reply = False
+        runtime.config.emoji.send_on_private_revisit = False
+        runtime.config.emoji.send_on_commitment = False
         scope = "aiocqhttp:FriendMessage:10001"
         await runtime.archive.upsert_emoji_asset(
             EmojiAssetRecord(
@@ -3774,13 +3779,25 @@ class RuntimeProactiveAsyncTest(
 
         self.assertEqual(provider.prompts, [])
 
-    async def test_emoji_tool_can_be_disabled_without_disabling_automatic_policy(self):
-        runtime, _ = self._make_proactive_runtime([])
-        runtime.config.emoji.tool_send_enabled = False
+    async def test_emoji_send_switch_disables_tools_and_all_automatic_scenes(self):
+        runtime, provider = self._make_proactive_runtime([])
+        runtime.config.emoji.send_enabled = False
+        scope = "aiocqhttp:FriendMessage:10001"
         event = Event(
-            unified_msg_origin="aiocqhttp:FriendMessage:10001",
+            unified_msg_origin=scope,
             message_id="m-policy-tool",
         )
+        runtime.mark_structured_pending_bot_text(event, "收到啦")
+
+        self.assertFalse(await runtime.send_semantic_emoji_if_needed(event))
+        for source in ("proactive_reply", "private_revisit", "proactive_commitment"):
+            with self.subTest(source=source):
+                await runtime._send_proactive_emoji_if_needed(
+                    scope,
+                    {"source": source, "expression_intent": {"send_emoji": True}},
+                    source_event=event,
+                    source_message_id="m-policy-tool",
+                )
 
         result = await runtime.life_emoji_send(
             event,
@@ -3789,7 +3806,31 @@ class RuntimeProactiveAsyncTest(
             emotion_category="happy",
         )
 
-        self.assertEqual(result, "表情工具已关闭。")
+        self.assertEqual(result, "表情发送已关闭。")
+        self.assertEqual(provider.prompts, [])
+        self.assertEqual(event.sent_messages, [])
+        self.assertEqual(runtime.context.sent_messages, [])
+
+    async def test_emoji_tool_rechecks_send_switch_after_selecting_material(self):
+        runtime, provider = self._make_proactive_runtime([])
+        scope = "aiocqhttp:FriendMessage:10001"
+        event = Event(unified_msg_origin=scope, message_id="m-policy-changed")
+        gesture = runtime._part_proactive_gesture_component
+
+        async def select_then_disable(*_args, **_kwargs):
+            runtime.config.emoji.send_enabled = False
+            return EmojiAssetRecord(
+                id=1, file_hash="disabled-during-selection",
+                file_path="https://example.com/smile.png", label="开心", status="ready",
+            )
+
+        with patch.object(gesture, "_select_emoji_asset_for_intent", select_then_disable):
+            result = await runtime.life_emoji_send(event, intent="开心")
+
+        self.assertEqual(result, "表情发送已关闭。")
+        self.assertEqual(provider.prompts, [])
+        self.assertEqual(event.sent_messages, [])
+        self.assertEqual(runtime.context.sent_messages, [])
 
     async def test_emoji_send_cooldown_reads_in_memory_send_state(self):
         runtime, _ = self._make_proactive_runtime([])
@@ -3968,9 +4009,11 @@ class RuntimeProactiveAsyncTest(
             "aiocqhttp:FriendMessage:10001"
         ]
         self.assertEqual(candidate["state"], "after_ordinary_reply")
-        self.assertEqual(
-            candidate["next_evaluation_at"], datetime.datetime(2026, 5, 24, 13, 1)
+        await runtime._refresh_private_proactive_timing(
+            candidate, datetime.datetime(2026, 5, 24, 12, 1)
         )
+        self.assertIsNone(candidate["next_evaluation_at"])
+        self.assertGreater(candidate["private_opportunity_at"], datetime.datetime(2026, 5, 24, 12, 6))
 
     async def test_private_revisit_sends_message_to_private_target(self):
         runtime, provider = self._make_proactive_runtime(
@@ -4100,7 +4143,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(runtime.context.sent_messages, [])
         state = runtime._get_proactive_air_state(target)
         self.assertEqual(state["last_decision"], "wait")
-        self.assertIn("尚未达到 60 分钟回访静默门槛", state["last_reason"])
+        self.assertIn("尚未到适合重新考虑联系的生活窗口", state["last_reason"])
 
     async def test_private_revisit_rejects_ungrounded_media_and_state_claims(self):
         runtime, provider = self._make_proactive_runtime(

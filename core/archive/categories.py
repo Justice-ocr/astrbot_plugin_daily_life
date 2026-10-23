@@ -81,6 +81,7 @@ WORLD_CLEAR_ORDER = (
 
 CONVERSATION_TABLES = (
     "memory_source_messages",
+    "conversation_arrivals",
     "conversation_receipts",
     "chat_memory_messages",
     "chat_memory_sessions",
@@ -94,6 +95,7 @@ CONVERSATION_TABLES = (
 )
 CONVERSATION_CLEAR_ORDER = (
     "memory_source_messages",
+    "conversation_arrivals",
     "conversation_receipts",
     "chat_memory_batches",
     "chat_memory_sessions",

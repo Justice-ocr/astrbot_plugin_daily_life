@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Protocol
 
 from ..models import STYLE_CATALOG_KIND_SET, StyleCatalogItemRecord
-
-from typing import Protocol
 
 
 class StyleCatalogArchiveComponentContext(Protocol):
@@ -21,6 +19,7 @@ class StyleCatalogArchiveComponentContext(Protocol):
     _style_hash_distance: Any
     _text: Any
     _wardrobe_item_state_unlocked: Any
+    _wardrobe_bootstrap_unlocked: Any
     get_style_catalog_items: Any
 
 
@@ -123,6 +122,7 @@ class StyleCatalogArchiveComponent:
                     self.context._text(item.created_at),
                 ),
             )
+            self.context._wardrobe_bootstrap_unlocked()
             self.context._conn.commit()
             row = self.context._conn.execute(
                 """
@@ -158,6 +158,7 @@ class StyleCatalogArchiveComponent:
         safe_limit = max(1, min(int(limit or 12), 500))
 
         def read() -> list[StyleCatalogItemRecord]:
+            self.context._wardrobe_bootstrap_unlocked()
             clauses = []
             values: list[Any] = []
             if normalized_kind in STYLE_CATALOG_KIND_SET:
@@ -364,6 +365,7 @@ class StyleCatalogArchiveComponent:
                     normalized_id,
                 ),
             )
+            self.context._wardrobe_bootstrap_unlocked()
             self.context._conn.commit()
             row = self.context._conn.execute(
                 "SELECT * FROM style_catalog_items WHERE id = ?", (normalized_id,)

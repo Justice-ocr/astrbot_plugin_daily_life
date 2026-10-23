@@ -4,48 +4,47 @@ import asyncio
 import contextvars
 import sqlite3
 from collections.abc import Callable, Coroutine
+from functools import cached_property
 from pathlib import Path
 from typing import Any, TypeVar
 
-from .categories import STORAGE_CATEGORIES
-from .schema import init_schema
-
-from .possessions import LivingArchiveComponent
-from .continuance import ContinuityArchiveComponent
-from .inventory import StyleCatalogArchiveComponent
-from .garments import GarmentArchiveComponent
-from .activity import DomainArchiveComponent
-from .knowledge import CognitionArchiveComponent
-from .vectors import MemoryVectorArchiveComponent
-from .queue import ChatMemoryQueueArchiveComponent
-from .journal import DayArchiveComponent
-from .weeks import WeekArchiveComponent
-from .promises import CommitmentArchiveComponent
-from .places import PlaceArchiveComponent
+from ..clock import local_timestamp
+from ..composition import ComponentCall
 from .acquaintances import AcquaintanceArchiveComponent
-from .summaries import SummaryArchiveComponent
-from .perception import PerceptionArchiveComponent
-from .longterm import LongTermMemoryArchiveComponent
-from .recollection import RecollectionArchiveComponent
-from .experience.episodes import EpisodeArchiveComponent
-from .experience.selection import LifeDecisionArchiveComponent
-from .experience.emotions import EmotionArchiveComponent
-from .experience.cadence import PhysiologicalRhythmArchiveComponent
-from .experience.proofs import EvidenceArchiveComponent
-from .experience.reactions import FeedbackArchiveComponent
-from .experience.voices import ExpressionArchiveComponent
-from .experience.clips import ClipArchiveComponent
-from .experience.patterns import BehaviorArchiveComponent
+from .activity import DomainArchiveComponent
+from .categories import STORAGE_CATEGORIES
+from .common import CommonArchiveComponent
+from .continuance import ContinuityArchiveComponent
 from .experience.attention import FocusArchiveComponent
+from .experience.cadence import PhysiologicalRhythmArchiveComponent
+from .experience.clips import ClipArchiveComponent
+from .experience.emotions import EmotionArchiveComponent
+from .experience.episodes import EpisodeArchiveComponent
 from .experience.lexicon import LexiconArchiveComponent
 from .experience.maintenance import MaintenanceArchiveComponent
+from .experience.patterns import BehaviorArchiveComponent
+from .experience.proofs import EvidenceArchiveComponent
+from .experience.reactions import FeedbackArchiveComponent
+from .experience.selection import LifeDecisionArchiveComponent
+from .experience.voices import ExpressionArchiveComponent
 from .gallery import MediaArchiveComponent
+from .garments import GarmentArchiveComponent
+from .inventory import StyleCatalogArchiveComponent
+from .journal import DayArchiveComponent
+from .knowledge import CognitionArchiveComponent
+from .longterm import LongTermMemoryArchiveComponent
+from .perception import PerceptionArchiveComponent
+from .places import PlaceArchiveComponent
+from .possessions import LivingArchiveComponent
+from .promises import CommitmentArchiveComponent
+from .queue import ChatMemoryQueueArchiveComponent
+from .recollection import RecollectionArchiveComponent
 from .reflections import LifecycleArchiveComponent
+from .schema import init_schema
 from .storage import StorageArchiveComponent
-from .common import CommonArchiveComponent
-from functools import cached_property
-from ..composition import ComponentCall
-from ..clock import local_timestamp
+from .summaries import SummaryArchiveComponent
+from .vectors import MemoryVectorArchiveComponent
+from .weeks import WeekArchiveComponent
 
 T = TypeVar("T")
 _DB_LOCK_HELD = contextvars.ContextVar("daily_life_db_lock_held", default=False)
@@ -639,7 +638,23 @@ class LifeArchive:
 
     upsert_memory_vectors = ComponentCall("_part_memory_vector_archive_component", MemoryVectorArchiveComponent, "upsert_memory_vectors")
 
-    save_conversation_receipt = ComponentCall("_part_chat_memory_queue_archive_component", ChatMemoryQueueArchiveComponent, "save_conversation_receipt")
+    save_conversation_arrival = ComponentCall(
+        "_part_chat_memory_queue_archive_component",
+        ChatMemoryQueueArchiveComponent,
+        "save_conversation_arrival",
+    )
+
+    get_conversation_arrival_before = ComponentCall(
+        "_part_chat_memory_queue_archive_component",
+        ChatMemoryQueueArchiveComponent,
+        "get_conversation_arrival_before",
+    )
+
+    save_conversation_receipt = ComponentCall(
+        "_part_chat_memory_queue_archive_component",
+        ChatMemoryQueueArchiveComponent,
+        "save_conversation_receipt",
+    )
 
     get_conversation_receipt_before = ComponentCall("_part_chat_memory_queue_archive_component", ChatMemoryQueueArchiveComponent, "get_conversation_receipt_before")
 
@@ -738,6 +753,8 @@ class LifeArchive:
     reschedule_commitment = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "reschedule_commitment")
 
     link_commitments_to_day = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "link_commitments_to_day")
+
+    reconcile_scheduled_commitments = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "reconcile_scheduled_commitments")
 
     _insert_event_unlocked = ComponentCall("_part_place_archive_component", PlaceArchiveComponent, "_insert_event_unlocked")
 

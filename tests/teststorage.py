@@ -1391,6 +1391,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 conn.executescript(script)
             conn.execute("DROP TABLE memory_fact_links")
             conn.execute("DROP TABLE memory_source_messages")
+            conn.execute("DROP TABLE conversation_arrivals")
             conn.commit()
             conn.close()
 

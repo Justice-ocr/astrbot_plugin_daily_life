@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from componentfixtures import LifeActionComponent
 from core.archive.schema import SCHEMA_VERSION
 from core.config.options import LifeDomainSettings
 from core.life.amap import AmapWebServiceClient
 from core.life.domain import LifeDomainService
-from componentfixtures import LifeActionComponent
 from core.life.transit import transit_route_detail
 from core.models import (
     CommitmentRecord,
@@ -1326,6 +1326,43 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeline[0]["date"], "2026-08-03")
         self.assertEqual(timeline[0]["occurred_at"], "2026-08-03 09:30:00")
 
+    async def test_unified_timeline_converts_record_time_from_utc(self):
+        for stored, expected in (
+            ("2026-10-23 03:34:54", "2026-10-23 11:34:54"),
+            ("2026-10-22 23:34:54", "2026-10-23 07:34:54"),
+            ("2026-10-23T11:34:54+08:00", "2026-10-23 11:34:54"),
+        ):
+            with self.subTest(created_at=stored):
+                timeline = self.archive._domain_unified_timeline(
+                    {"conversation_actions": [{
+                        "title": "一起下楼吃面",
+                        "status": "pending",
+                        "due_at": "",
+                        "created_at": stored,
+                    }]},
+                    10,
+                )
+                self.assertEqual(timeline[0]["occurred_at"], expected)
+                self.assertEqual(timeline[0]["date"], "2026-10-23")
+                self.assertEqual(timeline[0]["time_source"], "created_at")
+                self.assertEqual(timeline[0]["details"]["created_at"], stored)
+
+    async def test_unified_timeline_keeps_scheduled_time_in_life_timezone(self):
+        for due_at in ("2026-10-23 11:35:00", "2026-10-23"):
+            with self.subTest(due_at=due_at):
+                timeline = self.archive._domain_unified_timeline(
+                    {"conversation_actions": [{
+                        "title": "一起下楼吃面",
+                        "status": "pending",
+                        "due_at": due_at,
+                        "created_at": "2026-10-23 03:34:54",
+                    }]},
+                    10,
+                )
+                self.assertEqual(timeline[0]["occurred_at"], due_at)
+                self.assertEqual(timeline[0]["date"], "2026-10-23")
+                self.assertEqual(timeline[0]["time_source"], "due_at")
+
     async def test_domain_snapshot_deduplicates_chore_definitions_by_name(self):
         definitions = self.archive._dedupe_chore_definitions(
             [
@@ -1439,6 +1476,158 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("2026-08-03:old:planned", action_ids)
         self.assertIn("2026-08-03:old:completed", action_ids)
         self.assertIn("2026-08-03:new:planned", action_ids)
+
+    async def test_replanned_sessions_are_removed_by_timeline_link_not_source(self):
+        current_id = "2026-08-03:current:planned"
+        day = self._day(
+            {
+                "action_id": current_id,
+                "action_type": "social",
+                "target": "当前邀约",
+                "timeline_index": 0,
+                "source": "commitment",
+            }
+        )
+        await self.archive.save_day(day, replace=True)
+        stale_ids = set()
+        for source in ("commitment", "continuous_executor", "another_plan_source"):
+            for status in ("planned", "active"):
+                action_id = f"2026-08-03:{source}:{status}"
+                stale_ids.add(action_id)
+                await self.archive.upsert_activity_session(
+                    {
+                        "action_id": action_id,
+                        "date": day.date,
+                        "title": f"已被替换的活动 {source} {status}",
+                        "status": status,
+                        "started_at": f"{day.date} 10:00:00",
+                        "source": source,
+                        "metadata": {"timeline_index": 0},
+                    }
+                )
+                await self.archive.save_meal_record(
+                    {
+                        "action_id": action_id,
+                        "date": day.date,
+                        "name": f"已被替换的餐食 {source} {status}",
+                        "status": "completed",
+                        "source": "life_action_simulation",
+                        "occurred_at": f"{day.date} 10:30:00",
+                    }
+                )
+        for action_id, metadata in (
+            (current_id, {"timeline_index": 0}),
+            ("independent:activity", {}),
+            ("independent:unlinked", {"timeline_index": -1}),
+        ):
+            await self.archive.upsert_activity_session(
+                {
+                    "action_id": action_id,
+                    "date": day.date,
+                    "title": "仍需保留的活动",
+                    "status": "planned",
+                    "started_at": f"{day.date} 12:00:00",
+                    "source": "commitment",
+                    "metadata": metadata,
+                }
+            )
+        retained_ids = {current_id, "independent:activity", "independent:unlinked"}
+
+        # 后台同步前，面板、统一时间轴和聊天上下文也应排除旧计划。
+        snapshot = await self.domains.snapshot()
+        self.assertEqual(
+            {item["action_id"] for item in snapshot["activity_sessions"]}, retained_ids
+        )
+        self.assertEqual(
+            {item["action_id"] for item in snapshot["timeline"]}, retained_ids
+        )
+        self.assertEqual(snapshot["meals"], [])
+        self.assertNotIn("已被替换的活动", await self.domains.format_context())
+        self.assertNotIn("已被替换的餐食", await self.domains.format_context())
+
+        await self.domains.sync_activity_sessions(
+            day, now=datetime.datetime(2026, 8, 3, 12, 30)
+        )
+        sessions = await self.archive.get_activity_sessions(limit=0)
+        self.assertEqual({item["action_id"] for item in sessions}, retained_ids)
+        self.assertTrue(stale_ids.isdisjoint(item["action_id"] for item in sessions))
+
+    async def test_replanned_sessions_keep_execution_receipts_including_simulated(self):
+        day = self._day({})
+        day.meta = {}
+        await self.archive.save_day(day, replace=True)
+        retained_ids = set()
+        for status in ("confirmed", "simulated", "failed", "cancelled"):
+            action_id = f"2026-08-03:executed:{status}"
+            retained_ids.add(action_id)
+            await self.archive.upsert_activity_session(
+                {
+                    "action_id": action_id,
+                    "date": day.date,
+                    "title": f"有回执的活动 {status}",
+                    "status": "active",
+                    "started_at": f"{day.date} 12:00:00",
+                    "source": "commitment",
+                    "metadata": {"timeline_index": 0},
+                }
+            )
+            await self.archive.save_life_action_receipt(
+                {
+                    "receipt_id": f"receipt:{status}",
+                    "action_id": action_id,
+                    "date": day.date,
+                    "action_type": "meal",
+                    "status": status,
+                    "source": "life_action_simulation",
+                    "occurred_at": f"{day.date} 12:30:00",
+                }
+            )
+            await self.archive.save_meal_record(
+                {
+                    "action_id": action_id,
+                    "date": day.date,
+                    "name": f"有回执的餐食 {status}",
+                    "status": "completed",
+                    "source": "life_action_simulation",
+                    "occurred_at": f"{day.date} 12:30:00",
+                }
+            )
+
+        await self.domains.sync_activity_sessions(
+            day, now=datetime.datetime(2026, 8, 3, 13, 0)
+        )
+        sessions = await self.archive.get_activity_sessions(limit=0)
+        snapshot = await self.domains.snapshot()
+        self.assertEqual({item["action_id"] for item in sessions}, retained_ids)
+        for key in ("activity_sessions", "meals", "timeline"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    {item["action_id"] for item in snapshot[key]}, retained_ids
+                )
+
+    async def test_activity_reschedule_updates_planned_time_but_keeps_actual_start(self):
+        payload = {
+            "action_id": "2026-08-03:rescheduled",
+            "date": "2026-08-03",
+            "title": "改期的共同活动",
+            "status": "planned",
+            "started_at": "2026-08-03 17:06:00",
+            "source": "commitment",
+            "metadata": {"timeline_index": 0},
+        }
+        await self.archive.upsert_activity_session(payload)
+        payload["started_at"] = "2026-08-03 18:00:00"
+        session = await self.archive.upsert_activity_session(payload)
+        self.assertEqual(session["started_at"], "2026-08-03 18:00:00")
+
+        payload.update(status="active", started_at="2026-08-03 18:05:00")
+        session = await self.archive.upsert_activity_session(payload)
+        self.assertEqual(session["started_at"], "2026-08-03 18:05:00")
+        for status in ("active", "completed"):
+            with self.subTest(status=status):
+                payload.update(status=status, started_at="2026-08-03 18:10:00")
+                session = await self.archive.upsert_activity_session(payload)
+                self.assertEqual(session["started_at"], "2026-08-03 18:05:00")
 
     async def test_domain_snapshot_hides_superseded_simulated_records(self):
         current_action_id = "2026-08-03:meal:current"

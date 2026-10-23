@@ -4,7 +4,44 @@ import asyncio
 import hashlib
 import math
 from collections import OrderedDict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
+
+_MODEL_TASK: ContextVar[tuple[str, str]] = ContextVar("daily_life_model_task", default=("", ""))
+
+
+@contextmanager
+def model_task(purpose: str = "", *, stage: str = ""):
+    previous = _MODEL_TASK.get()
+    token = _MODEL_TASK.set((purpose or previous[0], stage or previous[1]))
+    try:
+        yield
+    finally:
+        _MODEL_TASK.reset(token)
+
+
+def model_task_identity(session_id: str) -> tuple[str, str]:
+    purpose, stage = _MODEL_TASK.get()
+    if not purpose:
+        # 只使用已知业务前缀，不能把会话、用户编号或随机任务号记入统计维度。
+        for name in ("memory_target_calibration", "memory_calibration", "memory_batch",
+                     "wardrobe", "execution", "outfit", "state", "preference",
+                     "proactive", "idle", "reaction", "timeline", "daily", "weekly"):
+            if str(session_id).startswith("daily_life_" + name):
+                purpose = name
+                break
+    return purpose or "other_internal", stage or "request"
+
+
+def output_usage(response: Any) -> int | None:
+    raw = _field(response, "raw_completion") or response
+    usage = _field(raw, "usage") or _field(raw, "usage_metadata") or _field(raw, "usageMetadata")
+    for name in ("completion_tokens", "output_tokens", "candidates_token_count", "candidatesTokenCount"):
+        value = _count(_field(usage, name))
+        if value is not None:
+            return value
+    return _count(_field(_field(response, "usage"), "output"))
 
 
 def _field(value: Any, name: str) -> Any:
@@ -79,14 +116,42 @@ class ModelCacheMetrics:
         self.entries: OrderedDict[tuple[str, str, str], dict[str, int]] = OrderedDict()
         self.durations: dict[tuple[str, str, str], deque] = {}
         self.loop_delays: deque = deque(maxlen=600)
+        self.tasks: OrderedDict[tuple[str, str], dict[str, int]] = OrderedDict()
 
     def record(self, response: Any, *, kind: str, model: str = "", elapsed_ms: float | None = None,
                failed: bool = False, cancelled: bool = False,
-               prefix_version: str = "") -> dict[str, int | None]:
+               prefix_version: str = "", purpose: str = "", stage: str = "request",
+               attempt: int = 0) -> dict[str, int | None]:
         usage = cache_usage(response)
+        output = output_usage(response)
         if not model:
             raw = _field(response, "raw_completion") or response
-            model = str(_field(raw, "model") or "")
+            model = str(_field(raw, "model") or "当前模型")
+        role = _field(response, "role")
+        request_failed = failed or bool(_field(response, "is_error")) or getattr(role, "value", role) == "err"
+        task_key = (purpose or kind, model[:120])
+        task = self.tasks.setdefault(task_key, {
+            "requests": 0, "failed_requests": 0, "retry_requests": 0,
+            "repair_requests": 0, "input_tokens": 0, "cached_tokens": 0,
+            "output_tokens": 0, "input_reported_requests": 0,
+            "cached_reported_requests": 0, "output_reported_requests": 0,
+        })
+        self.tasks.move_to_end(task_key)
+        while len(self.tasks) > self.limit:
+            self.tasks.popitem(last=False)
+        task["requests"] += 1
+        task["failed_requests"] += int(request_failed)
+        task["retry_requests"] += int(attempt > 0)
+        task["repair_requests"] += int(stage == "json_repair")
+        if usage["input_tokens"] is not None:
+            task["input_reported_requests"] += 1
+            task["input_tokens"] += usage["input_tokens"]
+        if usage["cached_tokens"] is not None:
+            task["cached_reported_requests"] += 1
+            task["cached_tokens"] += usage["cached_tokens"]
+        if output is not None:
+            task["output_reported_requests"] += 1
+            task["output_tokens"] += output
         key = (
             str(kind or "internal")[:20], str(model or "当前模型")[:120],
             str(prefix_version or "")[:12],
@@ -141,6 +206,11 @@ class ModelCacheMetrics:
                 "latency": self.distribution(self.durations.get((kind, model, prefix_version), [])),
             })
         return {"since": "当前插件运行期", "models": rows,
+                "tasks": [{"purpose": purpose, "model": model, **counts,
+                           **{f"{name}_tokens": counts[f"{name}_tokens"]
+                              if counts[f"{name}_reported_requests"] else None
+                              for name in ("input", "cached", "output")}}
+                          for (purpose, model), counts in self.tasks.items()],
                 "event_loop_delay": self.distribution(self.loop_delays)}
 
 

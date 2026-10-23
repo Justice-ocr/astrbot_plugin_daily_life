@@ -131,6 +131,8 @@ const TIMELINE_TIME_EMPTY_TEXT = "未定";
 const LIFE_DOMAIN_FINISHED_STATUSES = new Set([
   "elapsed", "simulated", "completed", "confirmed", "done", "failed",
   "skipped", "rejected", "expired", "canceled", "cancelled", "delivery_failed",
+  // 这些状态表示备餐或点餐完成，不代表已经用餐。
+  "prepared", "ordered",
 ]);
 const TIMELINE_EXECUTION_LABELS = {
   planned: "待进行",
@@ -279,9 +281,9 @@ const HERO_COPY = {
     subtitle: "收藏、识图、导入和启停都放在一处，让表情在合适的时候自然出现。",
   },
   closet: {
-    eyebrow: "视觉衣橱 · 把喜欢的造型收进灵感册",
+    eyebrow: "视觉衣橱 · 自己的衣物与日常造型",
     title: "衣橱管理",
-    subtitle: "上传、创意生成、筛选和反馈集中管理，已启用的候选会自然参与日常穿搭与发型决策。",
+    subtitle: "收入衣橱的衣物就是已拥有的衣物，会结合天气、活动和洗护状态自然选择穿搭；发型、妆容和美甲按需采用。",
   },
   settings: {
     eyebrow: "运行设置 · 把规则整理成抽屉",
@@ -1128,7 +1130,7 @@ function domainRecord(title, meta = "", lines = []) {
 
 function domainTimelineGroupKey(item, kind, title, status, source) {
   const date = clean(item.date, "") || clean(item.occurred_at, "").slice(0, 10);
-  return JSON.stringify([date, kind, title, status, source]);
+  return JSON.stringify([date, kind, title, status, source, item.time_source || ""]);
 }
 
 function domainRecordFinished(item = {}) {
@@ -1154,13 +1156,17 @@ export function domainTimelineGroups(domains = {}) {
       title,
       status,
       source,
+      active: ["active", "running"].includes(text(item.status).trim().toLowerCase()),
       finished: domainRecordFinished(item),
       occurredAt: clean(item.occurred_at || item.date, ""),
+      timeSource: clean(item.time_source, ""),
       count: 1,
     });
   });
   return [...groups.values()].sort((a, b) => (
-    Number(a.finished) - Number(b.finished) || a.occurredAt.localeCompare(b.occurredAt)
+    Number(b.active) - Number(a.active)
+    || Number(a.finished) - Number(b.finished)
+    || a.occurredAt.localeCompare(b.occurredAt)
   ));
 }
 
@@ -1172,7 +1178,8 @@ function renderDomainTimeline(domains = {}) {
     return domainRecord(
       group.title,
       [group.kind, group.status, group.count > 1 ? `${group.count}次` : ""].filter(Boolean).join(" · "),
-      [group.occurredAt, sourceLabel]
+      [group.timeSource === "created_at" && group.occurredAt
+        ? `记录于：${group.occurredAt}` : group.occurredAt, sourceLabel]
     );
   });
 }
@@ -3331,7 +3338,7 @@ function closetRecord(group = {}) {
     checkbox.type = "checkbox";
     checkbox.checked = selectedCount > 0 && selectedCount === itemIds.length;
     checkbox.indeterminate = selectedCount > 0 && selectedCount < itemIds.length;
-    checkbox.setAttribute("aria-label", `选择${clean(item.title || item.description, "衣橱来源图")}的全部候选`);
+    checkbox.setAttribute("aria-label", `选择${clean(item.title || item.description, "衣橱来源图")}的全部条目`);
     checkbox.addEventListener("change", () => toggleClosetGroupSelected(itemIds));
     selector.append(checkbox);
     record.append(selector);
@@ -3370,7 +3377,7 @@ function closetRecord(group = {}) {
   items.forEach((entry) => {
     const button = node("button", `closet-component is-${closetStatus(entry)}`, CLOSET_KIND_LABELS[entry.kind] || "造型");
     button.type = "button";
-    button.setAttribute("aria-label", `查看${CLOSET_KIND_LABELS[entry.kind] || "造型"}：${clean(entry.title || entry.description, "候选详情")}`);
+    button.setAttribute("aria-label", `查看${CLOSET_KIND_LABELS[entry.kind] || "造型"}：${clean(entry.title || entry.description, "衣橱详情")}`);
     button.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(entry.id) : openClosetDetail(entry.id));
     components.append(button);
   });
@@ -3404,8 +3411,8 @@ function renderClosetManagement() {
     el.closetSummary.textContent = !total
       ? "暂无衣橱素材"
       : !items.length
-        ? `暂无符合条件的素材，共 ${total} 个候选`
-        : `显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个候选`;
+        ? `暂无符合条件的素材，共 ${total} 个条目`
+        : `显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个条目`;
   }
   el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
   if (el.closetSummary && state.closetWardrobe) {
@@ -3545,9 +3552,10 @@ function renderClosetDetail() {
   grid.className = "closet-detail-grid";
   const wardrobe = item.attributes?.wardrobe;
   if (wardrobe) {
-    const conditions = {clean: "干净可穿", worn: "正在穿着", dirty: "待洗", washing: "清洗中", drying: "晾晒中", stored: "已收纳"};
-    closetDetailField(grid, "衣物归属", wardrobe.ownership === "owned" ? "正式拥有" : "灵感候选");
+    const conditions = {clean: "干净可穿", worn: "穿过，仍可穿", dirty: "待洗", washing: "清洗中", drying: "晾晒中", stored: "已收纳"};
+    closetDetailField(grid, "衣物归属", wardrobe.ownership === "owned" ? "已拥有" : "待核验，尚未入橱");
     closetDetailField(grid, "穿护状态", conditions[wardrobe.condition] || "尚未确定");
+    if (wardrobe.currently_worn) closetDetailField(grid, "实际穿着", "正在穿着");
   }
   closetDetailField(grid, "偏好分", Number(item.preference_score || 0).toFixed(2));
   closetDetailField(grid, "置信度", `${Math.round(Number(item.confidence || 0) * 100)}%`);
@@ -3687,7 +3695,7 @@ async function importClosetFiles(files) {
     if (!result) throw new Error(failures[0] || "衣橱图片学习失败");
     applyClosetPayload(result);
     const skipped = selected.length - valid.length;
-    const details = [`识别 ${succeeded} 张图片`, `形成 ${candidates} 个候选`];
+    const details = [`识别 ${succeeded} 张图片`, `收入 ${candidates} 个衣橱条目`];
     if (failures.length) details.push(`${failures.length} 张失败`);
     if (skipped) details.push(`${skipped} 张格式或大小不符合要求`);
     setNotice(details.join("，"), failures.length ? "warning" : "success");

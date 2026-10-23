@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
+from ...clock import local_datetime
 from ...life.curation import current_wardrobe_choice, wardrobe_choice_text
 from ...models import (
     STYLE_CATALOG_KIND_SET,
@@ -355,6 +356,11 @@ class PortalClosetComponent:
 
     def _page_closet_item(self, item: StyleCatalogItemRecord) -> dict:
         data = item.as_dict()
+        # 衣橱使用记录由 SQLite 写入 UTC，仅在面板中转换到生活时区。
+        last_used_at = local_datetime(data.get("last_used_at"), naive_timezone=timezone.utc)
+        data["last_used_at"] = (
+            last_used_at.isoformat(sep=" ", timespec="seconds") if last_used_at else ""
+        )
         attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
         status = self.context._page_closet_text(data.get("status"), 24).lower()
         if status not in {"active", "disabled", "rejected"}:

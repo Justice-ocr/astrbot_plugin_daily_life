@@ -265,7 +265,7 @@ class SpineInviteComponent:
                 await self.context.archive.save_day(data)
                 return False
 
-            apply_edited_timeline(data, new_timeline, decision)
+            apply_edited_timeline(data, new_timeline, decision, commitment_id=item.id)
             applied_signature = self.context._commitment_reconcile_signature(data, item)
             self.context._store_commitment_reconcile_marker(
                 data, markers, marker_key, applied_signature, "applied"
@@ -375,7 +375,23 @@ class SpineInviteComponent:
         raw_message: str,
     ) -> str:
         data.meta.pop("pending_invite_alternative", None)
-        apply_edited_timeline(data, new_timeline, decision)
+        accepted_commitment = await self.context.archive.save_commitment(
+            CommitmentRecord(
+                content=invite_details,
+                trigger_date=today_str,
+                owner="共同",
+                people=[sender_name],
+                status="active",
+                confidence=1.0,
+                source="invite",
+                source_session=str(context_meta.get("session_id") or ""),
+                source_message_id=str(context_meta.get("message_id") or ""),
+                source_message=raw_message,
+            )
+        )
+        apply_edited_timeline(
+            data, new_timeline, decision, commitment_id=accepted_commitment.id
+        )
         audited_places = decision.get("_audited_places")
         if isinstance(audited_places, list):
             data.places = [
@@ -402,20 +418,6 @@ class SpineInviteComponent:
                 detail=f"已接受【{sender_name}】的邀约：{invite_details}",
                 force=True,
             )
-        accepted_commitment = await self.context.archive.save_commitment(
-            CommitmentRecord(
-                content=invite_details,
-                trigger_date=today_str,
-                owner="共同",
-                people=[sender_name],
-                status="active",
-                confidence=1.0,
-                source="invite",
-                source_session=str(context_meta.get("session_id") or ""),
-                source_message_id=str(context_meta.get("message_id") or ""),
-                source_message=raw_message,
-            )
-        )
         if accepted_commitment.id:
             await self.context.archive.link_commitments_to_day(
                 today_str, [accepted_commitment.id]

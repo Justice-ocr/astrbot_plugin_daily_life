@@ -35,7 +35,7 @@ class MeaningService:
         embedding_providers: Callable[[], list[Any]],
         memory_config: Callable[[], Any],
         archive: Callable[[], Any],
-        memory_provider: Callable[[], Awaitable[Any]],
+        text_provider: Callable[[str], Awaitable[Any]],
         call_text_model: Callable[..., Awaitable[str]],
         close_text_session: Callable[[str], Awaitable[None]],
         schedule_background: Callable[..., bool],
@@ -43,7 +43,7 @@ class MeaningService:
         self._embedding_providers = embedding_providers
         self._memory_config = memory_config
         self._archive = archive
-        self._memory_provider = memory_provider
+        self._text_provider = text_provider
         self._call_text_model = call_text_model
         self._close_text_session = close_text_session
         self._schedule_background = schedule_background
@@ -482,7 +482,8 @@ class MeaningService:
     ) -> dict[str, list[Any]] | None:
         if not str(query or "").strip():
             return None
-        provider = await self._memory_provider()
+        provider_id = self._memory_config().ranking_provider
+        provider = await self._text_provider(provider_id)
         if not provider:
             return None
         candidates = {
@@ -501,7 +502,6 @@ JSON 输出要求：
 每类最多选择给定数量；没有相关内容就返回空数组。按整体语义、人物、时间和事件关系判断，不做字面词语匹配。"""
         dynamic = f"当前对话：{query}\n每类上限：{json.dumps(limits, ensure_ascii=False)}\n候选：{json.dumps(candidates, ensure_ascii=False)}"
         session_id = f"daily_life_memory_rank_{uuid.uuid4().hex[:8]}"
-        provider_id = str(getattr(self._memory_config(), "provider", "") or "")
         try:
             raw = await asyncio.wait_for(
                 self._call_text_model(

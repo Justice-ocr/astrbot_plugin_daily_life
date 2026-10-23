@@ -1160,6 +1160,24 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted["data"]["deleted_files"], 1)
         self.assertFalse(image_path.exists())
 
+    def test_closet_display_converts_utc_usage_time_without_changing_record(self):
+        for stored, expected in (
+            ("2026-10-23 03:34:54", "2026-10-23 11:34:54"),
+            ("2026-10-22 23:34:54", "2026-10-23 07:34:54"),
+            ("2026-10-23T11:34:54+08:00", "2026-10-23 11:34:54"),
+            ("", ""),
+        ):
+            with self.subTest(last_used_at=stored):
+                item = StyleCatalogItemRecord(last_used_at=stored)
+                displayed = self.plugin._page_closet_item(item)
+                self.assertEqual(displayed["last_used_at"], expected)
+                self.assertEqual(item.last_used_at, stored)
+
+    def test_emoji_display_keeps_usage_time_in_life_timezone(self):
+        item = EmojiAssetRecord(last_used_at="2026-10-23 11:34")
+        displayed = self.plugin._page_emoji_item(item)
+        self.assertEqual(displayed["last_used_at"], "2026-10-23 11:34")
+
     async def test_closet_payload_uses_the_configured_default_generation_mode(self):
         self.plugin.runtime.config = LifeSettings.from_dict(
             {
@@ -3559,7 +3577,7 @@ if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义
         self.assertNotIn("source_groups:", app)
         self.assertNotIn('["active", "pending", "disabled", "rejected"]', app)
         self.assertIn(
-            "`显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个候选`",
+            "`显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个条目`",
             app,
         )
         self.assertNotIn("组、${items.length} 个候选；总数", app)
@@ -4200,7 +4218,8 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
 
         expected_fields = [
             f"life_domain_config.{field_key}"
-            for field_key in schema["life_domain_config"]["items"]
+            for field_key, field_spec in schema["life_domain_config"]["items"].items()
+            if field_spec.get("_special") != "select_provider"
         ]
         field_positions = [life_groups.index(f'"{path}"') for path in expected_fields]
         self.assertEqual(field_positions, sorted(field_positions))
@@ -4525,6 +4544,107 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertNotIn("已自动保存", html + config)
         self.assertIn("configVersion", app + config)
         self.assertNotIn("toolbar-pill", html + style)
+
+    def test_recognition_timeouts_render_in_visual_section_with_emoji_order(self):
+        root = Path(__file__).resolve().parents[1]
+        script = self._dashboard_dom_mock_script() + """
+window.setTimeout = () => 1;
+const { readFileSync } = await import("node:fs");
+const { createConfigPanel } = await import("./pages/dashboard/ui/settings.js");
+const schema = JSON.parse(readFileSync("./_conf_schema.json", "utf8"));
+const node = (tag, className = "", content = "") => {
+  const item = new MockElement(tag);
+  item.className = className;
+  item.textContent = String(content ?? "");
+  return item;
+};
+const state = {
+  configSectionKey: "image_generation_config", configSchema: schema,
+  config: {
+    vision_config: { provider: "image", timeout_seconds: 45 },
+    emoji_vision_config: { provider: "emoji", timeout_seconds: 60 },
+    emoji_config: { send_enabled: true, send_on_regular_reply: true },
+  },
+  providers: [], relationships: [], configLoaded: true,
+  configDirty: false, configChangeSeq: 0, configVersion: 0,
+};
+const el = {
+  configNav: node("nav"), configSectionTitle: node("h2"),
+  configSectionHint: node("p"), configFieldList: node("div"),
+};
+const panel = createConfigPanel({
+  state, el, node, empty: (message) => node("div", "empty", message),
+  setBusy() {}, setNotice() {}, async loadStatus() {}, syncSelectControls() {},
+});
+const descendants = (root) => [root, ...(root.children || []).flatMap(descendants)];
+const input = (id) => descendants(el.configFieldList).find((item) => item.id === id);
+panel.renderConfig();
+if (input("vision_config__timeout_seconds") || input("emoji_vision_config__timeout_seconds")) {
+  throw new Error("图片生成板块仍包含视觉识别超时");
+}
+state.configSectionKey = "emoji_config";
+panel.renderConfig();
+const imageTimeout = input("vision_config__timeout_seconds");
+const emojiTimeout = input("emoji_vision_config__timeout_seconds");
+if (el.configSectionTitle.textContent !== "视觉" || !imageTimeout || !emojiTimeout) {
+  throw new Error("视觉板块未展示两项识别超时");
+}
+const groupLabels = descendants(el.configFieldList).map((item) => item.textContent);
+if (!groupLabels.includes("图片理解") || !groupLabels.includes("表情库")) {
+  throw new Error("视觉板块未保留图片理解和表情库分组");
+}
+const emojiSend = input("emoji_config__send_enabled");
+if (!emojiSend || !groupLabels.includes("启用表情发送")
+    || input("emoji_config__auto_send_enabled") || input("emoji_config__tool_send_enabled")) {
+  throw new Error("表情发送未合并为统一总开关");
+}
+emojiSend.checked = false;
+emojiSend.dispatch("change");
+if (state.config.emoji_config.send_enabled !== false
+    || state.config.emoji_config.send_on_regular_reply !== true) {
+  throw new Error("表情总开关未保存或改写了自动附加场景设置");
+}
+const fieldIds = descendants(el.configFieldList).map((item) => item.id).filter(Boolean);
+for (const name of ["enabled", "max_images_per_message", "detail_level", "gif_sample_frames"]) {
+  if (!input(`vision_config__${name}`)) throw new Error(`未展示图片理解设置 ${name}`);
+}
+const imageLimit = input("vision_config__max_images_per_message");
+imageLimit.value = "5";
+imageLimit.dispatch("change");
+const imageDetail = input("vision_config__detail_level");
+imageDetail.value = "detailed";
+imageDetail.dispatch("change");
+if (state.config.vision_config.max_images_per_message !== 5
+    || state.config.vision_config.detail_level !== "detailed") {
+  throw new Error("图片理解设置未保存到对应配置");
+}
+const batchIndex = fieldIds.indexOf("emoji_config__review_batch_size");
+if (batchIndex < 0 || fieldIds[batchIndex + 1] !== "emoji_vision_config__timeout_seconds") {
+  throw new Error("表情识别超时未紧跟单条消息识别上限");
+}
+imageTimeout.value = "75";
+imageTimeout.dispatch("change");
+if (state.config.vision_config.timeout_seconds !== 75
+    || state.config.emoji_vision_config.timeout_seconds !== 60) {
+  throw new Error("修改图片超时影响了表情识别超时");
+}
+emojiTimeout.value = "90";
+emojiTimeout.dispatch("change");
+if (state.config.emoji_vision_config.timeout_seconds !== 90
+    || state.config.vision_config.timeout_seconds !== 75) {
+  throw new Error("修改表情识别超时影响了图片理解超时");
+}
+state.configSectionKey = "__model_provider_settings";
+panel.renderConfig();
+if (!input("vision_config__provider") || !input("emoji_vision_config__provider")) {
+  throw new Error("两个模型未保留独立选择入口");
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"], cwd=root, input=script,
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_dashboard_text_config_commits_on_change_without_rebuilding_input(self):
         from pathlib import Path

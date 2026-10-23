@@ -8,8 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from support import DailyLifeRuntime, DayRecord, LifeArchive, LifeSettings, LifeState, TimelineItem
-
+from componentfixtures import LifeActionComponent, ProactiveSendComponent
 from core.life.body import ContinuousBody
 from core.life.continuity import execution_context
 from core.life.domain import LifeDomainService
@@ -28,13 +27,19 @@ from core.life.presence import (
     sync_kernel_from_day,
     update_self_model,
 )
-from componentfixtures import LifeActionComponent
 from core.models import LifeActionIntent
 from core.prompts import LIFE_ACTION_SCOPE_RULES
 from core.runtime.continuous import next_decision_time
-from componentfixtures import ProactiveSendComponent
 from core.runtime.status import StateRefreshService, _StateRefreshSpec
 from core.runtime.timer import LifeRhythmClock
+from support import (
+    DailyLifeRuntime,
+    DayRecord,
+    LifeArchive,
+    LifeSettings,
+    LifeState,
+    TimelineItem,
+)
 
 
 class Composer(LifeActionComponent):
@@ -664,8 +669,107 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
             }
         }
         self.assertEqual(
-            next_decision_time(day, world, self.now),
+            next_decision_time(day, world, self.now, refresh_minutes=30),
             self.now + datetime.timedelta(minutes=4),
+        )
+
+    async def test_routine_decisions_follow_config_even_during_ordinary_chat(self):
+        await self.start(duration=120)
+        self.runtime.config.state.refresh_minutes = 10
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        decide.return_value = {"decision": "continue", "reason": "继续当前练习"}
+        for minute in range(1, 10):
+            self.runtime.now = self.now + datetime.timedelta(minutes=minute)
+            await self.runtime.note_continuous_chat_exchange(
+                SimpleNamespace(message_id=str(minute), unified_msg_origin="chat")
+            )
+            await self.runtime.continuous_life._check_continuous_life_once()
+        decide.assert_not_awaited()
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(world["run"]["active_seconds"], 540)
+        await self.tick()
+        decide.assert_awaited_once()
+
+    async def test_failed_and_invalid_decisions_wait_for_shared_interval(self):
+        self.runtime.config.state.refresh_minutes = 15
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        decide.return_value = {"decision": "wait"}
+        await self.archive.mutate_continuous_life(
+            self.runtime.date, lambda day, world: world.pop("next_decision_at", None)
+        )
+        await self.runtime.continuous_life._check_continuous_life_once()
+        for _ in range(14):
+            await self.tick()
+        decide.assert_awaited_once()
+        decide.side_effect = TimeoutError()
+        await self.tick()
+        self.assertEqual(decide.await_count, 2)
+        for _ in range(14):
+            await self.tick()
+        self.assertEqual(decide.await_count, 2)
+        await self.tick()
+        self.assertEqual(decide.await_count, 3)
+
+    async def test_new_scene_and_schedule_bypass_routine_interval(self):
+        await self.start(duration=120)
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        await self.archive.mutate_day(
+            self.runtime.date, lambda day: setattr(day, "outfit", "换好的外出穿搭")
+        )
+        await self.tick()
+        decide.assert_awaited_once()
+        await self.tick()
+        decide.assert_awaited_once()
+
+        def invite(day):
+            day.timeline.append(TimelineItem(
+                time="01:20", activity="新确认的电影约定", duration_minutes=90,
+            ))
+
+        await self.archive.mutate_day(self.runtime.date, invite)
+        await self.tick()
+        self.assertEqual(decide.await_count, 2)
+
+    async def test_significant_body_change_is_reviewed_before_routine_interval(self):
+        await self.start(duration=120)
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        await self.archive.mutate_continuous_life(
+            self.runtime.date, lambda day, world: world["body"].update(thirst=90)
+        )
+        await self.tick()
+        decide.assert_awaited_once()
+        await self.tick()
+        decide.assert_awaited_once()
+
+    async def test_action_completion_settles_without_waiting_for_routine_interval(self):
+        self.runtime.config.state.refresh_minutes = 120
+        run = await self.start(duration=2)
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        await self.tick()
+        decide.assert_not_awaited()
+        await self.tick()
+        decide.assert_awaited_once()
+        self.assertEqual(len(await self.archive.get_life_action_receipts(
+            action_id=run["action"]["action_id"],
+        )), 1)
+
+    async def test_deferred_schedule_waits_for_confirmed_new_time(self):
+        day = await self.archive.get_day(self.runtime.date)
+        item = TimelineItem(time="01:04", activity="准备睡觉", duration_minutes=60)
+        day.timeline = [item]
+        day.meta.update(
+            rest_delay_date=day.date,
+            rest_delay_targets=json.dumps([[item.time, item.activity]]),
+            rest_delay_until="2026-10-07T01:12:00",
+        )
+        self.assertEqual(
+            next_decision_time(day, {}, self.now, refresh_minutes=30),
+            self.now + datetime.timedelta(minutes=12),
         )
 
     async def test_external_meal_receipt_updates_body_once_and_is_atomic(self):
@@ -1382,6 +1486,68 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.runtime.note_continuous_chat_exchange(event)
         self.assertEqual(world, await self.archive.get_continuous_life())
+
+    async def test_active_continuation_uses_compact_context_and_expands_for_new_needs(self):
+        runtime = self.runtime
+        runtime.composer._get_persona = AsyncMock(return_value="喜欢摄影的角色")
+        runtime.composer._collect_recent_chat_context = AsyncMock(return_value="无")
+        runtime.composer._cleanup_conversation = AsyncMock()
+        runtime.get_text_provider = AsyncMock(return_value=object())
+        runtime.call_text_model = AsyncMock(return_value='{"decision":"wait"}')
+        day = await self.archive.get_day(runtime.date)
+        world = await self.archive.get_continuous_life()
+        initial = await runtime.continuous_decision.choose(day, world, runtime.now)
+        world.update(goal_source_key=initial["_goal_source_key"], goal_review_at=runtime.now.isoformat(),
+                     run={"status": "running", "action": {"action_id": "reading", "action_type": "study"}})
+        runtime.composer._style_catalog_context.reset_mock()
+        runtime.call_text_model.reset_mock()
+        runtime.call_text_model.return_value = '{"decision":"continue","self_model_updates":{"invented":"不能越权修改"}}'
+        result = await runtime.continuous_decision.choose(day, world, runtime.now)
+        self.assertEqual(result["decision"], "continue")
+        self.assertNotIn("self_model_updates", result)
+        runtime.composer._style_catalog_context.assert_not_awaited()
+        self.assertEqual(runtime.call_text_model.await_count, 1)
+        prompt = runtime.call_text_model.call_args.args[1]
+        data = json.loads(prompt.split("【眼前内容】\n", 1)[1])
+        self.assertEqual(data["outfit"], "居家服")
+        self.assertIn("body", data)
+        runtime.call_text_model.reset_mock()
+        runtime.call_text_model.side_effect = ['{"decision":"expand","reason":"口渴了要喝水"}', '{"decision":"wait"}']
+        await runtime.continuous_decision.choose(day, world, runtime.now)
+        self.assertEqual(runtime.call_text_model.await_count, 2)
+        runtime.composer._style_catalog_context.assert_awaited_once()
+
+    async def test_goal_review_reuses_evidence_and_batches_new_chat_with_shared_interval(self):
+        runtime = self.runtime
+        runtime.config.state.refresh_minutes = 20
+        runtime.composer._get_persona = AsyncMock(return_value="喜欢摄影的角色")
+        runtime.composer._collect_recent_chat_context = AsyncMock(return_value="无")
+        runtime.composer._cleanup_conversation = AsyncMock()
+        runtime.get_text_provider = AsyncMock(return_value=object())
+        runtime.call_text_model = AsyncMock(return_value='{"decision":"wait"}')
+        day = await self.archive.get_day(runtime.date)
+        world = await self.archive.get_continuous_life()
+        initial = await runtime.continuous_decision.choose(day, world, runtime.now)
+        self.assertTrue(initial["_goal_review_due"])
+        world.update(goal_source_key=initial["_goal_source_key"],
+                     goal_review_at=runtime.now.isoformat())
+        stable = await runtime.continuous_decision.choose(
+            day, world, runtime.now + datetime.timedelta(days=2),
+        )
+        self.assertFalse(stable["_goal_review_due"])
+
+        runtime._read_recent_context_messages = AsyncMock(return_value=[{
+            "role": "user", "content": "你之前的摄影练习还想继续吗", "message_id": "new",
+        }])
+        world.update(last_chat_scope="chat", chat_events=["chat:new"])
+        early = await runtime.continuous_decision.choose(
+            day, world, runtime.now + datetime.timedelta(minutes=19),
+        )
+        self.assertFalse(early["_goal_review_due"])
+        ready = await runtime.continuous_decision.choose(
+            day, world, runtime.now + datetime.timedelta(minutes=20),
+        )
+        self.assertTrue(ready["_goal_review_due"])
 
     async def test_current_chat_is_evidence_even_when_not_a_reference_conversation(
         self,

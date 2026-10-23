@@ -342,7 +342,8 @@ class RuntimeMediaCommonComponent:
         try:
             # 补话只占用后台任务；模型异常时及时释放，不拖住后续聊天。
             async with asyncio.timeout(12):
-                provider = await self.context.get_text_provider("")
+                provider_id = self.context.config.chat_style.task_reply_provider
+                provider = await self.context.get_text_provider(provider_id)
                 if provider is None:
                     return ""
                 persona = str(await self.context.get_persona_text(scope) or "").strip()
@@ -368,7 +369,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
                     cache_friendly_prompt(fixed, dynamic, dynamic_title="实际失败结果"),
                     f"daily_life_background_failure_{uuid.uuid4().hex[:8]}",
                     empty_retries=0,
-                    primary_provider_id="",
+                    primary_provider_id=provider_id,
                 )
                 return self.context._parse_delivered_media_reply(raw)
         except Exception as exc:

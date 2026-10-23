@@ -224,6 +224,7 @@ class ImageGenerationSettings:
 @dataclass(slots=True)
 class VideoGenerationSettings:
     enabled: bool = False
+    prompt_provider: str = ""
     base_url: str = ""
     api_key: str = ""
     model: str = "grok-imagine-video-1.5"
@@ -240,6 +241,7 @@ class VideoGenerationSettings:
             return VideoGenerationSettings()
         return VideoGenerationSettings(
             enabled=as_bool(data.get("enabled", False), False),
+            prompt_provider=as_str(data.get("prompt_provider", "")).strip(),
             base_url=as_str(data.get("base_url", ""), "").strip(),
             api_key=as_str(data.get("api_key", ""), "").strip(),
             model=as_str(

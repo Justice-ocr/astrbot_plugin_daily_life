@@ -6,14 +6,14 @@ import hashlib
 import json
 from typing import Any
 
+from ..models import TIMELINE_ACTIVITY_KINDS
 from .actionchain import execution_evidence
 from .calendar import format_season_context
 from .tools import get_current_timeline_status
-from ..models import TIMELINE_ACTIVITY_KINDS
 
 CONDITION_LABELS = {
     "clean": "干净可穿",
-    "worn": "正在穿着",
+    "worn": "穿过，仍可穿",
     "dirty": "待洗",
     "washing": "清洗中",
     "drying": "晾晒中",
@@ -294,7 +294,7 @@ def wardrobe_fact_text(snapshot: dict) -> str:
         "user_feedback": "对方反馈参考",
     }
     lines = [
-        "数字衣橱：候选不等于已拥有，已拥有不等于已经穿上；洗护是数字生活执行记录。"
+        "数字衣橱：手动收入、备份还原和核验入橱的衣物均已拥有，没穿过也可以选择；实际穿着由换装回执确认。仅后台尚未核验的生成资料暂未入橱；洗护状态独立延续。"
     ]
     choice = current_wardrobe_choice(snapshot)
     choice_text = wardrobe_choice_text(choice)
@@ -338,7 +338,7 @@ def wardrobe_fact_text(snapshot: dict) -> str:
 WARDROBE_REVIEW_RULES = """你是当前角色的数字衣橱生活执行者。只返回结构化决策，不扮演用户。
 根据实际天气、室内外活动、身体记录、自身审美和可用衣物选择；季节只是背景，天气未知时不编造温度。
 先保留合适的当前穿搭，再考虑已有单品叠穿和鞋饰调整；干净适配的喜欢衣物允许复穿，不为轮换强制换新。
-衣物用途已分批整理并缓存。本轮 suitability 只返回与当前选择有关的单品适配，不假装逐条评估了整个衣橱；仅能推断视觉厚薄与可能的用途，不能编造面料成分、精确保暖温度或真实试穿体感。
+衣物用途已分批整理并缓存。wardrobe 是新增或条件变化后需审阅的单品；assessed_wardrobe 是相同证据条件下已核实的适配，可直接用于组合，只有新组合确实改变判断时才重评。本轮 suitability 只返回新评估或修正的单品，不重复抄写已核实结果；仅能推断视觉厚薄与可能的用途，不能编造面料成分、精确保暖温度或真实试穿体感。
 对 targets 分别给出 scene_choices，必须区分当前与未来用途。fits 代表已判断整套协调、适合该活动和天气的完整套装或上下装组合，不是单品各自可穿就算搭配成功。outfit_basis 为 current 时以当前实际穿着为基础，item_ids 只列调整的单品（不调整可为空）；selection 则列出完整主体服装，鞋饰按需补充。已有候选能组合采用时同时填 adopt_ids 和理由。missing 只能在审视所有可用主体衣物及可纳入候选后给出，considered_ids 列出实际评估过的主体衣物；资料不足用 unknown，不能把未知当作适配或缺衣。保持适配当前穿着优先，未来组合只作准备。
 衣橱选择 acquisition 可以 keep（复穿）、remix（已有单品尝试新组合）、consider（先记下想法）、generate（现在设计并生成新造型）。每次说明自己的具体理由，允许什么都不添。
 生成动机 motive 分 need（实际衣物需求）、interest（自身审美探索）、occasion（为已确认的角色安排准备）。已有可穿衣服不阻止有理由的审美探索，也不要求每天轮换或等衣物全部不合适。一次新鲜想法不是稳定偏好，不能杜撰过去一直喜欢。

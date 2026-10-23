@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
-from typing import Any
+from typing import Any, Protocol
 
-from ..clock import TIMEZONE, today as life_today
+from ..clock import TIMEZONE
+from ..clock import today as life_today
 from .categories import STORAGE_CATEGORIES, StorageCategory, normalize_storage_category
 from .memorypolicy import unprotected_memory_clause
-
-from typing import Protocol
 
 
 class StorageArchiveComponentContext(Protocol):
@@ -267,8 +266,20 @@ class StorageArchiveComponent:
         deleted = self.context._delete_statements_unlocked(
             (
                 (
+                    "DELETE FROM conversation_arrivals WHERE received_at < ?",
+                    (
+                        datetime.datetime.fromisoformat(cutoff)
+                        .replace(tzinfo=TIMEZONE)
+                        .timestamp(),
+                    ),
+                ),
+                (
                     "DELETE FROM conversation_receipts WHERE sent_at < ?",
-                    (datetime.datetime.fromisoformat(cutoff).replace(tzinfo=TIMEZONE).timestamp(),),
+                    (
+                        datetime.datetime.fromisoformat(cutoff)
+                        .replace(tzinfo=TIMEZONE)
+                        .timestamp(),
+                    ),
                 ),
                 (
                     """

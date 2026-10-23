@@ -19,15 +19,27 @@ try:
 except (AttributeError, ImportError):  # AstrBot 精简运行时可能没有完整工具包
     WEB_SEARCH_TOOL_NAMES: tuple[str, ...] = ()
 
+from functools import cached_property
+
+from .core.composition import ComponentCall
 from .core.interface import (
     DailyLifeCommandCenter,
     LifeAccessPolicy,
     LifeActionProposal,
     LifeActionScope,
 )
+from .core.interface.panel import DailyLifeDashboardComponent
+from .core.interface.portal.asset import PortalReferenceComponent
+from .core.interface.portal.closet import PortalClosetComponent
+from .core.interface.portal.entry import PortalBaseComponent
+from .core.interface.portal.line import PortalLineComponent
+from .core.interface.portal.memo import PortalMemoryComponent
+from .core.interface.portal.operation import PortalActionComponent
+from .core.interface.portal.stickers import PortalEmojiComponent
+from .core.interface.view import PageViewComponent
 from .core.logguard import ProviderLogGuard
-from .core.sources.location import enrich_location_message
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
+from .core.runtime.external import generate_text, model_route
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.preparation import ReplyPreparationService
 from .core.runtime.sender import install_expressive_send_message_tool
@@ -36,19 +48,8 @@ from .core.runtime.tooling import (
     guard_tool_arguments,
     prepare_tool_argument_checks,
 )
+from .core.sources.location import enrich_location_message
 from .core.telemetry import cache_prefix_version
-
-from .core.interface.panel import DailyLifeDashboardComponent
-from .core.interface.view import PageViewComponent
-from .core.interface.portal.entry import PortalBaseComponent
-from .core.interface.portal.asset import PortalReferenceComponent
-from .core.interface.portal.closet import PortalClosetComponent
-from .core.interface.portal.stickers import PortalEmojiComponent
-from .core.interface.portal.operation import PortalActionComponent
-from .core.interface.portal.line import PortalLineComponent
-from .core.interface.portal.memo import PortalMemoryComponent
-from functools import cached_property
-from .core.composition import ComponentCall
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -143,6 +144,7 @@ class DailyLifePlugin(Star):
         + _INCOMING_NOTE_HOOKS
         + (
             "note_conversation_incoming",
+            "record_conversation_arrival",
             "note_recalled_message",
             "note_runtime_scope_activity",
             "note_continuous_turn_incoming",
@@ -393,6 +395,29 @@ class DailyLifePlugin(Star):
 
         return guarded
 
+    async def get_external_model_route(self) -> dict:
+        """仅返回模型 ID，不对外暴露凭据和 provider 实例。"""
+        async with self._external_runtime_lease() as runtime:
+            return await model_route(runtime)
+
+    async def generate_external_text(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        target_umo: str = "",
+        timeout_seconds: float = 20,
+    ) -> str:
+        """使用 daily_life 的模型选择与故障切换机制，在隔离会话中生成文本。"""
+        async with self._external_runtime_lease() as runtime:
+            return await generate_text(
+                runtime,
+                prompt,
+                system_prompt=system_prompt,
+                target_umo=target_umo,
+                timeout_seconds=timeout_seconds,
+            )
+
     async def get_share_context(self, target_umo: str = "") -> dict:
         """为分享类插件返回目标隔离且已提炼的生活上下文。"""
         async with self._external_runtime_lease() as runtime:
@@ -470,7 +495,10 @@ class DailyLifePlugin(Star):
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
             return await runtime.generate_share_image_task(
-                event, prompt, task_key=task_key, contains_character=contains_character,
+                event,
+                prompt,
+                task_key=task_key,
+                contains_character=contains_character,
                 target_umo=target_umo,
             )
 
@@ -489,7 +517,10 @@ class DailyLifePlugin(Star):
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
             return await runtime.generate_share_video_task(
-                event, prompt, task_key=task_key, reference_image=reference_image,
+                event,
+                prompt,
+                task_key=task_key,
+                reference_image=reference_image,
                 target_umo=target_umo,
             )
 
@@ -542,17 +573,30 @@ class DailyLifePlugin(Star):
 
     async def plan_share_voice(self, text: str, target_umo: str = "") -> dict:
         async with self._external_runtime_lease() as runtime:
-            return await runtime.plan_share_voice(str(text or ""), str(target_umo or ""))
+            return await runtime.plan_share_voice(
+                str(text or ""), str(target_umo or "")
+            )
 
-    async def search_share_memories(self, query: str, target_umo: str = "", *, limit: int = 4) -> list:
+    async def search_share_memories(
+        self, query: str, target_umo: str = "", *, limit: int = 4
+    ) -> list:
         async with self._external_runtime_lease() as runtime:
-            return await runtime.search_share_memories(str(query or ""), str(target_umo or ""), limit=limit)
+            return await runtime.search_share_memories(
+                str(query or ""), str(target_umo or ""), limit=limit
+            )
 
     async def coordinate_share_contact(
-        self, target_umo: str, *, owner: str, action: str = "reserve", expected: str | None = None
+        self,
+        target_umo: str,
+        *,
+        owner: str,
+        action: str = "reserve",
+        expected: str | None = None,
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
-            return await runtime.coordinate_share_contact(target_umo, owner=owner, action=action, expected=expected)
+            return await runtime.coordinate_share_contact(
+                target_umo, owner=owner, action=action, expected=expected
+            )
 
     async def record_external_activity_receipt(self, receipt: dict) -> bool:
         async with self._external_runtime_lease() as runtime:
@@ -700,8 +744,8 @@ class DailyLifePlugin(Star):
     ):
         """
         当对方明确提出明天或未来一天需要记住的计划、约定或待办时调用。
-        调用前必须先用角色口吻说一句简短、自然的等待语，表示自己会记一下；
-        这句话不能声称已经记录成功。工具完成后，再自然确认已经记住，并按双方关系回应这项安排。
+        直接记录，不先发等待语；等工具返回后，再根据实际结果自然回应一次。
+        记录成功才确认已经记住，并按双方关系回应这项安排；失败时如实说明。
 
         Args:
             memo_details(string): 用户提到的明天或未来计划，例如“和用户去草坪野餐，负责做三明治”。
@@ -839,7 +883,10 @@ class DailyLifePlugin(Star):
             content=str(content or "").strip(),
             evidence=str(evidence or "").strip(),
             revision=self._tool_int(revision, 0),
-            owner=owner, quantity=quantity, unit=unit, available_at=available_at,
+            owner=owner,
+            quantity=quantity,
+            unit=unit,
+            available_at=available_at,
         )
 
     @filter.llm_tool(name="life_memory_correct")
@@ -1833,8 +1880,12 @@ class DailyLifePlugin(Star):
     @guard_tool_arguments
     @_runtime_guard
     async def tool_life_wardrobe_manage(
-        self, event: AstrMessageEvent, operation: str = "query",
-        item_ids: list[int] | None = None, reason: str = "", duration_minutes: int = 30,
+        self,
+        event: AstrMessageEvent,
+        operation: str = "query",
+        item_ids: list[int] | None = None,
+        reason: str = "",
+        duration_minutes: int = 30,
     ):
         """查询数字衣橱审美与衣物状态，或执行本轮明确的纳入和洗护操作。
         灵感候选不等于拥有；adopt 正式纳入数字衣橱，不等于现实购物或已穿上。
@@ -1847,12 +1898,18 @@ class DailyLifePlugin(Star):
             reason(string): 本轮明确要求和具体操作理由。
             duration_minutes(int): washing 的预计清洗分钟，默认30；预计时长不等于完成。
         """
-        denial = self._life_permission_denial(event, "style:manage", LifeActionScope.PRIVATE)
+        denial = self._life_permission_denial(
+            event, "style:manage", LifeActionScope.PRIVATE
+        )
         if denial:
             return denial
-        return await self.runtime.manage_wardrobe(event, operation=operation,
-            item_ids=self.runtime._style_item_ids(item_ids or []), reason=reason,
-            duration_minutes=self._tool_int(duration_minutes,30))
+        return await self.runtime.manage_wardrobe(
+            event,
+            operation=operation,
+            item_ids=self.runtime._style_item_ids(item_ids or []),
+            reason=reason,
+            duration_minutes=self._tool_int(duration_minutes, 30),
+        )
 
     @filter.llm_tool(name="life_style_catalog")
     @guard_tool_arguments
@@ -2264,7 +2321,9 @@ class DailyLifePlugin(Star):
             map_available = getattr(domains, "map_tools_available", None)
             if not callable(map_available) or not map_available():
                 resolution_due = getattr(domains, "home_location_resolution_due", None)
-                schedule_background = getattr(self.runtime, "_schedule_background_task", None)
+                schedule_background = getattr(
+                    self.runtime, "_schedule_background_task", None
+                )
                 if (
                     callable(ensure_map_context)
                     and callable(resolution_due)
@@ -2280,7 +2339,8 @@ class DailyLifePlugin(Star):
                     toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
         setattr(
-            event, "_daily_life_prefix_version",
+            event,
+            "_daily_life_prefix_version",
             cache_prefix_version(getattr(req, "system_prompt", "")),
         )
         await prepare_tool_argument_checks(getattr(req, "func_tool", None))
@@ -2296,9 +2356,13 @@ class DailyLifePlugin(Star):
         note_usage = getattr(self.runtime, "note_chat_model_usage", None)
         if callable(note_usage):
             started = getattr(event, "_daily_life_model_started", None)
-            elapsed = (time.perf_counter() - started) * 1000 if started is not None else None
+            elapsed = (
+                (time.perf_counter() - started) * 1000 if started is not None else None
+            )
             note_usage(
-                response, elapsed_ms=elapsed, failed=response_failed,
+                response,
+                elapsed_ms=elapsed,
+                failed=response_failed,
                 model_identity=getattr(event, "_daily_life_model_identity", ""),
                 prefix_version=getattr(event, "_daily_life_prefix_version", ""),
             )
@@ -2641,7 +2705,9 @@ class DailyLifePlugin(Star):
             return False
         result = event.get_result()
         chain = getattr(result, "chain", None)
-        if not chain or not all(str(getattr(item, "text", "") or "").strip() for item in chain):
+        if not chain or not all(
+            str(getattr(item, "text", "") or "").strip() for item in chain
+        ):
             return False
         keeper = getattr(self.runtime, "_chat_style_should_keep_default_send", None)
         if callable(keeper) and keeper(event, "\n".join(item.text for item in chain)):
@@ -2657,8 +2723,10 @@ class DailyLifePlugin(Star):
             )
 
         ReplyPreparationService(
-            schedule=schedule, prepare=self._send_pipeline_apply,
-            delivered=self._record_reply_delivery, is_current=current,
+            schedule=schedule,
+            prepare=self._send_pipeline_apply,
+            delivered=self._record_reply_delivery,
+            is_current=current,
             complete=runtime.complete_continuous_turn,
         ).defer(event)
         # 队列满时保留原文字交给框架发送，不在前台等待模型或 TTS。
@@ -2746,6 +2814,9 @@ class DailyLifePlugin(Star):
         self._runtime_hook_call("note_continuous_turn_incoming", event)
         try:
             await self._runtime_hook_apply(
+                "record_conversation_arrival", event, is_async=True
+            )
+            await self._runtime_hook_apply(
                 "prepare_visual_media_from_event", event, is_async=True
             )
         finally:
@@ -2831,53 +2902,95 @@ class DailyLifePlugin(Star):
             return
         yield await self.runtime.bili_status(event)
 
-    _register_page_web_apis = ComponentCall("_part_daily_life_dashboard_component", DailyLifeDashboardComponent, "_register_page_web_apis")
+    _register_page_web_apis = ComponentCall(
+        "_part_daily_life_dashboard_component",
+        DailyLifeDashboardComponent,
+        "_register_page_web_apis",
+    )
 
-    _page_archive_records = ComponentCall("_part_page_view_component", PageViewComponent, "_page_archive_records")
+    _page_archive_records = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_archive_records"
+    )
 
     _page_records_for_date = staticmethod(PageViewComponent._page_records_for_date)
 
-    _build_page_config = ComponentCall("_part_page_view_component", PageViewComponent, "_build_page_config")
+    _build_page_config = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_build_page_config"
+    )
 
-    _page_reference_relationships = ComponentCall("_part_page_view_component", PageViewComponent, "_page_reference_relationships")
+    _page_reference_relationships = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_reference_relationships"
+    )
 
     _load_page_config_schema = staticmethod(PageViewComponent._load_page_config_schema)
 
     @classmethod
     async def _page_config_schema(cls) -> dict:
-        return await PageViewComponent._page_config_schema.__func__(cls, )
+        return await PageViewComponent._page_config_schema.__func__(
+            cls,
+        )
 
-    _page_current_config = ComponentCall("_part_page_view_component", PageViewComponent, "_page_current_config")
+    _page_current_config = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_current_config"
+    )
 
-    _page_provider_options = ComponentCall("_part_page_view_component", PageViewComponent, "_page_provider_options")
+    _page_provider_options = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_provider_options"
+    )
 
-    _build_page_status = ComponentCall("_part_page_view_component", PageViewComponent, "_build_page_status")
+    _build_page_status = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_build_page_status"
+    )
 
-    _page_world_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_world_snapshot")
+    _page_world_snapshot = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_world_snapshot"
+    )
 
-    _page_experience_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_experience_snapshot")
+    _page_experience_snapshot = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_experience_snapshot"
+    )
 
-    _page_runtime_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_runtime_snapshot")
+    _page_runtime_snapshot = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_runtime_snapshot"
+    )
 
     _page_compact = staticmethod(PageViewComponent._page_compact)
 
-    _page_internal_reference_segments = staticmethod(PageViewComponent._page_internal_reference_segments)
+    _page_internal_reference_segments = staticmethod(
+        PageViewComponent._page_internal_reference_segments
+    )
 
-    _page_is_evidence_reference = staticmethod(PageViewComponent._page_is_evidence_reference)
+    _page_is_evidence_reference = staticmethod(
+        PageViewComponent._page_is_evidence_reference
+    )
 
-    _page_readable_evidence = classmethod(PageViewComponent._page_readable_evidence.__func__)
+    _page_readable_evidence = classmethod(
+        PageViewComponent._page_readable_evidence.__func__
+    )
 
-    _page_readable_evidence_record = classmethod(PageViewComponent._page_readable_evidence_record.__func__)
+    _page_readable_evidence_record = classmethod(
+        PageViewComponent._page_readable_evidence_record.__func__
+    )
 
-    _page_strip_same_day_prefix = staticmethod(PageViewComponent._page_strip_same_day_prefix)
+    _page_strip_same_day_prefix = staticmethod(
+        PageViewComponent._page_strip_same_day_prefix
+    )
 
-    _page_decision_display = classmethod(PageViewComponent._page_decision_display.__func__)
+    _page_decision_display = classmethod(
+        PageViewComponent._page_decision_display.__func__
+    )
 
     _page_current_decision = staticmethod(PageViewComponent._page_current_decision)
 
-    _page_daily_decision_candidates = ComponentCall("_part_page_view_component", PageViewComponent, "_page_daily_decision_candidates")
+    _page_daily_decision_candidates = ComponentCall(
+        "_part_page_view_component",
+        PageViewComponent,
+        "_page_daily_decision_candidates",
+    )
 
-    _page_memo_status = ComponentCall("_part_page_view_component", PageViewComponent, "_page_memo_status")
+    _page_memo_status = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_memo_status"
+    )
 
     _page_memo_lines = staticmethod(PageViewComponent._page_memo_lines)
 
@@ -2887,137 +3000,295 @@ class DailyLifePlugin(Star):
 
     _page_decision_sources = staticmethod(PageViewComponent._page_decision_sources)
 
-    _page_observatory = ComponentCall("_part_page_view_component", PageViewComponent, "_page_observatory")
+    _page_observatory = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_observatory"
+    )
 
     _page_unique_records = staticmethod(PageViewComponent._page_unique_records)
 
     _page_feedback_records = staticmethod(PageViewComponent._page_feedback_records)
 
-    _page_group_environments = ComponentCall("_part_page_view_component", PageViewComponent, "_page_group_environments")
+    _page_group_environments = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_group_environments"
+    )
 
-    _page_domain_snapshot = ComponentCall("_part_page_view_component", PageViewComponent, "_page_domain_snapshot")
+    _page_domain_snapshot = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_domain_snapshot"
+    )
 
-    _page_session_display_name = ComponentCall("_part_page_view_component", PageViewComponent, "_page_session_display_name")
+    _page_session_display_name = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_session_display_name"
+    )
 
     _page_action_decisions = staticmethod(PageViewComponent._page_action_decisions)
 
-    _page_raw_action_decisions = ComponentCall("_part_page_view_component", PageViewComponent, "_page_raw_action_decisions")
+    _page_raw_action_decisions = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_raw_action_decisions"
+    )
 
-    _page_relationships = ComponentCall("_part_page_view_component", PageViewComponent, "_page_relationships")
+    _page_relationships = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_relationships"
+    )
 
-    _resolve_relationship_display_name = ComponentCall("_part_page_view_component", PageViewComponent, "_resolve_relationship_display_name")
+    _resolve_relationship_display_name = ComponentCall(
+        "_part_page_view_component",
+        PageViewComponent,
+        "_resolve_relationship_display_name",
+    )
 
     _is_generic_page_name = staticmethod(PageViewComponent._is_generic_page_name)
 
-    _page_memory_evidence = ComponentCall("_part_page_view_component", PageViewComponent, "_page_memory_evidence")
+    _page_memory_evidence = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_memory_evidence"
+    )
 
-    _page_day = ComponentCall("_part_page_view_component", PageViewComponent, "_page_day")
+    _page_day = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_day"
+    )
 
-    _page_week_plan = ComponentCall("_part_page_view_component", PageViewComponent, "_page_week_plan")
+    _page_week_plan = ComponentCall(
+        "_part_page_view_component", PageViewComponent, "_page_week_plan"
+    )
 
     _PAGE_UPLOAD_CHUNK_SIZE = PortalBaseComponent._PAGE_UPLOAD_CHUNK_SIZE
 
     _page_public_error = staticmethod(PortalBaseComponent._page_public_error)
 
-    _page_response = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_response")
+    _page_response = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_response"
+    )
 
-    _page_json = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_json")
+    _page_json = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_json"
+    )
 
-    _page_json_body = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_json_body")
+    _page_json_body = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_json_body"
+    )
 
-    _page_receive_upload = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_receive_upload")
+    _page_receive_upload = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_receive_upload"
+    )
 
-    _page_copy_upload = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_copy_upload")
+    _page_copy_upload = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_copy_upload"
+    )
 
-    _page_copy_upload_sync = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_copy_upload_sync")
+    _page_copy_upload_sync = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_copy_upload_sync"
+    )
 
-    _page_send_download = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_send_download")
+    _page_send_download = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_send_download"
+    )
 
-    _page_request_method = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_request_method")
+    _page_request_method = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_request_method"
+    )
 
     _page_bool = staticmethod(PortalBaseComponent._page_bool)
 
-    _page_query_args = ComponentCall("_part_portal_base_component", PortalBaseComponent, "_page_query_args")
+    _page_query_args = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "_page_query_args"
+    )
 
-    page_status = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_status")
+    page_status = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "page_status"
+    )
 
-    page_status_wait = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_status_wait")
+    page_status_wait = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "page_status_wait"
+    )
 
-    page_config = ComponentCall("_part_portal_base_component", PortalBaseComponent, "page_config")
+    page_config = ComponentCall(
+        "_part_portal_base_component", PortalBaseComponent, "page_config"
+    )
 
-    _page_gallery_spec = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_gallery_spec")
+    _page_gallery_spec = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_gallery_spec",
+    )
 
-    _page_friend_reference_key = staticmethod(PortalReferenceComponent._page_friend_reference_key)
+    _page_friend_reference_key = staticmethod(
+        PortalReferenceComponent._page_friend_reference_key
+    )
 
-    _page_gallery_dir = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_gallery_dir")
+    _page_gallery_dir = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_gallery_dir",
+    )
 
-    _page_reference_dir = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_dir")
+    _page_reference_dir = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_reference_dir",
+    )
 
-    _page_safe_gallery_path = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_safe_gallery_path")
+    _page_safe_gallery_path = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_safe_gallery_path",
+    )
 
-    _page_safe_reference_path = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_safe_reference_path")
+    _page_safe_reference_path = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_safe_reference_path",
+    )
 
     _page_reference_mime = staticmethod(PortalReferenceComponent._page_reference_mime)
 
-    _page_reference_image_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_upload")
+    _page_reference_image_upload = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_reference_image_upload",
+    )
 
-    _page_reference_image_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_delete")
+    _page_reference_image_delete = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_reference_image_delete",
+    )
 
-    _page_reference_image_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "_page_reference_image_preview")
+    _page_reference_image_preview = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "_page_reference_image_preview",
+    )
 
-    page_character_reference_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_upload")
+    page_character_reference_upload = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_character_reference_upload",
+    )
 
-    page_character_reference_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_delete")
+    page_character_reference_delete = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_character_reference_delete",
+    )
 
-    page_character_reference_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_character_reference_preview")
+    page_character_reference_preview = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_character_reference_preview",
+    )
 
-    page_friend_reference_upload = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_upload")
+    page_friend_reference_upload = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_friend_reference_upload",
+    )
 
-    page_friend_reference_delete = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_delete")
+    page_friend_reference_delete = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_friend_reference_delete",
+    )
 
-    page_friend_reference_preview = ComponentCall("_part_portal_reference_component", PortalReferenceComponent, "page_friend_reference_preview")
+    page_friend_reference_preview = ComponentCall(
+        "_part_portal_reference_component",
+        PortalReferenceComponent,
+        "page_friend_reference_preview",
+    )
 
-    page_closet_list = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_list")
+    page_closet_list = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_list"
+    )
 
-    page_closet_import = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_import")
+    page_closet_import = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_import"
+    )
 
-    page_closet_generate = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_generate")
+    page_closet_generate = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_generate"
+    )
 
-    page_closet_preview = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_preview")
+    page_closet_preview = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_preview"
+    )
 
-    page_closet_status = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_status")
+    page_closet_status = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_status"
+    )
 
-    page_closet_feedback = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_feedback")
+    page_closet_feedback = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_feedback"
+    )
 
-    page_closet_review = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_review")
+    page_closet_review = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_review"
+    )
 
-    page_closet_delete = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_delete")
+    page_closet_delete = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_delete"
+    )
 
-    page_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_backup")
+    page_closet_backup = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_backup"
+    )
 
-    page_closet_restore = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "page_closet_restore")
+    page_closet_restore = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "page_closet_restore"
+    )
 
-    _page_closet_payload = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_payload")
+    _page_closet_payload = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "_page_closet_payload"
+    )
 
-    _page_closet_generation_timeouts = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_generation_timeouts")
+    _page_closet_generation_timeouts = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_closet_generation_timeouts",
+    )
 
-    _page_closet_item = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_item")
+    _page_closet_item = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "_page_closet_item"
+    )
 
-    _page_closet_record = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_record")
+    _page_closet_record = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "_page_closet_record"
+    )
 
-    _page_closet_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_path")
+    _page_closet_path = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "_page_closet_path"
+    )
 
-    _page_safe_closet_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_safe_closet_path")
+    _page_safe_closet_path = ComponentCall(
+        "_part_portal_closet_component", PortalClosetComponent, "_page_safe_closet_path"
+    )
 
-    _page_delete_closet_files = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_delete_closet_files")
+    _page_delete_closet_files = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_delete_closet_files",
+    )
 
-    _page_write_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_write_closet_backup")
+    _page_write_closet_backup = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_write_closet_backup",
+    )
 
-    _page_read_closet_backup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_read_closet_backup")
+    _page_read_closet_backup = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_read_closet_backup",
+    )
 
-    _page_closet_transfer_path = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_closet_transfer_path")
+    _page_closet_transfer_path = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_closet_transfer_path",
+    )
 
-    _page_schedule_closet_cleanup = ComponentCall("_part_portal_closet_component", PortalClosetComponent, "_page_schedule_closet_cleanup")
+    _page_schedule_closet_cleanup = ComponentCall(
+        "_part_portal_closet_component",
+        PortalClosetComponent,
+        "_page_schedule_closet_cleanup",
+    )
 
     _page_closet_kind = staticmethod(PortalClosetComponent._page_closet_kind)
 
@@ -3029,111 +3300,245 @@ class DailyLifePlugin(Star):
 
     _page_closet_event = staticmethod(PortalClosetComponent._page_closet_event)
 
-    page_emoji_list = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_list")
+    page_emoji_list = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_list"
+    )
 
-    page_emoji_import = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_import")
+    page_emoji_import = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_import"
+    )
 
-    page_emoji_preview = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_preview")
+    page_emoji_preview = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_preview"
+    )
 
-    page_emoji_delete = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_delete")
+    page_emoji_delete = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_delete"
+    )
 
-    page_emoji_sendable = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_sendable")
+    page_emoji_sendable = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_sendable"
+    )
 
-    page_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_backup")
+    page_emoji_backup = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_backup"
+    )
 
-    page_emoji_restore = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_restore")
+    page_emoji_restore = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "page_emoji_restore"
+    )
 
-    _page_emoji_payload = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_payload")
+    _page_emoji_payload = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_payload"
+    )
 
-    _page_emoji_payload_from_assets = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_payload_from_assets")
+    _page_emoji_payload_from_assets = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_emoji_payload_from_assets",
+    )
 
-    _page_emoji_item = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_item")
+    _page_emoji_item = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_item"
+    )
 
-    _page_emoji_asset_by_id = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_asset_by_id")
+    _page_emoji_asset_by_id = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_asset_by_id"
+    )
 
-    _page_emoji_assets_by_ids = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_assets_by_ids")
+    _page_emoji_assets_by_ids = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_emoji_assets_by_ids",
+    )
 
     _page_emoji_ids = staticmethod(PortalEmojiComponent._page_emoji_ids)
 
-    _page_cached_emoji_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_cached_emoji_path")
+    _page_cached_emoji_path = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_cached_emoji_path"
+    )
 
     _page_emoji_is_animated = staticmethod(PortalEmojiComponent._page_emoji_is_animated)
 
-    _page_safe_emoji_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_emoji_path")
+    _page_safe_emoji_path = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_emoji_path"
+    )
 
-    _page_delete_emoji_files = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_delete_emoji_files")
+    _page_delete_emoji_files = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_delete_emoji_files"
+    )
 
-    _page_build_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup")
+    _page_build_emoji_backup = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup"
+    )
 
-    _page_build_emoji_backup_file = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup_file")
+    _page_build_emoji_backup_file = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_build_emoji_backup_file",
+    )
 
-    _page_write_emoji_backup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_write_emoji_backup")
+    _page_write_emoji_backup = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_write_emoji_backup"
+    )
 
-    _page_emoji_backup_item = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_backup_item")
+    _page_emoji_backup_item = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_backup_item"
+    )
 
-    _page_backup_file_allowed = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_file_allowed")
+    _page_backup_file_allowed = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_backup_file_allowed",
+    )
 
-    _page_backup_asset_name = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_asset_name")
+    _page_backup_asset_name = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_asset_name"
+    )
 
-    _page_restore_emoji_backup_records = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_restore_emoji_backup_records")
+    _page_restore_emoji_backup_records = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_restore_emoji_backup_records",
+    )
 
-    _page_emoji_transfer_path = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_transfer_path")
+    _page_emoji_transfer_path = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_emoji_transfer_path",
+    )
 
-    _page_schedule_emoji_transfer_cleanup = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_schedule_emoji_transfer_cleanup")
+    _page_schedule_emoji_transfer_cleanup = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_schedule_emoji_transfer_cleanup",
+    )
 
-    _page_merge_restored_emoji_asset = staticmethod(PortalEmojiComponent._page_merge_restored_emoji_asset)
+    _page_merge_restored_emoji_asset = staticmethod(
+        PortalEmojiComponent._page_merge_restored_emoji_asset
+    )
 
-    _page_validate_emoji_backup_zip = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_validate_emoji_backup_zip")
+    _page_validate_emoji_backup_zip = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_validate_emoji_backup_zip",
+    )
 
-    _page_read_emoji_backup_manifest = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_read_emoji_backup_manifest")
+    _page_read_emoji_backup_manifest = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_read_emoji_backup_manifest",
+    )
 
-    _page_restore_emoji_backup_file = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_restore_emoji_backup_file")
+    _page_restore_emoji_backup_file = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_restore_emoji_backup_file",
+    )
 
-    _page_safe_backup_member = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_backup_member")
+    _page_safe_backup_member = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_safe_backup_member"
+    )
 
-    _page_backup_member_suffix = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_backup_member_suffix")
+    _page_backup_member_suffix = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_backup_member_suffix",
+    )
 
-    _page_emoji_cache_filename = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_cache_filename")
+    _page_emoji_cache_filename = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_emoji_cache_filename",
+    )
 
-    _page_emoji_max_bytes = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_max_bytes")
+    _page_emoji_max_bytes = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_max_bytes"
+    )
 
-    _page_receive_emoji = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_receive_emoji")
+    _page_receive_emoji = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_receive_emoji"
+    )
 
-    _page_imported_emoji_record = staticmethod(PortalEmojiComponent._page_imported_emoji_record)
+    _page_imported_emoji_record = staticmethod(
+        PortalEmojiComponent._page_imported_emoji_record
+    )
 
-    _page_schedule_emoji_import_vision = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_schedule_emoji_import_vision")
+    _page_schedule_emoji_import_vision = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_schedule_emoji_import_vision",
+    )
 
     _page_image_mime = staticmethod(PortalEmojiComponent._page_image_mime)
 
-    _page_emoji_preview_data = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_preview_data")
+    _page_emoji_preview_data = ComponentCall(
+        "_part_portal_emoji_component", PortalEmojiComponent, "_page_emoji_preview_data"
+    )
 
-    _page_static_emoji_preview_data = ComponentCall("_part_portal_emoji_component", PortalEmojiComponent, "_page_static_emoji_preview_data")
+    _page_static_emoji_preview_data = ComponentCall(
+        "_part_portal_emoji_component",
+        PortalEmojiComponent,
+        "_page_static_emoji_preview_data",
+    )
 
-    _page_static_emoji_preview_path = staticmethod(PortalEmojiComponent._page_static_emoji_preview_path)
+    _page_static_emoji_preview_path = staticmethod(
+        PortalEmojiComponent._page_static_emoji_preview_path
+    )
 
-    _page_emoji_placeholder_data_url = classmethod(PortalEmojiComponent._page_emoji_placeholder_data_url.__func__)
+    _page_emoji_placeholder_data_url = classmethod(
+        PortalEmojiComponent._page_emoji_placeholder_data_url.__func__
+    )
 
-    _page_emoji_placeholder_bytes = staticmethod(PortalEmojiComponent._page_emoji_placeholder_bytes)
+    _page_emoji_placeholder_bytes = staticmethod(
+        PortalEmojiComponent._page_emoji_placeholder_bytes
+    )
 
-    page_refresh_state = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_refresh_state")
+    page_refresh_state = ComponentCall(
+        "_part_portal_action_component", PortalActionComponent, "page_refresh_state"
+    )
 
-    page_reset_day = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_reset_day")
+    page_reset_day = ComponentCall(
+        "_part_portal_action_component", PortalActionComponent, "page_reset_day"
+    )
 
-    page_generate_week = ComponentCall("_part_portal_action_component", PortalActionComponent, "page_generate_week")
+    page_generate_week = ComponentCall(
+        "_part_portal_action_component", PortalActionComponent, "page_generate_week"
+    )
 
     _page_validate_timeline = staticmethod(PortalLineComponent._page_validate_timeline)
 
-    page_timeline_save = ComponentCall("_part_portal_line_component", PortalLineComponent, "page_timeline_save")
+    page_timeline_save = ComponentCall(
+        "_part_portal_line_component", PortalLineComponent, "page_timeline_save"
+    )
 
-    page_experience_episode_correct = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_episode_correct")
+    page_experience_episode_correct = ComponentCall(
+        "_part_portal_memory_component",
+        PortalMemoryComponent,
+        "page_experience_episode_correct",
+    )
 
-    page_experience_episode_protect = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_episode_protect")
+    page_experience_episode_protect = ComponentCall(
+        "_part_portal_memory_component",
+        PortalMemoryComponent,
+        "page_experience_episode_protect",
+    )
 
-    page_experience_focus = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_focus")
+    page_experience_focus = ComponentCall(
+        "_part_portal_memory_component", PortalMemoryComponent, "page_experience_focus"
+    )
 
-    page_experience_boundary = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_boundary")
+    page_experience_boundary = ComponentCall(
+        "_part_portal_memory_component",
+        PortalMemoryComponent,
+        "page_experience_boundary",
+    )
 
-    page_experience_feedback = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_experience_feedback")
+    page_experience_feedback = ComponentCall(
+        "_part_portal_memory_component",
+        PortalMemoryComponent,
+        "page_experience_feedback",
+    )
 
     @cached_property
     def _part_daily_life_dashboard_component(self):
@@ -3170,4 +3575,3 @@ class DailyLifePlugin(Star):
     @cached_property
     def _part_portal_memory_component(self):
         return PortalMemoryComponent(self)
-

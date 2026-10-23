@@ -5,6 +5,7 @@ from typing import Any
 
 from ...sources.platforms import parse_unified_origin
 from ...sources.location import enrich_location_message
+from ...sight.visual import IMAGE_SUMMARY_MAX_CHARS
 from ..elapsed import RECEIVED_AT, SENT_AT, event_time
 from .grain import StructuredMessage
 
@@ -130,7 +131,7 @@ class StructuredForgeComponent:
     ) -> StructuredMessage | None:
         scope = str(scope or "").strip()
         message_key = str(message_key or "").strip()
-        summary = self.context._structured_text(summary, 96).strip(" ：:，,。")
+        summary = self.context._structured_text(summary, IMAGE_SUMMARY_MAX_CHARS).strip(" ：:，,。")
         if not scope or not message_key or not summary:
             return None
 

@@ -5,6 +5,7 @@ import html
 from typing import Any
 
 from ...clock import TIMEZONE
+from ...sight.visual import IMAGE_SUMMARY_MAX_CHARS
 from .grain import StructuredMessage
 
 from typing import Protocol
@@ -135,7 +136,9 @@ class StructuredGlanceComponent:
             for key, value in attrs.items()
             if str(value or "").strip()
         )
-        content = self.context._structured_text(item.content, 180)
+        content = self.context._structured_text(
+            item.content, IMAGE_SUMMARY_MAX_CHARS + 180 if item.visual_summary else 180
+        )
         if item.media and item.media not in content:
             content = f"[{item.media}] {content}".strip()
         at_targets = "、".join(

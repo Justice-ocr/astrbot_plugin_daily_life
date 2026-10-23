@@ -1,6 +1,7 @@
 from .basis import (
     ChatStyleSettings,
     EmojiSettings,
+    ImageUnderstandingSettings,
     LifecycleSettings,
     OutfitSettings,
     ProactiveReplySettings,
@@ -9,6 +10,7 @@ from .basis import (
     StateSettings,
     StorageSettings,
     TaskModelSettings,
+    VisionSettings,
     WeatherSettings,
 )
 from .generate import (
@@ -36,6 +38,7 @@ __all__ = [
     "IMAGE_ASPECT_RATIOS",
     "IMAGE_RESOLUTIONS",
     "ImageGenerationSettings",
+    "ImageUnderstandingSettings",
     "RealtimeVoiceCallSettings",
     "LifecycleSettings",
     "LifeSettings",
@@ -49,6 +52,7 @@ __all__ = [
     "StorageSettings",
     "TaskModelSettings",
     "VideoGenerationSettings",
+    "VisionSettings",
     "VoiceGenerationSettings",
     "WeatherSettings",
     "SearchSettings",

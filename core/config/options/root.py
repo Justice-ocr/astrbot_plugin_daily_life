@@ -12,6 +12,7 @@ from ...prompts import (
 from .basis import (
     ChatStyleSettings,
     EmojiSettings,
+    ImageUnderstandingSettings,
     LifecycleSettings,
     OutfitSettings,
     ProactiveReplySettings,
@@ -21,6 +22,7 @@ from .basis import (
     StateSettings,
     StorageSettings,
     TaskModelSettings,
+    VisionSettings,
     WeatherSettings,
 )
 from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
@@ -57,7 +59,8 @@ class LifeSettings:
     lifecycle: LifecycleSettings = field(default_factory=LifecycleSettings)
     outfit: OutfitSettings = field(default_factory=OutfitSettings)
     invite: TaskModelSettings = field(default_factory=TaskModelSettings)
-    vision: TaskModelSettings = field(default_factory=TaskModelSettings)
+    vision: ImageUnderstandingSettings = field(default_factory=ImageUnderstandingSettings)
+    emoji_vision: VisionSettings = field(default_factory=VisionSettings)
     emoji: EmojiSettings = field(default_factory=EmojiSettings)
     sight: SightSettings = field(default_factory=SightSettings)
     image_generation: ImageGenerationSettings = field(
@@ -99,6 +102,7 @@ class LifeSettings:
         outfit_conf = dict_section(data, "outfit_config")
         invite_conf = dict_section(data, "invite_config")
         vision_conf = dict_section(data, "vision_config")
+        emoji_vision_conf = dict_section(data, "emoji_vision_config")
         emoji_conf = dict_section(data, "emoji_config")
         sight_conf = dict_section(data, "sight_config")
         image_generation_conf = dict_section(data, "image_generation_config")
@@ -142,7 +146,8 @@ class LifeSettings:
         config.lifecycle = LifecycleSettings.from_dict(lifecycle_conf)
         config.outfit = OutfitSettings.from_dict(outfit_conf)
         config.invite = TaskModelSettings.from_dict(invite_conf)
-        config.vision = TaskModelSettings.from_dict(vision_conf)
+        config.vision = ImageUnderstandingSettings.from_dict(vision_conf)
+        config.emoji_vision = VisionSettings.from_dict(emoji_vision_conf)
         config.emoji = EmojiSettings.from_dict(emoji_conf)
         config.sight = SightSettings.from_dict(sight_conf)
         config.image_generation = ImageGenerationSettings.from_dict(

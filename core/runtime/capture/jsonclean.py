@@ -6,6 +6,7 @@ from typing import Any
 
 from ...life.tools import extract_json_from_text
 from ...prompts import cache_friendly_prompt
+from ...telemetry import model_task
 
 STRICT_JSON_REPLY_RULE = "最终回复只能是一个 JSON 对象；第一个非空字符必须是 {，最后一个非空字符必须是 }，禁止在 JSON 前后写任何独白、解释、旁白或补充文字。"
 MAX_JSON_REPAIR_CHARS = 20_000
@@ -29,6 +30,17 @@ def is_pure_json_object_text(text: str) -> bool:
     except json.JSONDecodeError:
         return False
     return isinstance(data, dict)
+
+
+def unwrap_json_object(text: str) -> dict[str, Any] | None:
+    """只接受一个完整对象或其代码围栏，不从说明文字中猜取对象。"""
+    raw = str(text or "").strip()
+    lines = raw.splitlines()
+    if len(lines) >= 3 and lines[0].strip().lower() in {"```", "```json"} and lines[-1].strip() == "```":
+        raw = "\n".join(lines[1:-1]).strip()
+    if not is_pure_json_object_text(raw):
+        return None
+    return json.loads(raw)
 
 
 async def call_pure_json(
@@ -71,8 +83,9 @@ async def call_pure_json(
         session_id,
         **call_options,
     )
-    if is_pure_json_object_text(text):
-        payload = validate(json.loads(str(text).strip()))
+    unwrapped = unwrap_json_object(text)
+    if unwrapped is not None:
+        payload = validate(unwrapped)
         if payload is not None:
             return payload
         if strict:
@@ -98,12 +111,13 @@ async def call_pure_json(
         repair_source,
         dynamic_title="待修复 JSON",
     )
-    repaired = await model_gateway.call_text_model(
-        provider,
-        repair_prompt,
-        repair_session_id or session_id,
-        **call_options,
-    )
+    with model_task(stage="json_repair"):
+        repaired = await model_gateway.call_text_model(
+            provider,
+            repair_prompt,
+            repair_session_id or session_id,
+            **call_options,
+        )
     repaired_payload = None
     if is_pure_json_object_text(repaired):
         repaired_payload = validate(json.loads(str(repaired).strip()))

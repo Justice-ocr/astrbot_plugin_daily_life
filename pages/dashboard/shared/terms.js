@@ -92,6 +92,8 @@ export const LIFE_DOMAIN_STATUS_LABELS = {
   simulated: "模拟完成",
   completed: "已完成",
   confirmed: "已确认",
+  ordered: "已下单",
+  prepared: "已备餐",
   open: "待处理",
   pending: "已安排",
   queued: "排队中",
@@ -107,6 +109,7 @@ export const LIFE_DOMAIN_STATUS_LABELS = {
 
 export const LIFE_DOMAIN_SOURCE_LABELS = {
   continuous_executor: "自主行动",
+  continuous_plan: "自主计划",
   daily_plan: "日程计划",
   life_action: "动作回执",
   life_action_simulation: "生活模拟",

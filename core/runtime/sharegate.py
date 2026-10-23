@@ -54,6 +54,7 @@ class ShareContactGate:
             ).items()
             if target == scope
         )
+        # 机器人发送回执只控制联系间隔，不代表用户对话或生活事实变化。
         payload = {
             "date": now.date().isoformat(),
             "action": {
@@ -62,7 +63,6 @@ class ShareContactGate:
             "status": run.get("status"),
             "observation": run.get("observation_state"),
             "chat": chat,
-            "last_sent": previous,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
@@ -79,7 +79,7 @@ class ShareContactGate:
         if action not in {"reserve", "check"}:
             return {"allowed": False, "reason": "不支持的预约操作"}
         if not self.claim(scope, owner):
-            return {"allowed": False, "reason": "该会话已有其他主动联系任务"}
+            return {"allowed": False, "retryable": True, "reason": "该会话已有其他主动联系任务"}
         try:
             snapshot, previous = await self.snapshot(scope)
         except BaseException:
@@ -87,7 +87,7 @@ class ShareContactGate:
                 self.leases.pop(scope, None)
             raise
         if not self.claim(scope, owner):
-            return {"allowed": False, "reason": "该会话已有其他主动联系任务"}
+            return {"allowed": False, "retryable": True, "reason": "该会话已有其他主动联系任务"}
         if expected is not None and snapshot != expected:
             self.leases.pop(scope, None)
             return {
@@ -96,11 +96,9 @@ class ShareContactGate:
                 "reason": "新消息或生活事实已变化，保留成品并停止补发",
             }
         if (
-            action == "reserve"
-            and expected is None
-            and previous
+            previous
             and life_now().replace(tzinfo=TIMEZONE).timestamp() - previous < 120
         ):
             self.leases.pop(scope, None)
-            return {"allowed": False, "reason": "该会话刚收到主动消息，稍后再联系"}
+            return {"allowed": False, "retryable": True, "reason": "该会话刚收到主动消息，稍后再联系"}
         return {"allowed": True, "snapshot": snapshot}

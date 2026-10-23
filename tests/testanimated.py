@@ -24,6 +24,20 @@ def gif_bytes(colors, durations=100):
 
 
 class AnimatedImageTest(unittest.TestCase):
+    def test_configured_sampling_count_keeps_first_and_last_frame(self):
+        data = gif_bytes([(index * 12, 0, 255 - index * 12) for index in range(20)])
+        for count in (2, 4, 16):
+            with self.subTest(count=count):
+                source, hint = prepare_animated_image(
+                    "base64://" + base64.b64encode(data).decode("ascii"), sample_frames=count
+                )
+                self.assertIn(f"{count} 个采样画面", hint)
+                with Image.open(BytesIO(base64.b64decode(source.split(",", 1)[1]))) as sheet:
+                    first = sheet.getpixel((48, 62))
+                    last = sheet.getpixel((48 + ((count - 1) % 4) * 88, 62 + ((count - 1) // 4) * 92))
+                    self.assertGreater(first[2], 240)
+                    self.assertGreater(last[0], 210)
+
     def test_single_frame_gif_is_static_and_keeps_original_resolution(self):
         data = gif_bytes(["red"])
         with tempfile.TemporaryDirectory() as directory:
@@ -141,26 +155,18 @@ class AnimatedVisionDeadlineTest(unittest.IsolatedAsyncioTestCase):
         runtime.composer = Composer()
         return runtime, closed
 
-    async def test_slow_primary_is_cancelled_and_fallback_finishes_in_budget(self):
-        cancelled = asyncio.Event()
-
-        class SlowProvider(Provider):
-            async def text_chat(self, **kwargs):
-                try:
-                    await asyncio.sleep(10)
-                finally:
-                    cancelled.set()
-
+    async def test_failed_primary_switches_to_default_within_same_budget(self):
         fallback = Provider(['{"summary":"猫挥手"}'], provider_id="fallback")
-        runtime, closed = self.runtime(SlowProvider([], provider_id="primary"), fallback)
-        runtime._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS = 0.02
-        runtime._EMOJI_VISION_TIMEOUT_SECONDS = 0.2
-        result = await runtime._call_emoji_vision_payload(
+        primary = Provider([RuntimeError("请求失败")], provider_id="primary")
+        runtime, closed = self.runtime(primary, fallback)
+        runtime.config.vision.timeout_seconds = 0.5
+        result = await runtime._call_vision_payload(
             "识别图片", "https://example.test/image.png",
-            session_prefix="test", task_label="测试视觉",
+            session_prefix="test", task_label="测试视觉", settings=runtime.config.vision,
         )
         self.assertEqual(result["summary"], "猫挥手")
-        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(primary.vision_prompts), 1)
+        self.assertEqual(len(fallback.vision_prompts), 1)
         self.assertEqual(len(closed), 2)
 
     async def test_total_timeout_cancels_request_and_closes_session(self):
@@ -173,17 +179,47 @@ class AnimatedVisionDeadlineTest(unittest.IsolatedAsyncioTestCase):
                 finally:
                     cancelled.set()
 
-        runtime, closed = self.runtime(SlowProvider([], provider_id="primary"))
+        fallback = Provider(['{"summary":"不应在超时后继续识别"}'], provider_id="fallback")
+        runtime, closed = self.runtime(SlowProvider([], provider_id="primary"), fallback)
         # 留给请求进入 provider 的时间，避免繁忙测试进程先在准备阶段超时。
-        runtime._EMOJI_VISION_TIMEOUT_SECONDS = 0.5
-        runtime._EMOJI_VISION_PROVIDER_TIMEOUT_SECONDS = 1
+        runtime.config.vision.timeout_seconds = 0.5
         with self.assertRaises(TimeoutError):
-            await runtime._call_emoji_vision_payload(
+            await runtime._call_vision_payload(
                 "识别图片", "https://example.test/image.png",
-                session_prefix="test", task_label="测试视觉",
+                session_prefix="test", task_label="测试视觉", settings=runtime.config.vision,
             )
         self.assertTrue(cancelled.is_set())
         self.assertEqual(len(closed), 1)
+        self.assertEqual(fallback.vision_prompts, [])
+
+    async def test_preprocessing_and_model_attempts_share_one_deadline(self):
+        cancelled = asyncio.Event()
+
+        class SlowProvider(Provider):
+            async def text_chat(self, **kwargs):
+                try:
+                    await asyncio.sleep(10)
+                finally:
+                    cancelled.set()
+
+        primary = Provider([RuntimeError("请求失败")], provider_id="primary")
+        runtime, closed = self.runtime(primary, SlowProvider(provider_id="fallback"))
+        runtime.config.vision.timeout_seconds = 0.4
+
+        def decode(source, **kwargs):
+            time.sleep(0.25)
+            return source, ""
+
+        started = time.monotonic()
+        with patch("core.runtime.capture.emoji.vision.prepare_animated_image", decode):
+            with self.assertRaises(TimeoutError):
+                await runtime._call_vision_payload(
+                    "识别图片", "https://example.test/image.png",
+                    session_prefix="test", task_label="测试视觉", settings=runtime.config.vision,
+                )
+        self.assertLess(time.monotonic() - started, 0.6)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(closed), 2)
 
     async def test_decode_runs_off_event_loop_and_supported_retry_limit_is_passed(self):
         requests = []
@@ -196,7 +232,7 @@ class AnimatedVisionDeadlineTest(unittest.IsolatedAsyncioTestCase):
         runtime, _ = self.runtime(ExplicitProvider([], provider_id="primary"))
         ticks = []
 
-        def decode(_source):
+        def decode(_source, **kwargs):
             time.sleep(0.05)
             return "data:image/jpeg;base64,dGVzdA==", "同一动图的多帧画面"
 
@@ -206,8 +242,8 @@ class AnimatedVisionDeadlineTest(unittest.IsolatedAsyncioTestCase):
                 ticks.append(1)
 
         with patch("core.runtime.capture.emoji.vision.prepare_animated_image", decode):
-            result, _ = await asyncio.gather(runtime._call_emoji_vision_payload(
-                "识别图片", "animation.gif", session_prefix="test", task_label="测试视觉"
+            result, _ = await asyncio.gather(runtime._call_vision_payload(
+                "识别图片", "animation.gif", session_prefix="test", task_label="测试视觉", settings=runtime.config.vision
             ), heartbeat())
         self.assertEqual(result["summary"], "多帧动作")
         self.assertEqual(len(ticks), 5)

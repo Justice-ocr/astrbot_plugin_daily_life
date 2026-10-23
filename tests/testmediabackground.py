@@ -8,11 +8,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import support  # noqa: F401 - 导入运行时模块前先安装 AstrBot 测试替身。
+
+# isort: split
+
+from core.media.picture.polling import ImageTaskError
+from core.outcome import ToolResultText
 from core.runtime.background import BackgroundTaskScheduler
 from core.runtime.channel import image as image_module
-from core.media.picture.polling import ImageTaskError
 from core.runtime.delivery import BackgroundTextMode
-from core.outcome import ToolResultText
 from core.sight.clip import SightClip, SightInsight
 from runtimehelpers import (
     Context,
@@ -1439,7 +1442,7 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         )
         self.assertTrue(all(value[1]["note"] == "原始要求" for value in captures))
         self.assertEqual(len(first.sent_messages), 1)
-        self.assertIn("已加入视觉衣橱候选", str(first.sent_messages[0].items))
+        self.assertIn("已收入视觉衣橱", str(first.sent_messages[0].items))
         self.assertEqual(
             self.runtime._background_tool_request(first, "life_style_learn")["status"],
             "sent",

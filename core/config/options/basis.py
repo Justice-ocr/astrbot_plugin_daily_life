@@ -95,6 +95,7 @@ class StateSettings:
 @dataclass(slots=True)
 class ProactiveReplySettings:
     provider: str = ""
+    contact_provider: str = ""
     semantic_timeout_seconds: float = 30.0
     group_enabled: bool = False
     private_enabled: bool = False
@@ -119,6 +120,7 @@ class ProactiveReplySettings:
             return ProactiveReplySettings()
         return ProactiveReplySettings(
             provider=as_str(data.get("provider", "")).strip(),
+            contact_provider=as_str(data.get("contact_provider", "")).strip(),
             semantic_timeout_seconds=as_float(
                 data.get("semantic_timeout_seconds", 30.0), 30.0, 1.0, 300.0
             ),
@@ -227,6 +229,7 @@ class ChatStyleSettings:
     punctuation_cleanup_enabled: bool = True
     punctuation_cleanup_chars: str = DEFAULT_PUNCTUATION_CLEANUP_CHARS
     semantic_provider: str = ""
+    task_reply_provider: str = ""
     semantic_max_segments: int = 10
     semantic_timeout_seconds: float = 3.0
     segment_delay_range: str = "1.5,3.5"
@@ -296,6 +299,7 @@ class ChatStyleSettings:
                 DEFAULT_PUNCTUATION_CLEANUP_CHARS,
             ),
             semantic_provider=as_str(data.get("semantic_provider", "")).strip(),
+            task_reply_provider=as_str(data.get("task_reply_provider", "")).strip(),
             semantic_max_segments=as_int(
                 data.get("semantic_max_segments", 10), 10, 1, 10
             ),
@@ -323,6 +327,44 @@ class TaskModelSettings:
 
 
 @dataclass(slots=True)
+class VisionSettings:
+    provider: str = ""
+    timeout_seconds: int = 45
+
+    @staticmethod
+    def from_dict(data: Any) -> VisionSettings:
+        if not isinstance(data, dict):
+            return VisionSettings()
+        return VisionSettings(
+            provider=as_str(data.get("provider", "")).strip(),
+            timeout_seconds=as_int(data.get("timeout_seconds", 45), 45, 5, 300),
+        )
+
+
+@dataclass(slots=True)
+class ImageUnderstandingSettings(VisionSettings):
+    enabled: bool = True
+    max_images_per_message: int = 3
+    detail_level: str = "auto"
+    gif_sample_frames: int = 8
+
+    @staticmethod
+    def from_dict(data: Any) -> ImageUnderstandingSettings:
+        if not isinstance(data, dict):
+            return ImageUnderstandingSettings()
+        base = VisionSettings.from_dict(data)
+        detail = as_str(data.get("detail_level", "auto")).strip()
+        return ImageUnderstandingSettings(
+            provider=base.provider,
+            timeout_seconds=base.timeout_seconds,
+            enabled=as_bool(data.get("enabled", True), True),
+            max_images_per_message=as_int(data.get("max_images_per_message", 3), 3, 1, 10),
+            detail_level=detail if detail in {"auto", "brief", "detailed"} else "auto",
+            gif_sample_frames=as_int(data.get("gif_sample_frames", 8), 8, 2, 16),
+        )
+
+
+@dataclass(slots=True)
 class OutfitSettings:
     provider: str = ""
 
@@ -337,6 +379,7 @@ class OutfitSettings:
 
 @dataclass(slots=True)
 class EmojiSettings:
+    selection_provider: str = ""
     collect_chat_emojis: bool = False
     max_ready: int = 128
     replace_when_full: bool = True
@@ -345,12 +388,11 @@ class EmojiSettings:
     review_batch_size: int = 3
     inactive_record_keep_days: int = 30
     orphan_cache_grace_hours: int = 24
-    auto_send_enabled: bool = True
+    send_enabled: bool = True
     send_on_regular_reply: bool = True
     send_on_proactive_reply: bool = True
     send_on_private_revisit: bool = True
     send_on_commitment: bool = True
-    tool_send_enabled: bool = True
     send_cooldown_seconds: int = 0
     recent_sent_exclusion_limit: int = 5
     semantic_candidate_limit: int = 8
@@ -360,6 +402,7 @@ class EmojiSettings:
         if not isinstance(data, dict):
             return EmojiSettings()
         return EmojiSettings(
+            selection_provider=as_str(data.get("selection_provider", "")).strip(),
             collect_chat_emojis=as_bool(data.get("collect_chat_emojis", False), False),
             max_ready=as_int(data.get("max_ready", 128), 128, 1, 300),
             replace_when_full=as_bool(data.get("replace_when_full", True), True),
@@ -374,7 +417,7 @@ class EmojiSettings:
             orphan_cache_grace_hours=as_int(
                 data.get("orphan_cache_grace_hours", 24), 24, 1, 168
             ),
-            auto_send_enabled=as_bool(data.get("auto_send_enabled", True), True),
+            send_enabled=as_bool(data.get("send_enabled", True), True),
             send_on_regular_reply=as_bool(
                 data.get("send_on_regular_reply", True), True
             ),
@@ -385,7 +428,6 @@ class EmojiSettings:
                 data.get("send_on_private_revisit", True), True
             ),
             send_on_commitment=as_bool(data.get("send_on_commitment", True), True),
-            tool_send_enabled=as_bool(data.get("tool_send_enabled", True), True),
             send_cooldown_seconds=as_int(
                 data.get("send_cooldown_seconds", 0), 0, 0, 86400
             ),

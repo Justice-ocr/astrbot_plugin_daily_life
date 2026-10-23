@@ -7,10 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 from support import LifeArchive  # isort: skip
 
+from componentfixtures import (
+    ProactiveFollowupComponent,
+    ProactiveSendComponent,
+    SpineBootComponent,
+)
 from core.models import CommitmentRecord, DayRecord, TimelineItem
-from componentfixtures import ProactiveFollowupComponent
-from componentfixtures import ProactiveSendComponent
-from componentfixtures import SpineBootComponent
 from core.sources.dispatch import PermanentScopeDeliveryError
 
 
@@ -28,6 +30,10 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         self.clock = patch("core.runtime.proactive.rendezvous.life_now", lambda: self.now)
         self.clock.start()
         self.addCleanup(self.clock.stop)
+        for target in ("core.runtime.spine.boot.life_now", "core.archive.knowledge.life_now"):
+            clock = patch(target, lambda: self.now)
+            clock.start()
+            self.addCleanup(clock.stop)
         self.day = await self.archive.save_day(
             DayRecord(
                 date="2026-10-03",
@@ -92,6 +98,15 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
     async def run_contact(self):
         return await self.runtime.run_proactive_commitment_task(self.task)
 
+    def worker(self):
+        worker = SpineBootComponent.__new__(SpineBootComponent)
+        worker.archive = self.archive
+        worker._durable_task_owner = "test-worker"
+        worker._durable_runtime_handlers = {
+            "proactive_commitment": self.runtime.run_proactive_commitment_task
+        }
+        return worker
+
     async def send_now(self):
         self.decision = {
             "decision": "send",
@@ -105,12 +120,7 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
     async def test_wait_binds_actual_activity_and_persists_plan_across_worker_restart(
         self,
     ):
-        worker = SpineBootComponent.__new__(SpineBootComponent)
-        worker.archive = self.archive
-        worker._durable_task_owner = "test-worker"
-        worker._durable_runtime_handlers = {
-            "proactive_commitment": self.runtime.run_proactive_commitment_task
-        }
+        worker = self.worker()
         self.assertEqual(await worker._run_durable_tasks_once(), 0)
         saved = (await self.archive.get_durable_tasks())[0]
         self.assertEqual(saved.available_at, "2026-10-03 18:20:00")
@@ -162,12 +172,12 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_completion_claim_is_reviewed_again_without_sending(self):
         from core.runtime.proactive.rendezvous import SharedActivityContactComponent
-        self.runtime._get_proactive_provider = AsyncMock(return_value=object())
+        self.runtime.get_text_provider = AsyncMock(return_value=object())
         self.runtime._current_proactive_persona = AsyncMock(return_value="角色")
         self.runtime._proactive_voice_capability = lambda scope: "文字"
         self.runtime._format_recent_context_messages = lambda recent, **kw: "等我两分钟"
         self.runtime.close_text_session = AsyncMock()
-        self.runtime.config = SimpleNamespace(proactive=SimpleNamespace(provider="test"))
+        self.runtime.config = SimpleNamespace(proactive=SimpleNamespace(contact_provider="contact-test"))
         self.runtime._audit_proactive_continuity = AsyncMock(return_value=(False, "没有换装完成证据"))
         self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = SharedActivityContactComponent(
             self.runtime
@@ -183,6 +193,11 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"committed_actions": []', facts)
         self.assertIn('"outfit"', facts)
         self.assertEqual(result["progress"]["review_issue"], "没有换装完成证据")
+        self.runtime.get_text_provider.assert_awaited_once_with("contact-test")
+        self.assertEqual(
+            self.runtime._audit_proactive_continuity.call_args.kwargs["provider_id"],
+            "contact-test",
+        )
 
     async def test_messages_arriving_during_model_work_are_rechecked(self):
         async def evaluate(**kwargs):
@@ -211,8 +226,168 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_expired_contact_does_not_attach_to_later_unrelated_activity(self):
         self.now = datetime.datetime(2026, 10, 3, 19, 2)
-        with self.assertRaises(ValueError):
-            await self.send_now()
+        result = await self.send_now()
+        self.assertEqual(result["outcome"], "expired")
+        self.assertEqual(self.sent, [])
+
+    async def test_send_uses_actual_clock_without_requiring_model_timestamp(self):
+        for model_time in (None, "", "2026-10-03 17:59:00", "2026-10-03 19:00:00"):
+            with self.subTest(model_time=model_time):
+                self.now = datetime.datetime(2026, 10, 3, 18, 0, 25)
+
+                async def evaluate(**kwargs):
+                    self.now += datetime.timedelta(seconds=5)
+                    return {
+                        "decision": "send", "activity_index": 2,
+                        "contact_at": model_time, "reply_text": "要不要顺路买点喝的？",
+                    }
+
+                self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
+                result = await self.run_contact()
+                self.assertEqual(result["outcome"], "sent")
+                self.assertEqual(result["progress"]["contact_at"], "2026-10-03T18:00:30")
+                self.assertEqual(len(self.sent), 1)
+                self.sent.clear()
+
+    async def test_wait_still_normalizes_timezone_and_keeps_model_selected_time(self):
+        self.decision["contact_at"] = "2026-10-03T10:20:00+00:00"
+        result = await self.run_contact()
+        self.assertEqual(result["retry_at"], "2026-10-03 18:20:00")
+        self.assertEqual(self.sent, [])
+
+    async def test_invalid_wait_saves_boundaries_and_rejected_decision_for_retry(self):
+        for contact_at in (
+            "", "不是时间", "2026-10-02 18:20:00", "2026-10-03 18:00:00",
+            "2026-10-03 19:00:00", "2026-10-03 19:10:00",
+        ):
+            with self.subTest(contact_at=contact_at):
+                self.task = (await self.archive.lease_durable_tasks(
+                    "owner", now="2026-10-03 18:00:00",
+                ))[0]
+                self.decision["contact_at"] = contact_at
+                with self.assertRaises(ValueError):
+                    await self.run_contact()
+                saved = await self.archive.get_durable_task(self.task.task_key)
+                progress = saved.result["progress"]
+                self.assertTrue(progress["review_issue"])
+                self.assertEqual(progress["rejected_decision"]["contact_at"], contact_at)
+                self.assertEqual(progress["judged_at"], "2026-10-03T18:00:00")
+                self.assertEqual(progress["activity"]["starts_at"], "2026-10-03T19:00:00")
+                self.assertEqual(self.sent, [])
+                await self.archive.defer_durable_task(
+                    saved.id, "2026-10-03 18:00:00", owner="owner", progress=progress,
+                )
+
+    async def test_retry_uses_persisted_issue_and_latest_chat_then_can_skip_naturally(self):
+        from core.runtime.proactive.rendezvous import SharedActivityContactComponent
+
+        worker = self.worker()
+        self.decision["contact_at"] = "2026-10-03 17:59:00"
+        self.assertEqual(await worker._run_durable_tasks_once(), 0)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.status, "pending")
+        self.assertEqual(saved.attempts, 1)
+        self.assertTrue(saved.result["progress"]["review_issue"])
+        await self.archive.aclose()
+        self.archive = LifeArchive(Path(self.directory.name) / "life.db")
+        self.runtime.archive = self.archive
+        self.recent = [{"role": "user", "content": "饮料已经买好了，直接碰头吧"}]
+        self.runtime.get_text_provider = AsyncMock(return_value=object())
+        self.runtime._current_proactive_persona = AsyncMock(return_value="角色")
+        self.runtime._proactive_voice_capability = lambda scope: "文字"
+        self.runtime._format_recent_context_messages = lambda recent, **kwargs: str(recent)
+        self.runtime.close_text_session = AsyncMock()
+        self.runtime.config = SimpleNamespace(proactive=SimpleNamespace(contact_provider="contact-test"))
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = SharedActivityContactComponent(
+            self.runtime,
+        )._evaluate_shared_activity_contact
+        self.now += datetime.timedelta(minutes=2)
+        with patch("core.runtime.proactive.rendezvous.call_pure_json", AsyncMock(return_value={
+            "decision": "skip", "reason": "刚刚已商量好，不重复联系",
+        })) as model:
+            self.assertEqual(await self.worker()._run_durable_tasks_once(), 1)
+        prompt = model.call_args.args[2]
+        self.runtime.get_text_provider.assert_awaited_once_with("contact-test")
+        self.assertEqual(model.call_args.kwargs["primary_provider_id"], "contact-test")
+        self.assertIn("稍后联系时间必须晚于判断时刻且早于活动开始", prompt)
+        self.assertIn("2026-10-03 17:59:00", prompt)
+        self.assertIn("当前时间：2026-10-03 18:02:00", prompt)
+        self.assertIn("饮料已经买好了", prompt)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.result["outcome"], "skipped")
+        self.assertEqual(self.sent, [])
+        self.assertEqual((await self.archive.get_commitment(self.commitment.id)).status, "scheduled")
+
+    async def test_repeated_invalid_waits_keep_existing_attempt_limit(self):
+        self.decision["contact_at"] = "2026-10-03 19:10:00"
+        worker = self.worker()
+        for attempt in range(1, self.task.max_attempts + 1):
+            self.assertEqual(await worker._run_durable_tasks_once(), 0)
+            saved = await self.archive.get_durable_task(self.task.task_key)
+            self.assertEqual(saved.attempts, attempt)
+            self.assertTrue(saved.result["progress"]["review_issue"])
+            if attempt < self.task.max_attempts:
+                self.assertEqual(saved.status, "pending")
+                self.assertEqual(await worker._run_durable_tasks_once(), 0)
+                self.assertEqual(len(self.decisions), attempt)
+                self.now = datetime.datetime.fromisoformat(saved.available_at)
+        self.assertEqual(saved.status, "dead")
+        self.assertEqual(await worker._run_durable_tasks_once(), 0)
+        self.assertEqual(len(self.decisions), self.task.max_attempts)
+        self.assertEqual(self.sent, [])
+
+    async def test_invalid_wait_does_not_retry_after_bound_activity_has_started(self):
+        self.decision["contact_at"] = "2026-10-03 19:10:00"
+        worker = self.worker()
+        await worker._run_durable_tasks_once()
+        self.now = datetime.datetime(2026, 10, 3, 19, 2)
+        self.assertEqual(await worker._run_durable_tasks_once(), 1)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.result["outcome"], "expired")
+        self.assertEqual(len(self.decisions), 1)
+        self.assertEqual(self.sent, [])
+
+    async def test_reconciliation_expires_bound_contact_without_clearing_its_activity(self):
+        self.decision["contact_at"] = "2026-10-03 19:10:00"
+        worker = self.worker()
+        await worker._run_durable_tasks_once()
+        previous = await self.archive.get_durable_task(self.task.task_key)
+        self.now = datetime.datetime(2026, 10, 3, 19, 2)
+        await self.runtime.reconcile_scheduled_invite_contacts(now=self.now)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.status, "completed")
+        self.assertEqual(saved.result["outcome"], "expired")
+        self.assertEqual(saved.result["progress"], previous.result["progress"])
+        self.assertEqual(await worker._run_durable_tasks_once(), 0)
+        self.assertEqual(len(self.decisions), 1)
+        self.assertEqual(self.sent, [])
+        self.assertEqual((await self.archive.get_commitment(self.commitment.id)).status, "scheduled")
+
+    async def test_activity_start_during_model_work_precedes_invalid_time_check(self):
+        self.now = datetime.datetime(2026, 10, 3, 18, 59, 50)
+
+        async def evaluate(**kwargs):
+            self.now += datetime.timedelta(seconds=15)
+            return {"decision": "wait", "activity_index": 2, "contact_at": "无效时间"}
+
+        self.runtime._part_shared_activity_contact_component._evaluate_shared_activity_contact = evaluate
+        result = await self.run_contact()
+        self.assertEqual(result["outcome"], "expired")
+        self.assertEqual(self.sent, [])
+
+    async def test_later_plan_change_does_not_reopen_contact_for_started_activity(self):
+        worker = self.worker()
+        await worker._run_durable_tasks_once()
+        changed = await self.archive.get_day(self.day.date)
+        changed.timeline[3].time = "22:30"
+        await self.archive.save_day(changed)
+        self.now = datetime.datetime(2026, 10, 3, 19, 2)
+        await self.runtime.reconcile_scheduled_invite_contacts(now=self.now)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.status, "completed")
+        self.assertEqual(saved.result["outcome"], "expired")
+        self.assertEqual(await worker._run_durable_tasks_once(), 0)
+        self.assertEqual(len(self.decisions), 1)
         self.assertEqual(self.sent, [])
 
     async def test_activity_begins_while_model_is_working(self):

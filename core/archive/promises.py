@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 from typing import Any
 
 from ..models import CommitmentRecord
+from .schedulelinks import reconcile_scheduled_commitments
 
 from typing import Protocol
 
@@ -30,6 +32,13 @@ class CommitmentArchiveComponentContext(Protocol):
 class CommitmentArchiveComponent:
     def __init__(self, context: CommitmentArchiveComponentContext) -> None:
         self.context = context
+
+    async def reconcile_scheduled_commitments(
+        self, *, now: datetime.datetime | None = None
+    ) -> int:
+        return await self.context._run_db(
+            lambda: reconcile_scheduled_commitments(self.context._conn, now=now)
+        )
 
     def _compose_commitment(self, row: sqlite3.Row) -> CommitmentRecord:
         return CommitmentRecord(

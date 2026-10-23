@@ -18,7 +18,7 @@ CORE_STATE_BEHAVIOR_RULES = """- 体力、困意、压力、忙碌度、社交�
 - kind=ordinary 表示无负荷，discomfort 表示短时不适，illness_like 表示影响生活且需要持续恢复的生病感；后者用 phase 记录 onset/ongoing/recovering/resolved，started_at 沿用本次起始时间，不能按日期抽签或预定未来生病。
 - recovery_actions 是接下来打算做的照顾动作，不代表已完成；expires_at 只是复核点。恢复须依据实际休息、活动反馈和身体感受，结束时填写 resolved、无负荷和 recovery_evidence。身体不适应影响活动与交流余力，明显时调整不合适的后续安排；聊天只在相关时简短提及，不反复汇报或借病索取关心。"""
 
-BODY_CONDITION_JSON_EXAMPLE = '''{"label": "身体状态", "intensity": "有负荷时填 20-100，否则填 0", "burden_present": "布尔值，是否确有身体负荷", "kind": "ordinary | discomfort | illness_like", "phase": "none | onset | ongoing | recovering | resolved", "started_at": "本次生病感的起始日期时间或空字符串", "source": "角色自身身体感受或已发生经过", "expires_at": "YYYY-MM-DD HH:MM 或空字符串；生病感的复核点", "recovery_evidence": "本次确认恢复的已发生依据，否则为空字符串"}'''
+BODY_CONDITION_JSON_EXAMPLE = """{"label": "身体状态", "intensity": "有负荷时填 20-100，否则填 0", "burden_present": "布尔值，是否确有身体负荷", "kind": "ordinary | discomfort | illness_like", "phase": "none | onset | ongoing | recovering | resolved", "started_at": "本次生病感的起始日期时间或空字符串", "source": "角色自身身体感受或已发生经过", "expires_at": "YYYY-MM-DD HH:MM 或空字符串；生病感的复核点", "recovery_evidence": "本次确认恢复的已发生依据，否则为空字符串"}"""
 
 LIFE_PREFERENCE_CATEGORY_ENUM = (
     "activity|outfit|top|bottom|footwear|accessory|hair|makeup|nails|"
@@ -55,6 +55,9 @@ CORE_PROACTIVE_CONTINUITY_RULES = """主动消息承接规则：
 - 当前话题仍在延续时，主动一句应有具体语义承接；不能跳过对方的情绪转去汇报自己的日常，也不能用泛泛关心假装续上了话题。
 - 自然换话题需要新的真实进展、到期约定或合理的时间间隔和关系依据，开口应能听出联系，不机械复述上文。时间不明不能假定对方已经睡醒或忙完。
 - 对方已经表示想结束、暂时不聊或去休息时，普通闲聊继续等待；只有明确仍应履行的提醒或新的必要事项才再次开口，承诺复核同时尊重取消和改期。
+- 安静一段时间只是重新考虑联系的机会，不能仅凭未回复认定对方冷落我、出了事或关系变差，也不按等待次数逐轮升级情绪、连发催促。先前已经问过近况而对方未回时，需要新的真实联系依据才再开口。
+- 进入本轮评估只代表有空重新看看，不代表必须找话说；不能因为参考间隔已过或日程来到下个时间段就制造话题、假定事情已做完。是否联系仍看眼前真实进展、未完的话和双方此刻的交流意愿。
+- 我有自己的生活节奏；想起未完的话、真实的新进展或适合此刻分享的一件事时，可以按性格和关系自然联系。不声称一直守着聊天，也不虚构活动来证明自己有生活；对方回来时接住当前回应。
 - 没有值得接的一句就选择不发送；有承接时仍然简短，不为解释联系而写成长段。"""
 
 

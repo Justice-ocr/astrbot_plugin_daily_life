@@ -2,26 +2,24 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...life.condition import format_state_prompt, normalize_state
 from ...life.people import PROACTIVE_PERSON_TEXT_PATHS
+from ...life.presence import kernel_context
 from ...prompts import (
-    CORE_PROACTIVE_VOICE_RULES,
-    CORE_PROACTIVE_CONTINUITY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
+    CORE_PROACTIVE_CONTINUITY_RULES,
+    CORE_PROACTIVE_VOICE_RULES,
     cache_friendly_prompt,
 )
 from ..capture.jsonclean import call_pure_json
-from ...life.presence import kernel_context
 from ..markers import LOG_PREFIX
-
-from typing import Protocol
 
 
 class ProactiveRevisitComponentContext(Protocol):
@@ -60,6 +58,9 @@ class ProactiveRevisitComponentContext(Protocol):
     _proactive_air_delay_remaining: Any
     _proactive_bool: Any
     _proactive_current_day: Any
+    _proactive_chat_enabled: Any
+    _proactive_idle_candidates: Any
+    _refresh_private_proactive_timing: Any
     _proactive_expression_limit_for_scope: Any
     _proactive_lifecycle_snapshot: Any
     _proactive_private_last_revisit_at: Any
@@ -215,8 +216,18 @@ class ProactiveRevisitComponent:
             if last_message_timestamp > 0
             else None
         )
+        timing = {
+            "target_scope": target_scope,
+            "last_activity_at": datetime.datetime.fromtimestamp(last_message_timestamp)
+            if last_message_timestamp > 0
+            else None,
+        }
+        await self.context._refresh_private_proactive_timing(timing, now)
+        opportunity_at = timing.get("private_opportunity_at")
         minimum_idle_seconds = (
-            max(5, int(self.context.config.proactive.private_idle_minutes or 60)) * 60
+            max(0, int((opportunity_at - timing["last_activity_at"]).total_seconds()))
+            if isinstance(opportunity_at, datetime.datetime)
+            else 0
         )
         too_recent = (
             silence_seconds is not None and silence_seconds < minimum_idle_seconds
@@ -236,6 +247,7 @@ class ProactiveRevisitComponent:
             "last_message_timestamp": last_message_timestamp,
             "silence_seconds": silence_seconds,
             "minimum_idle_seconds": minimum_idle_seconds,
+            "timing_reason": timing.get("timing_reason", ""),
             "too_recent": too_recent,
             "context_marker": {
                 "role": str(recent_messages[-1].get("role") or ""),
@@ -623,8 +635,9 @@ JSON 输出要求：
                 "should_reply": False,
                 "decision": "wait",
                 "reason": (
-                    f"最近私聊仅安静 {silence_seconds // 60} 分钟，"
-                    f"尚未达到 {minimum_seconds // 60} 分钟回访静默门槛"
+                    f"最近私聊安静 {silence_seconds // 60} 分钟，"
+                    "尚未到适合重新考虑联系的生活窗口；"
+                    f"{memory_context['timing_reason']}"
                 ),
                 "reply_text": "",
                 "retry_after": max(1, minimum_seconds - silence_seconds),
@@ -809,6 +822,12 @@ JSON 输出要求：
             if not target_scope:
                 continue
             key = target_scope
+            # 将本次机会交给正在进行的对话，避免争抢。
+            candidates = getattr(self.context, "_proactive_idle_candidates", {})
+            if self.context._proactive_chat_enabled(False) and isinstance(
+                candidates.get(key), dict
+            ):
+                continue
             air_delay = self.context._proactive_air_delay_remaining(key, now, pending_count=1)
             if air_delay > 0:
                 continue

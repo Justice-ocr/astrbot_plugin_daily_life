@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 from ...media.base import normalize_voice_style
 from ...prompts import cache_friendly_prompt
+from ...telemetry import model_task
 from ..markers import LOG_PREFIX
 
 
@@ -101,13 +102,14 @@ class VoiceExpressionPlanner:
                     return VoiceExpressionPlan(
                         valid=False, reason="表达判断模型不可用。"
                     )
-                raw = await self.context.call_text_model(
-                    provider,
-                    prompt,
-                    scope,
-                    empty_retries=0,
-                    primary_provider_id=provider_id,
-                )
+                with model_task("voice_expression"):
+                    raw = await self.context.call_text_model(
+                        provider,
+                        prompt,
+                        scope,
+                        empty_retries=0,
+                        primary_provider_id=provider_id,
+                    )
             plan = self.validate_payload(
                 self.context._semantic_segment_parse_payload(raw)
             )

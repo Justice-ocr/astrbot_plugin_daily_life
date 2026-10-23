@@ -66,6 +66,80 @@ def _schema_leaf_paths(spec: dict, path: str) -> set[str]:
 
 
 class LifeSettingsTest(unittest.TestCase):
+    def test_emoji_send_switch_is_independent_of_collection_and_auto_scenes(self):
+        self.assertTrue(LifeSettings.from_dict({}).emoji.send_enabled)
+        settings = LifeSettings.from_dict({"emoji_config": {
+            "send_enabled": "off", "collect_chat_emojis": True,
+            "send_on_regular_reply": False,
+        }}).emoji
+
+        self.assertFalse(settings.send_enabled)
+        self.assertTrue(settings.collect_chat_emojis)
+        self.assertFalse(settings.send_on_regular_reply)
+        self.assertTrue(settings.send_on_proactive_reply)
+        self.assertTrue(settings.send_on_private_revisit)
+        self.assertTrue(settings.send_on_commitment)
+
+    def test_image_understanding_controls_defaults_and_bounds(self):
+        settings = LifeSettings.from_dict({}).vision
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.max_images_per_message, 3)
+        self.assertEqual(settings.detail_level, "auto")
+        self.assertEqual(settings.gif_sample_frames, 8)
+        settings = LifeSettings.from_dict({"vision_config": {
+            "enabled": False, "max_images_per_message": 99,
+            "detail_level": "detailed", "gif_sample_frames": 1,
+        }}).vision
+        self.assertFalse(settings.enabled)
+        self.assertEqual(settings.max_images_per_message, 10)
+        self.assertEqual(settings.detail_level, "detailed")
+        self.assertEqual(settings.gif_sample_frames, 2)
+        settings = LifeSettings.from_dict({"vision_config": {
+            "max_images_per_message": 0, "detail_level": "invalid", "gif_sample_frames": 99,
+        }}).vision
+        self.assertEqual(settings.max_images_per_message, 1)
+        self.assertEqual(settings.detail_level, "auto")
+        self.assertEqual(settings.gif_sample_frames, 16)
+
+    def test_vision_timeout_defaults_and_bounds(self):
+        defaults = LifeSettings.from_dict({}).vision
+        self.assertEqual(defaults.timeout_seconds, 45)
+        for timeout, expected in (
+            ("30", 30),
+            (0, 5),
+            (999, 300),
+            (None, 45),
+            ("invalid", 45),
+        ):
+            with self.subTest(timeout=timeout):
+                config = LifeSettings.from_dict({
+                    "vision_config": {
+                        "provider": " vision-model ",
+                        "timeout_seconds": timeout,
+                    },
+                    "rhythm_config": {"llm_timeout_seconds": 300},
+                })
+                self.assertEqual(config.vision.provider, "vision-model")
+                self.assertEqual(config.vision.timeout_seconds, expected)
+                self.assertEqual(config.llm_timeout_seconds, 300)
+
+    def test_image_and_emoji_vision_settings_are_independent(self):
+        config = LifeSettings.from_dict({
+            "vision_config": {"provider": "image", "timeout_seconds": 20},
+            "emoji_vision_config": {"provider": "emoji", "timeout_seconds": 55},
+        })
+        self.assertEqual(config.vision.provider, "image")
+        self.assertEqual(config.emoji_vision.provider, "emoji")
+        self.assertEqual(config.vision.timeout_seconds, 20)
+        self.assertEqual(config.emoji_vision.timeout_seconds, 55)
+        config.vision.provider = "changed"
+        config.vision.timeout_seconds = 10
+        self.assertEqual(config.emoji_vision.provider, "emoji")
+        self.assertEqual(config.emoji_vision.timeout_seconds, 55)
+        defaults = LifeSettings.from_dict({})
+        self.assertIsNot(defaults.vision, defaults.emoji_vision)
+        self.assertEqual(defaults.emoji_vision.timeout_seconds, 45)
+
     def test_idle_reply_timeout_is_separate_from_gate_and_general_timeout(self):
         self.assertEqual(
             LifeSettings.from_dict({}).proactive.semantic_timeout_seconds, 30.0
@@ -1451,11 +1525,11 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("emotion_voice_map", voice_items)
         self.assertNotIn("emotion_speed_map", voice_items)
         self.assertEqual(
-            schema["vision_config"]["items"]["provider"]["description"], "视觉信息"
+            schema["vision_config"]["items"]["provider"]["description"], "图片理解"
         )
         self.assertIn("emoji_config", schema)
         emoji_items = schema["emoji_config"]["items"]
-        self.assertEqual(schema["emoji_config"]["description"], "表情库")
+        self.assertEqual(schema["emoji_config"]["description"], "视觉")
         self.assertEqual(
             emoji_items["collect_chat_emojis"]["description"], "自动收集表情"
         )
@@ -1642,10 +1716,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.5.0", metadata)
+        self.assertIn("version: 1.5.1", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.5.0", readme)
-        self.assertIn("v1.5.0 更新说明", readme)
+        self.assertIn("version-1.5.1", readme)
+        self.assertIn("v1.5.1 更新说明", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("自主补衣与审美", readme)
@@ -1657,6 +1731,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.5.1 · 2026-10-24", changelog)
         self.assertIn("v1.5.0 · 2026-10-22", changelog)
         self.assertIn("v1.4.9 · 2026-10-21", changelog)
         self.assertIn("v1.4.8 · 2026-10-20", changelog)

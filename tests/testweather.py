@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.config.options import WeatherSettings
+from core.config import LifeSettings
 from core.life.tools import analyze_weather
 from core.life.weather import WeatherClient
 from componentfixtures import DailyClimateComponent
@@ -64,8 +65,10 @@ class WeatherClientTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_condition_semantics_require_structured_model_result(self):
         class Classifier(DailyClimateComponent):
-            def _task_provider_id(self):
-                return "test"
+            config = LifeSettings.from_dict({"state_config": {"provider": "weather-state"}})
+
+            def _task_provider_id(self, provider_id=""):
+                return provider_id
 
             _get_provider = AsyncMock(return_value=object())
             _call_llm_text = AsyncMock()
@@ -83,6 +86,10 @@ class WeatherClientTest(unittest.IsolatedAsyncioTestCase):
         classifier._call_llm_text.return_value = json.dumps(flags)
         result = await classifier._classify_weather_condition(payload)
         self.assertTrue(analyze_weather(result)["is_severe"])
+        classifier._get_provider.assert_awaited_once_with("weather-state")
+        self.assertEqual(
+            classifier._call_llm_text.await_args.kwargs["primary_provider_id"], "weather-state"
+        )
         self.assertNotIn("is_severe", payload["data"]["weather"])
         await classifier._classify_weather_condition(payload)
         classifier._call_llm_text.assert_awaited_once()

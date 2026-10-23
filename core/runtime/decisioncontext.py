@@ -2,6 +2,60 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
+
+def decision_observation(day, world: dict) -> dict:
+    """仅保留会改变行动选择的事实，不让时钟、普通聊天或身体微小波动触发重评。"""
+    run = world.get("run") or {}
+    rhythm = day.state.physiological_rhythm if day.state else None
+    facts = {
+        "date": day.date,
+        "timeline": [
+            {key: getattr(item, key, None) for key in (
+                "time", "activity", "activity_kind", "place", "place_kind",
+                "duration_minutes", "execution_state",
+            )}
+            for item in day.timeline
+        ],
+        "plan": day.meta.get("planned_life_actions", ""),
+        "deferred": {key: day.meta.get(key, "") for key in (
+            "rest_delay_date", "rest_delay_targets", "rest_delay_until",
+        )},
+        "place": day.meta.get("current_place", ""),
+        "outfit": day.outfit,
+        "outfit_ids": day.meta.get("style_catalog_reference_ids", ""),
+        "condition": {key: getattr(rhythm.body_condition, key, None) for key in (
+            "label", "kind", "phase", "burden_present", "intensity",
+        )} if rhythm else {},
+        "attention": {key: getattr(day.state, key, "") for key in (
+            "watch_state", "interrupt_level",
+        )},
+        "run": {key: run.get(key) for key in (
+            "status", "action", "rest_kind", "observation_state",
+        )},
+    }
+    return {
+        "context_key": hashlib.sha256(json.dumps(
+            facts, ensure_ascii=False, sort_keys=True, default=str,
+        ).encode()).hexdigest(),
+        "body": {key: (world.get("body") or {}).get(key, 0) for key in (
+            "energy", "sleep_pressure", "fatigue", "hunger", "thirst",
+            "social_battery", "discomfort",
+        )},
+    }
+
+
+def decision_observation_changed(previous: dict | None, current: dict) -> bool:
+    if not previous or previous.get("context_key") != current["context_key"]:
+        return True
+    # 这里只触发模型复核，不由分数代替生活判断、安排睡眠或诊断身体。
+    return any(
+        abs(value - previous.get("body", {}).get(key, value)) >= 10
+        for key, value in current["body"].items()
+    )
+
 
 def execution_context(world: dict) -> dict:
     kernel = world.get("kernel") or {}

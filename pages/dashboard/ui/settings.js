@@ -15,7 +15,7 @@ const referencePreviewCache = new Map();
 const MODEL_SECTION_KEY = "__model_provider_settings";
 const MODEL_SECTION_SPEC = {
   description: "大语言模型",
-  hint: "统一调整生成、状态、穿搭、复盘、邀约、约定、记忆、语义向量、图片导演、图片轻量润色和视觉等功能使用的模型。每项留空都直接使用当前默认模型。",
+  hint: "统一调整生成、状态、穿搭、复盘、邀约、约定、记忆、语义向量、图片导演、图片轻量润色、图片理解和表情识别等功能使用的模型。每项留空都直接使用当前默认模型。",
 };
 const CONFIG_SECTION_ORDER = [
   "rhythm_config",
@@ -31,6 +31,7 @@ const CONFIG_SECTION_ORDER = [
   "image_generation_config",
   "video_generation_config",
   "sight_config",
+  "emoji_config",
   "search_config",
   "storage_config",
   "story_engine_config",
@@ -50,6 +51,12 @@ export function templateListDropIndex(pointerY, itemCenters = [], fromIndex = -1
 }
 
 const CONFIG_FIELD_DISPLAY_SECTIONS = new Map([
+  ["vision_config.timeout_seconds", "emoji_config"],
+  ["vision_config.enabled", "emoji_config"],
+  ["vision_config.max_images_per_message", "emoji_config"],
+  ["vision_config.detail_level", "emoji_config"],
+  ["vision_config.gif_sample_frames", "emoji_config"],
+  ["emoji_vision_config.timeout_seconds", "emoji_config"],
   ["chat_style_config.casual_short_prompt", "story_engine_config"],
   ["search_config.today_prompt", "story_engine_config"],
   ["image_generation_config.creative_wardrobe.enabled", "rhythm_config"],
@@ -327,6 +334,44 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       fields: [
         "image_generation_config.text_channels",
         "image_generation_config.edit_channels",
+      ],
+    },
+  ]],
+  ["emoji_config", [
+    {
+      key: "understanding",
+      label: "图片理解",
+      hint: "理解聊天图片和 GIF，可结合本条消息的问题观察。",
+      fields: [
+        "vision_config.enabled",
+        "vision_config.max_images_per_message",
+        "vision_config.detail_level",
+        "vision_config.gif_sample_frames",
+        "vision_config.timeout_seconds",
+      ],
+    },
+    {
+      key: "emoji_library",
+      label: "表情库",
+      hint: "控制表情收集、识别、发送和缓存清理。",
+      fields: [
+        "emoji_config.collect_chat_emojis",
+        "emoji_config.max_ready",
+        "emoji_config.replace_when_full",
+        "emoji_config.max_size_mb",
+        "emoji_config.send_candidate_limit",
+        "emoji_config.review_batch_size",
+        "emoji_vision_config.timeout_seconds",
+        "emoji_config.inactive_record_keep_days",
+        "emoji_config.orphan_cache_grace_hours",
+        "emoji_config.send_enabled",
+        "emoji_config.send_on_regular_reply",
+        "emoji_config.send_on_proactive_reply",
+        "emoji_config.send_on_private_revisit",
+        "emoji_config.send_on_commitment",
+        "emoji_config.send_cooldown_seconds",
+        "emoji_config.recent_sent_exclusion_limit",
+        "emoji_config.semantic_candidate_limit",
       ],
     },
   ]],

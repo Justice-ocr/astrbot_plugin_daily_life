@@ -10,18 +10,24 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..contextbudget import compact_json
 from ..epistemic import temporal_context
 from ..life.achievement import review_candidates
-from ..life.body import instant
 from ..life.actionchain import ready as action_ready
+from ..life.body import instant
 from ..life.planalignment import protected_indexes
-from ..life.tools import extract_json_from_text, timeline_deferred_until, timeline_item_datetime
+from ..life.tools import (
+    extract_json_from_text,
+    timeline_deferred_until,
+    timeline_item_datetime,
+)
 from ..models import INTERNAL_SIMULATED_ACTION_TYPES
 from ..prompts import LIFE_ACTION_SCOPE_RULES, cache_friendly_prompt
-from .continuous import planned_actions, _TERMINAL_STATES
-from .markers import LOG_PREFIX
-from .goalreview import review_goals
+from ..telemetry import model_task
+from .continuous import _TERMINAL_STATES, planned_actions
 from .decisioncontext import execution_context, run_context, skill_context
+from .goalreview import review_goals
+from .markers import LOG_PREFIX
 
 
 class ContinuousDecisionService:
@@ -140,6 +146,11 @@ class ContinuousDecisionService:
                     persona,
                     [item.as_dict() for item in focus],
                     [item.as_dict() for item in preferences],
+                    world.get("chat_events", [])[-1:] if latest_exchange else [],
+                    [item.get("action_id") for item in kernel.get("action_outcomes", [])
+                     if isinstance(item, dict)][-8:],
+                    [{key: item.get(key) for key in ("id", "text", "status", "disposition")}
+                     for item in model.get("interests", []) if isinstance(item, dict)],
                 ],
                 ensure_ascii=False,
                 sort_keys=True,
@@ -147,9 +158,11 @@ class ContinuousDecisionService:
         ).hexdigest()
         last_review = instant(world.get("goal_review_at"))
         goal_review_due = (
-            goal_source_key != world.get("goal_source_key")
-            or last_review is None
-            or now - last_review >= datetime.timedelta(hours=6)
+            last_review is None
+            or goal_source_key != world.get("goal_source_key")
+            and now - last_review >= datetime.timedelta(
+                minutes=self._config().state.refresh_minutes,
+            )
         )
         achievement_candidates = review_candidates(world)
         last_attempt = instant(world.get("achievement_review_at"))
@@ -157,6 +170,79 @@ class ContinuousDecisionService:
         if (last_attempt and now - last_attempt < datetime.timedelta(minutes=20)
                 and revisions == world.get("achievement_review_revisions")):
             achievement_candidates = []
+        provider_id = self._config().domains.action_provider
+        provider = await self._text_provider(provider_id)
+        if provider is None:
+            return {}
+        run = world.get("run") or {}
+        if (run.get("status") in {"running", "paused"} and not goal_review_due
+                and not unreflected_outcomes and not achievement_candidates):
+            # 已在做的事只复核是否还能继续；需要新行动或完整资料时由模型主动展开。
+            protected = protected_indexes(day, world)
+            continuation = {
+                "persona": persona,
+                "state": day.state.as_dict() if day.state else {},
+                "body": world.get("body"), "run": run_context(world),
+                "current_place": day.meta.get("current_place", ""),
+                "outfit": day.outfit, "weather": day.weather,
+                "rest_delay_until": day.meta.get("rest_delay_until", ""),
+                "life_kernel": execution_context(world),
+                "preferences": [item.as_dict() for item in preferences],
+                "focus": [item.as_dict() for item in focus],
+                "goals": [{key: goal.get(key) for key in ("id", "title", "status", "obstacle")}
+                          for goal in world.get("goals", []) if isinstance(goal, dict)],
+                "self_model": {key: value for key, value in model.items() if key != "capabilities"},
+                "resource_blocked": world.get("resource_blocked", ""),
+                "plan_alignment_blocked": world.get("plan_alignment_blocked", ""),
+                "latest_exchange": latest_exchange,
+                "latest_exchange_at": world.get("last_chat_at", ""),
+                "recent_state_evidence": day.state_log[-2:],
+                "remaining_plans": [
+                    {"at": str(timeline_item_datetime(item, day.date, meta=day.meta) or ""),
+                     "activity": item.activity, "state": item.execution_state,
+                     "protected": index in protected}
+                    for index, item in enumerate(day.timeline)
+                    if item.execution_state not in _TERMINAL_STATES
+                ],
+                "now": now.isoformat(),
+            }
+            session = "daily_life_execution_continuation_" + uuid.uuid4().hex[:8]
+            try:
+                with model_task("execution_continuation"):
+                    text = await self._call_text_model(
+                        provider,
+                        cache_friendly_prompt(
+                            "复核当前角色正在进行或暂缓的内部生活行动。只返回 JSON："
+                            '{"decision":"continue|pause|resume|cancel|wait|expand","reason":"当前依据"}。'
+                            "根据当前身体、对话、地点、穿搭和约定决定，不由时钟或关键词代替判断。"
+                            "进展待确认不代表被打断，未观察的时长不算实际执行。"
+                            "如果需要改日程、换装、处理身体需求、选择新行动、维护兴趣目标，或资料不足，"
+                            "返回 expand 读取完整规划资料；不能用 continue 掩盖冲突。",
+                            compact_json(continuation),
+                        ), session, empty_retries=0,
+                        primary_provider_id=provider_id,
+                        timeout_seconds=min(45, self._config().llm_timeout_seconds),
+                    )
+                payload = extract_json_from_text(text)
+                if (isinstance(payload, dict) and payload.get("decision") in {
+                    "continue", "pause", "resume", "cancel", "wait",
+                } and not any(payload.get(key) for key in (
+                    "new_actions", "timeline_updates", "new_goals", "goal_updates",
+                ))):
+                    return {
+                        "decision": payload["decision"],
+                        "reason": str(payload.get("reason") or ""),
+                        "achievement_reviews": [], "_sources": sources,
+                        "_candidates": candidates, "_goal_review_due": False,
+                        "_goal_source_key": goal_source_key, "_reflection_action_ids": set(),
+                        "_achievement_candidates": [],
+                        "_self_model": {"persona": persona,
+                                        "preferences": [item.as_dict() for item in preferences],
+                                        "focus": [item.as_dict() for item in focus],
+                                        "skills": skill_context(world), "evidence_ids": sorted(sources)},
+                    }
+            finally:
+                await self._close_text_session(session)
         living_objects = await self._archive().get_living_entities(
             str(chat_scope or "global"), kind="object", limit=24
         )
@@ -305,24 +391,21 @@ cook 只完成食物准备，order_food 只完成点餐；meal 才表示实际�
             "goal_review_due": goal_review_due,
             "now": now.isoformat(),
         }
-        provider = await self._text_provider(self._config().state.provider)
-        if provider is None:
-            return {}
         session = f"daily_life_execution_{uuid.uuid4().hex[:8]}"
         try:
             decision_call = self._call_text_model(
                 provider,
-                cache_friendly_prompt(fixed, json.dumps(dynamic, ensure_ascii=False)),
+                cache_friendly_prompt(fixed, compact_json(dynamic)),
                 session,
                 empty_retries=0,
-                primary_provider_id=self._config().state.provider,
+                primary_provider_id=provider_id,
                 timeout_seconds=min(45, self._config().llm_timeout_seconds),
             )
             text, reviews = await asyncio.gather(
                 decision_call,
                 review_goals(provider, achievement_candidates, call=self._call_text_model,
                              close=self._close_text_session,
-                             provider_id=self._config().state.provider,
+                             provider_id=provider_id,
                              timeout=self._config().llm_timeout_seconds),
                 return_exceptions=True,
             )

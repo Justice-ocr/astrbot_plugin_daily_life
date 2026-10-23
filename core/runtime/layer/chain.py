@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import ProviderRequest
 
+from ...contextbudget import budget_context
 from ...epistemic import knowledge_label
-
 from ...life.surroundings import (
     format_hidden_group_awareness,
     format_hidden_world_context,
 )
-from ..markers import LOG_PREFIX
 from ..expression import remember_expression_context
-
-from typing import Protocol
+from ..markers import LOG_PREFIX
 
 
 class LayerChainComponentContext(Protocol):
@@ -691,7 +689,7 @@ class LayerChainComponent:
             )
             if self.context._voice_expression_channel_enabled(event):
                 self.context.mark_voice_switch_available(event)
-            self.context._apply_life_request_context(req, missing_context + timing_context)
+            self.context._apply_life_request_context(req, budget_context(missing_context + timing_context))
             self._append_visual_input_anchor(req)
             self.context._append_video_input_anchor(req, event)
             logger.debug("[上下文注入] 当前暂无日常生活记录，已注入防编造约束")
@@ -708,7 +706,7 @@ class LayerChainComponent:
         remember_expression_context(event, timing=timing_context)
         if self.context._voice_expression_channel_enabled(event):
             self.context.mark_voice_switch_available(event)
-        self.context._apply_life_request_context(req, hidden_context + timing_context)
+        self.context._apply_life_request_context(req, budget_context(hidden_context + timing_context))
         self._append_visual_input_anchor(req)
         self.context._append_video_input_anchor(req, event)
         logger.debug("[上下文注入] 已注入日常生活背景上下文")

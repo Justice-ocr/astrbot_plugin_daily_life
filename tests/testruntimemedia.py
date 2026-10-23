@@ -35,6 +35,7 @@ from runtimehelpers import (
 
 
 from astrbot.api import logger
+from core.sight.visual import image_understanding_cache_key
 
 
 class FrameworkStopEvent(Event):
@@ -2656,6 +2657,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             {
                 "memory_config": {"provider": "memory-model"},
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -2721,6 +2723,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
     def test_visual_context_summary_keeps_maximum_meme_text(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"vision_config": {"detail_level": "brief"}})
         raw_summary = (
             "画面中是一个蓝发Q版女仆装的动漫角色（带有鲸鱼尾巴和耳朵），她委屈地含泪跪坐在地上，"
             "面前放着一个空碗。左侧有一只手指着她，上方气泡文字写着“你这个白吃token的大肥鱼”，"
@@ -2777,6 +2780,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -2848,6 +2852,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             {
                 "memory_config": {"provider": "memory-model"},
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -2968,6 +2973,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3061,6 +3067,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3188,6 +3195,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             ],
             provider_id="vision-model",
         )
+        vision_provider.responses.insert(0, json.dumps({"summary": json.loads(vision_provider.responses[0])["summary"]}))
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(
             vision_provider, providers={"vision-model": vision_provider}
@@ -3195,6 +3203,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3243,7 +3252,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             runtime.note_structured_incoming_message(event)
             self.assertTrue(runtime.schedule_visual_context_from_event(event))
-            await scheduled[0][2]
+            await runtime.maybe_collect_emoji_assets_from_event(event, sender_name=event.get_sender_name())
+            for _, _, job in scheduled:
+                await job
 
             assets = await runtime.archive.get_emoji_assets(
                 10, status="ready", sendable_only=True
@@ -3360,6 +3371,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             ],
             provider_id="vision-model",
         )
+        vision_provider.responses.insert(0, json.dumps({"summary": json.loads(vision_provider.responses[0])["summary"]}))
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(
             vision_provider, providers={"vision-model": vision_provider}
@@ -3367,6 +3379,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3407,8 +3420,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             runtime.note_structured_incoming_message(event)
             self.assertTrue(runtime.schedule_visual_context_from_event(event))
+            await runtime.maybe_collect_emoji_assets_from_event(event, sender_name=event.get_sender_name())
             self.assertEqual(scheduled[0][0], "图片上下文识别")
-            await scheduled[0][2]
+            for _, _, job in scheduled:
+                await job
 
             assets = await runtime.archive.get_emoji_assets(
                 10, status="ready", sendable_only=True
@@ -3491,6 +3506,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             ],
             provider_id="vision-model",
         )
+        vision_provider.responses.insert(0, json.dumps({"summary": json.loads(vision_provider.responses[0])["summary"]}))
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(
             vision_provider, providers={"vision-model": vision_provider}
@@ -3498,6 +3514,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3547,7 +3564,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             runtime.note_structured_incoming_message(event)
             self.assertTrue(runtime.schedule_visual_context_from_event(event))
-            await scheduled[0][2]
+            await runtime.maybe_collect_emoji_assets_from_event(event, sender_name=event.get_sender_name())
+            for _, _, job in scheduled:
+                await job
 
             assets = await runtime.archive.get_emoji_assets(
                 10, status="ready", sendable_only=True
@@ -3585,6 +3604,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             ],
             provider_id="vision-model",
         )
+        vision_provider.responses.insert(0, json.dumps({"summary": json.loads(vision_provider.responses[0])["summary"]}))
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(
             vision_provider, providers={"vision-model": vision_provider}
@@ -3592,6 +3612,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3637,7 +3658,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             runtime.note_structured_incoming_message(event)
             self.assertTrue(runtime.schedule_visual_context_from_event(event))
-            await scheduled[0][2]
+            await runtime.maybe_collect_emoji_assets_from_event(event, sender_name=event.get_sender_name())
+            for _, _, job in scheduled:
+                await job
 
             assets = await runtime.archive.get_emoji_assets(
                 10, status="ready", sendable_only=True
@@ -3673,6 +3696,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             ],
             provider_id="vision-model",
         )
+        vision_provider.responses.insert(0, json.dumps({"summary": json.loads(vision_provider.responses[0])["summary"]}))
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(
             vision_provider, providers={"vision-model": vision_provider}
@@ -3680,6 +3704,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -3716,7 +3741,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
             runtime.note_structured_incoming_message(event)
             self.assertTrue(runtime.schedule_visual_context_from_event(event))
-            await scheduled[0][2]
+            for _, _, job in scheduled:
+                await job
 
             context = runtime.format_structured_message_context(event)
             self.assertIn("这个表情能收吗 [图片]", context)
@@ -3790,7 +3816,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
-                "emoji_config": {"collect_chat_emojis": True},
+                "emoji_vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": False},
             }
         )
         runtime.archive = DataManager()
@@ -3866,11 +3893,12 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         runtime.composer = Composer()
 
-        payload = await runtime._call_emoji_vision_payload(
+        payload = await runtime._call_vision_payload(
             "请识别测试图片",
             "https://example.test/test.png",
             session_prefix="daily_life_test_visual",
             task_label="测试图片",
+            settings=runtime.config.vision,
         )
 
         self.assertEqual(payload["summary"], "默认模型识别到挥手动作")
@@ -3980,7 +4008,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                 gather._prepared_visual_media_from_event = AsyncMock(return_value=[entry])
                 gather._prepared_visual_media_is_gif = AsyncMock(return_value=True)
                 gather._visual_media_source_is_gif = AsyncMock(return_value=False)
-                runtime._visual_context_summary_cache = lambda: {"animation": "小猫在挥手"}
+                runtime.config = LifeSettings.from_dict({})
+                runtime._visual_context_summary_cache = lambda: {
+                    image_understanding_cache_key(runtime.config.vision, "animation", Event().message_str): "小猫在挥手"
+                }
                 runtime._event_message_items = lambda event: items
                 runtime._emoji_asset_is_image_item = lambda item: item["type"] == "image"
                 request = ProviderRequest(
@@ -4072,7 +4103,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             event.message_obj.message = event.message_items
             await runtime.prepare_visual_media_from_event(event)
             entries = getattr(event, runtime._PREPARED_VISUAL_MEDIA_ATTR)
-            runtime._visual_context_summary_cache()[entries[1]["fingerprint"]] = "小猫在挥手"
+            runtime._visual_context_summary_cache()[image_understanding_cache_key(runtime.config.vision, entries[1]["fingerprint"], event.message_str)] = "小猫在挥手"
             request = ProviderRequest(
                 image_urls=[str(static_path), str(animated_path), "quoted-static.jpg"],
                 extra_user_content_parts=[{"type": "image_url", "image_url": {"url": str(static_path)}}],
@@ -4288,6 +4319,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict(
             {
                 "vision_config": {"provider": "vision-model"},
+                "emoji_vision_config": {"provider": "vision-model"},
                 "emoji_config": {"collect_chat_emojis": True},
             }
         )
@@ -4690,13 +4722,13 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.archive = DataManager()
         runtime.config = LifeSettings.from_dict({})
 
-        async def get_provider(_self):
-            return provider
+        async def get_provider_candidates(_self, _provider_id=""):
+            yield provider
 
         async def close_session(_self, _session_id):
             return None
 
-        runtime._part_emoji_base_component._get_vision_provider = types.MethodType(get_provider, runtime)
+        runtime.get_text_provider_candidates = types.MethodType(get_provider_candidates, runtime)
         runtime.close_text_session = types.MethodType(close_session, runtime)
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "old-review.png"

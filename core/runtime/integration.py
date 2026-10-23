@@ -355,8 +355,8 @@ class ExternalActivityService:
             return False
         async with self._receipt_lock:
             first = await self._archive().record_external_activity_receipt(receipt)
-            # A stable original time also makes the semantic memory queue idempotent
-            # if cancellation occurs after persistence but before acknowledgement.
+            # 保持原始时间稳定，可确保在持久化完成后、确认回执前取消时，
+            # 语义记忆队列仍保持幂等。
             media = {"image": "图片", "video": "视频", "audio": "语音"}.get(receipt.get("media_kind"), "")
             await self._capture_proactive_reply(scope, text, media=media, now=occurred_at)
             if event_id not in self._applied_receipts:

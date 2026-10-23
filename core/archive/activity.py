@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import datetime
 import json
 import math
-from typing import Any
+from typing import Any, Protocol
 
-from ..clock import today as life_today
-
-from typing import Protocol
-
+from ..clock import local_datetime, today as life_today
+from .schedulelinks import reconcile_scheduled_commitments
 
 _CONVERSATION_ACTION_ORDER = (
     "CASE WHEN status IN ('elapsed', 'simulated', 'completed', 'confirmed', 'done', "
     "'failed', 'skipped', 'rejected', 'expired', 'canceled', 'cancelled', "
     "'delivery_failed') THEN 1 ELSE 0 END, due_at, id DESC"
 )
+
+# 邀约和自主行动也能挂在时间轴上，不能只按来源判断日程归属。
+_TIMELINE_ACTIVITY_CONDITION = """
+    (source = 'daily_plan' OR CASE WHEN json_valid(metadata_json) THEN
+        json_type(metadata_json, '$.timeline_index') = 'integer'
+        AND json_extract(metadata_json, '$.timeline_index') >= 0
+    ELSE 0 END)
+"""
 
 
 class DomainArchiveComponentContext(Protocol):
@@ -110,7 +117,10 @@ class DomainArchiveComponent:
                     activity_type = excluded.activity_type,
                     title = excluded.title,
                     status = excluded.status,
-                    started_at = COALESCE(NULLIF(activity_sessions.started_at, ''), excluded.started_at),
+                    started_at = CASE WHEN activity_sessions.status = 'planned'
+                        THEN COALESCE(NULLIF(excluded.started_at, ''), activity_sessions.started_at)
+                        ELSE COALESCE(NULLIF(activity_sessions.started_at, ''), excluded.started_at)
+                    END,
                     ended_at = excluded.ended_at,
                     last_heartbeat_at = excluded.last_heartbeat_at,
                     duration_seconds = excluded.duration_seconds,
@@ -183,10 +193,10 @@ class DomainArchiveComponent:
 
         def dbwork() -> int:
             params: list[Any] = [date_text]
-            sql = """
+            sql = f"""
                 DELETE FROM activity_sessions
                 WHERE date = ?
-                  AND source = 'daily_plan'
+                  AND {_TIMELINE_ACTIVITY_CONDITION}
                   AND status IN ('planned', 'active')
             """
             if keep_ids:
@@ -198,7 +208,7 @@ class DomainArchiveComponent:
                       SELECT 1
                       FROM life_action_receipts receipt
                       WHERE receipt.action_id = activity_sessions.action_id
-                        AND receipt.status IN ('confirmed', 'failed', 'cancelled')
+                        AND receipt.status IN ('confirmed', 'simulated', 'failed', 'cancelled')
                   )
             """
             cursor = self.context._conn.execute(sql, tuple(params))
@@ -718,6 +728,8 @@ class DomainArchiveComponent:
         self, table: str, order_by: str, limit: int
     ) -> list[dict[str, Any]]:
         def dbwork() -> list[dict[str, Any]]:
+            if table == "conversation_action_items":
+                reconcile_scheduled_commitments(self.context._conn)
             sql = f"SELECT * FROM {table} ORDER BY {order_by}"
             params: tuple[Any, ...] = ()
             if limit > 0:
@@ -790,6 +802,8 @@ class DomainArchiveComponent:
         """在一次数据库锁定中读取生活领域面板数据。"""
 
         def dbwork() -> dict[str, Any]:
+            reconcile_scheduled_commitments(self.context._conn)
+
             def rows(table: str, order_by: str, row_limit: int) -> list[dict[str, Any]]:
                 sql = f"SELECT * FROM {table} ORDER BY {order_by}"
                 params: tuple[Any, ...] = ()
@@ -824,7 +838,7 @@ class DomainArchiveComponent:
                     """
                     SELECT DISTINCT action_id
                     FROM life_action_receipts
-                    WHERE status IN ('confirmed', 'failed', 'cancelled')
+                    WHERE status IN ('confirmed', 'simulated', 'failed', 'cancelled')
                     """
                 ).fetchall()
                 if self.context._text(row["action_id"])
@@ -833,10 +847,10 @@ class DomainArchiveComponent:
             superseded_action_ids = {
                 self.context._text(row["action_id"])
                 for row in self.context._conn.execute(
-                    """
+                    f"""
                     SELECT action_id, date
                     FROM activity_sessions
-                    WHERE source = 'daily_plan'
+                    WHERE {_TIMELINE_ACTIVITY_CONDITION}
                     """
                 ).fetchall()
                 if self.context._text(row["date"]) in planned_action_ids
@@ -873,6 +887,8 @@ class DomainArchiveComponent:
                         and self.context._text(item.get("status"))
                         in {"expired", "skipped", "failed"}
                     )
+                if action_id in superseded_action_ids:
+                    return False
                 return self.context._text(item.get("source")) not in {
                     "daily_plan",
                     "life_action_simulation",
@@ -1008,21 +1024,30 @@ class DomainArchiveComponent:
                 action_id = str(item.get("action_id") or "").strip()
                 if action_id and action_id in represented_action_ids:
                     continue
+                time_source = next(
+                    (field for field in ("occurred_at", "due_at", "created_at")
+                     if item.get(field)),
+                    "",
+                )
+                occurred_at = item.get(time_source, "")
+                if time_source == "created_at":
+                    # SQLite 审计时间是 UTC；活动与约定时间已经使用生活时区。
+                    created_at = local_datetime(
+                        occurred_at, naive_timezone=datetime.timezone.utc
+                    )
+                    occurred_at = (
+                        created_at.isoformat(sep=" ", timespec="seconds")
+                        if created_at is not None else ""
+                    )
                 values.append(
                     {
                         "kind": kind,
                         "title": item.get(title_key),
                         "status": item.get("status"),
                         "date": item.get("date")
-                        or str(
-                            item.get("occurred_at")
-                            or item.get("due_at")
-                            or item.get("created_at")
-                            or ""
-                        )[:10],
-                        "occurred_at": item.get("occurred_at")
-                        or item.get("due_at")
-                        or item.get("created_at"),
+                        or str(occurred_at or "")[:10],
+                        "occurred_at": occurred_at,
+                        "time_source": time_source,
                         "source": item.get("source") or "conversation",
                         "action_id": action_id,
                         "details": item,

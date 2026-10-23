@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import uuid
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from astrbot.api import logger
@@ -12,8 +12,6 @@ from ....clock import now as life_now
 from ....life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ....life.tools import extract_json_from_text
 from ...markers import LOG_PREFIX
-
-from typing import Protocol
 
 
 class ProactiveFlowComponentContext(Protocol):
@@ -45,6 +43,7 @@ class ProactiveFlowComponentContext(Protocol):
     _proactive_idle_candidates: Any
     _proactive_idle_enabled: Any
     _proactive_idle_seconds: Any
+    _refresh_private_proactive_timing: Any
     _proactive_observe_hold_remaining: Any
     _proactive_observe_hold_seconds: Any
     _proactive_readiness_check: Any
@@ -507,6 +506,8 @@ class ProactiveFlowComponent:
             return
         now = now or life_now()
         for key, candidate in list(candidates.items()):
+            if isinstance(candidate, dict):
+                await self.context._refresh_private_proactive_timing(candidate, now)
             if not self._idle_candidate_ready(candidate, now):
                 if not isinstance(candidate, dict) or not isinstance(
                     candidate.get("last_activity_at"), datetime.datetime
@@ -523,11 +524,33 @@ class ProactiveFlowComponent:
             return False
         if self.context._proactive_observe_hold_remaining(candidate, now) > 0:
             return False
+        due_at = candidate.get("next_evaluation_at")
+        if isinstance(due_at, datetime.datetime) and now < due_at:
+            return False
+        opportunity_at = candidate.get("private_opportunity_at")
+        if not candidate.get("is_group") and isinstance(
+            opportunity_at, datetime.datetime
+        ):
+            return now >= opportunity_at
         return int((now - last_activity_at).total_seconds()) >= (
             self.context._proactive_idle_seconds(candidate)
         )
 
     async def _evaluate_idle_candidate(
+        self, key: str, candidate: dict[str, Any], now: datetime.datetime
+    ) -> None:
+        if candidate.get("evaluation_in_progress"):
+            return
+        candidate["evaluation_in_progress"] = True
+        try:
+            await self.context._refresh_private_proactive_timing(candidate, now)
+            if not self._idle_candidate_ready(candidate, now):
+                return
+            await self._run_idle_candidate_evaluation(key, candidate, now)
+        finally:
+            candidate.pop("evaluation_in_progress", None)
+
+    async def _run_idle_candidate_evaluation(
         self, key: str, candidate: dict[str, Any], now: datetime.datetime
     ) -> None:
         revision = int(candidate.get("revision") or 0)
@@ -542,7 +565,7 @@ class ProactiveFlowComponent:
             key,
             "considering",
             event="evaluation_started",
-            reason="静默门槛已满足，开始主动性裁定",
+            reason="来到适合重新考虑联系的窗口，开始主动性裁定",
             now=now,
             revision=revision,
             candidate=candidate,
@@ -789,8 +812,19 @@ class ProactiveFlowComponent:
             self.context._record_virtual_life_metric("idle_send_failed")
             return
         if decision_name == "observe":
+            hold_seconds = self.context._proactive_observe_hold_seconds()
+            if not candidate.get("is_group"):
+                count = min(4, int(candidate.get("idle_observe_count") or 0) + 1)
+                candidate["idle_observe_count"] = count
+                hold_seconds = max(
+                    hold_seconds,
+                    int(
+                        self.context._proactive_idle_seconds(candidate)
+                        * (0.4 + 0.25 * count)
+                    ),
+                )
             candidate["observe_hold_until"] = now + datetime.timedelta(
-                seconds=self.context._proactive_observe_hold_seconds()
+                seconds=hold_seconds
             )
             candidate["next_evaluation_at"] = candidate["observe_hold_until"]
             candidate["state"] = "reevaluate_after_silence"

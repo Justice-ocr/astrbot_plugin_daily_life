@@ -40,13 +40,13 @@ class JsonCleanTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gateway.calls[1][3]["propagate_non_retryable"])
         self.assertIn('{"valid": tru', gateway.calls[1][1])
 
-    async def test_parseable_payload_survives_failed_strict_repair(self):
-        gateway = _Gateway(['```json\n{"valid":true}\n```', "not json"])
+    async def test_single_json_fence_needs_no_model_repair(self):
+        gateway = _Gateway(['```json\n{"valid":true}\n```'])
 
         payload = await call_pure_json(gateway, object(), "prompt", "session")
 
         self.assertEqual(payload, {"valid": True})
-        self.assertEqual(len(gateway.calls), 2)
+        self.assertEqual(len(gateway.calls), 1)
 
 
 if __name__ == "__main__":

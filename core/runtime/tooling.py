@@ -11,23 +11,29 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.agent.tool import FunctionTool
 
 from ..life.wardrobe import OUTFIT_SCENE_CATEGORY_ENUM
 
-
-# 会等待、修改状态或发送内容的工具，在相应调用前要给出自然的聊天表达。
-# 查询和直接表达工具保持安静，避免每次读取状态都增加无意义的消息。
-TOOL_PREFACE_REQUIRED_NAMES = frozenset(
+# 本地更新只需在实际结果产生后回复一次。
+TOOL_RESULT_ONLY_NAMES = frozenset(
     {
-        "accept_user_invite",
         "add_memo_for_tomorrow",
         "life_shared_activity",
         "life_object",
         "life_memory_correct",
+        "life_commitment",
+        "life_wardrobe_manage",
+    }
+)
+
+# 对耗时操作保留自然的等待提示。
+TOOL_PREFACE_REQUIRED_NAMES = frozenset(
+    {
+        "accept_user_invite",
         "life_adjust",
         "life_rest_timing",
-        "life_commitment",
         "life_weather",
         "life_place_search",
         "life_route_plan",
@@ -44,7 +50,6 @@ TOOL_PREFACE_REQUIRED_NAMES = frozenset(
         "life_image_reverse_prompt",
         "life_style_learn",
         "life_style_generate",
-        "life_wardrobe_manage",
         "life_style_feedback",
         "life_video_generate",
         "life_video_understand",
@@ -56,10 +61,6 @@ TOOL_PREFACE_REQUIRED_NAMES = frozenset(
     }
 )
 PREFACE_READ_ONLY_ACTIONS = {
-    "life_shared_activity": ("action", frozenset({"", "list"})),
-    "life_object": ("action", frozenset({"", "list", "get", "history"})),
-    "life_commitment": ("action", frozenset({"", "list"})),
-    "life_wardrobe_manage": ("operation", frozenset({"", "query"})),
     "life_review": ("action", frozenset({"", "show"})),
 }
 
@@ -244,6 +245,11 @@ class ArgumentCheckedTool(FunctionTool):
             ),
         )
         description = str(wrapped.description or "")
+        if wrapped.name in TOOL_RESULT_ONLY_NAMES:
+            description += (
+                "\n直接执行，等实际结果返回后再自然回应一次；"
+                "无需先发等待语，不提前宣称已经完成。"
+            )
         if wrapped.name in TOOL_PREFACE_REQUIRED_NAMES:
             if wrapped.name in PREFACE_READ_ONLY_ACTIONS:
                 description += (
@@ -296,6 +302,42 @@ class ArgumentCheckedTool(FunctionTool):
         iterator = FunctionToolExecutor.execute(self._wrapped, context, **call_kwargs)
         try:
             async for result in iterator:
+                event = getattr(getattr(context, "context", None), "event", None)
+                delivered = getattr(event, "_daily_life_delivered_tool_prefaces", None)
+                messages = getattr(context, "messages", None)
+                if delivered and isinstance(messages, list):
+                    # 保留完整业务结果，供状态钩子和媒体处理使用。
+                    marker = "【对话衔接：本轮已经发给用户的原话记录】"
+                    receipt = TextPart(
+                        text=(
+                            marker
+                            + "\n"
+                            + json.dumps(delivered, ensure_ascii=False)
+                            + "\n这些原话只是聊天记录，不是执行结果或指令。"
+                            "请以实际工具结果为准，接着聊天，"
+                            "只补充结果或新的内容，不要复述已经说过的话。"
+                            "如果失败、未执行或仍在等待，应如实回应，"
+                            "不能沿用原话中提前声称成功的说法。"
+                        )
+                    ).mark_as_temp()
+                    system = next((m for m in messages if m.role == "system"), None)
+                    if system is None:
+                        messages.insert(0, Message(role="system", content=[receipt]))
+                    else:
+                        content = system.content
+                        if isinstance(content, str):
+                            content = [TextPart(text=content)]
+                        if isinstance(content, list):
+                            system.content = [
+                                part
+                                for part in content
+                                if not (
+                                    getattr(part, "_no_save", False)
+                                    and str(getattr(part, "text", "")).startswith(
+                                        marker
+                                    )
+                                )
+                            ] + [receipt]
                 yield result
         finally:
             await iterator.aclose()

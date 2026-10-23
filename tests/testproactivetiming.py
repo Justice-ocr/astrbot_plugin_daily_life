@@ -5,9 +5,16 @@ import datetime
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
-from runtimehelpers import Event, LifeSettings, RuntimeAsyncHelpers
+from runtimehelpers import (
+    DayRecord,
+    Event,
+    LifeSettings,
+    LifeState,
+    RuntimeAsyncHelpers,
+    TimelineItem,
+)
 
 
 class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
@@ -45,7 +52,12 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             self.assertEqual(len(observed), 1)
             self.assertEqual(observed[0]["state"], "after_ordinary_reply")
             self.assertEqual(observed[0]["pending_count"], 0)
-            self.assertEqual(observed[0]["next_evaluation_at"], base + datetime.timedelta(minutes=61))
+            self.assertIsNone(observed[0]["next_evaluation_at"])
+            self.assertGreater(
+                observed[0]["private_opportunity_at"],
+                base + datetime.timedelta(minutes=6),
+            )
+            self.assertNotEqual(observed[0]["private_opportunity_at"], base + datetime.timedelta(minutes=61))
             self.assertEqual(runtime._proactive_idle_tasks, {})
         finally:
             await runtime._cancel_proactive_idle_tasks()
@@ -65,8 +77,11 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(candidate["pending_count"], 1)
         self.assertEqual(candidate["recent_messages"][-1]["content"], "嗯")
         self.assertEqual(candidate["last_bot_reply_at"], base + datetime.timedelta(minutes=1))
-        self.assertEqual(candidate["next_evaluation_at"], base + datetime.timedelta(minutes=90))
-        self.assertFalse(runtime._part_proactive_flow_component._idle_candidate_ready(candidate, base + datetime.timedelta(minutes=70)))
+        await runtime._refresh_private_proactive_timing(
+            candidate, base + datetime.timedelta(minutes=30)
+        )
+        self.assertIsNone(candidate["next_evaluation_at"])
+        self.assertFalse(runtime._part_proactive_flow_component._idle_candidate_ready(candidate, base + datetime.timedelta(minutes=31)))
         self.assertTrue(runtime._proactive_allowed_for_event(runtime._proactive_candidate_event(candidate), continuing=True))
 
     async def test_normal_reply_invalidates_inflight_idle_decision(self):
@@ -86,6 +101,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         await runtime._evaluate_idle_candidate(key, original, base + datetime.timedelta(minutes=60))
         runtime._send_proactive_message.assert_not_awaited()
         self.assertIsNot(runtime._proactive_idle_candidates[key], original)
+        self.assertNotIn("evaluation_in_progress", runtime._proactive_idle_candidates[key])
         self.assertEqual(runtime._proactive_lifecycle_snapshot(key)["state"], "candidate")
 
     async def test_old_send_completion_does_not_remove_new_candidate(self):
@@ -123,12 +139,296 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         base = datetime.datetime(2026, 5, 24, 12)
         runtime.note_proactive_activity(event, now=base)
         runtime.note_proactive_bot_reply(event, now=base + datetime.timedelta(minutes=1))
-        await runtime.evaluate_idle_proactive_candidates(now=base + datetime.timedelta(minutes=60))
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        await runtime._refresh_private_proactive_timing(
+            candidate, base + datetime.timedelta(minutes=1)
+        )
+        due_at = candidate["private_opportunity_at"]
+        await runtime.evaluate_idle_proactive_candidates(now=due_at - datetime.timedelta(seconds=1))
         self.assertEqual(runtime.context.sent_messages, [])
-        await runtime.evaluate_idle_proactive_candidates(now=base + datetime.timedelta(minutes=62))
+        await runtime.evaluate_idle_proactive_candidates(now=due_at + datetime.timedelta(seconds=1))
         self.assertEqual(len(runtime.context.sent_messages), 1)
         self.assertEqual(runtime.context.sent_messages[0][1].items, ["刚看到一张那个电影的幕后照"])
         self.assertNotIn(event.unified_msg_origin, runtime._proactive_idle_candidates)
+
+    async def test_private_timing_stays_stable_across_polls_and_varies_between_turns(
+        self,
+    ):
+        runtime, provider = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        first = candidate["private_opportunity_at"]
+        await runtime._refresh_private_proactive_timing(
+            candidate, base + datetime.timedelta(minutes=1)
+        )
+        self.assertEqual(candidate["private_opportunity_at"], first)
+        runtime.note_proactive_activity(
+            self.private_event(message_id="m2"),
+            now=base + datetime.timedelta(minutes=2),
+        )
+        current = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        await runtime._refresh_private_proactive_timing(
+            current, base + datetime.timedelta(minutes=2)
+        )
+        self.assertNotEqual(
+            current["private_opportunity_at"] - current["last_activity_at"],
+            first - base,
+        )
+        self.assertEqual(provider.prompts, [])
+
+    async def test_life_state_changes_move_the_same_contact_opportunity(self):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        day = DayRecord(
+            date="2026-05-24",
+            state=LifeState(
+                busyness=95,
+                sleepiness=90,
+                interaction_capacity=10,
+                social=20,
+                updated_at=base.isoformat(),
+            ),
+        )
+        runtime._proactive_current_day = AsyncMock(return_value=(day.date, False, day))
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        occupied_due = candidate["private_opportunity_at"]
+        day.state = LifeState(
+            busyness=10,
+            sleepiness=10,
+            interaction_capacity=90,
+            social=80,
+            updated_at=base.isoformat(),
+        )
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        self.assertLess(candidate["private_opportunity_at"], occupied_due)
+        self.assertGreaterEqual(
+            candidate["private_opportunity_at"], base + datetime.timedelta(minutes=5)
+        )
+
+    async def test_sleeping_private_timer_notices_a_new_life_window(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime._runtime_initialized = True
+        current = datetime.datetime(2026, 5, 24, 12)
+        base = current
+        day = DayRecord(
+            date="2026-05-24",
+            state=LifeState(busyness=95, sleepiness=90, interaction_capacity=10),
+        )
+        runtime._proactive_current_day = AsyncMock(return_value=(day.date, False, day))
+        sleeps, evaluations = [], []
+        event = self.private_event()
+
+        async def advance(seconds):
+            nonlocal current
+            sleeps.append(seconds)
+            current += datetime.timedelta(seconds=seconds)
+            day.state = LifeState(busyness=10, sleepiness=10, interaction_capacity=90)
+            day.timeline = [TimelineItem(time="12:10", activity="午后散步")]
+
+        async def evaluate(key, candidate, now):
+            evaluations.append(now)
+            runtime._proactive_idle_candidates.pop(key)
+
+        runtime.evaluate_proactive_reply = AsyncMock()
+        runtime._evaluate_idle_candidate = evaluate
+        with (
+            patch("core.runtime.proactive.scope.life_now", side_effect=lambda: current),
+            patch("core.runtime.proactive.scope.asyncio.sleep", side_effect=advance),
+        ):
+            runtime.note_proactive_activity(event, now=base)
+            task = runtime._proactive_idle_tasks[event.unified_msg_origin]
+            await asyncio.wait_for(task, 1)
+        self.assertEqual(sleeps[0], 300)
+        self.assertEqual(len(evaluations), 1)
+        self.assertGreater(evaluations[0], base + datetime.timedelta(minutes=10))
+        self.assertLess(evaluations[0], base + datetime.timedelta(minutes=20))
+        runtime.evaluate_proactive_reply.assert_not_awaited()
+
+    async def test_life_transition_can_be_considered_before_reference_interval(self):
+        runtime, provider = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        day = DayRecord(
+            date="2026-05-24",
+            timeline=[TimelineItem(time="12:15", activity="午后散步")],
+        )
+        runtime._proactive_current_day = AsyncMock(return_value=(day.date, False, day))
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        self.assertLess(
+            candidate["private_opportunity_at"], base + datetime.timedelta(minutes=30)
+        )
+        self.assertGreater(
+            candidate["private_opportunity_at"], base + datetime.timedelta(minutes=15)
+        )
+        self.assertFalse(
+            runtime._part_proactive_flow_component._idle_candidate_ready(
+                candidate, base + datetime.timedelta(minutes=14)
+            )
+        )
+        self.assertTrue(
+            runtime._part_proactive_flow_component._idle_candidate_ready(
+                candidate, base + datetime.timedelta(minutes=20)
+            )
+        )
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(provider.prompts, [])
+        day.state = LifeState(busyness=95, sleepiness=90, interaction_capacity=10)
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        self.assertFalse(
+            runtime._part_proactive_flow_component._idle_candidate_ready(
+                candidate, base + datetime.timedelta(minutes=20)
+            )
+        )
+
+    async def test_cancelled_or_old_day_transitions_do_not_advance_contact(self):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        candidate = {
+            "target_scope": self.private_event().unified_msg_origin,
+            "last_activity_at": base,
+        }
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        reference_due = candidate["private_opportunity_at"]
+        for date, execution in (("2026-05-24", "cancelled"), ("2026-05-23", "planned")):
+            with self.subTest(date=date, execution=execution):
+                day = DayRecord(
+                    date=date,
+                    timeline=[
+                        TimelineItem(
+                            time="12:15", activity="散步", execution_state=execution
+                        )
+                    ],
+                )
+                runtime._proactive_current_day = AsyncMock(
+                    return_value=(date, False, day)
+                )
+                await runtime._refresh_private_proactive_timing(candidate, base)
+                self.assertEqual(candidate["private_opportunity_at"], reference_due)
+
+    async def test_private_revisit_and_idle_share_one_opportunity(self):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        runtime._read_recent_context_messages = AsyncMock(
+            return_value=[
+                {
+                    "role": "assistant",
+                    "content": "等会儿再聊",
+                    "timestamp": base.timestamp(),
+                }
+            ]
+        )
+        runtime.build_memos_hidden_context = AsyncMock(return_value="")
+        await runtime._refresh_private_proactive_timing(candidate, base)
+        memory = await runtime._part_proactive_revisit_component._private_revisit_memory_context(
+            event.unified_msg_origin, None, "阿林", base
+        )
+        self.assertTrue(memory["too_recent"])
+        self.assertEqual(
+            memory["minimum_idle_seconds"],
+            int((candidate["private_opportunity_at"] - base).total_seconds()),
+        )
+
+    async def test_private_revisit_does_not_compete_with_an_active_idle_candidate(self):
+        runtime, provider = self._make_proactive_runtime([])
+        runtime.config.proactive.private_revisit_enabled = True
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=datetime.datetime(2026, 5, 24, 12))
+        component = runtime._part_proactive_revisit_component
+        component._get_recent_private_targets = AsyncMock(
+            return_value=[SimpleNamespace()]
+        )
+        runtime._resolve_private_target_umo = lambda *_: event.unified_msg_origin
+        component._evaluate_private_revisit_payload = AsyncMock()
+        await runtime.evaluate_private_revisit_candidates()
+        component._evaluate_private_revisit_payload.assert_not_awaited()
+        self.assertEqual(provider.prompts, [])
+
+    async def test_background_poll_respects_a_deferred_decision(self):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        runtime.evaluate_proactive_reply = AsyncMock(
+            return_value={
+                "should_reply": False,
+                "decision": "wait",
+                "retry_after": 3600,
+            }
+        )
+        due_at = base + datetime.timedelta(hours=3)
+        await runtime.evaluate_idle_proactive_candidates(now=due_at)
+        self.assertEqual(runtime.evaluate_proactive_reply.await_count, 1)
+        await runtime.evaluate_idle_proactive_candidates(
+            now=due_at + datetime.timedelta(minutes=5)
+        )
+        self.assertEqual(runtime.evaluate_proactive_reply.await_count, 1)
+        await runtime.evaluate_idle_proactive_candidates(
+            now=due_at + datetime.timedelta(hours=1)
+        )
+        self.assertEqual(runtime.evaluate_proactive_reply.await_count, 2)
+
+    async def test_observing_private_chat_backs_off_instead_of_rechecking_every_five_minutes(
+        self,
+    ):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        runtime.evaluate_proactive_reply = AsyncMock(
+            return_value={"should_reply": False, "decision": "observe"}
+        )
+        now = base + datetime.timedelta(hours=3)
+        await runtime.evaluate_idle_proactive_candidates(now=now)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        first_hold = candidate["next_evaluation_at"] - now
+        self.assertGreater(first_hold, datetime.timedelta(minutes=5))
+        await runtime.evaluate_idle_proactive_candidates(
+            now=now + datetime.timedelta(minutes=5)
+        )
+        self.assertEqual(runtime.evaluate_proactive_reply.await_count, 1)
+        second_at = candidate["next_evaluation_at"]
+        await runtime.evaluate_idle_proactive_candidates(now=second_at)
+        self.assertGreater(candidate["next_evaluation_at"] - second_at, first_hold)
+
+    async def test_timer_and_background_poll_do_not_evaluate_same_candidate_twice(self):
+        runtime, _ = self._make_proactive_runtime([])
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        runtime.note_proactive_activity(event, now=base)
+        candidate = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def evaluate(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return {"should_reply": False, "decision": "skip"}
+
+        runtime.evaluate_proactive_reply = AsyncMock(side_effect=evaluate)
+        task = asyncio.create_task(
+            runtime._evaluate_idle_candidate(
+                event.unified_msg_origin, candidate, base + datetime.timedelta(hours=3)
+            )
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        try:
+            await runtime.evaluate_idle_proactive_candidates(
+                now=base + datetime.timedelta(hours=3)
+            )
+            self.assertEqual(runtime.evaluate_proactive_reply.await_count, 1)
+        finally:
+            release.set()
+            await task
 
     async def test_semantic_decision_survives_old_deadline_without_blocking_loop(self):
         runtime, _ = self._make_proactive_runtime([])

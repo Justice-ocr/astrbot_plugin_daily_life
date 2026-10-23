@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from support import DailyLifeRuntime, Event, LifeArchive, LifeSettings, ProviderRequest
 from core.archive.schema import init_schema
 from core.clock import TIMEZONE
 from core.runtime.elapsed import RECEIVED_AT, SENT_AT, TURN_RECEIVED_AT
+from support import DailyLifeRuntime, Event, LifeArchive, LifeSettings, ProviderRequest
 
 
 def timestamp(text):
@@ -58,6 +58,177 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2026-10-08T23:30:00+08:00", context)
         self.assertIn("2026-10-09T08:00:00+08:00", context)
         self.assertIn("8小时30分钟（30600秒）", context)
+
+    async def test_proactive_delivery_does_not_reset_the_users_absence(self):
+        last_user = self.incoming(self.sent - 60)
+        await self.runtime.record_conversation_arrival(last_user)
+        await self.runtime.record_conversation_delivery(self.scope, self.sent)
+        await self.runtime.record_conversation_delivery(self.scope, self.arrived - 120)
+        context = await self.runtime.build_conversation_timing_context(self.incoming())
+        self.assertIn("已过：2分钟（120秒）", context)
+        self.assertIn("对方两次发来消息相隔：8小时31分钟（30660秒）", context)
+        self.assertIn("这不代表对方在此期间回复过", context)
+
+    async def test_arrivals_survive_reload_without_chat_memory_or_a_reply(self):
+        last_user = self.incoming(self.sent - 60)
+        await self.runtime.record_conversation_arrival(last_user)
+        await self.archive.aclose()
+        self.archive = LifeArchive(self.path)
+        self.runtime = self.new_runtime()
+        current = self.incoming()
+        await self.runtime.record_conversation_arrival(current)
+        context = await self.runtime.build_conversation_timing_context(current)
+        self.assertFalse(self.runtime.config.memory.enabled)
+        self.assertEqual(
+            self.archive._conn.execute(
+                "SELECT COUNT(*) FROM chat_memory_messages"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertIn("对方两次发来消息相隔：8小时31分钟（30660秒）", context)
+        self.assertIn("上次成功发送时间：无可核实记录", context)
+
+    async def test_continuous_turn_excludes_all_current_bubbles_from_previous_arrival(
+        self,
+    ):
+        await self.archive.save_conversation_arrival(self.scope, self.sent - 60)
+        first = self.incoming()
+        self.runtime.note_continuous_turn_incoming(first)
+        await self.runtime.record_conversation_arrival(first)
+        second = self.incoming(self.arrived + 3, message_id="second")
+        self.runtime.note_continuous_turn_incoming(second)
+        await self.runtime.record_conversation_arrival(second)
+        await self.runtime.record_conversation_delivery(self.scope, self.arrived + 1)
+        context = await self.runtime.build_conversation_timing_context(second)
+        self.assertIn("对方两次发来消息相隔：8小时31分钟（30660秒）", context)
+        self.assertIn("本轮连续消息开始到达：2026-10-09T08:00:00", context)
+        self.assertNotIn("本会话上次成功发送：", context)
+
+    async def test_arrival_scope_isolation_and_group_scope_are_explicit(self):
+        await self.archive.save_conversation_arrival("other:FriendMessage:1", self.sent)
+        context = await self.runtime.build_conversation_timing_context(self.incoming())
+        self.assertNotIn("两次发来消息相隔", context)
+        group = "test:GroupMessage:2"
+        await self.archive.save_conversation_arrival(group, self.sent)
+        context = await self.runtime.build_conversation_timing_context(
+            self.incoming(scope=group, group_id="2")
+        )
+        self.assertIn("群内两次发来消息相隔：8小时30分钟", context)
+        self.assertIn("不据此判断这个人迟回", context)
+
+    async def test_arrivals_are_bounded_idempotent_and_cleared_with_conversation(self):
+        for index in reversed(range(40)):
+            event = self.incoming(self.sent + index, message_id=str(index))
+            await self.runtime.record_conversation_arrival(event)
+        await self.runtime.record_conversation_arrival(event)
+        self.assertEqual(
+            self.archive._conn.execute(
+                "SELECT COUNT(*) FROM conversation_arrivals"
+            ).fetchone()[0],
+            32,
+        )
+        self.assertEqual(
+            len(self.runtime.conversation_timing._arrivals[self.scope]), 32
+        )
+        self.assertEqual(
+            await self.archive.get_conversation_arrival_before(
+                self.scope, self.sent + 20
+            ),
+            self.sent + 19,
+        )
+        await self.archive.clear_storage_category("conversation")
+        self.runtime.clear_conversation_timing()
+        self.assertFalse(self.runtime.conversation_timing._arrivals)
+        self.assertEqual(
+            await self.archive.get_conversation_arrival_before(
+                self.scope, self.arrived
+            ),
+            0,
+        )
+
+    async def test_self_and_synthetic_arrivals_are_not_persisted(self):
+        for synthetic in (False, True):
+            event = Event(sender_id="bot", self_id="bot") if not synthetic else Event()
+            event.is_proactive_synthetic = synthetic
+            self.runtime.note_conversation_incoming(event)
+            await self.runtime.record_conversation_arrival(event)
+            self.assertFalse(hasattr(event, RECEIVED_AT))
+        self.assertEqual(
+            self.archive._conn.execute(
+                "SELECT COUNT(*) FROM conversation_arrivals"
+            ).fetchone()[0],
+            0,
+        )
+
+    async def test_failed_arrival_persistence_keeps_in_memory_gap(self):
+        self.runtime.archive = types.SimpleNamespace(
+            save_conversation_arrival=AsyncMock(side_effect=OSError())
+        )
+        last_user = self.incoming(self.sent)
+        await self.runtime.record_conversation_arrival(last_user)
+        context = await self.runtime.build_conversation_timing_context(self.incoming())
+        self.assertIn("对方两次发来消息相隔：8小时30分钟", context)
+
+    async def test_legacy_history_does_not_mistake_current_message_for_previous_arrival(
+        self,
+    ):
+        self.archive._conn.executemany(
+            "INSERT INTO chat_memory_messages(event_key, session_id, role, message_text, occurred_at) VALUES (?, ?, 'user', '聊天', ?)",
+            [
+                ("previous-user", self.scope, "2026-10-08T23:29:00"),
+                ("current-user", self.scope, "2026-10-09T08:00:00"),
+            ],
+        )
+        current = self.incoming(self.arrived + 0.75)
+        await self.runtime.record_conversation_arrival(current)
+        context = await self.runtime.build_conversation_timing_context(current)
+        self.assertIn("对方两次发来消息相隔：8小时31分钟", context)
+        self.assertEqual(
+            await self.archive.get_conversation_arrival_before(
+                self.scope, self.arrived + 0.75
+            ),
+            self.sent - 60,
+        )
+
+    async def test_v27_upgrade_preserves_receipts_and_reads_existing_user_history(self):
+        from core.archive.migrations import (
+            CURRENT_SCHEMA_FINGERPRINT,
+            schema_fingerprint,
+        )
+
+        await self.runtime.record_conversation_delivery(self.scope, self.sent)
+        for versioned in (True, False):
+            with self.subTest(versioned=versioned):
+                self.archive._conn.execute("DROP TABLE conversation_arrivals")
+                if versioned:
+                    self.archive._conn.execute(
+                        "UPDATE meta SET value = '27' WHERE key = 'schema_version'"
+                    )
+                else:
+                    self.archive._conn.execute(
+                        "DELETE FROM meta WHERE key = 'schema_version'"
+                    )
+                self.archive._conn.commit()
+                init_schema(self.archive._conn)
+                init_schema(self.archive._conn)
+                self.assertEqual(
+                    schema_fingerprint(self.archive._conn), CURRENT_SCHEMA_FINGERPRINT
+                )
+        self.assertEqual(
+            await self.archive.get_conversation_receipt_before(
+                self.scope, self.arrived
+            ),
+            self.sent,
+        )
+        self.archive._conn.execute(
+            "INSERT INTO chat_memory_messages(event_key, session_id, role, message_text, occurred_at) VALUES ('old-user', ?, 'user', '稍后聊', '2026-10-08T23:29:00')",
+            (self.scope,),
+        )
+        self.archive._conn.commit()
+        await self.archive.save_conversation_arrival(self.scope, self.arrived)
+        context = await self.runtime.build_conversation_timing_context(self.incoming())
+        self.assertIn("对方两次发来消息相隔：8小时31分钟", context)
+        self.assertIn("已过：8小时30分钟", context)
 
     async def test_media_preparation_and_model_wait_do_not_inflate_gap(self):
         await self.runtime.record_conversation_delivery(self.scope, self.arrived - 2)
@@ -110,8 +281,10 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("间隔未知", context)
         group = "test:GroupMessage:2"
         await self.runtime.record_conversation_delivery(group, self.sent)
-        context = await self.runtime.build_conversation_timing_context(self.incoming(scope=group, group_id="2"))
-        self.assertIn("不能把群内发送间隔归因于当前发言者", context)
+        context = await self.runtime.build_conversation_timing_context(
+            self.incoming(scope=group, group_id="2")
+        )
+        self.assertIn("不能把群内收发间隔归因于当前发言者", context)
 
     async def test_synthetic_events_and_missing_arrival_do_not_invent_times(self):
         event = self.incoming()

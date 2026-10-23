@@ -9,16 +9,16 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
 
 from ..delivery import BackgroundTextMode
-from ..tooling import TOOL_PREFACE_REQUIRED_NAMES
+from ..tooling import TOOL_PREFACE_REQUIRED_NAMES, TOOL_RESULT_ONLY_NAMES
 
 try:
     from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
 except Exception:
     _astrbot_follow_up = None
 
-from ..markers import LOG_PREFIX
-
 from typing import Protocol
+
+from ..markers import LOG_PREFIX
 
 VOICE_TOOL_NAME = "life_voice_generate"
 EMOJI_TOOL_NAME = "life_emoji_send"
@@ -33,6 +33,7 @@ class ToolReplyPolicy:
 
 
 TOOL_REPLY_POLICIES = {
+    **{name: ToolReplyPolicy(preface_silent=True) for name in TOOL_RESULT_ONLY_NAMES},
     VOICE_TOOL_NAME: ToolReplyPolicy(
         preface_silent=True,
         replaces_text=True,
@@ -359,6 +360,13 @@ class SilentToolPrefaceComponent:
         state["preface_sent"] = bool(sent)
         state["preface_channel"] = channel
         if sent:
+            if preface_text:
+                delivered = getattr(event, "_daily_life_delivered_tool_prefaces", None)
+                if delivered is None:
+                    delivered = []
+                    setattr(event, "_daily_life_delivered_tool_prefaces", delivered)
+                if preface_text not in delivered:
+                    delivered.append(preface_text)
             if normalized:
                 sent_texts.add(normalized)
             if argument_preface:

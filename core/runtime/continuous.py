@@ -11,15 +11,15 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..life.achievement import apply_reviews
+from ..life.actionchain import actions as ordered_actions
+from ..life.actionchain import ready as action_ready
 from ..life.body import ContinuousBody, instant, project_body
 from ..life.continuity import observation_pending
-from ..life.actionchain import actions as ordered_actions, ready as action_ready
-from ..life.achievement import apply_reviews
+from ..life.goals import apply_goal_decisions, credit_goal, ready_steps
 from ..life.interests import apply_interest_updates, bind_interest
 from ..life.learning import expectation
 from ..life.planalignment import prepare_updates, synchronize_run
-from ..life.resources import reserve as reserve_resources, settle as settle_resources
-from ..life.goals import apply_goal_decisions, credit_goal, ready_steps
 from ..life.presence import (
     apply_action_reflections,
     apply_self_model_updates,
@@ -28,12 +28,15 @@ from ..life.presence import (
     sync_kernel_from_day,
     update_self_model,
 )
+from ..life.resources import reserve as reserve_resources
+from ..life.resources import settle as settle_resources
 from ..life.settlement import _ACTION_RULES
 from ..life.tools import (
     timeline_deferred_until,
     timeline_item_datetime,
 )
 from ..models import INTERNAL_SIMULATED_ACTION_TYPES, LifeActionIntent
+from .decisioncontext import decision_observation, decision_observation_changed
 from .markers import LOG_PREFIX
 
 _MAX_OBSERVED_GAP_SECONDS = 180
@@ -80,7 +83,7 @@ def sleep_delayed(day, run, now) -> bool:
     return bool(until and until > now)
 
 
-def next_decision_time(day, world, now):
+def next_decision_time(day, world, now, *, refresh_minutes: int):
     run = world.get("run") or {}
     remaining = max(
         1,
@@ -88,15 +91,18 @@ def next_decision_time(day, world, now):
         - float(run.get("active_seconds") or 0) / 60,
     )
     minutes = (
-        min(30, remaining)
+        min(refresh_minutes, remaining)
         if run.get("status") == "running" and not observation_pending(run)
-        else 5
+        else refresh_minutes
     )
     due = now + datetime.timedelta(minutes=minutes)
     for item in day.timeline:
         if item.execution_state in _TERMINAL_STATES:
             continue
         at = timeline_item_datetime(item, day.date, meta=day.meta)
+        deferred = timeline_deferred_until(item, day.date, day.meta)
+        if deferred and at:
+            at = max(at, deferred)
         if at and now < at < due:
             due = at
     return due
@@ -619,7 +625,30 @@ class ContinuousLifeService:
             day = await self._archive().get_day(date)
         await self._notify_status("continuous_life")
         due = instant(world.get("next_decision_at"))
-        if due and due > now:
+        last_decision = instant(world.get("last_decision_at"))
+        interval = self._config().state.refresh_minutes
+        if due and last_decision:
+            due = min(due, last_decision + datetime.timedelta(minutes=interval))
+        if due and due > now and not decision_observation_changed(
+            world.get("decision_observation"), decision_observation(day, world)
+        ):
+            return
+        expected_revision = world.get("revision")
+        claimed = False
+
+        def begin(latest, stored):
+            nonlocal claimed
+            if stored.get("revision") != expected_revision or latest.revision != day.revision:
+                return False
+            stored["last_decision_at"] = now.isoformat()
+            stored["decision_observation"] = decision_observation(latest, stored)
+            stored["next_decision_at"] = next_decision_time(
+                latest, stored, now, refresh_minutes=interval,
+            ).isoformat()
+            claimed = True
+
+        day, world = await self._archive().mutate_continuous_life(date, begin)
+        if not claimed:
             return
         try:
             payload = await self._decide(day, world, now)
@@ -627,16 +656,6 @@ class ContinuousLifeService:
             logger.warning(f"{LOG_PREFIX} 自主行动选择暂未完成：{type(exc).__name__}")
             payload = {}
         if not payload:
-            expected_revision = world.get("revision")
-
-            def retry(latest, stored):
-                if stored.get("revision") != expected_revision:
-                    return False
-                stored["next_decision_at"] = next_decision_time(
-                    latest, {}, self._now().replace(tzinfo=None)
-                ).isoformat()
-
-            await self._archive().mutate_continuous_life(date, retry)
             return
         await self._apply_continuous_decision(
             day, world, payload, self._now().replace(tzinfo=None)
@@ -660,7 +679,10 @@ class ContinuousLifeService:
                 if world.get("revision") != snapshot.get("revision") or latest.revision != day.revision:
                     return False
                 world["plan_alignment_blocked"] = "日程调整未通过事实与约定校验，请保留受保护节点，重新选择可执行的安排"
-                world["next_decision_at"] = (now + datetime.timedelta(minutes=5)).isoformat()
+                world["next_decision_at"] = next_decision_time(
+                    latest, world, now, refresh_minutes=self._config().state.refresh_minutes,
+                ).isoformat()
+                world["decision_observation"] = decision_observation(latest, world)
 
             await self._archive().mutate_continuous_life(day.date, retry)
             return
@@ -755,7 +777,7 @@ class ContinuousLifeService:
             latest.meta = copy.deepcopy(day.meta)
             world.pop("plan_alignment_blocked", None)
             self._advance_continuous_world(latest, world, now)
-            world["next_decision_at"] = next_decision_time(latest, {}, now).isoformat()
+            world["last_decision_at"] = now.isoformat()
             goal_payload = (
                 payload
                 if payload.get("_goal_review_due", True)
@@ -790,9 +812,9 @@ class ContinuousLifeService:
                 world, payload.get("achievement_reviews"),
                 offered=payload.get("_achievement_candidates", []), now=now,
             )
-            apply_interest_updates(world, payload.get("interest_updates"),
-                                   sources=payload.get("_sources", set()), now=now)
             if payload.get("_goal_review_due", True):
+                apply_interest_updates(world, payload.get("interest_updates"),
+                                       sources=payload.get("_sources", set()), now=now)
                 apply_self_model_updates(
                     world,
                     payload.get("self_model_updates"),
@@ -975,8 +997,9 @@ class ContinuousLifeService:
                     and running.get("rest_kind") == "sleep"
                 )
             world["next_decision_at"] = next_decision_time(
-                latest, world, now
+                latest, world, now, refresh_minutes=self._config().state.refresh_minutes,
             ).isoformat()
+            world["decision_observation"] = decision_observation(latest, world)
 
         await self._archive().mutate_continuous_life(day.date, apply)
         if blocked_reason:
@@ -984,7 +1007,10 @@ class ContinuousLifeService:
                 if int(world.get("revision") or 0) != expected_revision or latest.revision != day.revision:
                     return False
                 world["resource_blocked"] = blocked_reason
-                world["next_decision_at"] = (now + datetime.timedelta(minutes=5)).isoformat()
+                world["next_decision_at"] = next_decision_time(
+                    latest, world, now, refresh_minutes=self._config().state.refresh_minutes,
+                ).isoformat()
+                world["decision_observation"] = decision_observation(latest, world)
 
             await self._archive().mutate_continuous_life(day.date, record_blocked)
         await self._notify_status("continuous_life")
@@ -1052,6 +1078,7 @@ class ContinuousLifeService:
                     summary="实际回应对话，短暂醒来后重新判断睡眠安排",
                     evidence_ids=[token],
                 )
+                world.pop("next_decision_at", None)
             world["sleeping"] = False
             world["last_chat_at"] = now.isoformat()
             world["last_chat_scope"] = scope
@@ -1066,10 +1093,6 @@ class ContinuousLifeService:
             events = world.setdefault("chat_events", [])
             events.append(token)
             world["chat_events"] = events[-128:]
-            due = instant(world.get("next_decision_at"))
-            reconsider = now + datetime.timedelta(minutes=1)
-            if due is None or due > reconsider:
-                world["next_decision_at"] = reconsider.isoformat()
 
         await self._archive().mutate_continuous_life(date, record)
         await self._notify_status("continuous_life")

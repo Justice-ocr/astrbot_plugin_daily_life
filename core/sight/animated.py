@@ -37,7 +37,9 @@ def is_animated_gif(source: str) -> bool:
         return True
 
 
-def prepare_animated_image(source: str) -> tuple[str, str]:
+def prepare_animated_image(
+    source: str, *, sample_frames: int = MAX_SAMPLE_FRAMES
+) -> tuple[str, str]:
     """多帧 GIF 转为顺序采样图，单帧 GIF 转为静态 PNG，其余保持原来源。"""
     source = str(source or "").strip()
     started = time.monotonic()
@@ -81,13 +83,14 @@ def prepare_animated_image(source: str) -> tuple[str, str]:
             animation.convert("RGBA").save(output, format="PNG")
             encoded = base64.b64encode(output.getvalue()).decode("ascii")
             return f"data:image/png;base64,{encoded}", ""
-        if count <= MAX_SAMPLE_FRAMES:
+        sample_frames = max(2, min(int(sample_frames), 16))
+        if count <= sample_frames:
             indices = list(range(count))
         else:
             # 按实际时间采样，并始终保留首尾，避免只看到第一帧。
             indices = {0, count - 1}
-            for number in range(1, MAX_SAMPLE_FRAMES - 1):
-                target = elapsed_ms / 1000.0 * number / (MAX_SAMPLE_FRAMES - 1)
+            for number in range(1, sample_frames - 1):
+                target = elapsed_ms / 1000.0 * number / (sample_frames - 1)
                 index = next(
                     (
                         i

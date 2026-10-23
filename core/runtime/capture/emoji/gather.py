@@ -13,6 +13,7 @@ from astrbot.core.agent.message import TextPart
 from ....clock import now as life_now
 from ....models import EmojiAssetRecord
 from ....sight.animated import is_animated_gif
+from ....sight.visual import image_understanding_cache_key
 from ...markers import LOG_PREFIX
 from ...foreground import foreground_budget
 
@@ -32,6 +33,7 @@ class EmojiGatherComponentContext(Protocol):
     _apply_visual_context_summary_text: Any
     _cache_emoji_asset_file: Any
     _cache_emoji_asset_path: Any
+    _classify_plain_image_emoji_candidate: Any
     _describe_emoji_asset_with_vision: Any
     _describe_visual_context_with_vision: Any
     _emoji_asset_cache_candidates: Any
@@ -59,6 +61,7 @@ class EmojiGatherComponentContext(Protocol):
     _visual_media_sources: Any
     archive: Any
     contact_resolver: Any
+    config: Any
     event_was_recalled: Any
 
 
@@ -323,6 +326,9 @@ class EmojiGatherComponent:
         )
         if unique:
             body = "；".join(unique)
+            unknown = sum(not str(item or "").strip() for item in summaries)
+            if unknown:
+                body += f"；另有 {unknown} 张动图内容尚未确认，不猜测其画面"
             text = (
                 "<animated_image_caption>本轮用户发送了 GIF 动图。"
                 f"视觉模型识别结果：{body}。"
@@ -366,6 +372,8 @@ class EmojiGatherComponent:
     ) -> bool:
         """将 GIF 先交给视觉模型识别，再以文字摘要交给主对话模型。"""
 
+        if not self.context.config.vision.enabled:
+            return False
         entries = await self._prepared_visual_media_from_event(event)
         gif_entries = [
             entry
@@ -376,14 +384,20 @@ class EmojiGatherComponent:
             return False
 
         cache = self.context._visual_context_summary_cache()
-        if not all(
-            str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
+        settings = self.context.config.vision
+        user_text = str(getattr(event, "message_str", "") or "")
+        cache_keys = [
+            image_understanding_cache_key(
+                settings, str(entry.get("fingerprint") or ""), user_text
+            )
             for entry in gif_entries
+        ]
+        if not all(
+            str(cache.get(key, "") or "").strip() for key in cache_keys
         ):
             await self._wait_for_gif_visual_context(event)
         summaries = [
-            str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
-            for entry in gif_entries
+            str(cache.get(key, "") or "").strip() for key in cache_keys
         ]
         # AstrBot 先追加本轮图片，再追加引用图片。只关联本轮对应槽位，
         # 即使 GIF 已转换为 PNG，也不能清空引用或其他附加图片。
@@ -425,9 +439,6 @@ class EmojiGatherComponent:
         self,
         asset: EmojiAssetRecord,
         payload: dict[str, str],
-        *,
-        context_scope: str = "",
-        context_message_key: str = "",
     ) -> None:
         cached_path = await self.context._cache_emoji_asset_file(payload, asset.file_hash)
         if cached_path and cached_path != asset.file_path:
@@ -458,8 +469,6 @@ class EmojiGatherComponent:
                 asset = refreshed
         await self.context._describe_emoji_asset_with_vision(
             asset,
-            context_scope=context_scope,
-            context_message_key=context_message_key,
         )
 
     async def maybe_collect_emoji_assets_from_event(
@@ -482,23 +491,39 @@ class EmojiGatherComponent:
             return
         meta = await self.context._event_context_meta(event, sender_name, now)
         scope = meta.get("group_id") or meta.get("session_id") or ""
-        context_scope = meta.get("session_id") or ""
-        context_message_key = meta.get("message_id") or f"event:{id(event)}"
         saved: list[EmojiAssetRecord] = []
         payloads: dict[str, dict[str, str]] = {}
+        plain_scheduled = 0
+        review_limit = self.context._emoji_review_batch_size()
+        seen: set[str] = set()
         for entry in await self._prepared_visual_media_from_event(event):
             item = entry.get("item")
             source_kind = self.context._emoji_asset_source_kind(item)
-            if source_kind not in {"trusted", "review"}:
+            if source_kind not in {"trusted", "review", "plain_image"}:
                 continue
             if entry.get("state") == "failed":
                 continue
             payload = dict(entry.get("payload") or {})
             fingerprint = str(entry.get("fingerprint") or "")
-            if not fingerprint:
+            if not fingerprint or fingerprint in seen:
                 continue
+            seen.add(fingerprint)
             if self.context.event_was_recalled(event, log_skip=True):
                 return
+            if source_kind == "plain_image":
+                if plain_scheduled + len(saved) < review_limit:
+                    self.context._schedule_background_task(
+                        self.context._classify_plain_image_emoji_candidate(
+                            str(entry.get("path") or ""),
+                            self.context._event_session_id(event),
+                            self.context._event_message_id(event) or f"event:{id(event)}",
+                            fingerprint, cache_sources=list(entry.get("cache_sources") or []),
+                        ),
+                        label="图片表情素材识别",
+                        key=f"emoji_asset_vision:{fingerprint}",
+                    )
+                    plain_scheduled += 1
+                continue
             existing = await self.context.archive.get_emoji_asset_by_hash(fingerprint)
             if (
                 existing
@@ -506,18 +531,6 @@ class EmojiGatherComponent:
             ):
                 continue
             if existing and str(existing.status or "") == "ready":
-                cached_summary = self.context._visual_context_summary_cache().get(
-                    fingerprint, ""
-                )
-                if cached_summary:
-                    self.context._apply_visual_context_summary_text(
-                        context_scope,
-                        context_message_key,
-                        cached_summary,
-                    )
-                    continue
-                saved.append(existing)
-                payloads[str(existing.id)] = payload
                 continue
             if not await self.context._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
                 continue
@@ -551,27 +564,27 @@ class EmojiGatherComponent:
                 payloads[str(asset.id)] = payload
         if self.context.event_was_recalled(event, log_skip=True):
             return
-        for asset in saved[: self.context._emoji_review_batch_size()]:
+        for asset in saved[: review_limit - plain_scheduled]:
             self.context._schedule_background_task(
                 self._cache_and_describe_emoji_asset(
                     asset,
                     payloads.get(str(asset.id), {}),
-                    context_scope=context_scope,
-                    context_message_key=context_message_key,
                 ),
                 label="表情素材缓存与识别",
-                key=f"emoji_asset_vision:{asset.id}",
+                key=f"emoji_asset_vision:{asset.file_hash}",
             )
 
     def schedule_visual_context_from_event(self, event: Any) -> bool:
         if (
             event is None
+            or not self.context.config.vision.enabled
             or self.context._event_has_command_handler(event)
             or self.context.event_was_recalled(event, log_skip=True)
         ):
             return False
         if not any(
             self.context._emoji_asset_is_image_item(item)
+            or self.context._emoji_asset_source_kind(item) in {"trusted", "review"}
             for item in self.context._event_message_items(event)
         ):
             return False
@@ -597,7 +610,9 @@ class EmojiGatherComponent:
     async def _collect_visual_context_background(
         self, event: Any, *, gif_only: bool = False
     ) -> None:
-        if self.context.event_was_recalled(event, log_skip=True):
+        if not self.context.config.vision.enabled or self.context.event_was_recalled(
+            event, log_skip=True
+        ):
             return
         scope = self.context._event_session_id(event)
         message_key = self.context._event_message_id(event) or f"event:{id(event)}"
@@ -608,9 +623,18 @@ class EmojiGatherComponent:
             return
 
         entries = await self._prepared_visual_media_from_event(event)
+        # 先按附件顺序限制数量，再优先处理其中的 GIF，避免动图桥接绕过上限。
+        selected: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            fingerprint = str(entry.get("fingerprint") or "")
+            if fingerprint and fingerprint not in selected:
+                selected[fingerprint] = entry
+            if len(selected) >= self.context.config.vision.max_images_per_message:
+                break
+        user_text = str(getattr(event, "message_str", "") or "")
         classified = [
             (await self._prepared_visual_media_is_gif(entry), entry)
-            for entry in entries
+            for entry in selected.values()
         ]
         if gif_only:
             classified = [item for item in classified if item[0]]
@@ -626,7 +650,9 @@ class EmojiGatherComponent:
             if self.context.event_was_recalled(event, log_skip=True):
                 return
             try:
-                await self._collect_one_visual_context(entry, scope, message_key)
+                await self._collect_one_visual_context(
+                    entry, scope, message_key, user_text=user_text
+                )
             finally:
                 if is_gif:
                     gif_remaining -= 1
@@ -638,12 +664,15 @@ class EmojiGatherComponent:
                         gif_completion.set_result(True)
 
     async def _collect_one_visual_context(
-        self, entry: dict[str, Any], scope: str, message_key: str
+        self, entry: dict[str, Any], scope: str, message_key: str, *, user_text: str = ""
     ) -> None:
         fingerprint = str(entry.get("fingerprint") or "")
-        if not fingerprint:
+        if not fingerprint or not self.context.config.vision.enabled:
             return
-        cached_summary = self.context._visual_context_summary_cache().get(fingerprint, "")
+        cache_key = image_understanding_cache_key(
+            self.context.config.vision, fingerprint, user_text
+        )
+        cached_summary = self.context._visual_context_summary_cache().get(cache_key, "")
         if cached_summary:
             self.context._apply_visual_context_summary_text(scope, message_key, cached_summary)
             return
@@ -659,5 +688,5 @@ class EmojiGatherComponent:
             )
             return
         await self.context._describe_visual_context_with_vision(
-            path, scope, message_key, fingerprint, cache_sources=cache_sources
+            path, scope, message_key, fingerprint, user_text=user_text
         )

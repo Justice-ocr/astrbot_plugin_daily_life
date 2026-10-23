@@ -1,4 +1,10 @@
 CONVERSATION_SQL = """
+CREATE TABLE IF NOT EXISTS conversation_arrivals (
+    scope TEXT NOT NULL,
+    received_at REAL NOT NULL,
+    PRIMARY KEY(scope, received_at)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_receipts (
     scope TEXT NOT NULL,
     sent_at REAL NOT NULL,

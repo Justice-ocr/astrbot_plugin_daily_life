@@ -6,12 +6,11 @@ from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from statistics import median
+from typing import Any, Protocol
 
 from ..models import normalize_timeline_day_offsets, timeline_item_minutes
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
-
-from typing import Any, Protocol
 
 GENERATION_CONTRACT_VERSION = "daily_life_generation"
 FULL_DAY_LATEST_START_MINUTES = 13 * 60 + 30
@@ -20,18 +19,6 @@ FULL_DAY_MIN_SPAN_MINUTES = 6 * 60
 NIGHT_DAY_LATEST_START_MINUTES = 20 * 60
 NIGHT_DAY_EARLIEST_END_MINUTES = 23 * 60
 DAY_MINUTES = 24 * 60
-_SUSTAINED_DAY_ACTION_TYPES = {
-    "chore",
-    "exercise",
-    "move",
-    "photo",
-    "purchase",
-    "social",
-    "study",
-    "travel",
-    "video",
-    "work",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +206,7 @@ class DailyContractComponent:
         manual_extra: str = "",
         expected_coverage: str = "",
     ) -> str:
-        """保证清醒整日计划会从睡眠穿搭自然过渡到日间穿搭。"""
+        """进入公共场景前，要求穿着适合该场景的服装。"""
 
         if expected_coverage != "full_day" or str(manual_extra or "").strip():
             return ""
@@ -228,16 +215,6 @@ class DailyContractComponent:
             if isinstance(payload.get("life_decision"), dict)
             else {}
         )
-        life_mode = str(decision.get("life_mode") or "").strip()
-        day_plan = (
-            decision.get("day_plan")
-            if isinstance(decision.get("day_plan"), dict)
-            else {}
-        )
-        if life_mode in {"sleeping", "late_night", "all_nighter", "resting"}:
-            return ""
-        if str(day_plan.get("schedule_intent") or "").strip() == "rest":
-            return ""
         outfit = (
             decision.get("outfit") if isinstance(decision.get("outfit"), dict) else {}
         )
@@ -248,23 +225,24 @@ class DailyContractComponent:
         ):
             return ""
 
-        actions = payload.get("planned_actions")
-        if not isinstance(actions, list):
+        timeline = payload.get("timeline")
+        if not isinstance(timeline, list):
             return ""
-        sustained_indexes = [
+        public_indexes = [
             index
-            for action in actions
-            if str(action.get("action_type") or "").strip()
-            in _SUSTAINED_DAY_ACTION_TYPES
-            and (index := cls._action_timeline_index(action)) is not None
+            for index, item in enumerate(timeline)
+            if isinstance(item, dict)
+            and item.get("place_kind") in {"poi", "generic", "transit"}
         ]
-        if not sustained_indexes:
+        if not public_indexes:
             return ""
-        first_sustained_index = min(sustained_indexes)
+        first_public_index = min(public_indexes)
+        actions = payload.get("planned_actions")
+        actions = actions if isinstance(actions, list) else []
         has_prior_change = any(
             str(action.get("action_type") or "").strip() == "change_outfit"
             and (index := cls._action_timeline_index(action)) is not None
-            and index <= first_sustained_index
+            and 0 <= index <= first_public_index
             and str(action.get("target") or "").strip()
             for action in actions
             if isinstance(action, dict)
@@ -272,9 +250,8 @@ class DailyContractComponent:
         if has_prior_change:
             return ""
         return (
-            "清醒整日计划仍以睡眠穿搭进入持续日间活动；请在首个家务、学习、"
-            "工作、运动、社交、拍摄或外出动作之前安排明确的 change_outfit，"
-            "并从视觉衣橱候选中选择适合当日场景与天气的日间造型"
+            "日程仍以睡眠穿搭进入公共或外出场景；请在首次外出之前安排明确的 change_outfit，"
+            "从已拥有且可穿的衣物中选择适合场景与天气的搭配；舒适的居家活动可以延续睡衣"
         )
 
     @staticmethod
@@ -979,9 +956,9 @@ class DailyContractComponent:
             )
         if code == "daytime_outfit_transition":
             return (
-                "保留生活主题、状态、人物、地点和睡醒时的真实穿搭；在首个持续日间"
-                "活动之前增加自然的晨间换装节点和 change_outfit 动作，从再次提供的"
-                "视觉衣橱候选中选择完整套装，或同时选择上装与下装，并把采用编号写入"
+                "保留生活主题、状态、人物、地点和睡醒时的真实穿搭；居家阅读、用餐和轻家务可以延续舒适睡衣。"
+                "在首次外出之前安排自然的 change_outfit 动作，从再次提供的"
+                "已拥有且可穿的衣物中选择完整套装，或同时选择上装与下装，并把采用编号写入"
                 "该动作的 payload.catalog_reference_ids，同时写入换装后的 outfit_components。"
                 "未来穿搭不要提前写入顶层 outfit。"
             )

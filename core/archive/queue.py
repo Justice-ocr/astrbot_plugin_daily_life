@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import datetime
 import math
-from typing import Any
+from typing import Any, Protocol
 
 from ..clock import TIMEZONE
-
-from typing import Protocol
 
 
 class ChatMemoryQueueArchiveComponentContext(Protocol):
@@ -21,6 +19,56 @@ class ChatMemoryQueueArchiveComponentContext(Protocol):
 class ChatMemoryQueueArchiveComponent:
     def __init__(self, context: ChatMemoryQueueArchiveComponentContext) -> None:
         self.context = context
+
+    async def save_conversation_arrival(self, scope: str, received_at: float) -> None:
+        if not scope or not math.isfinite(received_at) or received_at <= 0:
+            return
+
+        def write() -> None:
+            self.context._conn.execute(
+                "INSERT OR IGNORE INTO conversation_arrivals(scope, received_at) VALUES (?, ?)",
+                (scope, received_at),
+            )
+            self.context._conn.execute(
+                "DELETE FROM conversation_arrivals WHERE scope = ? AND received_at NOT IN "
+                "(SELECT received_at FROM conversation_arrivals WHERE scope = ? ORDER BY received_at DESC LIMIT 32)",
+                (scope, scope),
+            )
+
+        await self.context._run_db(write)
+
+    async def get_conversation_arrival_before(
+        self, scope: str, received_at: float
+    ) -> float:
+        def read() -> float:
+            row = self.context._conn.execute(
+                "SELECT received_at FROM conversation_arrivals WHERE scope = ? AND received_at < ? "
+                "ORDER BY received_at DESC LIMIT 1",
+                (scope, received_at),
+            ).fetchone()
+            if row:
+                return float(row["received_at"])
+            # 首次使用时，以已有档案作为事实基线。
+            rows = self.context._conn.execute(
+                "SELECT occurred_at FROM chat_memory_messages WHERE session_id = ? "
+                "AND role = 'user' ORDER BY id DESC LIMIT 32",
+                (scope,),
+            ).fetchall()
+            times = []
+            for item in rows:
+                try:
+                    value = datetime.datetime.fromisoformat(item["occurred_at"])
+                    if value.tzinfo is None:
+                        value = value.replace(tzinfo=TIMEZONE)
+                    stamp = value.timestamp()
+                    # 旧版消息档案可能将接收时间截断到整秒。
+                    if 0 < stamp < math.floor(received_at):
+                        times.append(stamp)
+                except (ValueError, TypeError, OverflowError):
+                    continue
+            return max(times, default=0.0)
+
+        return await self.context._run_db(read)
 
     async def save_conversation_receipt(self, scope: str, sent_at: float) -> None:
         if not scope or not math.isfinite(sent_at) or sent_at <= 0:
