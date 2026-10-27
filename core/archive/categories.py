@@ -80,6 +80,7 @@ WORLD_CLEAR_ORDER = (
 )
 
 CONVERSATION_TABLES = (
+    "conversation_originals",
     "memory_source_messages",
     "conversation_arrivals",
     "conversation_receipts",
@@ -94,6 +95,7 @@ CONVERSATION_TABLES = (
     "session_mid_summaries",
 )
 CONVERSATION_CLEAR_ORDER = (
+    "conversation_originals",
     "memory_source_messages",
     "conversation_arrivals",
     "conversation_receipts",
@@ -151,6 +153,7 @@ EXPERIENCE_CLEAR_ORDER = (
 
 EXPRESSION_TABLES = (
     "expression_profiles",
+    "expression_learning_events",
     "expression_reviews",
     "temporary_expression_states",
     "expression_intents",
@@ -158,6 +161,7 @@ EXPRESSION_TABLES = (
     "reverse_prompts",
 )
 EXPRESSION_CLEAR_ORDER = (
+    "expression_learning_events",
     "emoji_assets",
     "expression_intents",
     "temporary_expression_states",
@@ -178,6 +182,8 @@ MEDIA_CLEAR_ORDER = (
 )
 
 LONG_TERM_TABLES = (
+    "memory_identity_redirects", "memory_associations", "memory_enrichments", "memory_chapters",
+    "knowledge_readings", "knowledge_passages", "knowledge_sources",
     "memory_fact_links",
     "memory_vectors",
     "long_term_memories",
@@ -189,6 +195,8 @@ LONG_TERM_TABLES = (
     "memory_decision_links",
 )
 LONG_TERM_CLEAR_ORDER = (
+    "memory_identity_redirects", "memory_associations", "memory_enrichments", "memory_chapters",
+    "knowledge_readings", "knowledge_passages", "knowledge_sources",
     "memory_fact_links",
     "memory_vectors",
     "memory_decision_links",
@@ -393,7 +401,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
             StorageTableGroup(
                 "summaries",
                 "聊天摘要",
-                ("chat_summaries", "chat_summary_people", "session_mid_summaries", "memory_source_messages"),
+                ("chat_summaries", "chat_summary_people", "session_mid_summaries", "memory_source_messages", "conversation_originals"),
             ),
             StorageTableGroup(
                 "group_awareness",
@@ -457,6 +465,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
                 "表达习惯",
                 (
                     "expression_profiles",
+                    "expression_learning_events",
                     "expression_reviews",
                     "temporary_expression_states",
                 ),
@@ -479,7 +488,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
     "longterm": StorageCategory(
         key="longterm",
         label="长期记忆",
-        description="长期记忆条目、片段聚类、实体索引、冲突记录和决策关联。",
+        description="长期记忆、关联、阶段回忆、原文资料与阅读手记。",
         tables=LONG_TERM_TABLES,
         clear_order=LONG_TERM_CLEAR_ORDER,
         default_keep_days=0,
@@ -491,14 +500,15 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
             StorageTableGroup(
                 "clusters",
                 "片段聚类",
-                ("memory_episode_clusters", "memory_episode_cluster_items"),
+                ("memory_episode_clusters", "memory_episode_cluster_items", "memory_chapters"),
             ),
             StorageTableGroup(
-                "entities", "实体索引", ("memory_entities", "memory_entity_links")
+                "entities", "实体索引", ("memory_entities", "memory_entity_links", "memory_identity_redirects", "memory_associations", "memory_enrichments")
             ),
             StorageTableGroup(
                 "quality", "冲突关联", ("memory_conflicts", "memory_decision_links", "memory_fact_links")
             ),
+            StorageTableGroup("library", "资料与阅读手记", ("knowledge_sources", "knowledge_passages", "knowledge_readings")),
         ),
     ),
     "planning": StorageCategory(

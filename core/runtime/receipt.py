@@ -9,15 +9,14 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
 from ..clock import now as life_now
 from ..sources.dispatch import send_message_to_scope
+from .channel.perspective import media_reply_context, restore_media_reply_context
 from .locks import operation_lock
-
-from typing import Protocol
 
 
 class RuntimeActionReceiptComponentContext(Protocol):
@@ -344,6 +343,7 @@ class RuntimeActionReceiptComponent:
                     "action_date": action_date,
                     "request_text": str(getattr(event, "message_str", "") or "")[:1000],
                     "chat_token": list(getattr(event, "_daily_life_media_chat_token", ()) or ()),
+                    "reply_perspective": media_reply_context(event),
                     "photo_suite": dict(metadata or {}),
                 },
                 priority=85,
@@ -431,6 +431,7 @@ class RuntimeActionReceiptComponent:
             _daily_life_photo_suite_slot=payload.get("photo_suite", {}),
             _daily_life_media_chat_token=tuple(payload.get("chat_token") or ()),
         )
+        restore_media_reply_context(origin, payload.get("reply_perspective"))
         progress = task.result.get("progress", {})
         path = str(progress.get("artifact_path") or "")
         try:
@@ -683,6 +684,7 @@ class RuntimeActionReceiptComponent:
                     "commitment_id": max(0, int(commitment_id or 0)),
                     "source_message_id": str(source_message_id or "").strip(),
                     "chat_token": list(getattr(source_event, "_daily_life_media_chat_token", ()) or ()),
+                    "reply_perspective": media_reply_context(source_event),
                     "reply_context": {
                         str(key): str(value or "").strip()[:1000]
                         for key, value in dict(reply_context or {}).items()
@@ -893,6 +895,11 @@ class RuntimeActionReceiptComponent:
         reply_context = payload.get("reply_context")
         followup = getattr(self.context, "_send_delivered_media_followup", None)
         if callable(followup) and isinstance(reply_context, dict) and reply_context:
+            reply_event = SimpleNamespace(
+                unified_msg_origin=scope,
+                _daily_life_media_chat_token=tuple(payload.get("chat_token") or ()),
+            )
+            restore_media_reply_context(reply_event, payload.get("reply_perspective"))
             reply_sent = await followup(
                 scope,
                 media_name=str(reply_context.get("media_name") or "生活媒体"),
@@ -901,9 +908,7 @@ class RuntimeActionReceiptComponent:
                     reply_context.get("delivery_text") or "媒体已恢复并成功送达"
                 ),
                 guidance=str(reply_context.get("guidance") or ""),
-                source_event=SimpleNamespace(
-                    _daily_life_media_chat_token=tuple(payload.get("chat_token") or ()),
-                ),
+                source_event=reply_event,
                 source="media_recovery_followup",
             )
         return {

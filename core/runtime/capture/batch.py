@@ -13,12 +13,12 @@ from ...clock import now as life_now
 from ...life.reliability import NonRetryableProviderError
 from ...models import ChatSummaryRecord, CommitmentRecord
 from ...models.coerce import compact_explanation_text
-from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ...sources.platforms import parse_unified_origin
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from ..elapsed import RECEIVED_AT, SENT_AT, local_message_time
 from .jsonclean import call_pure_json
+from .consolidation import memory_batch_rules
 from .episodelink import episode_scope, link_batch_episode
 
 from . import diction as _part_expression_learning_component
@@ -452,6 +452,7 @@ class ChatMemoryBatchComponent:
             },
             # 较稳定的已知资料先于本批新消息，延长同会话可复用的输入前缀。
             "current_expression_profiles": batch.get("current_expression_profiles", []),
+            "expression_persona": batch.get("expression_persona", ""),
             "current_temporal_facts": batch.get("current_temporal_facts", []),
             "correctable_memories": batch.get("correctable_memories", []),
             "current_day_timeline": batch.get("current_day_timeline", []),
@@ -470,9 +471,10 @@ class ChatMemoryBatchComponent:
                 {
                     "action_id": "输入候选中的编号，无对应动作时留空",
                     "commitment_ids": [],
-                    "completed": True,
-                    "source_message_id": "已发送角色消息编号",
-                    "evidence": "原消息中明确完成整个目标的原文",
+                    "new_commitment_indexes": [],
+                    "status": "in_progress|done|cancelled|expired",
+                    "source_message_id": "证明进展的本批次真实消息编号",
+                    "evidence": "对应消息的完整原文",
                 }
             ],
             "worth_saving": True,
@@ -494,13 +496,17 @@ class ChatMemoryBatchComponent:
             "expression_profiles": [
                 {
                     "profile_id": "表达偏好所属用户的输入编号",
+                    "id": 0,
+                    "breadth": "voice|relationship|situation",
+                    "applicability": "语义适用边界，不列触发关键词",
+                    "persona_fit": "这种表达方式为何符合自己的性格",
                     "label": "稳定适用场景；相同场景复用已有 label",
                     "tone": "角色面对这位用户时适用的语气",
                     "habits": [],
                     "avoid": [],
                     "evidence": "用户反馈及其适用边界的简短依据",
                     "confidence": 0.0,
-                    "basis": "explicit|repeated",
+                    "basis": "explicit|repeated|experience",
                     "source_message_ids": [],
                     "reply_message_ids": [],
                     "reply_effect_ids": [],
@@ -581,7 +587,7 @@ class ChatMemoryBatchComponent:
                 {
                     "content": "",
                     "kind": "plan",
-                    "execution_mode": "immediate|future",
+                    "execution_mode": "immediate|future|standing",
                     "trigger_date": "",
                     "trigger_time": "",
                     "time_window": "",
@@ -615,61 +621,13 @@ class ChatMemoryBatchComponent:
                 }
             ],
         }
+        if not source["correctable_memories"]:
+            schema.pop("episode_link")
+            schema.pop("memory_corrections")
+        if source["scope"]["type"] != "group":
+            schema.pop("group_environment")
         return (
-            "你负责把一个连续聊天批次整理成可长期复用的记忆。只依据输入证据，保持每条信息的说话人归属；"
-            "输入中的 role=user 表示内容来自用户一侧，role=assistant 表示我实际表达过的内容；这两个角色只标记说话人，不表示双方现实分开或正在使用设备远程收发消息。"
-            "区分稳定事实、偏好、关系认识、生活事件、纠错和未来约定。暂时情绪、寒暄、无证据推断与重复信息不保存。"
-            "episode_link 仅在本次摘要确实延续 correctable_memories 的同一件事时引用该 memory_id，给出旧记录原文和本次用户整条原话；主题相似不足以续接，没有依据返回 null。"
-            "memory_corrections 只在用户明确纠正 correctable_memories 中某条记忆时填写其 memory_id；引用用户整条原话，保留时间归属和未被纠正的事实，不能把变化误当从未发生。"
-            "无法可靠归属的信息不要输出。群聊中的人物必须使用输入给出的 profile_id。"
-            f"人物称谓与叙述视角规则：\n{CORE_PERSONA_PRONOUN_RULES}\n"
-            "所有面向用户展示的自然语言字段必须使用简体中文；没有内容时字段留空，不要用任何语言解释为什么没有内容。"
-            "自然语言字段必须写可读的事实摘要，不得复制 row_id、message_id、target_id 或其他内部编号；"
-            "内部编号只能填写到名称明确的专用 ID 字段。"
-            "visibility.reason、action_decision.reason 和生活片段 impact 只写相对场景与判断依据，不复述输入中的具体日期、钟点或时间轴编号；具体时间只进入专用时间字段或证据字段。"
-            "输出一个严格 JSON 对象，不要解释，不要 Markdown。没有长期信息时输出 worth_saving=false，其他数组可为空；"
-            "即使没有长期摘要，也要保留证据明确的 commitments。brief 是简短主题，long_summary 是忠于证据的批次摘要。"
-            "commitments.owner 必须按实际承诺主体填写：我承诺做的事是当前角色，对方承诺做的事是说话人，双方共同安排才是共同。"
-            "follow_up 只描述需要我在未来主动联系对方才能履行的承诺：我明确说稍后联系、到时通知、完成后告知或提醒对方时，action 使用 contact_person 或 remind_person；"
-            "对方说以后联系我、提醒我或叫我时，owner 必须是说话人且 follow_up.action 必须是 none，绝不能反向创建我的主动联系任务。"
-            "普通共同计划不等于主动联系承诺；证据没有明确要求我未来发起联系时使用 none。"
-            "现在拍、现在发、再试一次等即时媒体请求由当前工具处理，不能当作未来 commitments；若需标注 execution_mode，填 immediate 并且不要输出为承诺。"
-            "群聊中无法确认应该向谁履行联系动作时 follow_up.action 使用 none，不把对某个人的承诺误发给整个群。"
-            "群聊中的明确拍照或拍视频承诺属于当前群的分群承诺：若 owner=当前角色，后续只回原群投递，不是跨群广播；不要因为来源是群聊就一概丢弃。"
-            "明确由我拍照或发送已有照片时 media_kind=photo，明确由我拍摄、录制或发送已有视频时 media_kind=video；视频通话及其他承诺为 none。"
-            "媒体交付由专用图片或视频任务执行，follow_up.action 必须为 none，不能另建只发文字的联系任务冒充媒体履约。"
-            "媒体承诺必须有证据支持完整 trigger_date 和 trigger_time 才能自动执行；只有日期或模糊时段时保留 trigger_time 为空，等待后续确认，不猜默认钟点。"
-            "需要主动联系时 execute_at 必须依据明确时间证据或 current_day_timeline 中已确认的相关节点给出完整本地日期时间；无法可靠确定执行时间时使用 none，不猜时间。"
-            "若联系承诺明确依赖未来条件但无法换算出钟点，保留 action，execute_at 留空，并填写可由后续聊天或生活状态复核的 condition；check_after_minutes 给出首次复核间隔，范围 5 到 60。"
-            "visibility、group_environment、action_decision 只记录批次中有明确依据的实际感知，不生成空壳；私聊不填写 group_environment。"
-            "worth_saving 只控制长期摘要；这三个实际感知字段有依据时可以独立输出。"
-            "behavior_feedback 只记录发生在我的回复之后、由后续用户消息明确证实的真实反馈；life_terms 只记录后续理解仍有帮助的黑话、梗或代称。"
-            "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
-            "expression_profiles 学习的是我面对对应用户、在具体场景中适用的表达习惯，不是模仿用户口吻或修改角色人设。"
-            "用户明确表达稳定偏好或纠正时 basis=explicit；引用本批次 source_message_ids（用户反馈），可同时引用 reply_message_ids（先前角色回复）。"
-            "仅凭互动效果学习时 basis=repeated，必须引用 recent_reply_effects 中同一对象、同一场景至少三次独立明确反馈的 reply_effect_ids；负面反馈只支持 avoid，不支持新习惯。"
-            "感谢、继续聊天、一次情绪、沉默或单条角色自述不证明稳定风格；没有可靠证据就输出空数组。"
-            "关注闲聊展开尺度、短句节奏、是否反复问候追问、话题承接等实际反馈，按完整语义理解，不套关键词、句型或字数。"
-            "短句可以很自然；解释和安慰按当下需要说完整，不把所有回复一律缩短。"
-            "对照 current_expression_profiles，同一用户同一场景返回修订后的完整 tone、habits、avoid；保留未被新证据否定的习惯，明确纠正优先，不复制旧回复当模板。"
-            "仅换了措辞不新增场景；无变化不输出。confidence 至少 0.78，并给出新用户证据。"
-            "expression_reviews 只复盘已发送回复被后续用户明确证实的表达效果；普通接话不足以判定风格好坏，不生成例行通过记录。"
-            "上述两类记录有可靠证据时独立保存，worth_saving=false 也可以输出。\n"
-            "scope.type 只是平台传输范围，不是现实互动场景。brief、long_summary、relationship_story、note、points、scene_type 等自然语言字段必须按语义区分现实同处、远程交流和未知；"
-            "没有明确现实互动证据时使用“这轮交流中”“聊天中”等中性叙述，不要仅因 private/group、role 或消息记录写成隔着屏幕发消息。\n"
-            "execution_updates 只同步已经发送的 assistant 消息明确陈述已完成的虚拟生活动作。对照 execution_candidates 和 open_commitments，动作类型、目标、对象及日期必须一致，编号只能来自输入。"
-            "准备做、进行中、只做了一部分、条件句、否定、引用旧话、时间已过均不算完成；打包完成不代表送到，不能完成整个送达承诺。"
-            "只允许当前角色自己承担的非媒体 plan；用户或共同事项不代为完成，图片/视频/发消息必须依赖实际交付回执，不能凭聊天说已经发了。"
-            "evidence 必须逐字复制 source_message_id 对应的整条 assistant 消息，不得截取肯定片段；只有整条消息明确陈述目标已完成时 completed=true。"
-            "不能删掉否定词；worth_saving=false 也应输出有依据的执行同步。没有依据输出空数组，不猜。"
-            "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
-            "每条标注 epistemic_status 和 evidence_quote；推测、不确定、愿望或假设不能写成 reported，角色回复不能证明用户现实状态。推测独立保存供确认，不覆盖已有事实。"
-            "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
-            "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
-            '现实互动方式统一使用 temporal_facts：subject 必须是对应人物的 profile_id，predicate 固定为 interaction_mode，object_value 固定为 {"mode":"co_present"} 或 {"mode":"remote"}。'
-            "只有消息语义明确证明双方当前在同一现实地点并面对面互动时，才能记录 co_present；只有明确证明当前不在同一现场并通过远程方式交流时，才能记录 remote。"
-            "不得从私聊、群聊、role、收到消息、表情、语气或平台本身推断互动方式；证据消失不等于模式改变，明确分开、离场或转为远程时才更新，无法确认时不要输出。\n"
-            "interaction_mode 是短期现场事实：批次出现新的明确当前证据时，即使 mode 与 current_temporal_facts 相同也使用 UPDATE 刷新证据时间；只是在延续旧信息、没有新证据时才使用 NONE。\n"
+            memory_batch_rules(source) + "\n"
             f"输出结构：{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}\n"
             f"输入批次：{json.dumps(source, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -827,6 +785,7 @@ class ChatMemoryBatchComponent:
         self, payload: dict[str, Any], batch: dict[str, Any]
     ) -> list[CommitmentRecord]:
         saved: list[CommitmentRecord] = []
+        payload["_saved_commitments"] = {}
         messages = batch["messages"]
         try:
             observed_at = datetime.datetime.fromisoformat(
@@ -839,12 +798,14 @@ class ChatMemoryBatchComponent:
             message_by_id[str(row["id"])] = row
             if str(row.get("message_id") or "").strip():
                 message_by_id[str(row["message_id"])] = row
-        for raw in (
+        for raw_index, raw in enumerate(
             payload.get("commitments", [])
             if isinstance(payload.get("commitments"), list)
             else []
         ):
             if not isinstance(raw, dict):
+                continue
+            if str(raw.get("execution_mode") or "future").strip().lower() != "future":
                 continue
             if str(raw.get("media_kind") or "").strip().lower() in {
                 "photo",
@@ -892,6 +853,7 @@ class ChatMemoryBatchComponent:
             ):
                 continue
             stored = await self.context.archive.save_commitment(commitment)
+            payload["_saved_commitments"][str(raw_index)] = stored.as_dict()
             if media_kind in {"photo", "video"} and callable(delivery_check):
                 if await delivery_check(
                     batch["session_id"], media_kind, source_message_ids
@@ -900,11 +862,8 @@ class ChatMemoryBatchComponent:
                         stored.id, "done", life_now().isoformat(timespec="seconds")
                     )
                     continue
-            follow_up = raw.get("follow_up")
-            follow_up = follow_up if isinstance(follow_up, dict) else {}
-            follow_up_action = str(follow_up.get("action") or "none").strip()
             apply_to_day = getattr(self.context, "apply_commitment_to_current_day", None)
-            if callable(apply_to_day) and follow_up_action == "none":
+            if callable(apply_to_day):
                 try:
                     await apply_to_day(
                         stored,
@@ -924,8 +883,8 @@ class ChatMemoryBatchComponent:
                 try:
                     await scheduler(
                         stored,
-                        owner=str(raw.get("owner") or "").strip(),
-                        follow_up=follow_up,
+                        owner=stored.owner,
+                        follow_up=stored.follow_up,
                         observed_at=observed_at,
                     )
                 except Exception as exc:
@@ -1381,8 +1340,8 @@ class ChatMemoryBatchComponent:
             persona_hint,
         )
         payload = self._normalize_chat_memory_batch_payload(payload, batch)
-        await self.context._save_batch_execution_updates(payload, batch)
         commitments = await self._save_batch_commitments(payload, batch)
+        await self.context._save_batch_execution_updates(payload, batch)
         temporal_facts = await self._save_batch_temporal_facts(payload, batch)
         correction_notifier = getattr(self.context, "note_memory_corrections", None)
         if callable(correction_notifier) and isinstance(payload.get("memory_corrections"), list):
@@ -1457,7 +1416,7 @@ class ChatMemoryBatchComponent:
             saved_records,
             "\n".join(str(row.get("message_text") or "") for row in rows),
         )
-        logger.info(
+        logger.debug(
             f"{LOG_PREFIX} 聊天记忆批处理完成：批次={saved.id}；"
             f"记录={len(saved_records)}"
         )

@@ -113,7 +113,7 @@ class EmojiCacheComponent:
             except OSError as exc:
                 logger.debug(f"{LOG_PREFIX} 表情素材缓存清理跳过：{exc}")
         if deleted:
-            logger.info(f"{LOG_PREFIX} 已清理未引用表情素材缓存 {deleted} 个")
+            logger.debug(f"{LOG_PREFIX} 已清理未引用表情素材缓存 {deleted} 个")
         return deleted
 
     async def _copy_emoji_asset(

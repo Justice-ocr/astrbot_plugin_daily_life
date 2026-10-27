@@ -8,6 +8,13 @@ from typing import Any, Protocol
 from ..clock import local_datetime, today as life_today
 from .schedulelinks import reconcile_scheduled_commitments
 
+_CONVERSATION_ACTION_COLUMNS = (
+    "*, (SELECT completed_at FROM commitments "
+    "WHERE commitments.id = conversation_action_items.commitment_id) AS completed_at, "
+    "(SELECT trigger_date FROM commitments "
+    "WHERE commitments.id = conversation_action_items.commitment_id) AS commitment_date"
+)
+
 _CONVERSATION_ACTION_ORDER = (
     "CASE WHEN status IN ('elapsed', 'simulated', 'completed', 'confirmed', 'done', "
     "'failed', 'skipped', 'rejected', 'expired', 'canceled', 'cancelled', "
@@ -730,7 +737,8 @@ class DomainArchiveComponent:
         def dbwork() -> list[dict[str, Any]]:
             if table == "conversation_action_items":
                 reconcile_scheduled_commitments(self.context._conn)
-            sql = f"SELECT * FROM {table} ORDER BY {order_by}"
+            columns = _CONVERSATION_ACTION_COLUMNS if table == "conversation_action_items" else "*"
+            sql = f"SELECT {columns} FROM {table} ORDER BY {order_by}"
             params: tuple[Any, ...] = ()
             if limit > 0:
                 sql += " LIMIT ?"
@@ -751,6 +759,24 @@ class DomainArchiveComponent:
             raise ValueError("会话行动项缺少承诺编号或标题")
 
         def dbwork() -> dict[str, Any]:
+            commitment = self.context._conn.execute(
+                "SELECT status FROM commitments WHERE id = ?", (commitment_id,),
+            ).fetchone()
+            status = self.context._text(payload.get("status")) or "open"
+            if commitment and commitment["status"] in {
+                "done", "cancelled", "expired", "delivery_failed",
+            }:
+                status = {"delivery_failed": "failed"}.get(
+                    commitment["status"], commitment["status"],
+                )
+            existing = self.context._conn.execute(
+                "SELECT evidence_json FROM conversation_action_items WHERE commitment_id = ?",
+                (commitment_id,),
+            ).fetchone()
+            evidence = json.loads(existing["evidence_json"] or "[]") if existing else []
+            for proof in json.loads(self.context._domain_json(payload.get("evidence"), [])):
+                if proof not in evidence:
+                    evidence.append(proof)
             self.context._conn.execute(
                 """
                 INSERT INTO conversation_action_items(
@@ -761,7 +787,9 @@ class DomainArchiveComponent:
                     title = excluded.title,
                     owner = excluded.owner,
                     due_at = excluded.due_at,
-                    status = excluded.status,
+                    status = CASE WHEN conversation_action_items.status = 'active'
+                        AND excluded.status IN ('open', 'pending') THEN 'active'
+                        ELSE excluded.status END,
                     source_session = excluded.source_session,
                     source_message = excluded.source_message,
                     evidence_json = excluded.evidence_json,
@@ -772,10 +800,10 @@ class DomainArchiveComponent:
                     title,
                     self.context._text(payload.get("owner")),
                     self.context._text(payload.get("due_at")),
-                    self.context._text(payload.get("status")) or "open",
+                    status,
                     self.context._text(payload.get("source_session")),
                     self.context._text(payload.get("source_message")),
-                    self.context._domain_json(payload.get("evidence"), []),
+                    json.dumps(evidence, ensure_ascii=False),
                 ),
             )
             self.context._conn.commit()
@@ -805,7 +833,8 @@ class DomainArchiveComponent:
             reconcile_scheduled_commitments(self.context._conn)
 
             def rows(table: str, order_by: str, row_limit: int) -> list[dict[str, Any]]:
-                sql = f"SELECT * FROM {table} ORDER BY {order_by}"
+                columns = _CONVERSATION_ACTION_COLUMNS if table == "conversation_action_items" else "*"
+                sql = f"SELECT {columns} FROM {table} ORDER BY {order_by}"
                 params: tuple[Any, ...] = ()
                 if row_limit > 0:
                     sql += " LIMIT ?"

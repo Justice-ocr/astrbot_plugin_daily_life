@@ -254,6 +254,28 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.outfit, "浅绿色短袖和米白色长裤")
         self.assertEqual(day.meta["outfit_fact_source"], "life_action")
 
+    def test_unresolved_outfit_does_not_commit_with_old_clothes(self):
+        for component in ("main_clothing", "footwear", "carried_accessories"):
+            with self.subTest(component=component):
+                day = DayRecord(date="2026-10-26", outfit="旧睡衣", state=LifeState(energy=65), meta={
+                    "outfit_components": json.dumps({
+                        "main_clothing": {"state": "worn", "description": "旧睡衣"},
+                    }),
+                })
+                outcome = self.engine.settle_life_action(day, {
+                    "action_id": "unresolved-change", "action_type": "change_outfit",
+                    "target": "换出门的衣服", "payload": {
+                        "outfit_components": {component: {"state": "unknown", "description": "新衣物"}},
+                        "hair_style": "低马尾",
+                    },
+                })
+                self.assertEqual(outcome.status, "rejected")
+                self.assertIn(component, outcome.reason)
+                self.assertEqual(day.outfit, "旧睡衣")
+                self.assertEqual(day.state.energy, 65)
+                self.assertEqual(day.outfit_history, {})
+                self.assertNotIn("hair_style", day.meta)
+
     def test_outfit_energy_effect_commits_and_replaces_old_appearance_reason(self):
         day = DayRecord(
             date="2026-10-20",
@@ -301,6 +323,50 @@ class LifeActionTest(unittest.TestCase):
         )
         self.assertEqual(outcome.status, "committed")
         self.assertEqual(day.state.energy, 64)
+
+    def test_groom_commits_only_explicit_appearance_changes_once(self):
+        day = DayRecord(date="2026-10-26", outfit="衬衫和百褶裙", meta={
+            "hair_style": "湿发披散", "hair": "发尾湿着贴在肩背",
+            "makeup_style": "素颜", "makeup": "没有化妆",
+            "nails": "法式美甲", "style": "清爽日常风",
+        })
+        action = {"action_id": "tie-hair", "action_type": "groom", "target": "吹干头发，扎低马尾", "payload": {
+            "hair_style": "低马尾",
+        }}
+        outcome = self.engine.settle_life_action(
+            day, action, now=datetime.datetime(2026, 10, 26, 8, 40),
+        )
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.meta["hair_style"], "低马尾")
+        self.assertNotIn("hair", day.meta)
+        self.assertEqual(day.outfit, "衬衫和百褶裙")
+        self.assertEqual(day.meta["makeup"], "没有化妆")
+        self.assertEqual(day.meta["nails"], "法式美甲")
+        self.assertEqual(day.meta["style"], "清爽日常风")
+        snapshots = {key: value for key, value in day.meta.items() if key.startswith("appearance_snapshot:")}
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(json.loads(next(iter(snapshots.values())))["hair_style"], "低马尾")
+        self.assertTrue(self.engine.settle_life_action(day, action).replayed)
+        self.assertEqual({key: value for key, value in day.meta.items() if key.startswith("appearance_snapshot:")}, snapshots)
+
+    def test_appearance_pairs_update_for_outfit_and_groom_without_old_descriptions(self):
+        for action_type in ("groom", "change_outfit"):
+            with self.subTest(action_type=action_type):
+                day = DayRecord(date="2026-10-26", outfit="睡衣", meta={
+                    "hair_style": "披发", "hair": "长发散在肩上",
+                    "makeup_style": "淡妆", "makeup": "口红和眼影",
+                    "nails_style": "红色", "nails": "红色甲油",
+                })
+                outcome = self.engine.settle_life_action(day, {
+                    "action_id": "appearance", "action_type": action_type, "target": "整理仪容",
+                    "payload": {"hair": "低低扎起", "makeup_style": "素颜", "nails_style": "", "nails": ""},
+                })
+                self.assertEqual(outcome.status, "committed")
+                self.assertEqual(day.meta["hair"], "低低扎起")
+                self.assertNotIn("hair_style", day.meta)
+                self.assertEqual(day.meta["makeup_style"], "素颜")
+                for field in ("makeup", "nails_style", "nails"):
+                    self.assertNotIn(field, day.meta)
 
     def test_older_planned_outfit_does_not_override_later_user_request(self):
         day = DayRecord(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...models import ExpressionProfileRecord, ExpressionReviewRecord
+from ..expressionlearning import finite_confidence
 
 from typing import Protocol
 
@@ -36,15 +37,23 @@ class ExpressionLearningComponent:
             for row in batch.get("messages", [])
             if row.get("role", "user") == "user"
         }
-        profiles = await self.context.archive.get_expression_profiles(limit=12, scope=scope)
+        context_getter = getattr(self.context.archive, "get_expression_context", None)
+        if callable(context_getter):
+            profiles = await context_getter(limit=12, scope=scope)
+            own = []
+        else:
+            profiles = await self.context.archive.get_expression_profiles(limit=12, scope=scope)
+            own = await self.context.archive.get_expression_profiles(limit=12, scope="self")
+        persona = await self.context.get_persona_text(str(batch.get("session_id") or ""))
         effects = await self.context.archive.get_reply_effects(
             limit=12, scope=str(batch.get("session_id") or "")
         )
         return {
+            "expression_persona": str(persona or "")[:5000],
             "current_expression_profiles": [
-                item.as_dict()
-                for item in profiles
-                if item.scope == scope and item.profile_id in participants
+                {**item.as_dict(), "evidence": ""} if item.scope == "self" else item.as_dict()
+                for item in profiles + own
+                if (item.scope == scope and item.profile_id in participants) or item.scope == "self"
             ],
             "recent_reply_effects": [
                 item.as_dict()
@@ -92,23 +101,56 @@ class ExpressionLearningComponent:
         profiles = []
         seen = set()
         for raw in self.context._dict_payloads(payload.get("expression_profiles"))[:4]:
+            breadth = str(raw.get("breadth") or "situation")
+            own_voice = breadth == "voice"
+            if breadth not in {"voice", "relationship", "situation"}:
+                continue
+            if raw.get("breadth") == "voice" and not raw.get("profile_id"):
+                owners = {str(by_id[mid][1].get("sender_profile_id") or "") for mid in references(raw, "source_message_ids")
+                          if mid in by_id and by_id[mid][1].get("role") == "user"}
+                if len(owners) == 1:
+                    raw = {**raw, "profile_id": next(iter(owners))}
             record = ExpressionProfileRecord.from_value(raw)
+            basis = str(raw.get("basis") or "")
             if (
                 not record
                 or not scope
-                or not record.profile_id
+                or (not own_voice and not record.profile_id)
                 or not record.label
                 or not (record.tone or record.habits or record.avoid)
                 or not record.evidence
-                or isinstance(raw.get("confidence"), bool)
-                or not isinstance(raw.get("confidence"), (int, float))
-                or not 0.78 <= raw["confidence"] <= 1.0
+                or not finite_confidence(raw.get("confidence"), 0.55 if basis == "experience" else 0.78)
             ):
                 continue
             user_ids = references(raw, "source_message_ids")
-            if not user_evidence(user_ids, record.profile_id):
+            if basis != "experience" and not user_evidence(user_ids, record.profile_id):
                 continue
-            basis = str(raw.get("basis") or "")
+            if basis == "experience" and user_ids and not user_evidence(user_ids, record.profile_id):
+                continue
+            participants = {str(row.get("sender_profile_id") or "") for row in rows if row.get("role", "user") == "user"}
+            if not own_voice and record.profile_id not in participants:
+                continue
+            if own_voice and basis != "experience":
+                continue
+            current = {str(item["id"]): item for item in batch.get("current_expression_profiles", []) if isinstance(item, dict)}
+            if record.id:
+                previous = current.get(str(record.id))
+                if not previous or previous.get("scope") != ("self" if own_voice else scope) or previous.get("profile_id") != ("" if own_voice else record.profile_id):
+                    continue
+                # 旧的场景档案不能被一次模型总结直接扩大为对象通用偏好。
+                if (previous.get("learning") or {}).get("breadth", "situation") != breadth:
+                    continue
+                record.label = previous["label"]
+            elif own_voice:
+                record.profile_id = ""
+            if basis == "experience":
+                reply_ids = references(raw, "reply_message_ids")
+                if not reply_ids or not str(raw.get("persona_fit") or "").strip():
+                    continue
+                if any(item not in by_id or by_id[item][1].get("role") != "assistant"
+                       or by_id[item][1].get("is_quoted")
+                       or not str(by_id[item][1].get("message_text") or "").strip() for item in reply_ids):
+                    continue
             if basis == "repeated":
                 reply_ids = references(raw, "reply_message_ids")
                 if any(
@@ -145,7 +187,7 @@ class ExpressionLearningComponent:
                 avoidance = len(negative) >= 3 and record.avoid and not record.habits
                 if not avoidance and (len(positive) < 3 or negative):
                     continue
-            elif basis != "explicit":
+            elif basis not in {"explicit", "experience"}:
                 continue
             key = (record.profile_id, record.label)
             if key in seen:
@@ -155,9 +197,21 @@ class ExpressionLearningComponent:
                 {
                     **raw,
                     **record.as_dict(),
-                    "scope": scope,
+                    "scope": "self" if own_voice else scope,
+                    "profile_id": "" if own_voice else record.profile_id,
                     "source": "chat_expression",
                     "source_message_ids": user_ids,
+                    "learning": {"breadth": breadth, "applicability": str(raw.get("applicability") or "")[:200]},
+                    "_learning_event": {
+                        "event_key": "chat:" + str(batch.get("session_id") or "") + ":" +
+                            ",".join(sorted(user_ids + references(raw, "reply_message_ids"))),
+                        "kind": "observation" if basis == "experience" else "explicit",
+                        "source_scope": str(batch.get("session_id") or ""),
+                        "evidence": {"source_message_ids": user_ids,
+                            "reply_message_ids": references(raw, "reply_message_ids"),
+                            "reply_effect_ids": references(raw, "reply_effect_ids"),
+                            "basis": basis, "persona_fit": str(raw.get("persona_fit") or "")[:300]},
+                    },
                 }
             )
         payload["expression_profiles"] = profiles
@@ -202,7 +256,7 @@ class ExpressionLearningComponent:
             for row in batch.get("messages", [])
         }
         for profile, raw in zip(
-            saved["expression_profiles"], payload.get("expression_profiles", [])
+            saved["expression_profiles"], saved.get("expression_profile_sources", [])
         ):
             existing = await self.context.archive.get_memory_evidence(
                 target_type="expression_profile", target_id=str(profile.id), limit=30

@@ -184,6 +184,7 @@ class SharedActivityContactComponent:
             or not commitment.source_session
             or ":GroupMessage:" in commitment.source_session
             or commitment.media_kind != "none"
+            or commitment.follow_up.get("action") in {"contact_person", "remind_person"}
             or commitment.status not in {"active", "scheduled"}
         ):
             return False
@@ -352,7 +353,9 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 ),
                 "reason": "等待已确认约定落实到日程",
             }
-            # 单独明确作出的联系承诺，优先于推断出的准备提醒。
+        # 明确动作优先于推断出的准备提醒。
+        if commitment.follow_up.get("action") in {"contact_person", "remind_person"}:
+            return {"outcome": "already_covered", "reason": "同一约定已有明确联系义务"}
         explicit = await self.context.archive.get_durable_task(
             f"proactive_commitment:{commitment.id}"
         )

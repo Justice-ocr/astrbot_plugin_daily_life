@@ -529,8 +529,14 @@ class PageViewComponent:
         domain_snapshot_getter = getattr(domain_service, "snapshot", None)
         if callable(domain_snapshot_getter):
             domain_snapshot = await domain_snapshot_getter(limit=20)
+            action_items_getter = getattr(
+                self.context.runtime.archive, "get_conversation_action_items", None
+            )
+            if isinstance(domain_snapshot, dict) and callable(action_items_getter):
+                # 先取全量行动项，再按当日筛选，避免旧记录占满领域快照的 20 条额度。
+                domain_snapshot["conversation_actions"] = await action_items_getter(limit=0)
             domain_snapshot = await self.context._page_domain_snapshot(
-                domain_snapshot, target_date
+                domain_snapshot, target_date, action_date=now.date().isoformat()
             )
         memo_status = await self.context._page_memo_status(target_date, data, now)
         generation_status = {}
@@ -850,14 +856,15 @@ class PageViewComponent:
         return result
 
     async def _page_domain_snapshot(
-        self, snapshot: dict, target_date: str = ""
+        self, snapshot: dict, target_date: str = "", *, action_date: str = ""
     ) -> dict:
-        """筛选当日生活流水，并补充行动项的可读会话名称。"""
+        """筛选当日生活流水和行动项，并补充行动项的可读会话名称。"""
 
         if not isinstance(snapshot, dict):
             return {}
         result = dict(snapshot)
         date_text = str(target_date or "").strip()
+        action_date_text = str(action_date or date_text).strip()
         if date_text:
             for key, fields in (
                 ("activity_sessions", ("date", "started_at", "ended_at")),
@@ -888,10 +895,26 @@ class PageViewComponent:
             if not isinstance(item, dict):
                 continue
             data = dict(item)
-            status = str(data.get("status") or "").strip().lower()
-            if date_text and status not in {"open", "pending", "active"}:
+            if action_date_text:
+                status = str(data.get("status") or "").strip().lower()
+                if status in {"expired", "elapsed", "skipped"}:
+                    # 过期是原安排结束，不是今天发生的新事项；归属按原约定日判断。
+                    action_date_fields = (
+                        "commitment_date", "due_at", "created_at",
+                    )
+                elif status in {
+                    "simulated", "completed", "confirmed", "done", "failed",
+                    "rejected", "canceled", "cancelled", "delivery_failed",
+                }:
+                    action_date_fields = (
+                        "completed_at", "updated_at", "created_at", "due_at",
+                    )
+                else:
+                    action_date_fields = (
+                        "commitment_date", "due_at", "created_at", "updated_at",
+                    )
                 if not self.context._page_records_for_date(
-                    [data], date_text, "updated_at", "created_at", "due_at"
+                    [data], action_date_text, *action_date_fields
                 ):
                     continue
             source_session = str(data.get("source_session") or "").strip()

@@ -616,7 +616,7 @@ class WardrobeLifeService:
                     key="wardrobe-job:" + job_id, category="vision",
                 )
             if snapshot["profile"].get("acquisition", {}).get("reason") != saved_choice.get("reason"):
-                logger.info(f"[日常生活] 衣橱选择：{wardrobe_choice_text(saved_choice)}")
+                logger.debug(f"[日常生活] 衣橱选择：{wardrobe_choice_text(saved_choice)}")
             self._review_retry_after = (
                 None if profile["scene_review_complete"]
                 else now + datetime.timedelta(minutes=self._config().state.refresh_minutes)

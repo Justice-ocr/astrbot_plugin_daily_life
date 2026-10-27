@@ -1231,23 +1231,34 @@ class GeminiImageService:
                 f"{LOG_PREFIX} 图生图参考图已挂载：数量={request.reference_image_count}；"
                 f"端点={request.url.rsplit('/', 1)[-1]}"
             )
-        post = (
-            session.post(
-                request.url, data=request.form, headers=request.headers, timeout=timeout
+        try:
+            post = (
+                session.post(
+                    request.url, data=request.form, headers=request.headers, timeout=timeout
+                )
+                if request.form is not None
+                else session.post(
+                    request.url,
+                    json=request.payload,
+                    headers=request.headers,
+                    timeout=timeout,
+                )
             )
-            if request.form is not None
-            else session.post(
-                request.url,
-                json=request.payload,
-                headers=request.headers,
-                timeout=timeout,
-            )
-        )
-        async with post as response:
-            if response.status != 200:
-                detail = await response.text()
-                raise RuntimeError(f"HTTP {response.status}：{detail[:1000]}")
-            return await response.json()
+            async with post as response:
+                if response.status != 200:
+                    detail = await response.text()
+                    raise RuntimeError(f"HTTP {response.status}：{detail[:1000]}")
+                return await response.json()
+        except (TimeoutError, aiohttp.ClientError) as exc:
+            if not openai.uses_scywl_image_api(route.model, route.api_url):
+                raise
+            # 同步接口没有可查询的任务编号，连接中断不能视为生成失败。
+            raise polling.ImageTaskError(
+                "图片请求连接中断或等待超时，上游可能仍在生成；"
+                "已停止自动重复提交，请先检查上游使用记录",
+                request_id=request.headers.get("X-Client-Request-ID", ""),
+                phase="同步生成",
+            ) from exc
 
     @staticmethod
     def _is_policy_violation_error(exc: Exception) -> bool:

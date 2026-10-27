@@ -1,7 +1,4 @@
-"""以对应会话中已发送的消息为依据，确认聊天中虚拟动作的完成情况。"""
-from __future__ import annotations
-
-
+"""以对应会话中已发送的消息为依据，同步生活行动的进展和终态。"""
 from __future__ import annotations
 
 import datetime
@@ -99,14 +96,17 @@ class ChatExecutionComponent:
                         rows[str(row[key])] = row
         saved = 0
         for update in updates[:30]:
-            if not isinstance(update, dict) or update.get("completed") is not True:
+            if not isinstance(update, dict):
+                continue
+            status = str(update.get("status") or "").strip()
+            if status not in {"in_progress", "done", "cancelled", "expired"}:
                 continue
             row = rows.get(str(update.get("source_message_id") or ""))
-            if not row or row.get("role") != "assistant" or row.get("is_quoted"):
+            if not row or row.get("role") not in {"user", "assistant"} or row.get("is_quoted"):
                 continue
             evidence = str(update.get("evidence") or "").strip()
             message = str(row.get("message_text") or "")
-            if len(evidence) < 4 or evidence != message.strip():
+            if not evidence or evidence != message.strip():
                 continue
             try:
                 occurred = datetime.datetime.fromisoformat(
@@ -115,7 +115,7 @@ class ChatExecutionComponent:
             except ValueError:
                 continue
             action_id = str(update.get("action_id") or "").strip()
-            if action_id:
+            if action_id and row.get("role") == "assistant" and status == "done":
                 candidate = actions.get(action_id)
                 recorder = getattr(
                     getattr(self.context, "composer", None), "record_life_action_receipt", None
@@ -154,22 +154,24 @@ class ChatExecutionComponent:
                 if outcome is None or outcome.status != "committed":
                     continue
             ids = update.get("commitment_ids")
-            complete = getattr(self.context.archive, "complete_simulated_commitment", None)
+            ids = list(ids) if isinstance(ids, list) else []
+            indexes = update.get("new_commitment_indexes")
+            for index in indexes if isinstance(indexes, list) else []:
+                item = payload.get("_saved_commitments", {}).get(str(index))
+                if isinstance(item, dict):
+                    commitments[str(item["id"])] = item
+                    ids.append(item["id"])
+            reconcile = getattr(self.context.archive, "reconcile_conversation_commitment", None)
             for item_id in ids if isinstance(ids, list) else []:
                 item = commitments.get(str(item_id))
                 if (
                     not item
-                    or not callable(complete)
                     or item.get("source_session") != scope
                 ):
                     continue
-                saved += int(
-                    await complete(
-                        int(item["id"]),
-                        scope=scope,
-                        when=occurred.isoformat(sep=" "),
-                        evidence=evidence,
-                        source_id=str(update["source_message_id"]),
-                    )
-                )
+                if callable(reconcile):
+                    saved += int(await reconcile(
+                        int(item["id"]), scope=scope, status=status,
+                        evidence=evidence, source_id=str(update["source_message_id"]),
+                    ))
         return saved

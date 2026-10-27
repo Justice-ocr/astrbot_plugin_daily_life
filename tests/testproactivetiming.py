@@ -149,7 +149,10 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         await runtime.evaluate_idle_proactive_candidates(now=due_at + datetime.timedelta(seconds=1))
         self.assertEqual(len(runtime.context.sent_messages), 1)
         self.assertEqual(runtime.context.sent_messages[0][1].items, ["刚看到一张那个电影的幕后照"])
-        self.assertNotIn(event.unified_msg_origin, runtime._proactive_idle_candidates)
+        ongoing = runtime._proactive_idle_candidates[event.unified_msg_origin]
+        self.assertEqual(ongoing["pending_count"], 0)
+        self.assertGreater(ongoing["revision"], 2)
+        self.assertIsNone(ongoing["next_evaluation_at"])
 
     async def test_private_timing_stays_stable_across_polls_and_varies_between_turns(
         self,
@@ -324,7 +327,7 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
                 {
                     "role": "assistant",
                     "content": "等会儿再聊",
-                    "timestamp": base.timestamp(),
+                    "timestamp": base.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp(),
                 }
             ]
         )
@@ -571,6 +574,76 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         )
         self.assertIn('"role": "assistant"', provider.prompts[0])
         self.assertIn("那我们晚上再聊", provider.prompts[0])
+
+
+
+    async def test_private_observation_continues_after_two_autonomous_turns(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime.config.proactive.private_idle_minutes = 5
+        runtime.config.proactive.private_talk_frequency = 0.85
+        base = datetime.datetime(2026, 5, 24, 12)
+        event = self.private_event()
+        key = event.unified_msg_origin
+        runtime.note_proactive_activity(event, now=base)
+        runtime.evaluate_proactive_reply = AsyncMock(side_effect=[
+            {"should_reply": True, "decision": "reply", "reply_text": "刚把照片洗出来了"},
+            {"should_reply": True, "decision": "reply", "reply_text": "有一张光线特别喜欢"},
+        ])
+        runtime._send_proactive_message = AsyncMock(return_value=True)
+        runtime._commit_proactive_decision = AsyncMock()
+        runtime._save_pending_reply_effect = AsyncMock()
+        runtime._track_proactive_reply_effect = lambda *args: None
+        for offset in (30, 60):
+            now = base + datetime.timedelta(minutes=offset)
+            with patch("core.runtime.proactive.decide.flow.life_now", return_value=now):
+                await runtime.evaluate_idle_proactive_candidates(now=now)
+            self.assertIn(key, runtime._proactive_idle_candidates)
+            self.assertEqual(runtime._proactive_idle_candidates[key]["last_activity_at"], now)
+            self.assertEqual(runtime._proactive_lifecycle_snapshot(key)["state"], "cooldown")
+        self.assertEqual(runtime._send_proactive_message.await_count, 2)
+        self.assertEqual(runtime._proactive_idle_candidates[key]["pending_count"], 0)
+
+    async def test_temporary_private_silence_is_not_negative_feedback(self):
+        runtime, _ = self._make_proactive_runtime([])
+        key = self.private_event().unified_msg_origin
+        now = datetime.datetime(2026, 5, 24, 12)
+        for _ in range(10):
+            runtime._update_proactive_air_after_decision(
+                key, {"decision": "observe", "reason": "还没有新的想法"}, now, sent=False
+            )
+        state = runtime._get_proactive_air_state(key)
+        self.assertEqual(state["quiet_count"], 0)
+        self.assertEqual(state["silence_inertia"], 0)
+        self.assertLessEqual(runtime._proactive_air_delay_remaining(key, now), 300)
+        state["last_effect"] = "negative"
+        runtime._update_proactive_air_after_decision(
+            key, {"decision": "wait", "reason": "对方明确希望先安静"}, now, sent=False
+        )
+        self.assertEqual(state["last_effect"], "negative")
+        self.assertGreater(state["silence_inertia"], 0)
+
+    async def test_private_revisit_interprets_naive_history_in_life_timezone(self):
+        runtime, _ = self._make_proactive_runtime([])
+        now = datetime.datetime(2026, 5, 24, 12)
+        runtime._read_recent_context_messages = AsyncMock(return_value=[
+            {"role": "assistant", "content": "刚回家", "timestamp": "2026-05-24T11:30:00"}
+        ])
+        runtime.build_memos_hidden_context = AsyncMock(return_value="")
+        memory = await runtime._part_proactive_revisit_component._private_revisit_memory_context(
+            self.private_event().unified_msg_origin, None, "阿林", now
+        )
+        self.assertEqual(memory["silence_seconds"], 1800)
+
+    async def test_private_revisit_does_not_evaluate_during_quiet_hours(self):
+        runtime, provider = self._make_proactive_runtime([])
+        runtime.config.proactive.private_revisit_enabled = True
+        runtime.config.state.quiet_hours = "00:00-06:30"
+        targets = AsyncMock(return_value=[])
+        runtime._part_proactive_revisit_component._get_recent_private_targets = targets
+        with patch("core.runtime.spine.pulse.life_now", return_value=datetime.datetime(2026, 5, 24, 1)):
+            await runtime.run_private_revisit_check()
+        targets.assert_not_awaited()
+        self.assertEqual(provider.prompts, [])
 
 
 class IdleReplyTimeoutTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):

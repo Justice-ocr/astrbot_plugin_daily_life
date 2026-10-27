@@ -322,7 +322,8 @@ class ProactiveScopeComponent:
             f"{scope}|{anchor.isoformat()}".encode(), digest_size=8
         ).digest()
         variation = int.from_bytes(seed, "big") / (2**64 - 1)
-        rest_seconds = max(5 * 60, int(reference * 0.15))
+        willingness = self.context.config.proactive.private_talk_frequency
+        rest_seconds = max(120, int(300 * (1 - 0.6 * willingness)), int(reference * 0.15))
         _, _, day = await self.context._proactive_current_day(now)
         state = getattr(day, "state", None)
         values = state.as_dict() if hasattr(state, "as_dict") else state
@@ -429,7 +430,8 @@ class ProactiveScopeComponent:
     ) -> None:
         key = self.context._proactive_scope_key(event)
         now = now or life_now()
-        if key and key in self.context._proactive_feedback_watches():
+        learning = getattr(getattr(self.context, "config", None), "memory", None)
+        if key and (key in self.context._proactive_feedback_watches() or bool(getattr(learning, "enabled", False))):
             self.context._schedule_background_task(
                 self.context._observe_proactive_reply_effect(event, now),
                 label="闲时回复效果观察",

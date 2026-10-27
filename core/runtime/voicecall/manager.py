@@ -25,7 +25,7 @@ from ...life.tools import build_time_context
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
 from ...sources.platforms import is_onebot_event
-from .calltranscript import VoiceCallTranscriptTurn
+from .calltranscript import VoiceCallTranscriptTurn, VoiceCallTranscriptView
 from .voicegateway import VoiceCallGateway, voice_gateway_start_error_detail
 from .videocall import (
     RtcVoiceCallManager,
@@ -42,7 +42,7 @@ _REALTIME_OFFICIAL_NO_RESULT_MESSAGE = "暂时没有找到相关信息。"
 
 
 @dataclass(slots=True)
-class VoiceCallInvite:
+class VoiceCallInvite(VoiceCallTranscriptView):
     token_id: str
     scope: str
     user_id: str
@@ -53,10 +53,6 @@ class VoiceCallInvite:
     expires_at: float
     accepted: bool = False
     active: bool = False
-    user_transcript: str = ""
-    bot_transcript: str = ""
-    user_transcript_finalized: bool = False
-    bot_transcript_finalized: bool = False
     transcript_turns: list[VoiceCallTranscriptTurn] = field(default_factory=list)
     event_types: list[str] = field(default_factory=list)
     state: str = "invited"
@@ -594,13 +590,6 @@ class VoiceCallManager:
             if turn.role in {"user", "assistant"} and turn.text.strip()
         ]
         if not turns:
-            user_text = str(invite.user_transcript or "").strip()
-            bot_text = str(invite.bot_transcript or "").strip()
-            if user_text:
-                turns.append(VoiceCallTranscriptTurn(role="user", text=user_text))
-            if bot_text:
-                turns.append(VoiceCallTranscriptTurn(role="assistant", text=bot_text))
-        if not turns:
             invite.conversation_history_saved = None
             return False
 
@@ -714,10 +703,6 @@ class VoiceCallManager:
                 )
         except Exception as exc:
             logger.warning(f"[日常生活] 实时通话摘要保存失败：{type(exc).__name__}")
-        finally:
-            # 兼容字段不再保留；逐轮转写会在短暂只读窗口结束后由 _prune 释放。
-            invite.user_transcript = ""
-            invite.bot_transcript = ""
 
     @staticmethod
     def _conversation_history_status(invite: VoiceCallInvite) -> str:
@@ -1452,7 +1437,6 @@ class VoiceCallManager:
 
     _replayed_snapshot_start = classmethod(VoiceCallTranscriptComponent._replayed_snapshot_start.__func__)
 
-    _sync_legacy_transcripts = staticmethod(VoiceCallTranscriptComponent._sync_legacy_transcripts)
 
 
 

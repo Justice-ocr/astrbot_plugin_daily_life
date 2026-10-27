@@ -722,7 +722,7 @@ def sync_kernel_from_day(
 
 
 def kernel_context(world: dict[str, Any]) -> str:
-    """生成给聊天、状态和自主判断共同使用的事实摘要。"""
+    """生成供状态刷新和自主判断使用的完整事实摘要。"""
 
     kernel = ensure_kernel(world)
     affect = kernel.get("affect") or {}

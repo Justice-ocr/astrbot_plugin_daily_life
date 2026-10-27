@@ -154,6 +154,11 @@ class _ShareArchive:
         self.calls.append(("temporary_states", scope))
         return []
 
+    async def get_expression_context(self, *, scope, profile_id="", limit=16):
+        items = await self.get_expression_profiles(limit=limit, scope=scope)
+        return [{"scope": "self", "profile_id": "", "label": "自己的语气",
+                 "tone": "平实清楚", "learning": {"breadth": "voice", "status": "stable"}}, *items]
+
     async def get_behavior_patterns(self, limit=4, *, scope=""):
         self.calls.append(("behavior_patterns", scope))
         return [
@@ -436,6 +441,31 @@ class ShareChatStyleTests(unittest.TestCase):
 
 
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_external_expression_send_holds_runtime_lease(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        observed = []
+        event = object()
+
+        class Runtime:
+            async def send_share_expression(self, text, **kwargs):
+                observed.append((text, kwargs, plugin._external_users))
+                return {"sent_texts": [text]}
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+        self.assertEqual(
+            await plugin.send_share_expression(
+                "先歇一会儿", target_umo="bot:GroupMessage:42", source_event=event
+            ),
+            {"sent_texts": ["先歇一会儿"]},
+        )
+        self.assertEqual(observed, [(
+            "先歇一会儿",
+            {"target_umo": "bot:GroupMessage:42", "source_event": event},
+            1,
+        )])
+        self.assertEqual(plugin._external_users, 0)
+
     async def test_chat_share_review_forwards_requirements_under_runtime_lease(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         observed = []

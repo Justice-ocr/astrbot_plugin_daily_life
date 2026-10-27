@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from astrbot.api import logger
 
-from ...clock import now as life_now
+from ...clock import TIMEZONE, local_timestamp, now as life_now
 from ...life.condition import format_state_prompt, normalize_state
 from ...life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ...life.presence import kernel_context
@@ -14,12 +14,13 @@ from ...prompts import (
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
-    CORE_PROACTIVE_CONTINUITY_RULES,
-    CORE_PROACTIVE_VOICE_RULES,
     cache_friendly_prompt,
 )
+from .initiative import proactive_decision_contract
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
+from ..expressionlearning import select_profiles
+from ..contact import contact_rhythm
 
 
 class ProactiveRevisitComponentContext(Protocol):
@@ -99,10 +100,6 @@ class ProactiveRevisitComponent:
             item
             for item in relationships
             if self.context._relationship_friend_target_scope(item)
-            and (
-                getattr(item, "notes", None)
-                or str(getattr(item, "relationship_story", "") or "").strip()
-            )
         ]
         return targets[: max(0, limit)]
 
@@ -205,20 +202,20 @@ class ProactiveRevisitComponent:
                 timestamp = float(raw_timestamp or 0.0)
             except (TypeError, ValueError):
                 try:
-                    timestamp = datetime.datetime.fromisoformat(
-                        str(raw_timestamp or "").replace("Z", "+00:00")
-                    ).timestamp()
-                except (TypeError, ValueError):
+                    timestamp = local_timestamp(raw_timestamp) or 0.0
+                except (TypeError, ValueError, OverflowError):
                     timestamp = 0.0
+            if not 0 < timestamp <= local_timestamp(now):
+                continue
             last_message_timestamp = max(last_message_timestamp, timestamp)
         silence_seconds = (
-            max(0, int(now.timestamp() - last_message_timestamp))
+            max(0, int(local_timestamp(now) - last_message_timestamp))
             if last_message_timestamp > 0
             else None
         )
         timing = {
             "target_scope": target_scope,
-            "last_activity_at": datetime.datetime.fromtimestamp(last_message_timestamp)
+            "last_activity_at": datetime.datetime.fromtimestamp(last_message_timestamp, TIMEZONE).replace(tzinfo=None)
             if last_message_timestamp > 0
             else None,
         }
@@ -332,11 +329,16 @@ class ProactiveRevisitComponent:
         living_reader = getattr(self.context, "living_context_for_scope", None)
         if callable(living_reader):
             lines.append(await living_reader(target_scope))
+        browsing_reader = getattr(self.context, "bili_browse_share_context", None)
+        browsing_context = await browsing_reader(target_scope) if callable(browsing_reader) else ""
+        if browsing_context:
+            lines.append(browsing_context)
         return "\n".join(lines), bool(
             day
             or commitments
             or interaction_context.has_authoritative_mode
             or bool(continuous_world.get("kernel"))
+            or browsing_context
         )
 
     async def _private_revisit_expression_context(
@@ -345,9 +347,9 @@ class ProactiveRevisitComponent:
         relationship: Any | None,
         now: datetime.datetime,
     ) -> dict[str, Any]:
-        expression_profiles = await self.context.archive.get_expression_profiles(
-            limit=4, scope=target_scope
-        )
+        profile_id = str(getattr(relationship, "user_id", "") or getattr(relationship, "id", "") or "")
+        expression_profiles = await select_profiles(self.context, scope=target_scope, profile_id=profile_id,
+            query=str(getattr(relationship, "note", "") or ""))
         await self.context._settle_stale_reply_effects()
         return {
             "air_state": self.context._format_proactive_air_state(target_scope, now),
@@ -415,8 +417,8 @@ class ProactiveRevisitComponent:
             if relationship_snapshot["persona_hint"]
             else "证据不足，使用中性称呼"
         )
-        fixed = f"""我在心里掂量：此刻要不要向这个人自然开口，承接共同经历或最近交流。
-这不是任务提醒文案，也不是硬性打卡；只有在关系、最近印象或此刻状态自然适合时才回复。
+        fixed = f"""我继续过着自己的生活，也会想起这个人。结合当下经历、关系和近期交流，决定是否想找对方说话、接着聊或一起做点什么。
+联系意愿由当前主动程度、生活余力和真实互动反馈共同决定；选择适合此刻的一件事表达，也可以暂时观察。
 
 隐藏上下文规则：
 {CORE_HIDDEN_CONTEXT_RULES}
@@ -427,37 +429,11 @@ class ProactiveRevisitComponent:
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
 
-只输出 JSON：
-{{
-  "should_reply": true,
-  "confidence": 0.0,
-  "benefit": 0,
-  "timeliness": 0,
-  "continuity": 0,
-  "disruption": 0,
-  "uncertainty": 0,
-  "decision": "reply|observe|wait|skip",
-  "reason": "为什么此刻适合或不适合发起私聊回访",
-  "reply_text": "简短自然、意思完整的私聊问候或话题延续",
-  "expression_review": {{"passed": true, "risk": "具体表达风险或空字符串", "suggestion": "必要的调整或空字符串", "reason": "结合本轮话题和已学习表达习惯的检查依据"}},
-  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|soft|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
-}}
-裁定方式：
-- 先看“回访依据”，判断 reply、observe、wait 或 skip。
-- benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是回访收益，后两项是打扰与不确定风险。
-- 只有回访收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
-- reply_text 优先写简短自然的问候或话题延续，必要的意思说完整，不刻意扩写，遵循本轮表达设置。
-- 在同一次生成中检查最终 reply_text 的话题承接、重复关心或追问、关系分寸与适用表达习惯，填写 expression_review；短句自然与否由语境决定，不按关键词、句型或字数判断。发现问题先调整文本，仍不适合开口时 passed=false 并选择 observe。
-{CORE_PROACTIVE_VOICE_RULES}
-{CORE_PROACTIVE_CONTINUITY_RULES}
-- voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
-- reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
-- 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。
-- 只有“当前生活事实”明确支持时，才能断言当前地点、当前动作、动作完成或状态变化。
-- 本轮可见回复只写 reply_text；如果 expression_intent.send_emoji=true，执行层会在文字成功投递后独立尝试发送一张已有表情，但不保证一定有合适素材。reply_text 不得声称本轮已经附带、补发或重新发送任何媒体。
-- 只输出上面列出的字段，不添加内部过程或发送控制字段。
+{proactive_decision_contract()}
 """
-        dynamic = f"""角色人设摘要：
+        dynamic = f"""主动交流倾向：{self.context.config.proactive.private_talk_frequency}（0 至 1，越高越愿意主动来往）
+
+角色人设摘要：
 {persona_context}
 
 本轮表达设置：{expression_guidance}
@@ -590,6 +566,13 @@ JSON 输出要求：
         relationship: Any | None,
         now: datetime.datetime,
     ) -> dict[str, Any]:
+        rhythm = await contact_rhythm(self.context, target_scope, now)
+        if rhythm.get("ready") is False:
+            return {
+                "should_reply": False, "decision": "wait",
+                "reason": "结合最近收发情况，稍后再考虑联系",
+                "retry_after": rhythm["retry_after"],
+            }
         relationship_profile_id = str(
             getattr(relationship, "user_id", "")
             or getattr(relationship, "id", "")
@@ -700,6 +683,7 @@ JSON 输出要求：
                 revisit_evidence=revisit_evidence,
             )
             normalized["_interaction_mode"] = interaction_context.mode
+            normalized["_expression_profiles"] = [item.as_dict() for item in expression_context["expression_profiles"]]
             if not normalized.get("should_reply"):
                 return normalized
             latest_messages = await self.context._read_recent_context_messages(

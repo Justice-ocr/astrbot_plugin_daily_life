@@ -8,6 +8,9 @@ import time
 import uuid
 
 from ..clock import TIMEZONE, now as life_now
+from ..browsing.bookmarks import BrowseArchive
+from ..browsing.receipts import BrowseReceiptStore
+from .contact import contact_rhythm
 
 
 class ShareContactGate:
@@ -64,6 +67,19 @@ class ShareContactGate:
             "observation": run.get("observation_state"),
             "chat": chat,
         }
+        if callable(getattr(self.runtime.archive, "_run_db", None)):
+            records = await BrowseArchive(self.runtime.archive).list(
+                scope=scope, limit=200
+            )
+            payload["browsing_delivered"] = sorted(
+                record["id"]
+                for record in records
+                if scope in (record.get("shared_to") or {})
+                or "qzone_broadcast" in (record.get("shared_to") or {})
+            )
+            payload["browsing_pending"] = sorted(
+                await BrowseReceiptStore(self.runtime.archive).pending_ids(scope)
+            )
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest(), previous
@@ -79,7 +95,11 @@ class ShareContactGate:
         if action not in {"reserve", "check"}:
             return {"allowed": False, "reason": "不支持的预约操作"}
         if not self.claim(scope, owner):
-            return {"allowed": False, "retryable": True, "reason": "该会话已有其他主动联系任务"}
+            return {
+                "allowed": False,
+                "retryable": True,
+                "reason": "该会话已有其他主动联系任务",
+            }
         try:
             snapshot, previous = await self.snapshot(scope)
         except BaseException:
@@ -87,7 +107,11 @@ class ShareContactGate:
                 self.leases.pop(scope, None)
             raise
         if not self.claim(scope, owner):
-            return {"allowed": False, "retryable": True, "reason": "该会话已有其他主动联系任务"}
+            return {
+                "allowed": False,
+                "retryable": True,
+                "reason": "该会话已有其他主动联系任务",
+            }
         if expected is not None and snapshot != expected:
             self.leases.pop(scope, None)
             return {
@@ -95,10 +119,28 @@ class ShareContactGate:
                 "stale": True,
                 "reason": "新消息或生活事实已变化，保留成品并停止补发",
             }
+        try:
+            rhythm = await contact_rhythm(self.runtime, scope, life_now())
+        except BaseException:
+            if self.leases.get(scope, (None,))[0] == owner:
+                self.leases.pop(scope, None)
+            raise
+        if rhythm.get("ready") is False:
+            self.leases.pop(scope, None)
+            return {
+                "allowed": False,
+                "retryable": True,
+                "retry_after": rhythm["retry_after"],
+                "reason": "结合该对象最近的收发情况，稍后再联系",
+            }
         if (
             previous
             and life_now().replace(tzinfo=TIMEZONE).timestamp() - previous < 120
         ):
             self.leases.pop(scope, None)
-            return {"allowed": False, "retryable": True, "reason": "该会话刚收到主动消息，稍后再联系"}
+            return {
+                "allowed": False,
+                "retryable": True,
+                "reason": "该会话刚收到主动消息，稍后再联系",
+            }
         return {"allowed": True, "snapshot": snapshot}

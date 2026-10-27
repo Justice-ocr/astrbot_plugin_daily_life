@@ -112,18 +112,13 @@ class DailyClimateComponent:
         )
         constraint_section = ""
         if weather_constraint or activity_constraint:
+            constraint_section = "\n\n【天气与活动暴露参考】"
+            if weather_constraint:
+                constraint_section += f"\n衣物与体感：{weather_constraint}"
+            if activity_constraint:
+                constraint_section += f"\n活动与出行：{activity_constraint}"
             if self.context._has_weather_safety_risk(weather_info):
-                constraint_section = "\n\n【天气安全约束 - 必须遵守】"
-                if weather_constraint:
-                    constraint_section += f"\n穿搭安全：{weather_constraint}"
-                if activity_constraint:
-                    constraint_section += f"\n活动安全：{activity_constraint}"
-            else:
-                constraint_section = "\n\n【天气软参考】\n以下内容只作为生活决策参考，不覆盖 life_decision 或用户指令。"
-                if weather_constraint:
-                    constraint_section += f"\n穿搭参考：{weather_constraint}"
-                if activity_constraint:
-                    constraint_section += f"\n活动参考：{activity_constraint}"
+                constraint_section += "\n天气安全约束：必须遵守实际预警与活动安全条件；具体安排结合角色目的、暴露程度和现有条件决定。"
         return weather_section, constraint_section
 
 

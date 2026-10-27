@@ -1,6 +1,15 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS expression_learning_events;
         DROP TABLE IF EXISTS memory_fact_links;
+        DROP TABLE IF EXISTS knowledge_readings;
+        DROP TABLE IF EXISTS knowledge_passages;
+        DROP TABLE IF EXISTS knowledge_sources;
+        DROP TABLE IF EXISTS memory_identity_redirects;
+        DROP TABLE IF EXISTS memory_associations;
+        DROP TABLE IF EXISTS memory_enrichments;
+        DROP TABLE IF EXISTS memory_chapters;
+        DROP TABLE IF EXISTS conversation_originals;
         DROP TABLE IF EXISTS memory_source_messages;
         DROP TABLE IF EXISTS continuous_life_entries;
         DROP TABLE IF EXISTS conversation_action_items;

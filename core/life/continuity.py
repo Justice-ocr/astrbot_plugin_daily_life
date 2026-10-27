@@ -72,6 +72,9 @@ def project_world(day, world: dict[str, Any]) -> None:
     project_body(day, ContinuousBody.from_value(world["body"], day))
     sync_kernel_from_day(day, world)
     day.meta["continuous_life_context"] = execution_context(world)
+    from .chatview import chat_life_projection
+
+    day.meta["continuous_chat_context"] = chat_life_projection(world)
     day.meta["continuous_execution"] = json.dumps(
         world.get("run") or {}, ensure_ascii=False
     )

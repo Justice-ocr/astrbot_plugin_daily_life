@@ -12,6 +12,7 @@ from ....clock import now as life_now
 from ....life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ....life.tools import extract_json_from_text
 from ...markers import LOG_PREFIX
+from ...contact import contact_rhythm
 
 
 class ProactiveFlowComponentContext(Protocol):
@@ -348,6 +349,14 @@ class ProactiveFlowComponent:
         ):
             return self.context._proactive_skip("未启用或不适合闲时回复")
         now = now or life_now()
+        if not self.context._event_is_group_message(event):
+            rhythm = await contact_rhythm(self.context, self.context._event_session_id(event), now)
+            if rhythm.get("ready") is False:
+                return {
+                    "should_reply": False, "handled": True, "decision": "wait",
+                    "reason": "结合最近收发情况，给对方留一点回应空间",
+                    "retry_after": rhythm["retry_after"],
+                }
         interaction_mode = ""
         if not self.context._event_is_group_message(event):
             interaction_context = await self.context.resolve_interaction_context(
@@ -765,7 +774,29 @@ class ProactiveFlowComponent:
                 )
                 await self.context._save_pending_reply_effect(key, event, decision, reply_text)
                 if is_current():
-                    self.context._proactive_idle_candidates.pop(key, None)
+                    if candidate.get("is_group"):
+                        self.context._proactive_idle_candidates.pop(key, None)
+                    else:
+                        # 私聊继续生活与观察；一次联系不会终止后续主动性。
+                        sent_at = life_now()
+                        candidate.update(
+                            last_activity_at=sent_at, last_bot_reply_at=sent_at,
+                            pending_count=0, next_evaluation_at=None,
+                            revision=revision + 1,
+                            state="after_proactive_reply", decision="",
+                            decision_reason="主动联系已送达，继续留意生活与交流变化",
+                        )
+                        for field in ("private_opportunity_at", "observe_hold_until", "idle_observe_count"):
+                            candidate.pop(field, None)
+                        self.context._transition_proactive_lifecycle(
+                            key,
+                            "cooldown",
+                            event="contact_round_completed",
+                            reason="本轮主动联系已完成，结合收发情况等待下一个生活窗口",
+                            now=sent_at,
+                            revision=revision + 1,
+                            candidate=candidate,
+                        )
                 self.context._record_virtual_life_metric("idle_reply_sent")
                 return
             latest = self.context._proactive_idle_candidates.get(key)
@@ -820,7 +851,7 @@ class ProactiveFlowComponent:
                     hold_seconds,
                     int(
                         self.context._proactive_idle_seconds(candidate)
-                        * (0.4 + 0.25 * count)
+                        * min(1.0, 0.3 + 0.15 * count)
                     ),
                 )
             candidate["observe_hold_until"] = now + datetime.timedelta(

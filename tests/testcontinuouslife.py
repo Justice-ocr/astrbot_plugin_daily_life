@@ -430,6 +430,15 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime.now += datetime.timedelta(minutes=minutes)
         await self.runtime.continuous_life._check_continuous_life_once()
 
+    async def test_document_study_requires_actual_reading_receipt(self):
+        source = await self.archive.memory_life.import_source(scope="global", title="真实资料", content="这一段的原始依据")
+        await self.start(duration=1, payload={"knowledge_source_id":source["id"]})
+        await self.tick(1)
+        world = await self.archive.get_continuous_life()
+        self.assertFalse(world.get("run"))
+        self.assertEqual((await self.archive.memory_life.library(["global"]))[0]["read_count"],0)
+        self.assertNotEqual(world["kernel"]["action_outcomes"][-1]["status"],"committed")
+
     async def test_clock_updates_survive_completed_action_replay(self):
         day = await self.archive.get_day(self.runtime.date)
         specs = [
@@ -1516,6 +1525,45 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await runtime.continuous_decision.choose(day, world, runtime.now)
         self.assertEqual(runtime.call_text_model.await_count, 2)
         runtime.composer._style_catalog_context.assert_awaited_once()
+
+    async def test_real_browsing_evidence_enters_shared_interests_slowly(self):
+        from core.browsing.bookmarks import BrowseArchive, record_id
+        runtime = self.runtime
+        runtime.config.state.refresh_minutes = 20
+        runtime.composer._get_persona = AsyncMock(return_value="喜欢探索的角色")
+        runtime.composer._collect_recent_chat_context = AsyncMock(return_value="无")
+        runtime.composer._cleanup_conversation = AsyncMock()
+        runtime.get_text_provider = AsyncMock(return_value=object())
+        runtime.call_text_model = AsyncMock(return_value='{"decision":"wait"}')
+        day = await self.archive.get_day(runtime.date)
+        world = await self.archive.get_continuous_life()
+        before = await runtime.continuous_decision.choose(day, world, runtime.now)
+        world.update(goal_source_key=before["_goal_source_key"], goal_review_at=runtime.now.isoformat())
+        store = BrowseArchive(self.archive)
+        for bvid, scope in (("BV1xx411c7mD", "global"), ("BV1yy411c7mD", "global"), ("BV1zz411c7mD", "private:a")):
+            await store.save({
+                "id": record_id(bvid, scope=scope), "scope": scope, "status": "unfinished",
+                "created_at": runtime.now.isoformat(), "updated_at": runtime.now.isoformat(),
+                "bvid": bvid, "page": 1, "title": "实验视频", "position": 60, "duration": 300,
+                "evidence": [{"quote": "实际对照实验的字幕"}], "impression": "想再了解变量控制",
+                "interest": "实验", "interest_delta": 0.1,
+            })
+        early = await runtime.continuous_decision.choose(day, world, runtime.now + datetime.timedelta(minutes=19))
+        self.assertFalse(early["_goal_review_due"])
+        after = await runtime.continuous_decision.choose(day, world, runtime.now + datetime.timedelta(minutes=20))
+        self.assertTrue(after["_goal_review_due"])
+        references = sorted(source for source in after["_sources"] if source.startswith("browsing:"))
+        self.assertEqual(len(references), 2)
+        self.assertNotIn("browsing:" + record_id("BV1zz411c7mD", scope="private:a"), references)
+        update = {"owner": "self", "field": "interest", "id": "experiments", "text": "好奇实验方法", "reason": "真实浏览后的持续好奇"}
+        for _ in range(3):
+            apply_self_model_updates(world, [{**update, "source_ids": references[:1]}], sources=after["_sources"], now=runtime.now)
+        interest = world["kernel"]["self_model"]["interests"][0]
+        self.assertEqual((interest["support_count"], interest["status"]), (1, "tentative"))
+        apply_self_model_updates(world, [{**update, "source_ids": references[1:]}], sources=after["_sources"], now=runtime.now)
+        self.assertEqual((interest["support_count"], interest["status"]), (2, "supported"))
+        prompt = runtime.call_text_model.call_args.args[1]
+        self.assertIn("实际对照实验的字幕", prompt)
 
     async def test_goal_review_reuses_evidence_and_batches_new_chat_with_shared_interval(self):
         runtime = self.runtime

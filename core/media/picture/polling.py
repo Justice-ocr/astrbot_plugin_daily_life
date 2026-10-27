@@ -111,7 +111,7 @@ async def request_image_task(
                         raise
 
             phase = "查询"
-            logger.info(
+            logger.debug(
                 f"{LOG_PREFIX} 图片异步任务开始查询：分组={route.label}；"
                 f"任务={task_id}；"
                 f"参考图={request.reference_image_count}"
@@ -168,7 +168,7 @@ async def request_image_task(
                 result = data.get("result")
                 if not isinstance(result, dict) or not result.get("data"):
                     raise ValueError("图片任务已完成但没有成品数据")
-                logger.info(f"{LOG_PREFIX} 图片异步任务已完成：{task_id}")
+                logger.debug(f"{LOG_PREFIX} 图片异步任务已完成：{task_id}")
                 return ImageTaskResult(result, task_id, request_id=request_id)
     except ImageTaskFailed as exc:
         exc.task_id = task_id

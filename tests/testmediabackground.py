@@ -228,6 +228,40 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             self.assertFalse(hasattr(first, "_daily_life_image_request"))
         self.assertEqual(self.calls, [])
 
+    async def test_group_image_omitted_participant_is_locked_before_background_generation(self):
+        first = self.event(text="拍张我们两个的合影")
+        await self.begin_turn(first)
+        profile_id = first.get_sender_id()
+        self.runtime.media.image.friend_reference_options = lambda: [
+            {"profile_id": profile_id, "display_name": "当前好友"}
+        ]
+        self.runtime._current_life_appearance_snapshot = AsyncMock(return_value="")
+        self.runtime._resolve_life_identity_profiles = AsyncMock(return_value={})
+        self.runtime._build_person_fact_injection_context = AsyncMock(return_value="")
+
+        async def group_image(prompt, participants, aspect_ratio="", **kwargs):
+            self.calls.append(("group", participants))
+            self.started.set()
+            await self.release.wait()
+            return types.SimpleNamespace(path=self.path)
+
+        self.runtime.media.image.generate_group_image = group_image
+        result = json.loads(await self.runtime.life_image_generate(
+            first,
+            "人物 A 与人物 B 的客厅双人自拍",
+            subject_route="group",
+            friend_outfit="灰色短袖和家居长裤",
+            friend_hair="黑色自然短发",
+            friend_scene_category="home",
+        ))
+        self.assertEqual(result["status"], "pending")
+        first._sender_id = "another-user"
+        await asyncio.wait_for(self.started.wait(), 0.5)
+        await self.finish_tasks()
+        self.assertEqual(self.calls, [("group", [profile_id])])
+        self.assertEqual(first._daily_life_image_request["status"], "sent")
+        self.assertEqual(len(first.sent_messages), 1)
+
     async def test_image_invalid_request_never_returns_pending_or_releases_chat(self):
         self.runtime._release_media_chat_turn = Mock()
         self.runtime._historical_life_appearance_snapshot = AsyncMock(return_value="")

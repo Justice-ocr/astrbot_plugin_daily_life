@@ -28,6 +28,7 @@ class LifeRhythmClock:
         weekly_task: Callable[[], Awaitable[None]] | None = None,
         continuous_life_task: Callable[[], Awaitable[None]] | None = None,
         wardrobe_task: Callable[[], Awaitable[None]] | None = None,
+        browsing_task: Callable[[], Awaitable[None]] | None = None,
         loop_delay_reporter: Callable[[float], None] | None = None,
     ):
         self.config = config
@@ -46,6 +47,7 @@ class LifeRhythmClock:
         self.weekly_task = weekly_task
         self.continuous_life_task = continuous_life_task
         self.wardrobe_task = wardrobe_task
+        self.browsing_task = browsing_task
         self.proactive_revisit_task = proactive_revisit_task
         self.proactive_idle_task = proactive_idle_task
         self.durable_task = durable_task
@@ -100,6 +102,10 @@ class LifeRhythmClock:
             if self.wardrobe_task:
                 self.scheduler.add_job(self.wardrobe_task, "interval", seconds=60,
                     id="wardrobe_life", replace_existing=True)
+
+            if self.browsing_task:
+                self.scheduler.add_job(self.browsing_task, "interval", seconds=60,
+                    id="bili_browsing", replace_existing=True)
 
             proactive = self.config.proactive
             if (

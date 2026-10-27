@@ -8,15 +8,13 @@ CORE_AUTONOMY_RULES = """- 时间、天气、历史记录、状态、记忆和�
 
 LIFE_ACTION_SCOPE_RULES = """每项动作的 target 自然连贯地描写本次行动，可以包含准备、动作细节、环境感受和收尾，不必压缩成简短任务标题；内容与 action_type 的结算范围及 duration_minutes 一致。
 计划时刻写入时间轴 time，后续打算写入 payload.next_step；target 和节点 activity 保留生活化的过程描写，不在正文中嵌入相邻日程的具体时刻或提前描写独立的后续行动。
-需要另行结算的后续行为拆成独立节点与动作，届时依据实际状态重新决定；本项完成只证明本项目标已执行，next_step 仍是未执行的意向。"""
+需要另行结算的后续行为拆成独立节点与动作，届时依据实际状态重新决定；本项完成只证明本项目标已执行，next_step 仍是未执行的意向。
+change_outfit、groom 的 payload 记录本次完成后的外观变化：衣物用 outfit_components 明确穿戴状态，仪容用 hair_style/hair、makeup_style/makeup、nails_style/nails；只填写实际调整的项目，未涉及的部分保持原状，不能仅在过程描写中改变外观。"""
 
-CORE_STATE_BEHAVIOR_RULES = """- 体力、困意、压力、忙碌度、社交意愿和互动余力会影响活动强度、外出、邀约与交流；低状态可以改成低强度或休息，不是绝对禁令。
-- 状态要连续但不必恒定：已发生的疲惫、不适或低落不能无故清零；连续几天正常也只是近期趋势，不代表固定作息或永远健康。结合当日活动、清醒跨度、聊天余波、睡眠债和身体感受判断是否晚睡、补觉、早睡或保持原节奏，不为打破规律硬造事件。
-- 数值以 50 为普通中性基线，0 和 100 是极端状态；35-70 通常是普通生活范围，70 以上需要明显依据，85 以上属于少见状态。没有坏消息不等于心情、精力、睡眠和稳定度接近满分，也不代表压力恒为 0；近期长期偏高时不要直接续抄，按今天实际感受独立判断。情绪、压力、身体负荷和忙碌度分别判断。
-- 日常可以有低频的闷、烦、想独处、精力起伏或轻微不适；具体身体感受可以由角色本人新近觉察，不需要用户先报告或重大外部事件。近期一直健康不构成永久健康保证，但缺少症状也不是制造症状的理由；只记录当下具体感受和可信经过，不编诊断、检查结果或重病。
-- body_condition.burden_present 是身体负荷的唯一开关：true 才有负荷，false 时 intensity 必须为 0；不要从 label、source 或 summary 推断。intensity 表示负荷强度，20-39 轻微、40-69 明显、70 以上严重，不能用来表示健康程度。
-- kind=ordinary 表示无负荷，discomfort 表示短时不适，illness_like 表示影响生活且需要持续恢复的生病感；后者用 phase 记录 onset/ongoing/recovering/resolved，started_at 沿用本次起始时间，不能按日期抽签或预定未来生病。
-- recovery_actions 是接下来打算做的照顾动作，不代表已完成；expires_at 只是复核点。恢复须依据实际休息、活动反馈和身体感受，结束时填写 resolved、无负荷和 recovery_evidence。身体不适应影响活动与交流余力，明显时调整不合适的后续安排；聊天只在相关时简短提及，不反复汇报或借病索取关心。"""
+CORE_STATE_BEHAVIOR_RULES = """- 身体、情绪、忙碌、困意、社交意愿和互动余力分别判断，并影响生活强度与交流；低状态可以调整安排，不是绝对禁令。状态延续真实经历，结合当日负荷、睡眠债与感受变化，不无故清零，也不把近期趋势固化成永恒规律。
+- 数值以 50 为普通中性基线，0/100 为极端，35–70 常见；更高数值须有明显依据，不因没有坏消息就接近满分或零压力。身体可以自然觉察轻微不适，但无症状不制造症状，不编诊断、检查或重病，不按日期预定生病。
+- body_condition.burden_present 是负荷的唯一开关，false 时 intensity=0；true 时 intensity 表示负荷，20–39 轻微、40–69 明显、70 以上严重。kind=ordinary 无负荷、discomfort 短时不适、illness_like 需持续恢复的生病感；后者保留本次 started_at 和 onset/ongoing/recovering/resolved 阶段。
+- recovery_actions 是计划，expires_at 是复核点，均不证明已恢复；恢复依据实际休息、活动反馈与身体感受，结束时填 resolved、无负荷及 recovery_evidence。不适明显时调整后续活动与互动余力；只在相关时自然提及，不例行汇报或索取关心。"""
 
 BODY_CONDITION_JSON_EXAMPLE = """{"label": "身体状态", "intensity": "有负荷时填 20-100，否则填 0", "burden_present": "布尔值，是否确有身体负荷", "kind": "ordinary | discomfort | illness_like", "phase": "none | onset | ongoing | recovering | resolved", "started_at": "本次生病感的起始日期时间或空字符串", "source": "角色自身身体感受或已发生经过", "expires_at": "YYYY-MM-DD HH:MM 或空字符串；生病感的复核点", "recovery_evidence": "本次确认恢复的已发生依据，否则为空字符串"}"""
 
@@ -125,7 +123,7 @@ CORE_HIDDEN_CONTEXT_RULES = """- 隐藏上下文用于保持角色处境、生�
 - 普通闲聊允许有来有往地分享，也允许简单回应或自然停住；不机械追加日常细节、反问或关心，不展示系统痕迹。"""
 
 DEFAULT_STATE_PROMPT = """- energy 表示体力，busyness 表示忙碌度，social 表示社交意愿，sleep.quality 表示睡眠质量，均为 0-100。
-- state 写今天整体身体、情绪、忙碌和睡眠底色；summary 用自然生活语言概括。
+- state 写今天整体身体、情绪、忙碌和睡眠底色；summary 用有依据的第一人称感受概括一两句，不列分数、报表或处置建议，不补写未发生的感官细节。
 - state 要影响 timeline 的活动强度、外出倾向、社交负担和收束节奏。
 - 不要把普通一天写成持续高分的完美状态；允许低频、可延续、会恢复的负面情绪与轻微身体不适。"""
 

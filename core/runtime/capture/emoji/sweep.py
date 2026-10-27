@@ -121,7 +121,7 @@ class EmojiSweepComponent:
             "deleted_files": deleted_files,
         }
         if any(result.values()):
-            logger.info(
+            logger.debug(
                 f"{LOG_PREFIX} 表情素材维护完成：标记缺失 {updated} 个，修复 {repaired} 个，"
                 f"复审历史素材 {revalidated} 条，裁剪记录 {deleted_records} 条，"
                 f"清理不可用记录 {deleted_inactive_records} 条，"

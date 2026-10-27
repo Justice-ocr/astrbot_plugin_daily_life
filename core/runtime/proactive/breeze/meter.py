@@ -15,6 +15,18 @@ from ...markers import LOG_PREFIX
 from typing import Protocol
 
 
+def _decay_observation(state, now):
+    """未开口的历史判断会淡去，明确互动反馈由效果记录独立保留。"""
+    previous = state.get("observed_at")
+    if not isinstance(previous, datetime.datetime):
+        return
+    steps = max(0, int((now - previous).total_seconds() // 1800))
+    if steps:
+        state["quiet_count"] = max(0, int(state.get("quiet_count") or 0) - steps)
+        state["silence_inertia"] = max(0, int(state.get("silence_inertia") or 0) - steps * 20)
+        state["observed_at"] = previous + datetime.timedelta(minutes=steps * 30)
+
+
 class AirMeterComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
@@ -104,6 +116,13 @@ class AirMeterComponent:
 
     def _format_proactive_air_state(self, key: str, now: datetime.datetime) -> str:
         state = self.context._get_proactive_air_state(key)
+        _decay_observation(state, now)
+        if ":FriendMessage:" in key:
+            if state.get("last_effect") == "negative":
+                return "上次主动联系收到明确负向反馈，联系分寸需要结合对方的意愿判断"
+            if state.get("last_effect") == "positive":
+                return "上次主动联系有回应，可以结合眼前生活自然接着来往"
+            return "当前没有明确的互动反馈，结合现在的生活与交流情况独立判断"
         parts = [self._air_label(state)]
         quiet_count = int(state.get("quiet_count") or 0)
         if quiet_count:
@@ -153,6 +172,7 @@ class AirMeterComponent:
         pending_count: int = 1,
     ) -> int:
         state = self.context._get_proactive_air_state(key)
+        _decay_observation(state, now)
         wait_until = state.get("wait_until")
         if isinstance(wait_until, datetime.datetime) and wait_until > now:
             return max(1, int((wait_until - now).total_seconds()))
@@ -412,9 +432,21 @@ class AirMeterComponent:
         state["last_decision"] = decision
         state["last_reason"] = str(payload.get("reason") or "").strip()
         state["silence_reason"] = state["last_reason"]
+        state["observed_at"] = now
 
         if sent:
             self.context._reset_proactive_air_state(key)
+            return
+
+        if ":FriendMessage:" in key and state.get("last_effect") != "negative":
+            # 暂时不说话不等于对方拒绝，不累积成越来越沉默的人格。
+            state["quiet_count"] = 0
+            state["silence_inertia"] = 0
+            state["backoff_until"] = None
+            retry = payload.get("retry_after")
+            if not isinstance(retry, (int, float)) or retry <= 0:
+                retry = min(300, max(120, self.context.config.proactive.private_idle_minutes * 30))
+            state["wait_until"] = now + datetime.timedelta(seconds=min(7200, retry))
             return
 
         state["quiet_count"] = int(state.get("quiet_count") or 0) + 1

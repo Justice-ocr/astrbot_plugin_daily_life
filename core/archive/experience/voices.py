@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from typing import Any
 
 from ...clock import today as life_today
@@ -12,6 +13,7 @@ from ...models import (
     TemporaryExpressionStateRecord,
 )
 from .lines import _pack_lines, _unpack_lines
+from .expressiongrowth import apply_expression_learning, get_expression_context, learning_value, recover_expression_watch
 
 from typing import Protocol
 
@@ -48,6 +50,7 @@ class ExpressionArchiveComponent:
             source=row["source"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            learning=learning_value(row["learning_json"]),
         )
 
     async def upsert_expression_profile(
@@ -81,9 +84,9 @@ class ExpressionArchiveComponent:
                 f"""
                 INSERT INTO expression_profiles(
                     scope, profile_id, label, tone, habits, avoid, evidence,
-                    confidence, source, created_at, updated_at
+                    confidence, source, learning_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(scope, profile_id, label) DO UPDATE SET
                     {updates}
                     source = excluded.source,
@@ -99,6 +102,7 @@ class ExpressionArchiveComponent:
                     self.context._text(item.evidence),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
                     self.context._text(item.source) or "chat_memory",
+                    json.dumps(item.learning, ensure_ascii=False),
                 ),
             )
             self.context._conn.commit()
@@ -109,6 +113,15 @@ class ExpressionArchiveComponent:
             return self.context._compose_expression_profile(row) if row else None
 
         return await self.context._run_db(dbwork)
+
+    async def apply_expression_learning(self, profile: ExpressionProfileRecord, event: dict[str, Any]) -> ExpressionProfileRecord | None:
+        return await apply_expression_learning(self.context, profile, event)
+
+    async def get_expression_context(self, *, scope: str, profile_id: str = "", limit: int = 16) -> list[ExpressionProfileRecord]:
+        return await get_expression_context(self.context, scope=scope, profile_id=profile_id, limit=limit)
+
+    async def recover_expression_watch(self, *, scope: str, max_age_seconds: int = 1800) -> dict[str, Any] | None:
+        return await recover_expression_watch(self.context, scope=scope, max_age_seconds=max_age_seconds)
 
     async def get_expression_profiles(
         self,

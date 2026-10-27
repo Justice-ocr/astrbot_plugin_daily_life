@@ -20,12 +20,13 @@ import aiohttp
 from astrbot.api import logger
 
 from ...clock import TIMEZONE_NAME, now as life_now
+from ...config.options.generate import DEFAULT_RTC_MODEL_NAME as DEFAULT_RTC_MODEL
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.tools import build_time_context
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
 from ...sources.platforms import is_onebot_event
-from .calltranscript import VoiceCallTranscriptTurn
+from .calltranscript import VoiceCallTranscriptTurn, VoiceCallTranscriptView
 from .voicegateway import VoiceCallGateway, voice_gateway_start_error_detail
 from .rtc import (
     RtcTokenBuilder,
@@ -38,8 +39,6 @@ from .rtc import (
 from .calltranscript import VoiceCallTranscriptComponent
 
 
-DEFAULT_RTC_MODEL = "Doubao-Seed-1.6｜250615"
-_LEGACY_RTC_MODEL_NAMES = frozenset({"1.2.6.1", "doubao-seed-1.6"})
 VOICE_CALL_TRANSPORT = "websocket"
 VIDEO_CALL_TRANSPORT = "rtc"
 
@@ -169,7 +168,7 @@ def _rtc_function_calls(payload: Any) -> list[Mapping[str, Any]]:
 
 
 @dataclass(slots=True)
-class VoiceCallInvite:
+class VoiceCallInvite(VoiceCallTranscriptView):
     token_id: str
     scope: str
     user_id: str
@@ -180,10 +179,6 @@ class VoiceCallInvite:
     expires_at: float
     accepted: bool = False
     active: bool = False
-    user_transcript: str = ""
-    bot_transcript: str = ""
-    user_transcript_finalized: bool = False
-    bot_transcript_finalized: bool = False
     transcript_turns: list[VoiceCallTranscriptTurn] = field(default_factory=list)
     event_types: list[str] = field(default_factory=list)
     state: str = "invited"
@@ -591,11 +586,7 @@ class RtcVoiceCallManager:
 
     def _rtc_model_name(self) -> str:
         configured = str(getattr(self.settings, "rtc_model_name", "") or "").strip()
-        # rtc_model_name 独立于旧 WebSocket 的 model，避免把 1.2.6.1
-        # 或旧全双工模型标识送进新版 AI 音视频互动方案。
-        if not configured or configured in _LEGACY_RTC_MODEL_NAMES:
-            return DEFAULT_RTC_MODEL
-        return configured
+        return configured or DEFAULT_RTC_MODEL
 
     def _rtc_start_payload(self, invite: VoiceCallInvite) -> dict[str, Any]:
         settings = self.settings
@@ -1485,13 +1476,6 @@ class RtcVoiceCallManager:
             if turn.role in {"user", "assistant"} and turn.text.strip()
         ]
         if not turns:
-            user_text = str(invite.user_transcript or "").strip()
-            bot_text = str(invite.bot_transcript or "").strip()
-            if user_text:
-                turns.append(VoiceCallTranscriptTurn(role="user", text=user_text))
-            if bot_text:
-                turns.append(VoiceCallTranscriptTurn(role="assistant", text=bot_text))
-        if not turns:
             invite.conversation_history_saved = None
             return False
 
@@ -1603,10 +1587,6 @@ class RtcVoiceCallManager:
                 )
         except Exception as exc:
             logger.warning(f"[日常生活] 实时通话摘要保存失败：{type(exc).__name__}")
-        finally:
-            # 兼容字段不再保留；逐轮转写会在短暂只读窗口结束后由 _prune 释放。
-            invite.user_transcript = ""
-            invite.bot_transcript = ""
 
     @staticmethod
     def _conversation_history_status(invite: VoiceCallInvite) -> str:
@@ -2190,7 +2170,6 @@ class RtcVoiceCallManager:
 
     _replayed_snapshot_start = classmethod(VoiceCallTranscriptComponent._replayed_snapshot_start.__func__)
 
-    _sync_legacy_transcripts = staticmethod(VoiceCallTranscriptComponent._sync_legacy_transcripts)
 
 
 

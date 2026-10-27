@@ -8,7 +8,7 @@ import uuid
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
@@ -22,8 +22,13 @@ from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
-
-from typing import Protocol
+from .perspective import (
+    MEDIA_REPLY_PERSPECTIVE_RULE,
+    bind_media_reply_context,
+    group_participants_required,
+    media_reply_context_text,
+    resolve_group_participants,
+)
 
 PHOTO_SUITE_DEFAULT_COUNT = 3
 PHOTO_SUITE_MIN_COUNT = 2
@@ -511,8 +516,12 @@ class RuntimePhotoSuiteMediaComponent:
                 prompt, _, aspect_ratio = self.context._resolve_image_prompt(event, prompt)
                 if not prompt:
                     return "没有收到套图画面要求。"
-                if route == "group" and len(participant_ids) != 1:
-                    return "请明确选择一位已配置参考图的好友再生成合影套图。"
+                if route == "group":
+                    participant_ids = await resolve_group_participants(
+                        self.context, event, participant_ids
+                    )
+                    if len(participant_ids) != 1:
+                        return group_participants_required(self.context, media="photo_suite")
                 friend_look: dict[str, str] = {}
                 friend_look_persist = False
                 if route == "group":
@@ -604,6 +613,13 @@ class RuntimePhotoSuiteMediaComponent:
 
             assert manifest is not None and manifest_path is not None
             media_event = self.context._snapshot_media_event(event)
+            manifest["reply_perspective"] = await bind_media_reply_context(
+                self.context,
+                media_event,
+                str(manifest.get("subject_route") or "free"),
+                manifest.get("participants") or [],
+            )
+            await self.context._photo_suite_write_manifest(manifest_path, manifest)
             if not manifest.get("shots"):
                 media_event._daily_life_locked_suite_reference = (
                     await self.context._resolve_life_image_reference_async(
@@ -1569,7 +1585,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
                 "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
             )
             dynamic = (
-                f"角色口吻参考：{persona[:800] if persona else '按当前对话中的角色口吻自然回复。'}\n"
+                f"{media_reply_context_text(event, persona)}\n"
                 f"用户画面要求：{prompt}\n"
                 f"本次发送：{sent_count}/{requested_count}；整组数量：{total_count}；"
                 f"未完成位置：{failed_indexes}；是否重拍：{'是' if is_retry else '否'}；"
@@ -1578,7 +1594,11 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
             )
             raw = await call_llm(
                 provider,
-                cache_friendly_prompt(fixed, dynamic, dynamic_title="套图交付结果"),
+                cache_friendly_prompt(
+                    fixed + "\n" + MEDIA_REPLY_PERSPECTIVE_RULE,
+                    dynamic,
+                    dynamic_title="套图交付结果",
+                ),
                 f"daily_life_photo_suite_followup_{uuid.uuid4().hex[:8]}",
                 empty_retries=0,
                 primary_provider_id="",

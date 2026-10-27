@@ -165,7 +165,7 @@ class NativeSightComponent:
                 request_timeout = min(request_timeout, 180) - preparation
                 if request_timeout <= 0:
                     raise NativeVideoError("视频准备超过总时限，未提交理解请求。")
-            logger.info("[日常生活] Gemini 原生视频理解开始：完整文件输入。")
+            logger.debug("[日常生活] Gemini 原生视频理解开始：完整文件输入。")
             result, usage = await self._native_sight_client().analyze(
                 path,
                 route,
@@ -257,7 +257,7 @@ class NativeSightComponent:
                     kind="video_understanding",
                     model=route.model,
                 )
-            logger.info("[日常生活] Gemini 原生视频理解完成：已取得画面时间线。")
+            logger.debug("[日常生活] Gemini 原生视频理解完成：已取得画面时间线。")
         except NativeVideoError as exc:
             logger.warning(f"[日常生活] {exc}")
             insight = SightInsight(

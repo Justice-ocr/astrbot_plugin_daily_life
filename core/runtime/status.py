@@ -179,7 +179,7 @@ class StateRefreshService:
     "optional_cycle": {{"enabled": "布尔值，是否存在可选周期", "label": "可选周期标签", "intensity": 0-100, "source": "依据来源"}},
     "summary": "一句话概括此刻生理节律"
   }},
-  "summary": "一句话概括此刻状态",
+  "summary": "有事实依据的第一人称感受与意愿，一两句，不列数值、处置建议或未发生的感官细节",
   "source": "触发来源原样写入",
   "emotion_arc": {{"label": "此刻最主要的情绪脉络", "valence": -100到100, "arousal": 0-100, "intensity": 0-100, "stability": 0-100, "trigger": "触发点", "evidence": "依据", "influence": "会怎样轻微影响生活判断"}},
   "schedule_replan": {{"should_replan": false, "reason": "明确的新证据或空字符串", "replacements": [{{"replaces_anchor_id": "下方未来锚点的 anchor_id", "time": "HH:MM", "activity": "调整后的自然活动", "status": "短状态", "evidence": "本次触发依据"}}]}}

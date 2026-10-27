@@ -346,8 +346,47 @@ class DailyLifeRuntime:
             action_lock=lambda key: operation_lock(self, key),
         )
 
+    @cached_property
+    def bili_browsing(self):
+        from ..browsing.surfing import BiliBrowseService
+
+        return BiliBrowseService(self)
+
+    async def check_bili_browsing(self) -> None:
+        await self.bili_browsing.tick()
+
+    async def note_bili_browse_incoming(self, event: Any) -> None:
+        if callable(getattr(getattr(self, "archive", None), "_run_db", None)):
+            await self.bili_browsing.incoming(event)
+
+    async def record_bili_browse_delivery(self, scope: str, text: str, *, at: str = "") -> bool:
+        if not callable(getattr(getattr(self, "archive", None), "_run_db", None)):
+            return True
+        try:
+            from ..life.body import instant
+
+            occurred_at = instant(at)
+            await self.bili_browsing.delivered_text(
+                scope, text, at=occurred_at.isoformat(timespec="seconds") if occurred_at else "", defer=True
+            )
+            return True
+        except Exception:
+            logger.warning("[日常生活] 浏览分享回执未能保存，保留原发送结果", exc_info=True)
+            return False
+
+    async def note_bili_browse_delivered(self, event: Any) -> None:
+        result = getattr(event, "get_result", lambda: None)()
+        text = "\n".join(str(getattr(item, "text", "") or "") for item in (getattr(result, "chain", None) or []))
+        await self.record_bili_browse_delivery(self._event_session_id(event), text)
+
+    @cached_property
+    def memory_life(self):
+        from .memorylife import MemoryLifeService
+        return MemoryLifeService(self)
+
     async def check_continuous_life(self) -> None:
         await self.continuous_life.check_continuous_life()
+        self._schedule_background_task(self.memory_life.tick(), label="记忆关联与阅读", key="memory_life", category="maintenance")
 
     async def note_continuous_chat_exchange(self, event: Any) -> None:
         await self.continuous_life.note_continuous_chat_exchange(event)
@@ -750,10 +789,28 @@ class DailyLifeRuntime:
         )
 
     async def record_external_activity_receipt(self, receipt: dict) -> bool:
-        return await self.external_activity.record_external_activity_receipt(receipt)
+        recorded = await self.external_activity.record_external_activity_receipt(receipt)
+        if recorded:
+            return await self.record_bili_browse_delivery(
+                str(receipt.get("target_umo") or ""), str(receipt.get("text") or receipt.get("content") or ""),
+                at=str(receipt.get("occurred_at") or ""),
+            )
+        return recorded
 
     async def record_public_activity(self, receipt: dict) -> bool:
-        return await self.external_activity.record_public_activity(receipt)
+        recorded = await self.external_activity.record_public_activity(receipt)
+        if recorded:
+            scope = ("qzone_broadcast" if receipt.get("scene") == "qzone_post"
+                     else "qzone_thread:" + str(receipt.get("post_id") or receipt.get("event_id") or ""))
+            return await self.record_bili_browse_delivery(
+                scope, str(receipt.get("text") or receipt.get("content") or ""), at=str(receipt.get("occurred_at") or "")
+            )
+        return recorded
+
+    async def bili_browse_share_context(self, scope: str) -> str:
+        if not callable(getattr(getattr(self, "archive", None), "_run_db", None)):
+            return ""
+        return await self.bili_browsing.share_prompt(scope)
 
     async def record_external_activity(
         self,
@@ -938,8 +995,10 @@ class DailyLifeRuntime:
         query: str,
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
+        *,
+        optional_groups: set[str] | None = None,
     ) -> dict[str, list[Any]]:
-        return await self.meaning.rank_semantic_groups(query, groups, limits)
+        return await self.meaning.rank_semantic_groups(query, groups, limits, optional_groups=optional_groups)
 
     async def rank_embedding_groups(
         self,
@@ -987,6 +1046,7 @@ class DailyLifeRuntime:
         return OutboundLogService(
             context=getattr(self, "context", None),
             timing=self.conversation_timing,
+            delivered=lambda scope, text: self.record_bili_browse_delivery(scope, text),
             schedule=lambda coro, **kwargs: self._schedule_background_task(
                 coro, **kwargs
             ),
@@ -2230,6 +2290,10 @@ class DailyLifeRuntime:
 
     _sight_clip_source_is_usable = staticmethod(
         _part_sight_component.SightComponent._sight_clip_source_is_usable
+    )
+
+    _sight_clip_can_resolve = staticmethod(
+        _part_sight_component.SightComponent._sight_clip_can_resolve
     )
 
     event_has_sight_video = ComponentCall(
@@ -3505,6 +3569,12 @@ class DailyLifeRuntime:
         "send_semantic_segments",
     )
 
+    send_share_expression = ComponentCall(
+        "_part_semantic_segment_runtime_component",
+        SemanticSegmentRuntimeComponent,
+        "send_share_expression",
+    )
+
     send_background_text = ComponentCall(
         "_part_semantic_segment_runtime_component",
         SemanticSegmentRuntimeComponent,
@@ -3797,6 +3867,16 @@ class DailyLifeRuntime:
         "_part_proactive_followup_component",
         ProactiveFollowupComponent,
         "schedule_proactive_commitment",
+    )
+
+    reconcile_commitment_contact_tasks = ComponentCall(
+        "_part_proactive_followup_component", ProactiveFollowupComponent,
+        "reconcile_commitment_contact_tasks",
+    )
+
+    run_commitment_contact_review_task = ComponentCall(
+        "_part_proactive_followup_component", ProactiveFollowupComponent,
+        "run_commitment_contact_review_task",
     )
 
     _proactive_commitment_relationship = ComponentCall(
@@ -5130,20 +5210,6 @@ class DailyLifeRuntime:
         "note_life_video_reference_source",
     )
 
-    _video_prompt_duration_seconds = staticmethod(
-        RuntimeVideoMediaComponent._video_prompt_duration_seconds
-    )
-
-    _video_read_number = staticmethod(RuntimeVideoMediaComponent._video_read_number)
-
-    _video_skip_spaces = staticmethod(RuntimeVideoMediaComponent._video_skip_spaces)
-
-    _video_has_duration_unit = staticmethod(
-        RuntimeVideoMediaComponent._video_has_duration_unit
-    )
-
-    _video_clamp_seconds = staticmethod(RuntimeVideoMediaComponent._video_clamp_seconds)
-
     generate_life_video_asset = ComponentCall(
         "_part_runtime_video_media_component",
         RuntimeVideoMediaComponent,
@@ -5464,6 +5530,10 @@ class DailyLifeRuntime:
 
     _direct_life_video_prompt = ComponentCall(
         "_part_stage_voice_component", StageVoiceComponent, "_direct_life_video_prompt"
+    )
+
+    _direct_life_video_plan = ComponentCall(
+        "_part_stage_voice_component", StageVoiceComponent, "_direct_life_video_plan"
     )
 
     _remember_life_image_for_scope = ComponentCall(

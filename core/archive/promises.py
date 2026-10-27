@@ -5,6 +5,7 @@ import json
 import sqlite3
 from typing import Any
 
+from ..clock import local_datetime, now as life_now
 from ..models import CommitmentRecord
 from .schedulelinks import reconcile_scheduled_commitments
 
@@ -63,6 +64,7 @@ class CommitmentArchiveComponent:
             created_at=row["created_at"],
             activated_at=row["activated_at"],
             completed_at=row["completed_at"],
+            follow_up=json.loads(row["follow_up_json"] or "{}"),
         )
 
     async def save_commitment(self, commitment: CommitmentRecord) -> CommitmentRecord:
@@ -122,6 +124,21 @@ class CommitmentArchiveComponent:
                 )
                 if evidence_matches:
                     existing = evidence_matches[0]
+                    # 同一证据的重复提炼可以补齐联系动作，不能覆盖已结算状态。
+                    if (
+                        existing.status in {"active", "scheduled"}
+                        and existing.owner == item.owner == "当前角色"
+                        and item.follow_up.get("action") in {"contact_person", "remind_person"}
+                        and existing.follow_up.get("action") not in {"contact_person", "remind_person"}
+                    ):
+                        existing.follow_up = dict(item.follow_up)
+                        self.context._conn.execute(
+                            "UPDATE commitments SET follow_up_json = ? WHERE id = ?",
+                            (json.dumps(existing.follow_up, ensure_ascii=False), existing.id),
+                        )
+                        self.context._conn.commit()
+                    if not item.follow_up:
+                        item.follow_up = dict(existing.follow_up)
                     incoming_priority = _COMMITMENT_SOURCE_PRIORITY.get(item.source, 0)
                     existing_priority = _COMMITMENT_SOURCE_PRIORITY.get(
                         existing.source, 0
@@ -130,6 +147,9 @@ class CommitmentArchiveComponent:
                         return existing
                     if incoming_priority > existing_priority:
                         item.id = existing.id
+                        item.status = existing.status
+                        item.activated_at = existing.activated_at
+                        item.completed_at = existing.completed_at
                     elif item.source != "chat_batch" or all(
                         str(getattr(existing, field, "") or "").strip()
                         == str(getattr(item, field, "") or "").strip()
@@ -150,7 +170,7 @@ class CommitmentArchiveComponent:
                     SET content = ?, kind = ?, trigger_date = ?, trigger_time = ?,
                         time_window = ?, owner = ?, media_kind = ?, place = ?, status = ?, confidence = ?,
                         source = ?, source_session = ?, source_message_id = ?,
-                        source_message = ?,
+                        source_message = ?, follow_up_json = ?,
                         activated_at = ?, completed_at = ?
                     WHERE id = ?
                     """,
@@ -169,6 +189,7 @@ class CommitmentArchiveComponent:
                         item.source_session,
                         item.source_message_id,
                         item.source_message,
+                        json.dumps(item.follow_up, ensure_ascii=False),
                         item.activated_at,
                         item.completed_at,
                         item.id,
@@ -181,10 +202,10 @@ class CommitmentArchiveComponent:
                     INSERT INTO commitments(
                         content, kind, trigger_date, trigger_time, time_window, owner, media_kind, place,
                         status, confidence, source, source_session,
-                        source_message_id, source_message,
+                        source_message_id, source_message, follow_up_json,
                         activated_at, completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.content,
@@ -201,6 +222,7 @@ class CommitmentArchiveComponent:
                         item.source_session,
                         item.source_message_id,
                         item.source_message,
+                        json.dumps(item.follow_up, ensure_ascii=False),
                         item.activated_at,
                         item.completed_at,
                     ),
@@ -217,15 +239,36 @@ class CommitmentArchiveComponent:
 
         return await self.context._run_db(dbwork)
 
+    async def save_commitment_follow_up(
+        self, commitment_id: int, follow_up: dict[str, Any]
+    ) -> bool:
+        """保存独立联系动作，不重新激活已经结算或取消的约定。"""
+        def dbwork():
+            cursor = self.context._conn.execute(
+                "UPDATE commitments SET follow_up_json = ? WHERE id = ? AND status IN ('active', 'scheduled')",
+                (json.dumps(follow_up, ensure_ascii=False), int(commitment_id)),
+            )
+            self.context._conn.commit()
+            return cursor.rowcount > 0
+
+        return await self.context._run_db(dbwork)
+
     async def get_commitments(
-        self, status: str = "active", limit: int = 20
+        self, status: str = "active", limit: int = 20, *, source_session: str | None = None
     ) -> list[CommitmentRecord]:
         def dbwork():
+            reconcile_scheduled_commitments(self.context._conn)
             params: list[Any] = []
             sql = "SELECT * FROM commitments"
+            conditions = []
             if status:
-                sql += " WHERE status = ?"
+                conditions.append("status = ?")
                 params.append(self.context._text(status))
+            if source_session is not None:
+                conditions.append("(source_session = ? OR source_session = '')")
+                params.append(source_session)
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
             sql += " ORDER BY COALESCE(NULLIF(trigger_date, ''), '9999-12-31'), id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
@@ -251,6 +294,7 @@ class CommitmentArchiveComponent:
         placeholders = ",".join("?" for _ in statuses)
 
         def dbwork():
+            reconcile_scheduled_commitments(self.context._conn)
             rows = self.context._conn.execute(
                 f"""
                 SELECT *
@@ -271,14 +315,151 @@ class CommitmentArchiveComponent:
         def read():
             rows = self.context._conn.execute(
                 """SELECT * FROM commitments WHERE source_session = ?
-                AND status IN ('active', 'scheduled', 'pending')
-                AND (trigger_date = '' OR trigger_date <= ?)
-                ORDER BY trigger_date DESC, id DESC LIMIT ?""",
+                AND kind IN ('plan', 'reminder', 'followup')
+                AND (status IN ('active', 'scheduled', 'pending') OR (
+                    status = 'expired'
+                    AND COALESCE(NULLIF(trigger_date, ''), date(completed_at)) >= date(?, '-7 days')
+                    AND kind = 'plan' AND media_kind IN ('', 'none')))
+                ORDER BY CASE WHEN status = 'expired' THEN 1 ELSE 0 END,
+                    id DESC LIMIT ?""",
                 (scope, before_date, max(1, min(200, int(limit)))),
             ).fetchall()
             return [self.context._compose_commitment(row) for row in rows]
 
         return await self.context._run_db(read)
+
+    async def reconcile_conversation_commitment(
+        self, commitment_id: int, *, scope: str, status: str,
+        source_id: str, evidence: str,
+    ) -> bool:
+        """依据留存原消息同步生活进展，时间流逝和口头交付不能充当完成凭据。"""
+        if not scope or not source_id or not evidence or status not in {
+            "in_progress", "done", "cancelled", "expired",
+        }:
+            return False
+
+        def write():
+            conn = self.context._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                item = conn.execute(
+                    "SELECT * FROM commitments WHERE id = ? AND source_session = ?",
+                    (int(commitment_id), scope),
+                ).fetchone()
+                # 平台消息编号与本地行号各自匹配，全文与会话同时校验。
+                row = conn.execute(
+                    """SELECT * FROM chat_memory_messages WHERE session_id = ?
+                    AND (message_id = ? OR CAST(id AS TEXT) = ?)
+                    AND trim(message_text) = ? AND is_quoted = 0
+                    ORDER BY id DESC LIMIT 1""",
+                    (scope, source_id, source_id, evidence.strip()),
+                ).fetchone()
+                if not item or not row or item["status"] not in {
+                    "active", "scheduled", "pending", "expired",
+                } or item["kind"] != "plan":
+                    return False
+                occurred = local_datetime(row["occurred_at"])
+                if occurred is None or row["role"] not in {"user", "assistant"}:
+                    return False
+                # 已过期记录只允许以当时的完成或取消证据补正，不能重新启动。
+                if item["status"] == "expired" and status == "in_progress":
+                    return False
+                if status != "cancelled" and item["trigger_date"] > occurred.date().isoformat():
+                    return False
+                follow_up = json.loads(item["follow_up_json"] or "{}")
+                if status != "cancelled" and (
+                    item["media_kind"] not in {"", "none"}
+                    or follow_up.get("action") in {"contact_person", "remind_person"}
+                    or conn.execute(
+                        """SELECT 1 FROM durable_tasks WHERE task_key IN (?, ?)
+                        AND status IN ('pending', 'leased') LIMIT 1""",
+                        (f"proactive_commitment:{commitment_id}",
+                         f"commitment_contact_review:{commitment_id}"),
+                    ).fetchone()
+                ):
+                    return False
+                origins = conn.execute(
+                    """SELECT * FROM chat_memory_messages WHERE session_id = ?
+                    AND id <= ? AND is_quoted = 0 AND (
+                        (? != '' AND (message_id = ? OR CAST(id AS TEXT) = ?))
+                        OR (trim(message_text) != '' AND instr(?, trim(message_text)) > 0))
+                    ORDER BY id DESC LIMIT 200""",
+                    (scope, row["id"], item["source_message_id"], item["source_message_id"],
+                     item["source_message_id"], item["source_message"]),
+                ).fetchall()
+                if not origins:
+                    return False
+                if row["role"] == "assistant":
+                    if item["owner"] not in {"当前角色", "共同"}:
+                        return False
+                elif item["owner"] not in {"说话人", "共同"} and status != "cancelled":
+                    return False
+                elif row["is_group"] and not any(
+                    origin["role"] == "user" and row["sender_profile_id"]
+                    and origin["sender_profile_id"] == row["sender_profile_id"]
+                    for origin in origins
+                ):
+                    return False
+                target = "active" if status == "in_progress" else status
+                action_status = "active" if status == "in_progress" else status
+                prior_trace = conn.execute(
+                    "SELECT 1 FROM decision_traces WHERE trace_id = ? AND stage = ?",
+                    (f"commitment:{commitment_id}", f"conversation_{status}"),
+                ).fetchone()
+                unfinished_action = conn.execute(
+                    """SELECT 1 FROM conversation_action_items WHERE commitment_id = ?
+                    AND status != ? LIMIT 1""", (int(commitment_id), action_status),
+                ).fetchone()
+                if prior_trace and target == item["status"] and not unfinished_action:
+                    return False
+                when = occurred.isoformat(sep=" ", timespec="seconds")
+                conn.execute(
+                    "UPDATE commitments SET status = ?, completed_at = ? WHERE id = ?",
+                    (target, "" if target == "active" else when, int(commitment_id)),
+                )
+                actions = conn.execute(
+                    "SELECT id, evidence_json FROM conversation_action_items WHERE commitment_id = ?",
+                    (int(commitment_id),),
+                ).fetchall()
+                for action in actions:
+                    proof = json.loads(action["evidence_json"] or "[]")
+                    if evidence not in proof:
+                        proof.append(evidence)
+                    conn.execute(
+                        """UPDATE conversation_action_items SET status = ?, evidence_json = ?,
+                        updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                        (action_status, json.dumps(proof, ensure_ascii=False), action["id"]),
+                    )
+                if target in {"done", "cancelled", "expired"}:
+                    # 已领取的任务发送前仍需复查承诺；未领取任务立即停止。
+                    conn.execute(
+                        """UPDATE durable_tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'pending' AND (task_key IN (?, ?, ?, ?, ?)
+                        OR (json_valid(payload_json) AND
+                            CAST(json_extract(payload_json, '$.commitment_id') AS TEXT) = ?))""",
+                        (f"proactive_commitment:{commitment_id}", f"commitment_contact_review:{commitment_id}",
+                         f"commitment_photo:{commitment_id}", f"commitment_video:{commitment_id}",
+                         f"invite_contact:{commitment_id}", str(commitment_id)),
+                    )
+                conn.execute(
+                    """INSERT INTO decision_traces
+                    (trace_id, scope, stage, reason_code, decision, evidence_json, outcome)
+                    VALUES (?, ?, ?, 'conversation_action_evidence', ?, ?, ?)
+                    ON CONFLICT(trace_id, stage) DO NOTHING""",
+                    (f"commitment:{commitment_id}", scope, f"conversation_{status}", target,
+                     json.dumps([evidence, source_id], ensure_ascii=False),
+                     "依据对应会话中原始消息同步行动进展"),
+                )
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                # 拒绝更新时没有写入；成功时连同行动项及任务一起提交。
+                if conn.in_transaction:
+                    conn.commit()
+
+        return await self.context._run_db(write)
 
     async def get_open_commitments_for_message(
         self, scope: str, message_id: str
@@ -304,13 +485,25 @@ class CommitmentArchiveComponent:
         evidence: str,
         source_id: str,
     ) -> bool:
-        """以原子操作结算有证据的虚拟动作，不将媒体投递标记为完成。"""
+        """以原子操作结算虚拟动作；对外交付必须有独立回执。"""
         if not scope or not evidence or not source_id:
             return False
 
         def write():
             self.context._conn.execute("BEGIN IMMEDIATE")
             try:
+                row = self.context._conn.execute(
+                    "SELECT follow_up_json FROM commitments WHERE id = ?", (int(commitment_id),)
+                ).fetchone()
+                follow_up = json.loads(row[0] or "{}") if row else {}
+                external_task = self.context._conn.execute(
+                    """SELECT 1 FROM durable_tasks WHERE task_key IN (?, ?)
+                    AND status IN ('pending', 'leased') LIMIT 1""",
+                    (f"proactive_commitment:{commitment_id}", f"commitment_contact_review:{commitment_id}"),
+                ).fetchone()
+                if follow_up.get("action") in {"contact_person", "remind_person"} or external_task:
+                    self.context._conn.commit()
+                    return False
                 cursor = self.context._conn.execute(
                     """UPDATE commitments SET status = 'done', completed_at = ?
                     WHERE id = ? AND source_session = ? AND owner = '当前角色'
@@ -399,6 +592,10 @@ class CommitmentArchiveComponent:
         trigger_time: str = "",
     ) -> bool:
         def dbwork():
+            row = self.context._conn.execute(
+                "SELECT follow_up_json FROM commitments WHERE id = ?",
+                (int(commitment_id),),
+            ).fetchone()
             cursor = self.context._conn.execute(
                 """
                 UPDATE commitments
@@ -412,6 +609,34 @@ class CommitmentArchiveComponent:
                     int(commitment_id),
                 ),
             )
+            follow_up = json.loads(row["follow_up_json"] or "{}") if row else {}
+            if follow_up.get("action") in {"contact_person", "remind_person"}:
+                now = life_now()
+                due = local_datetime(f"{trigger_date} {trigger_time}") if trigger_time else None
+                if due is None:
+                    # 改成模糊时段后按新条件复核，不能继续沿用旧钟点发出招呼。
+                    date_start = local_datetime(f"{trigger_date} 00:00:00")
+                    due = max(now + datetime.timedelta(minutes=10), date_start or now)
+                    follow_up["condition"] = (
+                        f"改期后的联系时机已经到来：日期 {trigger_date or '以最新约定为准'}，"
+                        f"时段 {time_window or '以最新约定为准'}；结合最新交流确认，不提前联系"
+                    )
+                follow_up["execute_at"] = due.isoformat(timespec="seconds")
+                follow_up["observed_at"] = now.isoformat(timespec="seconds")
+                follow_up["expires_at"] = (
+                    (max(due, now) + datetime.timedelta(hours=24)).isoformat(timespec="seconds")
+                    if follow_up.get("condition") else ""
+                )
+                self.context._conn.execute(
+                    "UPDATE commitments SET follow_up_json = ? WHERE id = ?",
+                    (json.dumps(follow_up, ensure_ascii=False), int(commitment_id)),
+                )
+                # 在同一事务中移动待执行任务；执行中的任务还会在发送前复查记录。
+                self.context._conn.execute(
+                    "UPDATE durable_tasks SET available_at = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE task_key = ? AND status = 'pending'",
+                    (due.strftime("%Y-%m-%d %H:%M:%S"), f"proactive_commitment:{int(commitment_id)}"),
+                )
             self.context._conn.execute(
                 """
                 UPDATE conversation_action_items

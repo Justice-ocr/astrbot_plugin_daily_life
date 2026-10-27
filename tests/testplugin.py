@@ -1821,6 +1821,86 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         await runtime.handle_llm_tool_start(next_event, tool, {"preface": "我先看看路线。"})
         self.assertEqual(next_event.sent_messages, ["我先看看路线。"])
 
+    async def test_runtime_empty_intermediate_does_not_hide_argument_preface(self):
+        class Runtime(VoiceSwitchComponent):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(self, scope, text, **kwargs):
+                await kwargs["source_event"].send(text)
+                return True
+
+        class Runner:
+            def done(self):
+                return False
+
+        blank_chains = (
+            [""],
+            [" \n\t"],
+            [fixture_voice_preface_module.Plain("")],
+            [{"type": "plain", "text": " "}],
+            [{"type": "text", "data": {"text": "\n"}}],
+        )
+        runtime = Runtime()
+        for name in sorted(fixture_voice_preface_module.TOOL_PREFACE_REQUIRED_NAMES):
+            for index, chain in enumerate(blank_chains):
+                with self.subTest(tool=name, blank=index):
+                    event = Event(message_id=f"empty-preface-{name}-{index}")
+                    event.set_result(event.chain_result(chain))
+                    with patched_follow_up_runners({event.unified_msg_origin: Runner()}):
+                        self.assertTrue(runtime.suppress_intermediate_tool_result(event))
+                    self.assertIsNone(event.get_result())
+                    tool = types.SimpleNamespace(name=name)
+                    args = {"preface": "这次能拍上了，站好别动。"}
+                    await runtime.handle_llm_tool_start(event, tool, args)
+                    await runtime.handle_llm_tool_start(event, tool, args)
+                    self.assertEqual(event.sent_messages, [args["preface"]])
+                    self.assertEqual(
+                        event._daily_life_delivered_tool_prefaces, [args["preface"]]
+                    )
+
+    async def test_runtime_empty_intermediate_preserves_buffered_visible_preface(self):
+        class Runtime(VoiceSwitchComponent):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(self, scope, text, **kwargs):
+                await kwargs["source_event"].send(text)
+                return True
+
+        runtime = Runtime()
+        event = Event(message_id="visible-then-empty-preface")
+        component = runtime._part_silent_tool_preface_component
+        self.assertTrue(component._remember_tool_preface(
+            event, event.chain_result(["这次能拍上了，站好别动。"])
+        ))
+        self.assertFalse(component._remember_tool_preface(
+            event, event.chain_result([fixture_voice_preface_module.Plain("")])
+        ))
+        await runtime.handle_llm_tool_start(
+            event, types.SimpleNamespace(name="life_video_generate"),
+            {"preface": "等我一下。"},
+        )
+        self.assertEqual(event.sent_messages, ["这次能拍上了，站好别动。"])
+
+    async def test_runtime_empty_preface_is_not_reported_as_delivered(self):
+        class Runtime(VoiceSwitchComponent):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+        runtime = Runtime()
+        event = Event(message_id="empty-preface-not-delivered")
+        component = runtime._part_silent_tool_preface_component
+        chain = runtime._copy_result_chain(event.chain_result([""]))
+        sent, _ = await component._send_visible_tool_preface(
+            event.unified_msg_origin, chain, event
+        )
+        self.assertFalse(sent)
+        self.assertEqual(event.sent_messages, [])
+
     async def test_runtime_keeps_mixed_tool_preface_as_original_message_chain(self):
         class Runtime(VoiceSwitchComponent):
             def __init__(self):
@@ -1873,6 +1953,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 "life_memory_correct",
                 "life_commitment",
                 "life_wardrobe_manage",
+                "life_bili_browse",
+                "life_bili_message",
             },
         )
         self.assertTrue(tool_reply_policy("life_voice_generate").replaces_text)
@@ -2554,6 +2636,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             event,
             text,
             *,
+            duration=0,
             subject_route="free",
             participants=None,
             continue_last_result=False,
@@ -2564,6 +2647,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     "video",
                     event,
                     text,
+                    duration,
                     subject_route,
                     participants,
                     continue_last_result,
@@ -2672,6 +2756,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         video_result = await plugin.tool_life_video_generate(
             event,
             prompt="书店门口双人短视频",
+            duration=5,
             subject_route="group",
             participants=["friend-1"],
             continue_last_result=True,
@@ -2760,6 +2845,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     "video",
                     event,
                     "书店门口双人短视频",
+                    5,
                     "group",
                     ["friend-1"],
                     True,
@@ -2828,52 +2914,44 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stops(list[string])", outing_plan_doc)
         self.assertIn("action(string)", review_doc)
         self.assertIn("prompt(string)", image_doc)
-        self.assertIn("简短、自然的行动确认", image_doc)
-        self.assertIn("想让对方看看这个瞬间", image_doc)
-        self.assertIn("用户没有先索要也可以主动调用", image_doc)
-        self.assertIn("不要先询问用户是否想看", image_doc)
-        self.assertIn("用户明确要图片时默认调用本工具", image_doc)
-        self.assertIn("不因轻微不便反复拒绝", image_doc)
+        self.assertIn("调用前自然确认行动", image_doc)
+        self.assertIn("角色自然想分享的瞬间", image_doc)
+        self.assertIn("明确图片请求", image_doc)
         self.assertIn("prompt(string)", suite_doc)
         self.assertIn("count(int)", suite_doc)
         self.assertIn("retry_indexes(list[int])", suite_doc)
         self.assertIn("默认 3", suite_doc)
-        self.assertIn("2 到 6 张", suite_doc)
-        self.assertIn("不要为了生成套图而自行连续调用多次单图工具", suite_doc)
-        self.assertIn("不能提前声称图片已经完成", image_doc)
-        self.assertIn("只适合用户明确要视频", video_doc)
-        self.assertIn("用户明确要视频时默认调用本工具", video_doc)
-        self.assertIn("不因轻微不便反复拒绝", video_doc)
+        self.assertIn("2 至 6 张", suite_doc)
+        self.assertIn("实际送达后才谈结果", image_doc)
+        self.assertIn("用户明确请求视频", video_doc)
         self.assertNotIn("用户没有先索要也可以", video_doc)
         self.assertIn("subject_route(string)", image_doc)
         self.assertIn("current_character", image_doc)
-        self.assertIn("当前角色作为人物 A、好友作为人物 B", image_doc)
-        self.assertIn("未明确归属的单套穿搭默认只属于人物 A", image_doc)
-        self.assertIn("不要根据姓名或昵称猜测性别", image_doc)
+        self.assertIn("人物 A 是角色、B 是所选好友", image_doc)
+        self.assertIn("单套服装默认属于 A", image_doc)
+        self.assertIn("不由昵称猜性别", image_doc)
         self.assertIn("friend_scene_category(string)", image_doc)
         self.assertIn("current_outfit_change(bool)", image_doc)
         self.assertIn("current_outfit_instruction(string)", image_doc)
-        self.assertIn("仅看效果图时必须为 false", image_doc)
+        self.assertIn("仅看效果图为 false", image_doc)
         self.assertNotIn("friend_style_pool(string)", image_doc)
         self.assertNotIn("friend_outfit_decision(string)", image_doc)
-        self.assertIn("服装属性和造型决定由插件根据场景推导", image_doc)
-        self.assertIn("外出服回家后可以继续穿", image_doc)
         self.assertIn("friend_scene_category(string)", suite_doc)
         self.assertNotIn("friend_style_pool(string)", suite_doc)
         self.assertIn("use_last_reverse_prompt(bool)", image_doc)
         self.assertIn("resolution(string)", image_doc)
         self.assertIn("resolution(string)", suite_doc)
         self.assertIn("resolution(string)", edit_image_doc)
-        self.assertIn("只能填 1K、2K 或 4K", image_doc)
-        self.assertIn("上一条图片反推提示词原文", image_doc)
+        self.assertIn("输出分辨率 1K、2K、4K", image_doc)
+        self.assertIn("本会话上次反推提示词原文", image_doc)
         self.assertIn("参考图", image_doc)
-        self.assertIn("此参数不参与生成", image_doc)
+        self.assertIn("不自动沿用原图", image_doc)
         self.assertIn("reference_image(string)", edit_image_doc)
         self.assertIn("continue_last_result(bool)", edit_image_doc)
-        self.assertIn("当前会话上一张成功生成的图片", edit_image_doc)
-        self.assertIn("不能用它重新生成", edit_image_doc)
-        self.assertIn("不能提前声称已经改好", edit_image_doc)
-        self.assertIn("合影改图仍须把当前角色作为人物 A", edit_image_doc)
+        self.assertIn("会话上一张成功结果", edit_image_doc)
+        self.assertIn("不能以重生成替代连续改图", edit_image_doc)
+        self.assertIn("实际送达后才谈结果", edit_image_doc)
+        self.assertIn("好友档案是身份依据", edit_image_doc)
         self.assertIn("reference_image(string)", reverse_image_doc)
         self.assertIn("source_prompt(string)", reverse_image_doc)
         self.assertIn("profile(string)", reverse_image_doc)
@@ -2889,14 +2967,12 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("friend_scene_category(string)", video_doc)
         self.assertNotIn("friend_style_pool(string)", video_doc)
         self.assertIn("continue_last_result(bool)", video_doc)
-        self.assertIn("没有现成合影时", video_doc)
-        self.assertIn("普通“一起拍个视频”", video_doc)
-        self.assertIn("不要设置 continue_last_result", video_doc)
-        self.assertIn("只有用户明确说", video_doc)
-        self.assertIn("不能仅因上一轮刚发送过图片就设为 true", video_doc)
-        self.assertIn("视频必须沿用首帧中两人的独立属性", video_doc)
-        self.assertIn("简短、自然的行动确认", video_doc)
-        self.assertIn("真实视频发送后再自然补一句", video_doc)
+        self.assertIn("无首帧时通过好友参数确定独立外观", video_doc)
+        self.assertIn("新拍摄默认 continue_last_result=false", video_doc)
+        self.assertIn("明确沿用会话上一张成功图片才设 true", video_doc)
+        self.assertIn("现成首帧沿用画面属性", video_doc)
+        self.assertIn("调用前自然确认行动", video_doc)
+        self.assertIn("视频实际送达后才谈结果", video_doc)
         self.assertIn("target(string)", video_understand_doc)
         self.assertIn(
             "调用前必须根据聊天语境先用角色口吻自然回应一句", video_understand_doc

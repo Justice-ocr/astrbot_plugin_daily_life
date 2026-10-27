@@ -146,7 +146,7 @@ class VolcengineVoiceService:
         if len(audio) > _MAX_AUDIO_BYTES:
             raise RuntimeError("火山引擎语音生成失败：拼接后音频超过 32 MB")
         await asyncio.to_thread(self._write_atomic, path, audio)
-        logger.info(
+        logger.debug(
             f"{LOG_PREFIX} 火山引擎语音生成完成：{path.name}，"
             f"音色类型={route['source_label']}，情绪={route['emotion']}，"
             f"语气={route['style_key']}，分段数={len(text_parts)}"

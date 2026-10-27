@@ -45,7 +45,8 @@ class RuntimeStateTest(unittest.TestCase):
         )
         runtime.build_hidden_life_context(day, now, False, expression_event=event)
         context = json.loads(expression_context_for_event(event))
-        self.assertIn("困倦 85/100", context["state"])
+        self.assertIn("已经躺下，困得只想轻声聊天", context["state"])
+        self.assertNotIn("85/100", context["state"])
         self.assertIn("当前计划", context["activity"])
         self.assertNotIn("正在:", context["activity"])
         self.assertEqual(context["time"], "2026-05-24T22:05")
@@ -132,8 +133,8 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotIn("禁止主动介绍", text)
         self.assertNotIn("否则禁止主动提及", text)
         self.assertIn("隐藏上下文用于保持角色处境", text)
-        self.assertIn("[HiddenScheduleWindow]", text)
-        self.assertIn("全天索引", text)
+        self.assertNotIn("[HiddenScheduleWindow]", text)
+        self.assertNotIn("全天索引", text)
         self.assertNotIn("[HiddenScheduleMemory]", text)
         self.assertEqual(text.count("隐藏上下文用于保持角色处境"), 1)
         self.assertNotIn("<expression_channel>", text)
@@ -218,7 +219,7 @@ class RuntimeStateTest(unittest.TestCase):
         )
 
         self.assertIn("[HiddenState]", text)
-        self.assertIn("体力 30/100", text)
+        self.assertNotIn("体力 30/100", text)
         self.assertIn("今天不太想出门", text)
         self.assertNotIn("回复风格约束", text)
         self.assertNotIn("[HiddenAttentionState]", text)
@@ -406,7 +407,7 @@ class RuntimeStateTest(unittest.TestCase):
         )
 
         self.assertIn("[HiddenResidenceRefresh]", text)
-        self.assertIn("晚上回复朋友的消息", text)
+        self.assertNotIn("晚上回复朋友的消息", text)
         self.assertNotIn("旧城市出门穿搭", text)
         self.assertNotIn("去旧城市公园散步", text)
         self.assertNotIn("旧城市 晴 30°C", text)
@@ -471,26 +472,14 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertLess(
             text.index("[HiddenChatStyle]"), text.index("[HiddenAppearanceHint]")
         )
-        self.assertLess(
-            text.index("[HiddenAppearanceHint]"), text.index("[HiddenMoodHint]")
-        )
         self.assertIn("当前穿搭：浅蓝外套和白裙子", text)
-        self.assertIn("当前穿搭风格：清爽日常风", text)
-        self.assertIn("当前发型名称：松散低马尾", text)
-        self.assertIn("当前发型细节：黑色中长直发，低马尾，碎发自然垂落", text)
-        self.assertIn("当前妆容名称：清透自然妆", text)
-        self.assertIn("当前妆容细节：薄透底妆，淡粉唇色", text)
-        self.assertIn("当前美甲名称：奶白色短圆甲", text)
-        self.assertIn("当前美甲细节：短圆甲面保持奶白色，表面干净", text)
+        self.assertNotIn("当前发型细节", text)
+        self.assertNotIn("当前妆容细节", text)
+        self.assertNotIn("当前美甲细节", text)
+        for tag in ("HiddenMoodHint", "HiddenScheduleWindow", "HiddenWeather", "HiddenMemoHint", "HiddenStatusHint"):
+            self.assertNotIn(f"[{tag}]", text)
         self.assertLess(
-            text.index("[HiddenMoodHint]"), text.index("[HiddenScheduleWindow]")
-        )
-        self.assertLess(
-            text.index("[HiddenScheduleWindow]"), text.index("[HiddenWeather]")
-        )
-        self.assertLess(text.index("[HiddenWeather]"), text.index("[HiddenMemoHint]"))
-        self.assertLess(
-            text.index("[HiddenMemoHint]"), text.index("[HiddenWorldMemory]")
+            text.index("[HiddenAppearanceHint]"), text.index("[HiddenWorldMemory]")
         )
         self.assertLess(
             text.index("[HiddenWorldMemory]"), text.index("[HiddenLifeExperience]")
@@ -498,12 +487,7 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertLess(
             text.index("[HiddenLifeExperience]"), text.index("[HiddenExternalMemory]")
         )
-        self.assertLess(
-            text.index("[HiddenExternalMemory]"), text.index("[HiddenStatusHint]")
-        )
-        self.assertLess(
-            text.index("[HiddenStatusHint]"), text.index("[HiddenActivityHint]")
-        )
+        self.assertLess(text.index("[HiddenExternalMemory]"), text.index("[HiddenActivityHint]"))
         self.assertLess(text.index("[HiddenActivityHint]"), text.index("[HiddenTime]"))
         self.assertLess(text.index("[HiddenTime]"), text.index("[HiddenState]"))
         self.assertLess(
@@ -522,7 +506,7 @@ class RuntimeStateTest(unittest.TestCase):
         )
         self.assertLess(text.index("</daily_life>"), text.index("<expression_channel>"))
 
-    def test_hidden_schedule_window_keeps_compact_index_before_current_context(self):
+    def test_explicit_schedule_window_keeps_compact_index_before_current_context(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
@@ -550,13 +534,11 @@ class RuntimeStateTest(unittest.TestCase):
             ],
         )
 
-        text = runtime.build_hidden_life_context(
-            data,
-            datetime.datetime(2026, 5, 24, 19, 35),
-            using_extended_night=False,
+        text = runtime._part_layer_text_component._format_hidden_schedule_window(
+            data.timeline, datetime.datetime(2026, 5, 24, 19, 35),
+            timeline_date=data.date, meta=data.meta,
         )
 
-        self.assertIn("[HiddenScheduleWindow]", text)
         self.assertIn("当前计划: 12:00 在厨房煮清汤面 [温和]", text)
         self.assertIn("接下来: 20:30 回家整理餐桌 [清爽]", text)
         self.assertIn(
@@ -648,7 +630,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict({})
         runtime._CHAT_MEMORY_RANK_BUDGET_SECONDS = 0.01
 
-        async def slow_rank(query, groups, limits):
+        async def slow_rank(query, groups, limits, **kwargs):
             await asyncio.sleep(1)
             return {key: [] for key in groups}
 
@@ -702,7 +684,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.config = LifeSettings.from_dict({})
         calls = []
 
-        async def rank_once(query, groups, limits):
+        async def rank_once(query, groups, limits, **kwargs):
             calls.append((query, groups, limits))
             return {key: [] for key in groups}
 
@@ -737,7 +719,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.domains = Domains()
         calls = []
 
-        async def rank_once(query, groups, limits):
+        async def rank_once(query, groups, limits, **kwargs):
             calls.append((query, groups, limits))
             return {key: [] for key in groups}
 

@@ -1104,7 +1104,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         sessions = await self.archive.get_activity_sessions(limit=0)
         self.assertEqual(sessions[0]["status"], "completed")
 
-    async def test_legacy_expired_outfit_change_is_repaired_on_settlement(self):
+    async def test_expired_outfit_without_execution_evidence_stays_expired(self):
         action_id = "2026-08-03:change_outfit:legacy"
         outfit = "浅绿色短袖配靛蓝色牛仔短裤"
         detailed_outfit = "浅绿色纯棉短袖上衣，搭配靛蓝色高腰牛仔短裤和白色帆布鞋"
@@ -1148,16 +1148,13 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             now=datetime.datetime(2026, 8, 3, 12, 32),
         )
 
-        self.assertEqual(outcomes[0].status, "committed")
-        self.assertEqual(day.timeline[0].execution_state, "completed")
+        self.assertEqual(outcomes, [])
+        self.assertEqual(day.timeline[0].execution_state, "expired")
         self.assertEqual(day.outfit, detailed_outfit)
-        self.assertIn(detailed_outfit, day.outfit_history.values())
-        expirations = json.loads(day.meta["life_action_expirations"])
-        self.assertNotIn(action_id, expirations)
+        self.assertIn(action_id, json.loads(day.meta["life_action_expirations"]))
         sessions = await self.archive.get_activity_sessions(limit=0)
-        self.assertEqual(sessions[0]["status"], "completed")
-        receipts = await self.archive.get_life_action_receipts(action_id=action_id)
-        self.assertEqual(receipts[0].status, "simulated")
+        self.assertEqual(sessions[0]["status"], "expired")
+        self.assertEqual(await self.archive.get_life_action_receipts(action_id=action_id), [])
 
     async def test_insufficient_pantry_rejects_simulated_meal(self):
         await self.archive.adjust_pantry_item("鸡蛋", 1, unit="个", source="test")

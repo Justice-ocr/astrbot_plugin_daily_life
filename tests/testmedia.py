@@ -931,11 +931,11 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_form_field(request.form, "image"), b"reference")
         self.assertEqual(request.reference_image_count, 1)
 
-    def test_siciyuanweilai_edit_request_uses_documented_json_payload(self):
+    def test_siciyuanweilai_flare_edit_request_preserves_multiple_references(self):
         route = ImageRoute(
             api_url="https://siciyuanweilai.com",
             api_key="relay-key",
-            model="gpt-image-2",
+            model="gpt-image-2.5-flare",
             label="GPT Image",
             protocol="openai",
             resolution="1K",
@@ -970,7 +970,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             request.payload,
             {
-                "model": "gpt-image-2",
+                "model": "gpt-image-2.5-flare",
                 "prompt": (
                     "改成雨夜街景\n参考随请求提供的图片线索，保持画面要求自然一致。"
                 ),
@@ -1035,22 +1035,44 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                             for content, mime in references
                         ]
 
+                        base_model = model in {"gpt-image-2", "gpt-image-2.5"}
                         request = openai_image.build_request(
                             route, parts, resolution="1K", aspect_ratio="1:1"
                         )
 
+                        if base_model and reference_count > 1:
+                            self.assertIsNone(request.payload)
+                            fields = request.form.fields
+                            values = {name: value for name, value, _ in fields if name != "image"}
+                            self.assertNotIn("quality", values)
+                            self.assertEqual(values["model"], model)
+                            self.assertEqual(values["response_format"], "b64_json")
+                            self.assertEqual(request.reference_image_count, reference_count)
+                            self.assertTrue(request.url.endswith("/v1/images/edits"))
+                            self.assertEqual(
+                                [(value, options["content_type"]) for name, value, options in fields if name == "image"],
+                                references,
+                            )
+                            continue
                         self.assertIsNone(request.form)
                         self.assertEqual(request.payload["model"], model)
                         self.assertNotIn("quality", request.payload)
                         self.assertEqual(request.payload["response_format"], "b64_json")
                         self.assertNotIn("extra_fields", request.payload)
-                        self.assertNotIn("image", request.payload)
                         self.assertEqual(request.reference_image_count, reference_count)
                         endpoint = "edits" if reference_count else "generations"
                         self.assertTrue(request.url.endswith(f"/v1/images/{endpoint}"))
                         if not reference_count:
                             self.assertNotIn("images", request.payload)
+                            self.assertNotIn("image", request.payload)
                             continue
+                        if base_model:
+                            self.assertNotIn("images", request.payload)
+                            prefix, encoded = request.payload["image"].split(",", 1)
+                            self.assertEqual(prefix, f"data:{references[0][1]};base64")
+                            self.assertEqual(base64.b64decode(encoded), references[0][0])
+                            continue
+                        self.assertNotIn("image", request.payload)
                         self.assertEqual(
                             len(request.payload["images"]), reference_count
                         )
@@ -1758,8 +1780,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             },
         }
         for model in (
-            "gpt-image-2",
-            "gpt-image-2.5",
             "gpt-image-2.5-flare",
             "gpt-image-2.5-sunburst",
         ):
@@ -2027,12 +2047,10 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 calls.append((url, headers or {}, json, data, timeout))
                 if url.endswith("/async"):
                     return _Response(status=404)
-                if not (json or {}).get("images") or any(
-                    not image.get("image_url") for image in json["images"]
-                ):
+                if not (json or {}).get("image"):
                     return _Response(
                         status=400,
-                        text='{"error":{"message":"images[].image_url is required",'
+                        text='{"error":{"message":"image is required",'
                         '"type":"invalid_request_error"}}',
                     )
                 if json.get("response_format") != "b64_json":
@@ -2087,7 +2105,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("quality", calls[0][2])
         self.assertEqual(calls[0][2]["response_format"], "b64_json")
         self.assertEqual(generated.path.read_bytes(), output_bytes)
-        image_url = calls[0][2]["images"][0]["image_url"]
+        image_url = calls[0][2]["image"]
         self.assertTrue(image_url.startswith("data:image/png;base64,"))
         self.assertEqual(
             base64.b64decode(image_url.split(",", 1)[1]), reference.read_bytes()
@@ -2655,6 +2673,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                     "enabled": True,
                     "base_url": "https://relay.example",
                     "api_key": "key-a",
+                    "duration": 6,
                     "resolution": "1080p",
                     "poll_interval_seconds": 1,
                 },
@@ -2687,7 +2706,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(calls[0][3]["aspect_ratio"], "9:16")
         self.assertEqual(calls[0][3]["resolution"], "1080p")
-        self.assertEqual(calls[0][3]["seconds"], "8")
+        self.assertEqual(calls[0][3]["seconds"], "6")
         self.assertNotIn("image", calls[0][3])
         self.assertNotIn("duration", calls[0][3])
         self.assertNotIn("size", calls[0][3])

@@ -264,6 +264,8 @@ class ContinuityArchiveComponent:
 
         if category not in {"daily", "experience"}:
             return
+        if category == "experience":
+            self.context._conn.execute("DELETE FROM meta WHERE key='bili_browse_state' OR key LIKE 'bili_social:%'")
         world = self.context._continuous_world_unlocked()
         if not world:
             return
@@ -316,7 +318,9 @@ class ContinuityArchiveComponent:
             (json.dumps(world, ensure_ascii=False), _WORLD_KEY),
         )
         # 清空后立即撤下聊天投影；下一次巡检再投影仍然保留的事实。
-        self.context._conn.execute("DELETE FROM day_meta WHERE key='continuous_life_context'")
+        self.context._conn.execute(
+            "DELETE FROM day_meta WHERE key IN ('continuous_life_context', 'continuous_chat_context')"
+        )
 
     async def get_continuous_life(self) -> dict[str, Any]:
         return await self.context._run_db(self.context._continuous_world_unlocked)

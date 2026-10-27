@@ -17,6 +17,23 @@ class VoiceCallTranscriptTurn:
     interrupted: bool = False
 
 
+class VoiceCallTranscriptView:
+    """按需派生界面摘要，逐轮记录是唯一转写事实。"""
+
+    __slots__ = ()
+
+    def _role_transcript(self, role: str) -> str:
+        return "\n".join(turn.text for turn in self.transcript_turns if turn.role == role and turn.text)
+
+    def _role_finalized(self, role: str) -> bool:
+        return next((turn.finalized for turn in reversed(self.transcript_turns) if turn.role == role), False)
+
+    user_transcript = property(lambda self: self._role_transcript("user"))
+    bot_transcript = property(lambda self: self._role_transcript("assistant"))
+    user_transcript_finalized = property(lambda self: self._role_finalized("user"))
+    bot_transcript_finalized = property(lambda self: self._role_finalized("assistant"))
+
+
 class VoiceCallTranscriptComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
@@ -87,7 +104,6 @@ class VoiceCallTranscriptComponent:
             )
         if finalized:
             turn.finalized = True
-        cls._sync_legacy_transcripts(invite)
 
     @staticmethod
     def _find_transcript_turn(
@@ -231,12 +247,3 @@ class VoiceCallTranscriptComponent:
             return second_start
         return None
 
-    @staticmethod
-    def _sync_legacy_transcripts(invite: Any) -> None:
-        for role, text_field, finalized_field in (
-            ("user", "user_transcript", "user_transcript_finalized"),
-            ("assistant", "bot_transcript", "bot_transcript_finalized"),
-        ):
-            turns = [turn for turn in invite.transcript_turns if turn.role == role]
-            setattr(invite, text_field, "\n".join(turn.text for turn in turns if turn.text))
-            setattr(invite, finalized_field, bool(turns and turns[-1].finalized))

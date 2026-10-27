@@ -329,7 +329,7 @@ class SemanticSegmentTest(unittest.TestCase):
                 self.assertIn(event.message_str, prompt)
                 if expected:
                     synthesize.assert_awaited_once_with(
-                        "这才乖 快闭上眼\n晚安啦", emotion="困倦中轻柔亲近的晚安",
+                        source, emotion="困倦中轻柔亲近的晚安",
                         emotion_category="neutral", voice_style="soft",
                     )
                 else:

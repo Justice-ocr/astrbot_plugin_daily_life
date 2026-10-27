@@ -16,13 +16,16 @@ from astrbot.core.agent.tool import FunctionTool
 
 from ..life.wardrobe import OUTFIT_SCENE_CATEGORY_ENUM
 
-# 本地更新只需在实际结果产生后回复一次。
+# 本地更新和短账号操作只需在实际结果产生后回复一次。
 TOOL_RESULT_ONLY_NAMES = frozenset(
     {
+        "life_bili_browse",
+        "life_bili_message",
         "add_memo_for_tomorrow",
         "life_shared_activity",
         "life_object",
         "life_memory_correct",
+        "life_knowledge",
         "life_commitment",
         "life_wardrobe_manage",
     }

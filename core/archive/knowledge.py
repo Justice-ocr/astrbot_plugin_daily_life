@@ -2157,7 +2157,17 @@ class CognitionArchiveComponent:
                 sql += " LIMIT ?"
                 params.append(int(limit))
             rows = self.context._conn.execute(sql, tuple(params)).fetchall()
-            return [self.context._compose_grounded_diary(row) for row in rows]
+            from .memorylife import MemoryLifeArchive
+            living = MemoryLifeArchive(self.context)
+            result = []
+            for row in rows:
+                if row["source"] == "memory_life":
+                    refs = json.loads(row["evidence_ids_json"])
+                    sources = {p[1]: p[2] for ref in refs if len(p := str(ref).split(":")) == 3 and p[0] == "memory"}
+                    if not living._valid_sources(sources, row["scope"]):
+                        continue
+                result.append(self.context._compose_grounded_diary(row))
+            return result
 
         return await self.context._run_db(dbwork)
 

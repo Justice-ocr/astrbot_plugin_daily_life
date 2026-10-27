@@ -42,7 +42,7 @@ class GarmentArchiveComponentContext(Protocol):
     _conn: Any
     _record_wardrobe_wear_unlocked: Any
     _run_db: Any
-    _wardrobe_bootstrap_unlocked: Any
+    _synchronize_wardrobe_unlocked: Any
     _wardrobe_event_unlocked: Any
     _wardrobe_item_state_unlocked: Any
     _wardrobe_action_issue_unlocked: Any
@@ -54,9 +54,12 @@ class GarmentArchiveComponent:
     def __init__(self, context: GarmentArchiveComponentContext) -> None:
         self.context = context
 
-    def _wardrobe_bootstrap_unlocked(self) -> None:
+    def _synchronize_wardrobe_unlocked(self, image_hash: str = "", *, repair_legacy: bool = False) -> None:
+        """新增/重审目录时同步同图单品；历史修复只由版本迁移显式启用。"""
         rows = self.context._conn.execute(
             "SELECT id,kind,source_image_hash,last_used_at,created_at,attributes_json FROM style_catalog_items"
+            + (" WHERE source_image_hash=?" if image_hash else ""),
+            (image_hash,) if image_hash else (),
         ).fetchall()
         groups: dict[str, set[str]] = {}
         for row in rows:
@@ -68,7 +71,7 @@ class GarmentArchiveComponent:
         legacy_units = {
             key
             for key, unit in units.items()
-            if unit["ownership"] == "candidate"
+            if repair_legacy and unit["ownership"] == "candidate"
             and unit["revision"] == 0
             and unit["condition"] == "clean"
             and not unit["acquired_at"]
@@ -194,7 +197,7 @@ class GarmentArchiveComponent:
                     priority = (key in saved_units, row["kind"] == role)
                     if key not in recoveries or priority >= recoveries[key][0]:
                         recoveries[key] = (priority, facts)
-                # 修复旧版入库记录，不虚构穿着经历或重置洗护状态。
+                # 目录确认入库时同步归属，保留已有穿着与洗护事实。
                 if (
                     admitted or saved_units.get(key, {}).get("ownership") == "owned"
                 ) and units[key]["ownership"] == "candidate":
@@ -285,7 +288,6 @@ class GarmentArchiveComponent:
 
     def _wardrobe_action_issue_unlocked(self, raw_ids, *, retained_ids=()) -> str:
         """在世界结算事务内复核衣物，防止判断后被送洗。"""
-        self.context._wardrobe_bootstrap_unlocked()
         if not self.context._conn.execute(
             "SELECT 1 FROM wardrobe_links LIMIT 1"
         ).fetchone():
@@ -376,7 +378,6 @@ class GarmentArchiveComponent:
 
     async def get_wardrobe_snapshot(self) -> dict:
         def read():
-            self.context._wardrobe_bootstrap_unlocked()
             ids = [
                 row[0]
                 for row in self.context._conn.execute(
@@ -440,7 +441,6 @@ class GarmentArchiveComponent:
         def write():
             self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                self.context._wardrobe_bootstrap_unlocked()
                 records = [
                     self.context._conn.execute(
                         "SELECT status,kind,confidence FROM style_catalog_items WHERE id=?",
@@ -495,7 +495,6 @@ class GarmentArchiveComponent:
             ]
         )
 
-        self.context._wardrobe_bootstrap_unlocked()
         # 后到的旧回执不能把当前穿着退回去。
         latest = dict(
             self.context._conn.execute(
@@ -700,7 +699,6 @@ class GarmentArchiveComponent:
         def write():
             self.context._conn.execute("BEGIN IMMEDIATE")
             try:
-                self.context._wardrobe_bootstrap_unlocked()
                 keys = {
                     r[0]
                     for i in ids

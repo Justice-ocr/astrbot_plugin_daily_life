@@ -157,7 +157,19 @@ CREATE TABLE IF NOT EXISTS expression_profiles (
             source TEXT NOT NULL DEFAULT 'chat_memory',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            learning_json TEXT NOT NULL DEFAULT '{}',
             UNIQUE(scope, profile_id, label)
+        );
+CREATE TABLE IF NOT EXISTS expression_learning_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL REFERENCES expression_profiles(id) ON DELETE CASCADE,
+            event_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            outcome TEXT NOT NULL DEFAULT 'neutral',
+            source_scope TEXT NOT NULL DEFAULT '',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(profile_id, event_key)
         );
 CREATE TABLE IF NOT EXISTS expression_reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

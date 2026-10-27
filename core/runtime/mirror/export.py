@@ -265,7 +265,7 @@ class SnapshotExportComponent:
             self.context.archive.get_physiological_rhythm_trend(days=7, limit=8),
             self.context.archive.get_reply_effects(limit=8),
             self.context.archive.get_memory_corrections(limit=8, unapplied_only=True),
-            self.context.archive.get_expression_profiles(limit=8),
+            self.context.archive.get_expression_context(limit=16, scope="self"),
             self.context.archive.get_expression_reviews(limit=8),
             self.context.archive.get_behavior_patterns(limit=8),
             self.context.archive.get_behavior_scenes(limit=8),
@@ -492,6 +492,9 @@ class SnapshotExportComponent:
                 result[key].append(text)
 
         for item in profiles:
+            learning = cls._share_record_value(item, "learning", {}) or {}
+            if learning.get("status") in {"cooling", "emerging"}:
+                continue
             append_unique("tones", cls._share_record_value(item, "tone"))
             for value in cls._share_record_value(item, "habits", []) or []:
                 append_unique("habits", value)
@@ -618,7 +621,6 @@ class SnapshotExportComponent:
             focus_targets,
             focus_slots,
             scoped_profiles,
-            person_profiles,
             temporary_states,
             behavior_patterns,
             behavior_scenes,
@@ -635,14 +637,9 @@ class SnapshotExportComponent:
             self.context.archive.get_focus_slots(limit=6, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.context.archive.get_expression_profiles(limit=4, scope=experience_scope)
-            if experience_scope
-            else asyncio.sleep(0, result=[]),
-            self.context.archive.get_expression_profiles(
-                limit=4, scope=experience_scope, profile_id=profile_id
-            )
-            if is_private and profile_id
-            else asyncio.sleep(0, result=[]),
+            self.context.archive.get_expression_context(
+                limit=16, scope=experience_scope or "self", profile_id=profile_id
+            ),
             self.context.archive.get_temporary_expression_states(
                 limit=3, scope=experience_scope
             )
@@ -673,7 +670,7 @@ class SnapshotExportComponent:
 
         profiles = []
         profile_keys: set[tuple[str, str, str]] = set()
-        for item in [*scoped_profiles, *person_profiles]:
+        for item in scoped_profiles:
             key = (
                 self.context._share_text(item, "scope", 160),
                 self.context._share_text(item, "profile_id", 120),
@@ -695,6 +692,10 @@ class SnapshotExportComponent:
             item
             for item in profiles
             if item in scoped_profiles
+            or (
+                self.context._share_text(item, "scope", 160) == "self"
+                and not self.context._share_text(item, "profile_id", 120)
+            )
             or (
                 is_private
                 and self.context._share_text(item, "scope", 160) == experience_scope
@@ -765,14 +766,21 @@ class SnapshotExportComponent:
         context = await self._build_share_base_context(target_umo)
         if not context:
             return {}
+        browser = (getattr(self.context, "bili_browsing", None)
+                   if callable(getattr(getattr(self.context, "archive", None), "_run_db", None)) else None)
+        if browser is not None:
+            context["bili_experiences"] = await browser.context(target_umo or "public", sharing=True)
         context["share_guidance"] = await self._share_guidance(
             target_umo, list(context.get("relationships") or [])
         )
         from .sharing import share_continuity, share_timing
+        from ..contact import contact_rhythm
 
         try:
             context["conversation_timing"] = await share_timing(self.context, target_umo)
+            context["contact_rhythm"] = await contact_rhythm(self.context, target_umo, life_now())
         except Exception as exc:
+            context["contact_rhythm"] = {"ready": False}
             logger.debug(f"[分享上下文] 会话时间暂不可用：{type(exc).__name__}")
         if context.get("current_facts", {}).get("valid") is not False:
             try:

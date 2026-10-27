@@ -244,6 +244,19 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         scope="private:1",
         date="2026-09-24",
     ):
+        serial = getattr(self, "_execution_serial", 0) + 1
+        self._execution_serial = serial
+        origin_id, progress_id = f"origin:{serial}", f"progress:{serial}"
+        await self.archive.enqueue_chat_memory_message({
+            "event_key": origin_id, "session_id": "private:1", "message_id": origin_id,
+            "role": "assistant", "message_text": "我一会儿收拾小桌。",
+            "occurred_at": "2026-09-24T11:00:00",
+        })
+        row = {
+            "event_key": progress_id, "session_id": scope, "message_id": progress_id,
+            "role": role, "message_text": message, "occurred_at": "2026-09-24T12:00:00",
+        }
+        row["id"], _ = await self.archive.enqueue_chat_memory_message(row)
         commitment = await self.archive.save_commitment(
             CommitmentRecord(
                 content="收拾小桌",
@@ -251,6 +264,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
                 owner=owner,
                 media_kind=media_kind,
                 source_session="private:1",
+                source_message_id=origin_id, source_message="我一会儿收拾小桌。",
                 trigger_date=date,
                 status="scheduled",
             )
@@ -259,24 +273,16 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         runtime.archive = self.archive
         batch = {
             "session_id": scope,
-            "messages": [
-                {
-                    "id": 1,
-                    "message_id": "m1",
-                    "role": role,
-                    "message_text": message,
-                    "occurred_at": "2026-09-24T12:00:00",
-                }
-            ],
+            "messages": [row],
         }
         batch.update(await runtime._chat_execution_context(batch))
         payload = {
             "worth_saving": False,
             "execution_updates": [
                 {
-                    "completed": True,
+                    "status": "done",
                     "commitment_ids": [commitment.id],
-                    "source_message_id": "m1",
+                    "source_message_id": progress_id,
                     "evidence": message,
                     "action_id": "",
                 }
@@ -295,10 +301,14 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
     async def test_sent_reply_without_platform_id_uses_persistent_row_id(self):
         item, runtime, batch, payload = await self._execution()
         batch["messages"][0]["message_id"] = ""
-        payload["execution_updates"][0]["source_message_id"] = "1"
+        row_id = str(batch["messages"][0]["id"])
+        await self.archive._run_db(lambda: self.archive._conn.execute(
+            "UPDATE chat_memory_messages SET message_id='' WHERE id=?", (row_id,)
+        ))
+        payload["execution_updates"][0]["source_message_id"] = row_id
         prompt = ChatMemoryBatchComponent()._part_chat_memory_batch_component._build_chat_memory_batch_prompt(batch)
         source = json.loads(prompt.split("输入批次：", 1)[1])
-        self.assertEqual(source["messages"][0]["message_id"], "1")
+        self.assertEqual(source["messages"][0]["message_id"], row_id)
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 1)
         self.assertEqual((await self.archive.get_commitment(item.id)).status, "done")
 
@@ -329,7 +339,6 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         for kwargs in (
             {"role": "user"},
             {"owner": "说话人"},
-            {"owner": "共同"},
             {"media_kind": "photo"},
             {"media_kind": "video"},
             {"scope": "private:2"},
@@ -348,7 +357,8 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         item, runtime, batch, payload = await self._execution(
             message="我还没有收拾小桌。"
         )
-        payload["execution_updates"][0]["completed"] = False
+        payload["execution_updates"][0].pop("status")
+        payload["execution_updates"][0]["completed"] = True
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 0)
         self.assertEqual((await self.archive.get_commitment(item.id)).status, "scheduled")
 

@@ -340,6 +340,13 @@ class ContinuousLifeService:
         if action is None:
             await self._close_continuous_run(run, "cancelled", "原行动已被调整", now)
             return
+        if action.action_type == "study" and action.payload.get("knowledge_source_id"):
+            readings = await self._archive().memory_life.reading_receipts(
+                action.action_id, int(action.payload["knowledge_source_id"])
+            )
+            if not readings:
+                await self._close_continuous_run(run, "failed", "本次阅读尚未形成可核对的原文理解，阅读进度保持不变", now)
+                return
         reason = f"自主执行器已记录开始和 {run['active_seconds'] / 60:.1f} 分钟执行过程：{run['reason']}"
         completed_at = instant(run.get("finished_at")) or now
         valid, validation_reason = (

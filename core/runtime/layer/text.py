@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 from typing import Any
 
 from ..expression import remember_expression_context
@@ -9,8 +8,8 @@ from ..expression import remember_expression_context
 from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
-from ...life.condition import format_physiological_rhythm_prompt
 from ...life.continuity import observation_pending, run_status_label
+from ...life.chatview import chat_projection_from_day, read_execution
 from ...life.restdelay import format_rest_delay_hint, is_rest_activity
 from ...life.tools import (
     build_time_context,
@@ -111,68 +110,15 @@ class LayerTextComponent:
         if not state_dict:
             return ""
 
-        scores = []
-        for label, key in (
-            ("体力", "energy"),
-            ("心情值", "mood_score"),
-            ("忙碌", "busyness"),
-            ("社交", "social"),
-            ("压力", "stress"),
-            ("困倦", "sleepiness"),
-            ("互动", "interaction_capacity"),
-            ("摸鱼", "fishing"),
-            ("注意开放", "attention_openness"),
-        ):
-            value = state_dict.get(key)
-            if value is not None and value != "":
-                scores.append(f"{label} {value}/100")
-
-        mood = self.context._hidden_text(state_dict.get("mood"), 32)
-        summary = self.context._hidden_text(state_dict.get("summary"), 120)
-        watch_state = self.context._hidden_text(state_dict.get("watch_state"), 32)
-        interrupt_level = self.context._hidden_text(state_dict.get("interrupt_level"), 32)
-        interrupt_reason = self.context._hidden_text(state_dict.get("interrupt_reason"), 100)
-        sleep = (
-            state_dict.get("sleep") if isinstance(state_dict.get("sleep"), dict) else {}
-        )
-        sleep_depth = self.context._hidden_text(sleep.get("depth"), 24)
-        sleep_summary = self.context._hidden_text(sleep.get("summary"), 80)
-        rhythm = (
-            state_dict.get("physiological_rhythm")
-            if isinstance(state_dict.get("physiological_rhythm"), dict)
-            else {}
-        )
-        rhythm_text = (
-            self.context._hidden_text(format_physiological_rhythm_prompt(rhythm), 180)
-            if rhythm
-            else ""
-        )
-
-        lines = []
-        base = "；".join(scores)
+        # 数值、打断门槛和睡眠分层用于生活决策；聊天只读取已生成的感受。
+        summary = " ".join(str(state_dict.get("summary") or "").split())
+        mood = " ".join(str(state_dict.get("mood") or "").split())
+        # 按完整感受保留；不裁去句尾的否定、条件或时间限定。
+        summary = summary if len(summary) <= 360 else ""
+        mood = mood if len(mood) <= 32 else ""
+        lines = [f"- 此刻感受：{summary}"] if summary else []
         if mood:
-            base = f"{base}；心情：{mood}" if base else f"心情：{mood}"
-        if summary:
-            base = f"{base}；整体：{summary}" if base else f"整体：{summary}"
-        if base:
-            lines.append(f"- 当前身体与情绪底色：{base}")
-
-        attention = "；".join(
-            part
-            for part in (
-                f"观看状态 {watch_state}" if watch_state else "",
-                f"打断门槛 {interrupt_level}" if interrupt_level else "",
-                f"睡眠层级 {sleep_depth}" if sleep_depth else "",
-                f"睡眠 {sleep_summary}" if sleep_summary else "",
-                f"打断原因：{interrupt_reason}" if interrupt_reason else "",
-            )
-            if part
-        )
-        if attention:
-            lines.append(f"- 注意力与睡眠线索：{attention}")
-        if rhythm_text:
-            lines.append(f"- 生理节律：{rhythm_text}")
-
+            lines.append(f"- 心情：{mood}")
         return "[HiddenState]\n" + "\n".join(lines) if lines else ""
 
     def _format_timeline_item_compact(
@@ -373,6 +319,7 @@ class LayerTextComponent:
         recent_video: str = "",
         expression_event: Any = None,
         include_rules: bool = True,
+        detail_context: str = "",
     ) -> str:
         meta = data.meta or {}
         residence_context_stale = (
@@ -390,18 +337,15 @@ class LayerTextComponent:
                 now,
                 using_extended_night,
             )
-            try:
-                execution = json.loads(meta.get("continuous_execution") or "{}")
-            except (ValueError, TypeError):
-                execution = {}
+            execution = read_execution(data)
             if execution.get("status") in {"running", "paused", "ready", "settling"}:
-                activity = f"{execution['action']['target']}（{run_status_label(execution)}）"
-        parts = [
-            "\n\n<daily_life>",
-            "\n[UseRule] 以下内容是角色日常生活背景。按当前话题自然引用有依据的细节，"
-            "无需逐项汇报，也不要把未来计划说成已经发生。",
-        ]
+                target = (execution.get("action") or {}).get("target")
+                if target:
+                    activity = f"{target}（{run_status_label(execution)}）"
+        parts = ["\n\n<daily_life>"]
         if include_rules:
+            parts.append("\n[UseRule] 以下内容是角色日常生活背景。按当前话题自然引用有依据的细节，"
+                         "无需逐项汇报，也不要把未来计划说成已经发生。")
             parts.append(f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}")
         style_hint = self.context.build_hidden_chat_style_hint() if include_rules else ""
         if style_hint:
@@ -414,30 +358,18 @@ class LayerTextComponent:
                 "新生活记录完成前，对这些问题只能自然表示暂未确定。"
             )
         else:
-            wardrobe_context = data.meta.get("wardrobe_context", "")
-            if wardrobe_context:
-                parts.append("衣橱与审美事实：\n" + wardrobe_context)
-            continuous_context = data.meta.get("continuous_life_context", "")
+            continuous_context = chat_projection_from_day(data)
             if continuous_context:
                 parts.append(f"\n[HiddenContinuousLife]\n{continuous_context}")
             appearance = format_current_appearance_context(data)
             if appearance:
+                # 当前衣着只保留一条事实，妆发、组成账本等随话题召回。
+                outfit = appearance.splitlines()[0]
                 parts.append(
-                    f"\n[HiddenAppearanceHint]\n{appearance}\n"
-                    "(结合当前话题按需参考，不逐项介绍；仅以当前已确认外观为事实)"
+                    f"\n[HiddenAppearanceHint]\n{outfit}"
                 )
-
-            if meta:
-                parts.append(
-                    f"\n[HiddenMoodHint] 主题<{meta.get('theme')}> | 心情<{meta.get('mood')}>"
-                )
-
-            if data.timeline:
-                schedule_window = self.context._format_hidden_schedule_window(
-                    data.timeline, now, timeline_date=data.date, meta=data.meta
-                )
-                if schedule_window:
-                    parts.append(f"\n{schedule_window}")
+            if detail_context:
+                parts.append(f"\n[HiddenRelevantLife]\n{detail_context}")
 
             delay_hint = format_rest_delay_hint(data, now)
             if delay_hint:
@@ -447,21 +379,10 @@ class LayerTextComponent:
                     + "；这是当前对话形成的临时安排，不能把原定节点当成已经发生。"
                 )
 
-            weather_info = data.weather_info
-            weather_str = data.weather or "未知"
-            if weather_info.temp is not None:
-                weather_str = f"{weather_str} (体感: {weather_info.temp_desc})"
-            parts.append(f"\n[HiddenWeather] {weather_str}")
-
-        if data.memo:
-            parts.append(
-                f"\n[HiddenMemoHint] 今日重要备忘录: {data.memo} (涉及相关话题时自然参考，计划不等于已经发生)"
-            )
-
         lines = [
-            f"- #{item.id} {item.content}"
+            f"- {item.content}（{item.owner}；{' '.join(filter(None, (item.trigger_date, item.trigger_time, item.time_window)))}；尚未完成）"
             for item in (commitments or [])[:5]
-            if getattr(item, "content", "")
+            if getattr(item, "content", "") and getattr(item, "status", "active") == "active"
         ]
         if lines:
             parts.append(
@@ -487,11 +408,8 @@ class LayerTextComponent:
                 f"{memos_context}"
             )
 
-        parts.append(f"\n[HiddenStatusHint] {status_desc}")
         parts.append(f"\n[HiddenActivityHint] {activity}")
         parts.append(f"\n[HiddenTime] {now.strftime('%Y-%m-%d %H:%M')} ({period_cn})")
-        parts.append(f"\n[HiddenCalendar] {format_calendar_context(now)}")
-        parts.append(f"\n[HiddenSeason] {format_season_context(now)}")
         state_context = ""
         if not residence_context_stale:
             state_context = self._format_hidden_state_compact(data.state)

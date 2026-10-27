@@ -112,6 +112,44 @@ class ActionChainsTest(unittest.IsolatedAsyncioTestCase):
         await self.tick()
         self.assertEqual(len(await self.archive.get_life_action_receipts()), 2)
 
+    async def test_autonomous_outfit_and_grooming_commit_only_after_execution(self):
+        item = await self.wardrobe()
+        day = await self.archive.get_day(self.runtime.date)
+        day.meta.update({
+            "hair_style": "湿发披散", "hair": "湿发贴着肩背",
+            "outfit_components": json.dumps({
+                "main_clothing": {"state": "worn", "description": "居家服"},
+            }),
+        })
+        await self.archive.save_day(day)
+        first = await self.decide(new_actions=[
+            self.step("groom", "吹干头发，扎低马尾", payload={"hair_style": "低马尾", "hair": "头发吹干后低低扎起"}),
+            self.step("change_outfit", "换上已有睡裙", payload={
+                "catalog_reference_ids": [item.id], "scene_category": "sleep",
+                "outfit_components": {"main_clothing": {"state": "unknown", "description": "米白丝缎吊带睡裙"}},
+            }),
+        ])
+        self.assertIsNotNone(first)
+        started = await self.archive.get_day(day.date)
+        self.assertEqual(started.meta["hair_style"], "湿发披散")
+        self.assertEqual(started.outfit, "居家服")
+        await self.tick()
+        groomed = await self.archive.get_day(day.date)
+        self.assertEqual(groomed.meta["hair_style"], "低马尾")
+        self.assertEqual(groomed.meta["hair"], "头发吹干后低低扎起")
+        self.assertEqual(groomed.outfit, "居家服")
+        second = await self.select((await self.choose_pending())[0])
+        self.assertIsNotNone(second)
+        self.assertEqual((await self.archive.get_day(day.date)).outfit, "居家服")
+        await self.tick()
+        dressed = await self.archive.get_day(day.date)
+        self.assertEqual(dressed.outfit, "米白丝缎吊带睡裙")
+        self.assertEqual(dressed.meta["hair_style"], "低马尾")
+        self.assertEqual(json.loads(dressed.meta["outfit_components"])["main_clothing"]["state"], "worn")
+        states = (await self.archive.get_wardrobe_snapshot())["items"]
+        self.assertTrue(states[str(item.id)]["currently_worn"])
+        self.assertEqual(len(await self.archive.get_life_action_receipts()), 2)
+
     async def test_compound_timeline_only_finishes_after_last_step_even_when_delayed(
         self,
     ):

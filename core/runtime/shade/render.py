@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ..expressionweight import expression_weight
+from ..expressionlearning import profile_hint
 
 from typing import Protocol
 
@@ -134,7 +135,7 @@ class HiddenExperienceComponent:
             label = f"{label}（适用对象：{profile_id}）"
         details = [tone, habits, f"避免：{avoid}" if avoid else ""]
         return (
-            f"- {label}: {'；'.join(part for part in details if part)}；经验权重 {expression_weight(item):.2f}"
+            f"- {label}（{profile_hint(item)}）: {'；'.join(part for part in details if part)}；经验权重 {expression_weight(item):.2f}"
             if label and any(details)
             else ""
         )
@@ -332,7 +333,7 @@ class HiddenExperienceComponent:
             self.context._hidden_lines(reply_effects, 4, self._hidden_reply_effect_line),
         )
         profile_lines = self.context._hidden_lines(
-            expression_profiles, 4, self._hidden_expression_profile_line
+            expression_profiles, 5, self._hidden_expression_profile_line
         )
         self.context._hidden_section(
             sections,

@@ -192,6 +192,8 @@ class SilentToolPrefaceComponent:
         if not scope or not isinstance(chain, list) or not chain:
             return False
         copied = self.context._copy_result_chain(result)
+        if self._is_blank_tool_preface(copied):
+            return False
         self._tool_reply_round_store()[scope] = {
             "event_key": self._tool_preface_event_key(event),
             "preface": copied,
@@ -232,9 +234,26 @@ class SilentToolPrefaceComponent:
                 texts.append(text)
         return " ".join(texts).strip()
 
+    @staticmethod
+    def _is_blank_tool_preface(chain: Any) -> bool:
+        """空文本链不能占用前置回复；混合媒体链仍交给原发送通道。"""
+
+        parts = getattr(chain, "chain", None)
+        if not isinstance(parts, list) or not parts:
+            return True
+        for part in parts:
+            if isinstance(part, dict):
+                if str(part.get("type") or "").strip().lower() not in {"", "text", "plain"}:
+                    return False
+            elif not isinstance(part, (str, Plain)):
+                return False
+        return not SilentToolPrefaceComponent._plain_tool_preface_text(chain)
+
     async def _send_visible_tool_preface(
         self, scope: str, chain: Any, event: Any
     ) -> tuple[bool, str]:
+        if self._is_blank_tool_preface(chain):
+            return False, "空消息链"
         text = self.context._plain_tool_preface_text(chain)
         expressed_sender = getattr(self.context, "send_background_text", None)
         if text and callable(expressed_sender):
@@ -312,7 +331,7 @@ class SilentToolPrefaceComponent:
                         "final_response_pending": False,
                     },
                 )
-            if state.get("preface") is None:
+            if self._is_blank_tool_preface(state.get("preface")):
                 state["preface"] = self._preface_chain(preface_text)
                 state["preface_text"] = preface_text
         if state is None:
@@ -509,13 +528,16 @@ class SilentToolPrefaceComponent:
             return False
         if not self.context._is_active_agent_intermediate_result(event):
             return False
-        self._remember_tool_preface(event, result)
+        remembered = self._remember_tool_preface(event, result)
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
             clearer()
         else:
             chain.clear()
-        logger.debug(f"{LOG_PREFIX} 工具调用前回复已暂存，等待工具类型确认。")
+        if remembered:
+            logger.debug(f"{LOG_PREFIX} 工具调用前回复已暂存，等待工具类型确认。")
+        else:
+            logger.debug(f"{LOG_PREFIX} 已忽略工具调用前的空文本，等待工具参数中的前置回复。")
         return True
 
     def _is_active_agent_intermediate_result(self, event: Any) -> bool:

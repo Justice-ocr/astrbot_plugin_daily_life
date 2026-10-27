@@ -13,6 +13,7 @@ from .vows import COMMITMENT_SQL
 from .world import WORLD_SQL
 from .textile import TEXTILE_SQL
 from .mnemonics import RECOLLECTION_SQL
+from .memorylife import MEMORY_LIFE_V32_SQL
 
 SCHEMA_GROUPS = (
     CORE_SQL,
@@ -28,6 +29,7 @@ SCHEMA_GROUPS = (
     COGNITION_SQL,
     DOMAIN_SQL,
     RECOLLECTION_SQL,
+    MEMORY_LIFE_V32_SQL,
     INDEX_SQL,
     COGNITION_INDEX_SQL,
     DOMAIN_INDEX_SQL,

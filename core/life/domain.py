@@ -266,7 +266,7 @@ class LifeDomainService:
             "delivery_failed": "failed",
         }
         for commitment in await commitment_getter(status="", limit=0):
-            if commitment.id in existing_ids:
+            if commitment.id in existing_ids or commitment.kind not in {"plan", "reminder", "followup"}:
                 continue
             due_at = (
                 " ".join(
@@ -280,7 +280,7 @@ class LifeDomainService:
                 {
                     "commitment_id": commitment.id,
                     "title": commitment.content,
-                    "owner": "未定",
+                    "owner": commitment.owner or "未定",
                     "due_at": due_at,
                     "status": status_map.get(commitment.status, "open"),
                     "source_session": commitment.source_session,
@@ -573,6 +573,14 @@ class LifeDomainService:
     ) -> tuple[bool, str]:
         """校验领域前置条件，避免库存被扣成负数。"""
 
+        if action.action_type == "study" and action.payload.get("knowledge_source_id"):
+            try:
+                source_id = int(action.payload["knowledge_source_id"])
+            except (TypeError, ValueError):
+                return False, "阅读资料编号无效"
+            catalog = await self.archive.memory_life.library(["global", "self"])
+            if not any(r["id"] == source_id and r["status"] == "available" for r in catalog):
+                return False, "选中的阅读资料暂不可用"
         if not self.settings.enabled:
             return True, ""
         from .locationfacts import action_place, place_issue

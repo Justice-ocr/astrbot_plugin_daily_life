@@ -1,6 +1,8 @@
 # ruff: noqa: I001
 import asyncio
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 
@@ -227,30 +229,34 @@ class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
         release.set()
         await asyncio.gather(*list(scheduler.tasks))
 
-    async def test_background_task_slow_completion_is_logged_and_cleaned(self):
+    async def test_background_task_slow_completion_is_debug_logged_and_cleaned(self):
         from core.runtime import background as background_module
 
-        infos = []
-        old_info = background_module.logger.info
-        background_module.logger.info = lambda message, *args, **kwargs: infos.append(
-            str(message)
-        )
-        try:
-            scheduler = BackgroundTaskScheduler(slow_task_seconds=0)
+        with (
+            patch.object(background_module.logger, "debug") as log_debug,
+            patch.object(background_module.logger, "info") as log_info,
+            patch.object(
+                background_module,
+                "time",
+                SimpleNamespace(monotonic=Mock(side_effect=[100.0, 100.0, 135.61])),
+            ),
+        ):
+            scheduler = BackgroundTaskScheduler()
 
             async def job():
                 await asyncio.sleep(0)
 
             self.assertTrue(scheduler.schedule(job(), label="耗时测试", key="slow-key"))
             await asyncio.gather(*list(scheduler.tasks))
-        finally:
-            background_module.logger.info = old_info
 
         self.assertEqual(scheduler.tasks, set())
         self.assertEqual(scheduler.keys, set())
-        self.assertTrue(any("后台任务完成（耗时测试）" in message for message in infos))
+        self.assertEqual(scheduler.snapshot()["normal"]["completed"], 1)
+        log_info.assert_not_called()
+        messages = [str(call.args[0]) for call in log_debug.call_args_list]
+        self.assertTrue(any("后台任务完成（耗时测试）" in message for message in messages))
         self.assertTrue(
-            any("耗时 " in message and "总耗时" not in message for message in infos)
+            any("耗时 35.61 秒" in message and "总耗时" not in message for message in messages)
         )
 
     def test_background_completion_message_omits_duplicate_total_when_not_queued(self):

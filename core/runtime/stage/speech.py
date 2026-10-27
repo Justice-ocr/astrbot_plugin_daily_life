@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
@@ -8,8 +9,6 @@ from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
 from .error import MediaPromptExtractionError
 from .lens import clean_director_text
-
-from typing import Protocol
 
 
 class StageVoiceComponentContext(Protocol):
@@ -23,11 +22,19 @@ class StageVoiceComponentContext(Protocol):
     _media_director_recent_context_text: Any
 
 
+@dataclass(frozen=True, slots=True)
+class VideoPromptPlan:
+    first_frame: str
+    video_prompt: str
+
+
 class StageVoiceComponent:
     def __init__(self, context: StageVoiceComponentContext) -> None:
         self.context = context
 
-    def _media_video_prompt_from_payload(self, payload: dict[str, Any]) -> str:
+    def _media_video_plan_from_payload(
+        self, payload: dict[str, Any]
+    ) -> VideoPromptPlan:
         image = clean_director_text(payload.get("image"), 260)
         camera = clean_director_text(payload.get("camera"), 220)
         motion = clean_director_text(payload.get("motion"), 260)
@@ -35,21 +42,31 @@ class StageVoiceComponent:
         continuity = clean_director_text(payload.get("continuity"), 240)
         if not image:
             raise MediaPromptExtractionError("视频智能提取没有返回 image 字段")
-        parts = [f"画面：{image}"]
+        first_frame_parts = [f"画面：{image}"]
+        if continuity:
+            first_frame_parts.append(f"连续性：{continuity}")
+        parts = [*first_frame_parts]
         for label, value in (
-            ("连续性", continuity),
             ("镜头", camera),
             ("动态", motion),
             ("声音", sound),
         ):
             if value:
                 parts.append(f"{label}：{value}")
-        return "。".join(parts) + "。"
+        return VideoPromptPlan(
+            first_frame="。".join(first_frame_parts) + "。",
+            video_prompt="。".join(parts) + "。",
+        )
 
-    async def _direct_life_video_prompt(self, event: Any, original_prompt: str) -> str:
+    def _media_video_prompt_from_payload(self, payload: dict[str, Any]) -> str:
+        return self._media_video_plan_from_payload(payload).video_prompt
+
+    async def _direct_life_video_plan(
+        self, event: Any, original_prompt: str
+    ) -> VideoPromptPlan:
         original_prompt = str(original_prompt or "").strip()
         if not original_prompt:
-            return ""
+            return VideoPromptPlan("", "")
         try:
             day, now, using_extended_night = await self.context._media_director_current_day()
             context = self.context._media_director_context_text(day, now, using_extended_night)
@@ -59,16 +76,13 @@ class StageVoiceComponent:
             if emotion_context:
                 context = f"{context}\n{emotion_context}"
             recent_context = await self.context._media_director_recent_context_text(event)
-            fixed = f"""你是生活感短视频导演兼声音设计师。请根据画面要求和当前生活上下文，生成视频提示词的画面、动态和声音设计。
-要求：
-- 只输出 JSON 对象，不要解释。
-- image 写一段稳定画面描述，保持真实生活片段，不要写成广告大片。
-- continuity 只在使用首帧、参考图或已有角色身份时填写，保持原图主体、人物身份、可见造型、场景关系和构图连续；没有连续性对象时留空。
-- camera 和 motion 根据剧情、用户要求和画面内容决定；需要定镜、快速运动、转身、遮挡或较大动作时可以直接采用，不套固定镜头清单。没有独立镜头或动态要求时对应字段可留空。
-- sound 根据剧情决定；可以写环境声、动作声、人物台词、音乐，也可以留空。不要为了字段完整强行添加背景声或人声。
-- 如果 sound 有人物台词，motion 要包含嘴唇轻微自然开合并与说话节奏同步；如果 sound 没有台词，人物不要出现明显说话口型。
-- 只有用户要求、原始剧情或人物互动确实需要时才写台词；写清说话者、语气和台词内容，不要朗读聊天回复、说明文字或提示词。
-- 旁白、画外音和解说只有用户明确要求或剧情确实需要时才使用。
+            fixed = f"""你是生活感短视频导演兼声音设计师。请依据原始画面要求和当前生活上下文，整理成可直接用于图片与视频生成的结构化方案。
+只输出 JSON 对象，不要解释。字段定义：
+- image：视频开始时的一张静态画面，写清主体、场景、造型和构图。
+- continuity：已有参考对象的身份、外观和场景连续性；没有时留空。
+- camera：镜头构图与运动；motion：按时间推进的动作和变化。
+- sound：符合场景的声音与用户要求的台词；没有明确内容时留空。
+视频时长由接口参数单独控制，描述字段只写画面内容。台词、口型与声音保持自然一致。
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
 {{"image":"","continuity":"","camera":"","motion":"","sound":""}}"""
@@ -81,9 +95,13 @@ JSON 字段：
                 cache_friendly_prompt(fixed, dynamic, dynamic_title="视频生成请求"),
                 provider_id=self.context.config.video_generation.prompt_provider,
             )
-            prompt = self._media_video_prompt_from_payload(payload)
-            logger.debug(f"{LOG_PREFIX} 视频智能提取：{prompt[:180]}")
-            return prompt
+            plan = self._media_video_plan_from_payload(payload)
+            logger.debug(f"{LOG_PREFIX} 视频智能提取：{plan.video_prompt[:180]}")
+            return plan
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 视频智能提取失败：{exc}")
             raise MediaPromptExtractionError(f"视频智能提取失败：{exc}") from exc
+
+    async def _direct_life_video_prompt(self, event: Any, original_prompt: str) -> str:
+        plan = await self._direct_life_video_plan(event, original_prompt)
+        return plan.video_prompt

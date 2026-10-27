@@ -15,4 +15,6 @@ def expression_weight(profile, *, now: datetime.datetime | None = None) -> float
     updated = local_datetime(getattr(profile, "updated_at", ""))
     days = max(0, ((now or life_now()) - updated).total_seconds() / 86400) if updated else 0
     # 旧经验逐渐降低约束力，避免一次反馈永远固化口吻；不删除历史偏好。
-    return round(max(0, min(1, confidence)) * math.exp2(-days / 180), 3)
+    status = (getattr(profile, "learning", {}) or {}).get("status", "stable")
+    strength = {"emerging": 0.35, "cooling": 0.0}.get(status, 1.0)
+    return round(max(0, min(1, confidence)) * math.exp2(-days / 180) * strength, 3)

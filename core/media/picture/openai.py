@@ -115,14 +115,24 @@ def build_request(
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
+    scywl_image_api = uses_scywl_image_api(route.model, route.api_url)
     if siciyuanweilai:
         # 确保请求在网关侧可追踪且具有幂等性。
         request_id = f"daily-life-{uuid4().hex}"
         headers["X-Client-Request-ID"] = request_id
         headers["Idempotency-Key"] = request_id
-    size = size_for(resolution, aspect_ratio, model=route.model, api_url=route.api_url)
+    size = size_for(
+        resolution,
+        aspect_ratio,
+        model=route.model,
+        api_url=route.api_url,
+    )
     images = inline_images(parts)
-    if siciyuanweilai:
+    if scywl_image_api:
+        if any(mime not in {"image/png", "image/jpeg", "image/webp"} for _, mime in images):
+            raise ValueError("此图片接口的参考图须为 PNG、JPEG 或 WebP")
+    # JSON image 适用于单图；多图通过 multipart 重复上传 image，完整保留参考图。
+    if siciyuanweilai and (not scywl_image_api or len(images) <= 1):
         payload = {
             "model": route.model,
             "prompt": prompt_from_parts(parts),
@@ -132,9 +142,12 @@ def build_request(
             "response_format": "b64_json",
         }
         if images:
-            payload["images"] = [
-                {"image_url": image_data_url(image, mime)} for image, mime in images
-            ]
+            if scywl_image_api:
+                payload["image"] = image_data_url(*images[0])
+            else:
+                payload["images"] = [
+                    {"image_url": image_data_url(image, mime)} for image, mime in images
+                ]
         endpoint = "edits" if images else "generations"
         return ImageRequest(
             url=f"{base}/images/{endpoint}",
@@ -158,7 +171,9 @@ def build_request(
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
     form.add_field("size", size)
-    form.add_field("response_format", "url")
+    form.add_field("response_format", "b64_json" if siciyuanweilai else "url")
+    if siciyuanweilai:
+        form.add_field("n", "1")
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)
         form.add_field(
@@ -186,6 +201,11 @@ def is_siciyuanweilai(api_url: str) -> bool:
     except ValueError:
         return False
     return host in {"api.scywl.cc", "siciyuanweilai.com", "www.siciyuanweilai.com"}
+
+
+def uses_scywl_image_api(model: str, api_url: str) -> bool:
+    """识别采用本站 GPT Image 基础协议的通道。"""
+    return model in {"gpt-image-2", "gpt-image-2.5"} and is_siciyuanweilai(api_url)
 
 
 def image_data_url(image_bytes: bytes, mime_type: str) -> str:
@@ -242,6 +262,8 @@ def size_for(
     resolution = str(resolution or "").strip().upper()
     if resolution not in _TIER_MAX_EDGES:
         raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
+    if uses_scywl_image_api(model, api_url):
+        return _scywl_size_for(resolution, aspect_ratio)
     if _uses_hosted_gpt_sizes(model, api_url):
         if resolution == "4K":
             return _generic_size_for(resolution, aspect_ratio)
@@ -268,6 +290,7 @@ def uses_async_tasks(route: ImageRoute, *, response_format: str = "url") -> bool
     return (
         response_format == "url"
         and route.protocol == "openai"
+        and not uses_scywl_image_api(route.model, route.api_url)
         and _uses_hosted_gpt_sizes(route.model, route.api_url)
     )
 
@@ -280,6 +303,12 @@ def supported_aspect_ratio(
     resolution: str = "1K",
 ) -> str:
     ratio, width_ratio, height_ratio = _normalized_ratio(aspect_ratio)
+    if uses_scywl_image_api(model, api_url):
+        if width_ratio > 3 * height_ratio:
+            return "3:1"
+        if height_ratio > 3 * width_ratio:
+            return "1:3"
+        return ratio
     if _uses_hosted_gpt_sizes(model, api_url):
         supported = _HOSTED_GPT_SIZES.get(str(resolution or "").strip().upper())
         if supported is None:
@@ -300,6 +329,28 @@ def supported_aspect_ratio(
             )
         ),
     )
+
+
+def _scywl_size_for(resolution: str, aspect_ratio: str) -> str:
+    """按 SCYWL Image API 的尺寸约束生成请求。"""
+    _, width_ratio, height_ratio = _normalized_ratio(aspect_ratio)
+    if width_ratio > 3 * height_ratio:
+        width_ratio, height_ratio = 3, 1
+    elif height_ratio > 3 * width_ratio:
+        width_ratio, height_ratio = 1, 3
+    if width_ratio == height_ratio:
+        edge = {"1K": 1024, "2K": 2048, "4K": 4096}[resolution]
+        return f"{edge}x{edge}"
+    long_edge = {"1K": 1536, "2K": 2048, "4K": 3840}[resolution]
+    unit = min(
+        long_edge // max(width_ratio, height_ratio),
+        math.isqrt(_MAX_TOTAL_PIXELS // (width_ratio * height_ratio)),
+    )
+    unit -= unit % 16
+    width, height = width_ratio * unit, height_ratio * unit
+    if width * height < 655360:
+        raise ValueError("图片比例无法在此图片接口的尺寸限制内生成")
+    return f"{width}x{height}"
 
 
 def _generic_size_for(resolution: str, aspect_ratio: str) -> str:

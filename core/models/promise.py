@@ -27,6 +27,7 @@ class CommitmentRecord:
     created_at: str = ""
     activated_at: str = ""
     completed_at: str = ""
+    follow_up: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def from_value(value: Any) -> CommitmentRecord | None:
@@ -68,6 +69,8 @@ class CommitmentRecord:
             created_at=str(raw.get("created_at") or "").strip(),
             activated_at=str(raw.get("activated_at") or "").strip(),
             completed_at=str(raw.get("completed_at") or "").strip(),
+            follow_up=dict(raw["follow_up"])
+            if isinstance(raw.get("follow_up"), dict) else {},
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -91,4 +94,5 @@ class CommitmentRecord:
             "created_at": self.created_at,
             "activated_at": self.activated_at,
             "completed_at": self.completed_at,
+            "follow_up": dict(self.follow_up),
         }

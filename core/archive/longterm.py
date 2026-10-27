@@ -379,6 +379,13 @@ class LongTermMemoryArchiveComponent:
             """,
             (self.context._text(memory.scope), entity_type, name),
         ).fetchone()
+        if row and row["status"] == "merged":
+            canonical = self.context._conn.execute(
+                "SELECT e.* FROM memory_identity_redirects r JOIN memory_entities e ON e.id=r.canonical_id WHERE r.entity_id=? AND e.status='active' AND e.scope=? AND e.entity_type=?",
+                (row["id"], self.context._text(memory.scope), entity_type),
+            ).fetchone()
+            if canonical:
+                row = canonical
         if row:
             self.context._conn.execute(
                 """

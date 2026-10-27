@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
@@ -36,8 +36,12 @@ from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 from ..stage.error import MediaPromptExtractionError
-
-from typing import Protocol
+from .perspective import (
+    bind_media_reply_context,
+    group_participants_required,
+    media_reply_context,
+    resolve_group_participants,
+)
 
 try:
     from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
@@ -1414,6 +1418,8 @@ JSON 字段：
                 else ""
             )
         if contains_character:
+            if media_reply_context(event).get("角色是否在画面中") != "是":
+                await bind_media_reply_context(self.context, event, "current_character")
             if identity_profile is None:
                 identity_profiles = await self.context._resolve_life_identity_profiles(
                     event, "current_character"
@@ -1477,6 +1483,7 @@ JSON 字段：
             resolution = self.context._image_prompt_resolution(event_prompt)
         participant_ids = self.context._normalize_image_participants(participants)
         if use_last_reverse_prompt:
+            await bind_media_reply_context(self.context, event, "free")
             locked = getattr(event, "_daily_life_locked_reverse_prompt", None)
             resolved_prompt, aspect_ratio = (
                 locked
@@ -1499,6 +1506,7 @@ JSON 字段：
 
         route = self.context._normalize_image_subject_route(subject_route)
         tool_prompt = str(prompt or "").strip()
+        await bind_media_reply_context(self.context, event, route, participant_ids)
         appearance = str(current_appearance or "").strip()
         tool_prompt = self.context._apply_current_appearance_snapshot(
             tool_prompt,
@@ -1543,7 +1551,7 @@ JSON 字段：
         if plan.group_request:
             if len(plan.participant_ids) != 1:
                 return ImageGenerationExecution(
-                    error="请明确选择一位已配置参考图的好友再生成合影。"
+                    error=group_participants_required(self.context)
                 )
             generator = getattr(
                 getattr(getattr(self.context, "media", None), "image", None),
@@ -1591,6 +1599,8 @@ JSON 字段：
             plan.prompt,
             direct_prompt=False,
         )
+        if contains_character:
+            await bind_media_reply_context(self.context, event, "current_character")
         character_reference = (
             self.context._life_character_reference_image() if needs_character_reference else ""
         )
@@ -1640,7 +1650,7 @@ JSON 字段：
             options.get("participants")
         )
         if len(participant_ids) != 1:
-            return "请明确选择一位已配置参考图的好友再生成合影。"
+            return group_participants_required(self.context)
         look, source, missing = await self.context._prepare_friend_daily_look(
             event,
             participant_ids[0],
@@ -1684,6 +1694,12 @@ JSON 字段：
         route = self.context._normalize_image_subject_route(
             options.get("subject_route", "free")
         )
+        if route == "group" and not options.get("use_last_reverse_prompt"):
+            options["participants"] = await resolve_group_participants(
+                self.context,
+                snapshot,
+                self.context._normalize_image_participants(options.get("participants")),
+            )
         historical_request = route in {"current_character", "group"} and bool(
             options.get("historical_target")
         )
@@ -1891,6 +1907,12 @@ JSON 字段：
             logger.debug(f"{LOG_PREFIX} 图片工具跳过重复调用：本轮已经发送过单张图片。")
             return self.context._duplicate_direct_image_result()
         route = self.context._normalize_image_subject_route(subject_route)
+        if route == "group" and not use_last_reverse_prompt:
+            participants = await resolve_group_participants(
+                self.context,
+                event,
+                self.context._normalize_image_participants(participants),
+            )
         if error := await self._prepare_group_image_look(
             event,
             prompt,
@@ -2178,9 +2200,10 @@ JSON 字段：
         direct_prompt: bool,
     ) -> ImageGenerationExecution:
         if participant_ids:
+            await bind_media_reply_context(self.context, event, "group", participant_ids)
             if len(participant_ids) != 1:
                 return ImageGenerationExecution(
-                    error="请明确选择一位已配置参考图的好友再生成合影。"
+                    error=group_participants_required(self.context)
                 )
             generator = getattr(
                 getattr(getattr(self.context, "media", None), "image", None),
@@ -2226,6 +2249,9 @@ JSON 字段：
             logger.debug(
                 f"{LOG_PREFIX} 图片身份路线为当前角色本人；本次继续使用用户参考图编辑。"
             )
+        await bind_media_reply_context(
+            self.context, event, "current_character" if contains_character else "free"
+        )
         identity_profile = ""
         if contains_character:
             identity_profiles = await self.context._resolve_life_identity_profiles(
@@ -2333,7 +2359,7 @@ JSON 字段：
             return "没有收到图片编辑提示词。"
         participant_ids = self.context._normalize_image_participants(options.get("participants"))
         if len(participant_ids) > 1:
-            return "请明确选择一位已配置参考图的好友再修改合影。"
+            return group_participants_required(self.context)
         snapshot._daily_life_locked_edit_reference = (
             await self.context._resolve_life_image_reference_async(
                 snapshot,

@@ -31,6 +31,7 @@ const CONFIG_SECTION_ORDER = [
   "image_generation_config",
   "video_generation_config",
   "sight_config",
+  "bili_browse_config",
   "emoji_config",
   "search_config",
   "storage_config",
@@ -64,6 +65,7 @@ const CONFIG_FIELD_DISPLAY_SECTIONS = new Map([
   ["sight_config.video_cache_ttl_hours", "storage_config"],
   ["sight_config.video_cache_max_items", "storage_config"],
   ["sight_config.sight_cache_keep_days", "storage_config"],
+  ["sight_config.bili_auto_summary", "bili_browse_config"],
 ]);
 const CONFIG_SECTION_FIELD_ORDER = new Map([
   ["story_engine_config", [

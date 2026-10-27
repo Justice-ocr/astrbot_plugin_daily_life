@@ -72,7 +72,7 @@ class MediaFileCleanupComponent:
             deleted_reverse_rows = await cleanup_reverse(reverse_keep_days)
 
         if deleted_files or deleted_dirs or deleted_reverse_rows:
-            logger.info(
+            logger.debug(
                 f"{LOG_PREFIX} 插件文件缓存清理完成：清理文件 {deleted_files} 个，"
                 f"清理目录 {deleted_dirs} 个，清理反推记录 {deleted_reverse_rows} 条"
             )

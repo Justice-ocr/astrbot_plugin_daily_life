@@ -1839,9 +1839,26 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 ],
                 "conversation_actions": [
                     {
-                        "title": "仍待完成的行动项",
+                        "title": "昨天仍待完成的行动项",
                         "status": "open",
                         "created_at": "2026-06-10 08:00:00",
+                    },
+                    {
+                        "title": "今天待处理的行动项",
+                        "status": "open",
+                        "due_at": "2026-06-11 18:00:00",
+                        "created_at": "2026-06-10 08:00:00",
+                    },
+                    {
+                        "title": "今天约定的行动项",
+                        "status": "active",
+                        "commitment_date": "2026-06-11",
+                        "created_at": "2026-06-10 08:00:00",
+                    },
+                    {
+                        "title": "今天新建的行动项",
+                        "status": "pending",
+                        "created_at": "2026-06-11 11:00:00",
                     },
                     {
                         "title": "昨天已完成的行动项",
@@ -1849,9 +1866,37 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                         "updated_at": "2026-06-10 10:00:00",
                     },
                     {
+                        "title": "昨天过期今天才清理的行动项",
+                        "status": "expired",
+                        "commitment_date": "2026-06-10",
+                        "due_at": "2026-06-10 23:00:00",
+                        "completed_at": "2026-06-11 00:00:00",
+                        "updated_at": "2026-06-11 00:00:00",
+                    },
+                    {
+                        "title": "今天到期的行动项",
+                        "status": "expired",
+                        "commitment_date": "2026-06-11",
+                        "due_at": "2026-06-11 23:00:00",
+                        "completed_at": "2026-06-11 23:00:00",
+                        "updated_at": "2026-06-12 00:00:00",
+                    },
+                    {
                         "title": "今天已完成的行动项",
                         "status": "completed",
                         "updated_at": "2026-06-11 10:00:00",
+                    },
+                    {
+                        "title": "凭旧消息补正的行动项",
+                        "status": "done",
+                        "completed_at": "2026-06-11 23:50:00",
+                        "updated_at": "2026-06-12 03:00:00",
+                    },
+                    {
+                        "title": "补录昨天完成的行动项",
+                        "status": "done",
+                        "completed_at": "2026-06-10 23:50:00",
+                        "updated_at": "2026-06-11 03:00:00",
                     },
                 ],
                 "timeline": [
@@ -1887,12 +1932,57 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [item["title"] for item in snapshot["conversation_actions"]],
-            ["仍待完成的行动项", "今天已完成的行动项"],
+            [
+                "今天待处理的行动项",
+                "今天约定的行动项",
+                "今天新建的行动项",
+                "今天到期的行动项",
+                "今天已完成的行动项",
+                "凭旧消息补正的行动项",
+            ],
         )
         self.assertEqual(snapshot["pantry"][0]["name"], "测试库存")
         self.assertEqual(len(snapshot["pantry"]), 1)
         self.assertEqual(snapshot["recipes"][0]["name"], "测试食谱")
         self.assertEqual(snapshot["chores"][0]["name"], "测试家务轮换")
+
+    async def test_page_action_items_use_civil_today_during_extended_night(self):
+        snapshot = await self.plugin._page_domain_snapshot(
+            {
+                "conversation_actions": [
+                    {
+                        "title": "昨日未完成",
+                        "status": "open",
+                        "commitment_date": "2026-06-10",
+                    },
+                    {
+                        "title": "今天约定",
+                        "status": "open",
+                        "commitment_date": "2026-06-11",
+                        "created_at": "2026-06-10 08:00:00",
+                    },
+                    {
+                        "title": "未来安排",
+                        "status": "pending",
+                        "commitment_date": "2026-06-12",
+                        "created_at": "2026-06-11 08:00:00",
+                    },
+                    {
+                        "title": "今天收束的旧约定",
+                        "status": "done",
+                        "commitment_date": "2026-06-10",
+                        "completed_at": "2026-06-11 15:00:00",
+                    },
+                ]
+            },
+            "2026-06-10",
+            action_date="2026-06-11",
+        )
+
+        self.assertEqual(
+            [item["title"] for item in snapshot["conversation_actions"]],
+            ["今天约定", "今天收束的旧约定"],
+        )
 
     async def test_page_status_embeds_compact_today_decision_sources(self):
         long_reason = (

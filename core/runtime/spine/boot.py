@@ -52,6 +52,7 @@ _DURABLE_TASK_LABELS = {
     "share_video_generation": "外部分享视频原任务查询恢复",
     "web_research": "网页研究报告",
     "proactive_commitment": "主动承诺履行",
+    "commitment_contact_review": "联系约定语义复核",
     "commitment_photo": "承诺拍照",
     "commitment_video": "承诺拍视频",
 }
@@ -190,6 +191,7 @@ class SpineBootComponentContext(Protocol):
     begin_shutdown: Any
     check_autonomous_life_update: Any
     check_continuous_life: Any
+    check_bili_browsing: Any
     check_wardrobe_life: Any
     close_memos_service: Any
     composer: Any
@@ -225,6 +227,7 @@ class SpineBootComponentContext(Protocol):
     run_nightly_review: Any
     run_private_revisit_check: Any
     run_proactive_commitment_task: Any
+    run_commitment_contact_review_task: Any
     run_proactive_idle_check: Any
     run_weekly_refresh: Any
     runtime_service_lease: Any
@@ -676,6 +679,7 @@ class SpineBootComponent:
             if task.kind in {
                 "media_delivery",
                 "proactive_commitment",
+                "commitment_contact_review",
                 "commitment_photo",
                 "commitment_video",
                 "image_generation",
@@ -712,6 +716,7 @@ class SpineBootComponent:
             for name in (
                 "reconcile_commitment_photo_tasks",
                 "reconcile_commitment_video_tasks",
+                "reconcile_commitment_contact_tasks",
                 "reconcile_scheduled_invite_contacts",
             ):
                 reconcile = getattr(self.context, name, None)
@@ -829,6 +834,9 @@ class SpineBootComponent:
             handlers = {}
             self.context._durable_runtime_handlers = handlers
         handlers["proactive_commitment"] = self.context.run_proactive_commitment_task
+        contact_review = getattr(self.context, "run_commitment_contact_review_task", None)
+        if callable(contact_review):
+            handlers["commitment_contact_review"] = contact_review
         handlers["commitment_photo"] = self.context.run_commitment_photo_task
         handlers["commitment_video"] = self.context.run_commitment_video_task
         return LifeRhythmClock(
@@ -854,6 +862,8 @@ class SpineBootComponent:
                 self.context._schedule_durable_task_pump
             ),
             wardrobe_task=self.context._leased_rhythm_callback(self.context.check_wardrobe_life),
+            browsing_task=(self.context._leased_rhythm_callback(self.context.check_bili_browsing)
+                           if callable(getattr(self.context, "check_bili_browsing", None)) else None),
             continuous_life_task=self.context._leased_rhythm_callback(
                 self.context.check_continuous_life
             ),
@@ -1046,6 +1056,9 @@ class SpineBootComponent:
         close_snapshot_flight = getattr(self.context, "_close_injection_snapshot_flight", None)
         if callable(close_snapshot_flight):
             await close_snapshot_flight()
+        browsing = self.context.__dict__.get("bili_browsing")
+        if browsing is not None:
+            await browsing.close()
         continuous = self.context.__dict__.get("continuous_life")
         if continuous is not None:
             await continuous.close()

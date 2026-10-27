@@ -15,8 +15,7 @@ from core.runtime.voice.modality import VoiceExpressionPlan, VoiceExpressionPlan
 
 
 class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
-    def setup_reply(self):
-        source = "我也已经躺下啦。想听你说晚安。"
+    def setup_reply(self, source="我也已经躺下啦。想听你说晚安。"):
         runtime, event, synthesize = testreply.SemanticSegmentTest()._voice_reply(
             source
         )
@@ -27,6 +26,126 @@ class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
         event.message_str = "耳机戴好了"
         runtime.mark_voice_switch_available(event)
         return source, runtime, event, synthesize
+
+    async def test_tts_preserves_source_punctuation_and_line_breaks(self):
+        cases = (
+            ("明天再聊吧。", ["明天再聊吧。"], ["明天再聊吧"], False),
+            ("真的？我来了！", ["真的？", "我来了！"], ["真的", "我来了"], False),
+            (
+                "我也已经躺下啦。\n想听你说晚安。",
+                ["我也已经躺下啦。", "想听你说晚安。"],
+                ["我也已经躺下啦", "想听你说晚安"],
+                False,
+            ),
+            (
+                "今晚有点困，\n你还不睡吗？",
+                ["今晚有点困，", "你还不睡吗？"],
+                ["今晚有点困", "你还不睡吗"],
+                True,
+            ),
+        )
+        for source, segments, cleaned, already_segmented in cases:
+            with self.subTest(source=source):
+                _, runtime, event, synthesize = self.setup_reply(source)
+                runtime.config.chat_style.punctuation_cleanup_enabled = True
+                if already_segmented:
+                    event.set_result(event.chain_result([
+                        types.SimpleNamespace(text=text) for text in segments
+                    ]))
+
+                async def model(provider, prompt, scope, **options):
+                    if "待判断表达" in prompt:
+                        self.assertIn(json.dumps(source, ensure_ascii=False), prompt)
+                        return '{"channel":"voice","confidence":0.95}'
+                    return json.dumps({"segments": [{"text": text} for text in segments]})
+
+                runtime.composer._call_llm_text = model
+                await runtime.apply_semantic_segment_before_send(event)
+                self.assertEqual([item.text for item in event.get_result().chain], cleaned)
+                # 重复进入发送前处理，也不能把已经清洗的文字当成原文。
+                self.assertFalse(await runtime.apply_semantic_segment_before_send(event))
+                self.assertTrue(await runtime.apply_voice_switch_before_send(event))
+                self.assertEqual(synthesize.await_args.args, (source,))
+                self.assertEqual(event._daily_life_pending_voice_receipt["text"], source)
+
+    async def test_tts_source_keeps_punctuation_after_markdown_cleanup(self):
+        source, runtime, event, synthesize = self.setup_reply("明天再聊吧。")
+        runtime.config.chat_style.punctuation_cleanup_enabled = True
+        event.set_result(event.chain_result([
+            types.SimpleNamespace(text="**明天再聊吧**。")
+        ]))
+
+        async def model(provider, prompt, scope, **options):
+            if "待判断表达" in prompt:
+                return '{"channel":"voice","confidence":0.95}'
+            return json.dumps({"segments": [{"text": source}]})
+
+        runtime.composer._call_llm_text = model
+        self.assertTrue(runtime.apply_chat_plain_text_cleanup_before_send(event))
+        await runtime.apply_semantic_segment_before_send(event)
+        self.assertEqual(event.get_result().chain[0].text, "明天再聊吧")
+        self.assertTrue(await runtime.apply_voice_switch_before_send(event))
+        self.assertEqual(synthesize.await_args.args, (source,))
+
+    async def test_tts_failure_delivers_clean_text_in_both_segment_paths(self):
+        for valid_segments in (True, False):
+            with self.subTest(valid_segments=valid_segments):
+                source, runtime, event, synthesize = self.setup_reply()
+                runtime.config.chat_style.punctuation_cleanup_enabled = True
+                segments = ["我也已经躺下啦。", "想听你说晚安。"]
+
+                async def model(provider, prompt, scope, **options):
+                    if "待判断表达" in prompt:
+                        return '{"channel":"voice","confidence":0.95}'
+                    if not valid_segments:
+                        return "{}"
+                    return json.dumps({"segments": [{"text": text} for text in segments]})
+
+                runtime.composer._call_llm_text = model
+                synthesize.side_effect = RuntimeError("TTS 暂不可用")
+                await runtime.apply_semantic_segment_before_send(event)
+                self.assertFalse(await runtime.apply_voice_switch_before_send(event))
+                self.assertEqual(synthesize.await_args.args, (source,))
+                self.assertFalse(hasattr(event, "_daily_life_pending_voice_receipt"))
+                runtime.apply_chat_style_before_send(event)
+                if valid_segments:
+                    self.assertTrue(await runtime.send_semantic_segments_if_needed(event))
+                else:
+                    self.assertTrue(await runtime.send_chat_style_segments_if_needed(event))
+                self.assertEqual(
+                    [runtime._semantic_segment_text(message.chain[0]) for message in event.sent_messages],
+                    ["我也已经躺下啦", "想听你说晚安"],
+                )
+
+    async def test_changed_or_cleared_reply_does_not_reuse_tts_source(self):
+        for change in ("edit", "replace", "clear"):
+            with self.subTest(change=change):
+                source, runtime, event, synthesize = self.setup_reply("明天再聊吧。")
+                runtime.config.chat_style.punctuation_cleanup_enabled = True
+
+                async def model(provider, prompt, scope, **options):
+                    if "待判断表达" in prompt:
+                        return '{"channel":"voice","confidence":0.95}'
+                    return json.dumps({"segments": [{"text": source}]})
+
+                runtime.composer._call_llm_text = model
+                await runtime.apply_semantic_segment_before_send(event)
+                if change == "edit":
+                    event.get_result().chain[0].text = "那就等明天见。"
+                    expected = "那就等明天见。"
+                elif change == "replace":
+                    # 相同文字的新结果也不能自动绑定先前结果的原文。
+                    expected = "明天再聊吧"
+                    event.set_result(event.chain_result([types.SimpleNamespace(text=expected)]))
+                else:
+                    event.set_result(None)
+                changed = await runtime.apply_voice_switch_before_send(event)
+                if change == "clear":
+                    self.assertFalse(changed)
+                    synthesize.assert_not_awaited()
+                else:
+                    self.assertTrue(changed)
+                    self.assertEqual(synthesize.await_args.args, (expected,))
 
     async def test_voice_receipt_does_not_rewrite_framework_conversation(self):
         for saved_state in ("saved", "newer_turn", "not_saved"):
@@ -45,7 +164,7 @@ class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
                     manager.conversations[scope] = types.SimpleNamespace(
                         history=copy.deepcopy(saved_history)
                     )
-                # 发送形式经过清洗、分段，和框架保存的原始回复不同。
+                # 没有本轮原文快照时，以当前正文为准，不从历史猜测。
                 spoken = "我也已经躺下啦\n想听你说晚安"
                 event.set_result(event.chain_result([types.SimpleNamespace(text=spoken)]))
                 event._daily_life_expression_plan = VoiceExpressionPlan(
@@ -141,7 +260,8 @@ class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_segmentation_failure_does_not_discard_valid_voice_judgment(self):
         for failure in ("invalid", "timeout", "exception"):
             with self.subTest(failure=failure):
-                _, runtime, event, synthesize = self.setup_reply()
+                source, runtime, event, synthesize = self.setup_reply()
+                runtime.config.chat_style.punctuation_cleanup_enabled = True
 
                 async def model(provider, prompt, scope, **options):
                     if "待判断表达" in prompt:
@@ -161,6 +281,7 @@ class VoiceExpressionTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertTrue(await runtime.apply_voice_switch_before_send(event))
                 synthesize.assert_awaited_once()
+                self.assertEqual(synthesize.await_args.args, (source,))
                 self.assertFalse(
                     hasattr(event, "_daily_life_expression_unavailable_reason")
                 )

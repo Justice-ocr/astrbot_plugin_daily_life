@@ -2153,6 +2153,12 @@ class DataManager:
         values.sort(key=lambda item: (item.confidence, item.id), reverse=True)
         return values[:limit] if limit > 0 else values
 
+    async def get_expression_context(self, *, scope, profile_id="", limit=16):
+        values = [item for item in self.expression_profiles.values()
+                  if (item.scope == "self" and not item.profile_id) or
+                  (item.scope == scope and (not profile_id or item.profile_id in {"", profile_id}))]
+        return [item for item in values if item.learning.get("status") != "cooling"][:limit]
+
     async def save_expression_review(self, review):
         item = (
             review

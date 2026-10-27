@@ -39,6 +39,7 @@ from .possessions import LivingArchiveComponent
 from .promises import CommitmentArchiveComponent
 from .queue import ChatMemoryQueueArchiveComponent
 from .recollection import RecollectionArchiveComponent
+from .memorylife import MemoryLifeArchive
 from .reflections import LifecycleArchiveComponent
 from .schema import init_schema
 from .storage import StorageArchiveComponent
@@ -246,7 +247,7 @@ class LifeArchive:
                 await self.get_recent_places(10),
                 await self.get_recent_events(10),
                 await self.get_recent_chat_summaries(max_summaries),
-                await self.get_commitments(status="active", limit=8),
+                await self.get_commitments(status="active", limit=8, source_session=session_id or None),
                 await self.get_recent_group_environments(3),
                 await self.get_recent_action_decisions(3),
                 await self.get_recent_message_visibility(3),
@@ -261,9 +262,9 @@ class LifeArchive:
                 ),
                 await self.get_memory_corrections(limit=3, unapplied_only=True),
                 (
-                    await self.get_expression_profiles(limit=4, scope=experience_scope)
+                    await self.get_expression_context(limit=16, scope=experience_scope)
                     if experience_scope
-                    else await self.get_expression_profiles(limit=4)
+                    else await self.get_expression_context(limit=16, scope="self")
                 ),
                 await self.get_expression_reviews(
                     limit=3, scope=session_id or experience_scope
@@ -410,7 +411,7 @@ class LifeArchive:
 
     mark_style_catalog_used = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "mark_style_catalog_used")
 
-    _wardrobe_bootstrap_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_wardrobe_bootstrap_unlocked")
+    _synchronize_wardrobe_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_synchronize_wardrobe_unlocked")
 
     _wardrobe_item_state_unlocked = ComponentCall("_part_garment_archive_component", GarmentArchiveComponent, "_wardrobe_item_state_unlocked")
 
@@ -657,6 +658,7 @@ class LifeArchive:
     )
 
     get_conversation_receipt_before = ComponentCall("_part_chat_memory_queue_archive_component", ChatMemoryQueueArchiveComponent, "get_conversation_receipt_before")
+    get_conversation_contact_state = ComponentCall("_part_chat_memory_queue_archive_component", ChatMemoryQueueArchiveComponent, "get_conversation_contact_state")
 
     _purge_completed_chat_memory_messages_unlocked = ComponentCall("_part_chat_memory_queue_archive_component", ChatMemoryQueueArchiveComponent, "_purge_completed_chat_memory_messages_unlocked")
 
@@ -736,6 +738,8 @@ class LifeArchive:
 
     save_commitment = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "save_commitment")
 
+    save_commitment_follow_up = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "save_commitment_follow_up")
+
     get_commitments = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "get_commitments")
 
     get_commitment = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "get_commitment")
@@ -747,6 +751,7 @@ class LifeArchive:
     get_open_commitments_for_message = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "get_open_commitments_for_message")
 
     complete_simulated_commitment = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "complete_simulated_commitment")
+    reconcile_conversation_commitment = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "reconcile_conversation_commitment")
 
     set_commitment_status = ComponentCall("_part_commitment_archive_component", CommitmentArchiveComponent, "set_commitment_status")
 
@@ -1027,6 +1032,12 @@ class LifeArchive:
     upsert_expression_profile = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "upsert_expression_profile")
 
     get_expression_profiles = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "get_expression_profiles")
+
+    get_expression_context = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "get_expression_context")
+
+    apply_expression_learning = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "apply_expression_learning")
+
+    recover_expression_watch = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "recover_expression_watch")
 
     _compose_expression_review = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "_compose_expression_review")
 
@@ -1311,6 +1322,10 @@ class LifeArchive:
     @cached_property
     def _part_long_term_memory_archive_component(self):
         return LongTermMemoryArchiveComponent(self)
+
+    @cached_property
+    def memory_life(self):
+        return MemoryLifeArchive(self)
 
     @cached_property
     def _part_recollection_archive_component(self):

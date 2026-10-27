@@ -839,6 +839,22 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("tencent_map_api_key", items)
         self.assertNotIn("baidu_map_api_key", items)
 
+    def test_browsing_model_hint_describes_default_fallback(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        action_model = schema["life_domain_config"]["items"]["action_provider"]
+        browsing_model = schema["bili_browse_config"]["items"]["provider"]
+
+        self.assertEqual(
+            action_model["description"], "自主生活行动规划"
+        )
+        self.assertIn("自主生活行动选择与目标复核使用的模型", action_model["hint"])
+        self.assertEqual(
+            browsing_model["hint"],
+            "指定B站自主浏览决策、视频片段感受与兴趣判断使用的模型；留空使用当前默认模型。",
+        )
+
     def test_image_channel_schema_exposes_custom_group_names(self):
         schema = json.loads(
             (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
@@ -1331,7 +1347,7 @@ class LifeSettingsTest(unittest.TestCase):
             ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
         )
         self.assertNotIn("1:4", openai_channel_items["aspect_ratio"]["options"])
-        self.assertIn("固定合法尺寸", openai_channel_items["aspect_ratio"]["hint"])
+        self.assertIn("接口支持的比例与尺寸范围", openai_channel_items["aspect_ratio"]["hint"])
         self.assertNotIn("edit_request_format", openai_channel_items)
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 300)
         for list_key in ("text_channels", "edit_channels"):
@@ -1716,10 +1732,13 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.5.1", metadata)
+        version = next(line.partition(":")[2].strip() for line in metadata.splitlines()
+                       if line.startswith("version:"))
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.5.1", readme)
-        self.assertIn("v1.5.1 更新说明", readme)
+        self.assertIn(f"version-{version}", readme)
+        self.assertIn(f"v{version} 更新说明", readme)
+        self.assertIn(f"## v{version} · ", changelog)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("自主补衣与审美", readme)

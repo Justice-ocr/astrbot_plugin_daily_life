@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from core.archive import LifeArchive
 from core.config.options import LifeSettings
 from core.models import DayRecord
+from core.runtime.capture.actioncontract import COMMITMENT_ACTION_CONTRACT
 from core.runtime.live import DailyLifeRuntime
 from support import *  # noqa: F401,F403
 
@@ -554,7 +555,13 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有内容时字段留空", prompt)
         self.assertIn("不得复制 row_id、message_id、target_id", prompt)
         self.assertIn("不复述输入中的具体日期、钟点或时间轴编号", prompt)
-        self.assertIn("绝不能反向创建我的主动联系任务", prompt)
+        self.assertIn(COMMITMENT_ACTION_CONTRACT, prompt)
+        self.assertIn("owner", schema["commitments"][0])
+        self.assertTrue(
+            {"action", "execute_at", "condition", "message_goal"}.issubset(
+                schema["commitments"][0]["follow_up"]
+            )
+        )
         self.assertIn("current_day_timeline", source)
 
     def test_batch_payload_hides_internal_ids_only_from_readable_fields(self):
@@ -674,7 +681,8 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNone(saved)
-        commitments = await self.runtime.archive.get_commitments(limit=10)
+        # 此处验证已落库，历史约定可能已过期，不限定当前有效状态。
+        commitments = await self.runtime.archive.get_commitments(status="", limit=10)
         action_items = await self.runtime.archive.get_conversation_action_items(10)
         self.assertEqual(len(commitments), 1)
         self.assertEqual(commitments[0].content, "周六一起去看展")
@@ -682,6 +690,44 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(action_items), 1)
         self.assertEqual(action_items[0]["commitment_id"], commitments[0].id)
         self.assertEqual(action_items[0]["title"], "周六一起去看展")
+
+    async def test_present_reminder_and_standing_preference_do_not_create_future_actions(self):
+        message = ChatMemoryArchiveTest.snapshot(message_id="m1", text="面别煮太软，以后也别写括号动作")
+        message["id"] = 1
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
+            {"worth_saving": False, "commitments": [
+                {"content": "提醒面别煮太软", "execution_mode": "immediate", "confidence": 0.95,
+                 "source_message_ids": ["m1"]},
+                {"content": "以后不写括号动作", "execution_mode": "standing", "confidence": 0.95,
+                 "source_message_ids": ["m1"]},
+            ]},
+            {"session_id": "private:1", "messages": [message]},
+        )
+        self.assertEqual(await self.runtime.archive.get_commitments(status="", limit=0), [])
+        self.assertEqual(await self.runtime.archive.get_conversation_action_items(), [])
+
+    async def test_new_action_and_completion_in_same_batch_settle_together(self):
+        rows = []
+        for index, text in enumerate(("我做面，你帮我打下手", "做好了，快来吃吧")):
+            row = ChatMemoryArchiveTest.snapshot(message_id=f"m{index}", text=text,
+                                                occurred_at=f"2026-07-10T12:0{index}:00")
+            row["role"] = "user"
+            row["id"], _ = await self.runtime.archive.enqueue_chat_memory_message(row)
+            rows.append(row)
+        await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
+            {"worth_saving": False, "commitments": [
+                {"content": "一起做面吃", "owner": "共同", "execution_mode": "future",
+                 "confidence": 0.95, "source_message_ids": ["m0"]},
+            ], "execution_updates": [
+                {"status": "done", "new_commitment_indexes": [0],
+                 "source_message_id": "m1", "evidence": rows[1]["message_text"]},
+            ]},
+            {"session_id": "private:1", "messages": rows},
+        )
+        saved = await self.runtime.archive.get_commitments(status="", limit=0)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].status, "done")
+        self.assertEqual((await self.runtime.archive.get_conversation_action_items())[0]["status"], "done")
 
     async def test_immediate_video_request_is_not_saved_as_future_commitment(self):
         message = ChatMemoryArchiveTest.snapshot(

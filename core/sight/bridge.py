@@ -13,7 +13,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
@@ -21,10 +21,12 @@ from astrbot.api.message_components import Image, Plain
 from astrbot.core.agent.message import TextPart
 
 from ..runtime.markers import LOG_PREFIX
+from . import cinematics as _part_native_sight_component
+from . import identity as _part_sight_identity_component
+from . import prune as _part_sight_cleanup_component
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief
 from .clip import SightClip, SightInsight
-from .native import NativeVideoError
 from .cookie import BiliCookieJar
 from .digest import (
     VIDEO_ANSWER_BOUNDARY_RULE,
@@ -46,6 +48,7 @@ from .flight import (
     sight_resource_matches,
 )
 from .login import BiliLoginService, BiliLoginStatus
+from .native import NativeVideoError
 from .note import (
     PROFESSIONAL_NOTE_CACHE_SCHEMA,
     SightNote,
@@ -54,6 +57,7 @@ from .note import (
     professional_note_unavailable_reason,
 )
 from .probe import (
+    clean_source,
     clips_from_items,
     clips_from_text_links,
     clips_from_value,
@@ -77,11 +81,6 @@ from .sample import (
     sight_cache_dir,
 )
 from .vault import SightVault
-
-from . import cinematics as _part_native_sight_component
-from . import prune as _part_sight_cleanup_component
-from . import identity as _part_sight_identity_component
-from typing import Protocol
 
 BILI_RESOLVE_TIMEOUT_SECONDS = 10
 DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS = 300
@@ -112,6 +111,8 @@ def _sight_file_content_fingerprint(path: str) -> str:
 
 class SightComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
+
+    bili_browsing: Any
 
     _apply_sight_insight_to_structured: Any
     _astrbot_config: Any
@@ -170,6 +171,7 @@ class SightComponentContext(Protocol):
     _sight_cache_dir: Any
     _sight_cache_max_items: Any
     _sight_cache_ttl_seconds: Any
+    _sight_clip_can_resolve: Any
     _sight_clip_source_is_usable: Any
     _sight_clips_from_event: Any
     _sight_clips_from_event_async: Any
@@ -502,8 +504,9 @@ class SightComponent:
             and result.cookies
             and await asyncio.to_thread(jar.save, result.cookies)
         ):
+            await self.context.bili_browsing.login_changed()
             yield self.context._sight_plain_result(
-                event, "B站登录成功，后续 B站视频总结会自动使用登录态。"
+                event, "B站登录成功，刷刷B站和视频总结会自动使用登录态。"
             )
             return
         if result.status == BiliLoginStatus.EXPIRED:
@@ -523,13 +526,24 @@ class SightComponent:
         if not jar.is_logged_in():
             return self.context._sight_plain_result(event, "当前未登录 B站。")
         await asyncio.to_thread(jar.clear)
+        await self.context.bili_browsing.login_changed()
         return self.context._sight_plain_result(event, "已退出 B站登录。")
 
     async def bili_status(self, event: Any) -> Any:
         if self.context._event_is_group_message(event):
             return self.context._sight_plain_result(event, "B站登录请在私聊里使用。")
         jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
-        status = "已登录" if jar.is_logged_in() else "未登录"
+        status = "未登录"
+        if jar.is_logged_in():
+            from ..browsing.feed import BiliLoginRequired, BiliReadError
+
+            try:
+                await self.context.bili_browsing.reader.require_login()
+                status = "已登录"
+            except BiliLoginRequired:
+                status = "已失效，请先 /B站登出，再 /B站登录"
+            except BiliReadError:
+                status = "暂时无法验证，请稍后再试"
         return self.context._sight_plain_result(event, f"B站登录状态：{status}")
 
     def _sight_clips_from_event(
@@ -564,7 +578,10 @@ class SightComponent:
     ) -> list[SightClip]:
         clips = list(self.context._sight_clips_from_event(event, explicit))
         if explicit:
-            return dedupe_clips(clips)
+            usable = [
+                clip for clip in clips if self.context._sight_clip_can_resolve(clip)
+            ]
+            return dedupe_clips(usable or clips)
         scope = self.context._event_session_id(event)
         message_id = self.context._event_message_id(event) or f"event:{id(event)}"
         text = str(getattr(event, "message_str", "") or "").strip()
@@ -587,12 +604,18 @@ class SightComponent:
         quote_clips = await self.context._sight_quote_video_clips_from_event(
             event, scope, message_id, text
         )
-        if quote_clips:
+        usable_quote_clips = [
+            clip
+            for clip in quote_clips
+            if self.context._sight_clip_can_resolve(clip)
+        ]
+        if usable_quote_clips:
+            quote_clips = usable_quote_clips
             clips = [
                 clip
                 for clip in clips
                 if clip.origin != "quote"
-                or self.context._sight_clip_source_is_usable(clip.source)
+                or self.context._sight_clip_can_resolve(clip)
             ]
         combined = self.context._sight_enrich_clips_from_raw_message(
             event, [*current_clips, *quote_clips, *clips]
@@ -682,28 +705,25 @@ class SightComponent:
 
     @staticmethod
     def _sight_clip_source_is_usable(source: str) -> bool:
-        text = str(source or "").strip()
+        text = clean_source(source)
         if not text:
             return False
         if text.lower().startswith(
-            ("http://", "https://", "file://", "base64://", "data:")
+            ("http://", "https://", "base64://", "data:")
         ):
             return True
         try:
-            if Path(text).expanduser().exists():
-                return True
+            return Path(text).expanduser().is_file()
         except OSError:
             return False
-        return Path(text).suffix.lower() in {
-            ".mp4",
-            ".m4v",
-            ".mov",
-            ".mkv",
-            ".webm",
-            ".avi",
-            ".flv",
-            ".ts",
-        }
+
+    @classmethod
+    def _sight_clip_can_resolve(cls, clip: SightClip | None) -> bool:
+        if clip is None:
+            return False
+        return cls._sight_clip_source_is_usable(clip.source) or bool(
+            str(clip.file_id or "").strip()
+        )
 
     def event_has_sight_video(self, event: Any) -> bool:
         return bool(event is not None and self.context._sight_clips_from_event(event))
@@ -732,6 +752,8 @@ class SightComponent:
         )
 
     def schedule_bili_summary_from_event(self, event: Any) -> bool:
+        if getattr(event, "_daily_life_bili_natural", False):
+            return False
         if (
             event is None
             or self.context._event_has_command_handler(event)
@@ -945,7 +967,7 @@ class SightComponent:
             "fallback_parallel": "单帧并发",
             "native_video": "原生完整视频",
         }.get(str(metrics.get("vision_mode") or ""), "未使用")
-        logger.info(
+        logger.debug(
             f"{LOG_PREFIX} 视频专业总结完成：缓存={'命中' if cache_hit else '未命中'}；"
             f"文字={transcript_source}；"
             f"素材={material:.2f} 秒；抽帧={extract:.2f} 秒；"
@@ -2005,10 +2027,15 @@ class SightComponent:
     async def _resolve_sight_clip_source(
         self, event: Any, clip: SightClip
     ) -> SightClip:
-        if clip.source or not clip.file_id:
+        if clip.source and not clip.file_id:
+            return clip
+        if clip.source and self.context._sight_clip_source_is_usable(clip.source):
+            return clip
+        clip.source = ""
+        if not clip.file_id:
             return clip
         source = await self.context._resolve_sight_file_source(event, clip.file_id)
-        if source:
+        if source and self.context._sight_clip_source_is_usable(source):
             clip.source = source
         return clip
 
@@ -2194,9 +2221,12 @@ class SightComponent:
         return await self.context._sight_vault_for_runtime().recent(scope, limit=limit)
 
     async def format_recent_sight_context(self, event: Any, *, limit: int = 2) -> str:
+        browsing = (getattr(self.context, "bili_browsing", None)
+                    if callable(getattr(getattr(self.context, "archive", None), "_run_db", None)) else None)
+        browse_context = await browsing.prompt(event) if browsing is not None else ""
         insights = await self.context._sight_recent_for_event(event, limit=limit)
         if not insights:
-            return ""
+            return browse_context
         lines = [
             "<recent_video_understanding>",
             f"  <note>近期真实视频理解结果；回答视频内容时优先参考，不足处说明不确定。{VIDEO_ANSWER_BOUNDARY_RULE}</note>",
@@ -2228,9 +2258,9 @@ class SightComponent:
                 continue
             lines.append(f"  <video {' '.join(attrs)}>{body}</video>")
         if len(lines) == 2:
-            return ""
+            return browse_context
         lines.append("</recent_video_understanding>")
-        return "\n".join(lines)
+        return "\n".join(lines) + browse_context
 
     def _append_video_input_anchor(self, req: Any, event: Any = None) -> None:
         if event is None or not self.context.event_has_sight_video(event):

@@ -7,14 +7,19 @@ from types import SimpleNamespace
 
 # 导入运行时模块前先安装 AstrBot 测试替身。
 from support import LifeArchive  # isort: skip
+from componentfixtures import (
+    ProactiveFollowupComponent,
+    RuntimeActionReceiptComponent,
+    RuntimeMediaCommonComponent,
+    SpineBootComponent,
+)
 from core.clock import now as life_now
-
 from core.life.reliability import NonRetryableProviderError
 from core.models import CommitmentRecord
-from componentfixtures import RuntimeMediaCommonComponent
-from componentfixtures import ProactiveFollowupComponent
-from componentfixtures import RuntimeActionReceiptComponent
-from componentfixtures import SpineBootComponent
+from core.runtime.channel.perspective import (
+    media_reply_context,
+    restore_media_reply_context,
+)
 
 
 class _MediaRuntime(RuntimeActionReceiptComponent, SpineBootComponent):
@@ -570,6 +575,41 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_runtime.sent[0][1]["type"], "video")
         self.assertEqual(stored.status, "completed")
         self.assertEqual(stored.result["delivery"], "recovered")
+
+    async def test_restart_preserves_media_identity_until_followup(self):
+        image_path = Path(self.directory.name) / "identity.png"
+        image_path.write_bytes(b"fake-image")
+        old_runtime = _MediaRuntime(self.archive, image_path)
+        event = SimpleNamespace()
+        perspective = {
+            "角色人设": "完整人设。" * 300 + "我是小岚。",
+            "当前聊天对象": {"id": "10001", "name": "阿遥"},
+            "用户原话": "我们一起拍张照片",
+            "画面人物对应": [
+                {"对话身份": "说话人（我）"},
+                {"档案 ID": "10001", "对话身份": "当前聊天对象（你）"},
+            ],
+        }
+        restore_media_reply_context(event, perspective)
+        task = await old_runtime.stage_durable_media_delivery(
+            "aiocqhttp:FriendMessage:10001", "image", [str(image_path)],
+            action_type="photo", evidence="图片已生成", source_event=event,
+            reply_context={"media_name": "生活照片", "request_text": "我们一起拍张照片"},
+        )
+        event._daily_life_media_reply_context.clear()
+        await self.archive.recover_leased_durable_tasks()
+        task = next(item for item in await self.archive.get_durable_tasks() if item.id == task.id)
+        received = []
+        new_runtime = _MediaRuntime(self.archive, image_path)
+
+        async def followup(scope, **kwargs):
+            received.append(media_reply_context(kwargs["source_event"]))
+            return True
+
+        new_runtime._send_delivered_media_followup = followup
+        result = await new_runtime.resume_durable_media_delivery(task)
+        self.assertTrue(result["reply_sent"])
+        self.assertEqual(received, [perspective])
 
 
 class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):

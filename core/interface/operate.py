@@ -47,7 +47,7 @@ class OperateCommandComponent:
         )
         existing = await self.context.runtime.archive.get_day(req.target_date_str)
         if existing is None:
-            logger.info(
+            logger.debug(
                 f"[穿搭更新] {req.target_date_str} 尚无生活安排，先生成基础日程"
             )
             result = await self.context.runtime.run_daily_generation(

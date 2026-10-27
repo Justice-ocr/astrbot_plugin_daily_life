@@ -92,10 +92,12 @@ class OutboundLogService:
         context: Any,
         timing: ConversationTimingService,
         schedule: Callable[..., bool],
+        delivered: Callable[..., Any] | None = None,
     ) -> None:
         self._context = context
         self._timing = timing
         self._schedule = schedule
+        self._delivered = delivered
         self._bot_names: dict[str, str] = {}
 
     def clear(self) -> None:
@@ -254,6 +256,8 @@ class OutboundLogService:
         scope = str(kwargs.get("scope") or getattr(source_event, "unified_msg_origin", "") or "")
         # 先记录发送回执，再查询昵称，防止这段等待期间的新消息丢失时间锚点。
         await self._timing.record_conversation_delivery(scope, sent_at, source_event)
+        if self._delivered is not None:
+            await self._delivered(scope, message_outline(chain))
         name = await self.prepare_outbound_bot_name(scope=scope, source_event=source_event)
         return self.log_outbound_message(
             chain, bot_name=name, sent_at=sent_at, persist_receipt=False, **kwargs

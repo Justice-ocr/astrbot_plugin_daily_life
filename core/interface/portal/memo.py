@@ -103,3 +103,122 @@ class PortalMemoryComponent:
             }
 
         return await self.context._page_json(handler)
+
+    async def page_memory_center(self):
+        async def handler():
+            args = self.context._page_query_args()
+            archive = self.context.runtime.archive
+            service = archive.memory_life
+            scopes = await service.scopes()
+            scope = str(args.get("scope") or "")
+            visible = [scope] if scope else scopes
+            section = str(args.get("section") or "timeline")
+            offset = max(0, int(args.get("offset") or 0))
+            if section == "timeline":
+                data = await service.timeline(
+                    visible, offset=offset, limit=int(args.get("limit") or 12)
+                )
+            elif section == "memories":
+                data = await archive._run_db(
+                    lambda: list(reversed(service._memories(visible)))
+                )
+            elif section == "graph":
+                data = await service.graph(
+                    visible, entity_id=int(args.get("entity_id") or 0)
+                )
+            elif section == "diary":
+                data = await service.diaries(visible, 0)
+            elif section == "library":
+                data = {
+                    "sources": await service.library(visible),
+                    "notes": await service.reading_notes(visible, 100),
+                }
+            elif section == "originals":
+                data = await service.originals(
+                    visible,
+                    start=str(args.get("start") or ""),
+                    end=str(args.get("end") or ""),
+                    offset=offset,
+                    limit=12,
+                )
+            elif section == "evidence":
+                mid = int(args.get("memory_id") or 0)
+                data = await archive.read_memory_evidence(
+                    mid, scopes=visible, offset=offset
+                )
+                memory = await archive._run_db(
+                    lambda: next(
+                        (r for r in service._memories(visible) if r["id"] == mid), None
+                    )
+                )
+                data["memory"] = memory
+                data["validity"] = (
+                    await archive.get_memory_recall_context([mid], scopes=visible)
+                ).get(mid, "")
+            elif section == "passage":
+                data = await service.passage(
+                    int(args.get("source_id") or 0),
+                    visible,
+                    passage_id=int(args.get("passage_id") or 0),
+                    include_inactive=True,
+                )
+            elif section == "chapters":
+                data = await service.chapters(visible, 0)
+            else:
+                raise ValueError("未知记忆视图")
+            more = None
+            if isinstance(data, list):
+                more = offset + 12 if len(data) > offset + 12 else None
+                data = data[offset : offset + 12]
+            return {"scopes": scopes, "data": data, "next_offset": more}
+
+        return await self.context._page_json(handler)
+
+    async def page_memory_manage(self):
+        async def handler():
+            body = await self.context._page_json_body()
+            archive = self.context.runtime.archive
+            service = archive.memory_life
+            operation = str(body.get("operation") or "")
+            if operation == "import":
+                result = await service.import_source(
+                    scope=str(body.get("scope") or "global"),
+                    title=str(body.get("title") or ""),
+                    content=str(body.get("content") or ""),
+                    origin=str(body.get("origin") or ""),
+                )
+            elif operation == "correct":
+                mid = int(body.get("memory_id") or 0)
+                scope = str(body.get("scope") or "")
+                result = await archive.correct_life_memory(
+                    scope,
+                    mid,
+                    str(body.get("content") or ""),
+                    evidence_id=f"dashboard:{life_now().isoformat()}",
+                    evidence=str(body.get("reason") or ""),
+                    expected_content=str(body["expected_content"])
+                    if "expected_content" in body
+                    else None,
+                )
+            elif operation in {"merge", "split"}:
+                result = {
+                    "entity_id": await service.manage_identity(
+                        operation=operation,
+                        entity_id=int(body.get("entity_id") or 0),
+                        target_id=int(body.get("target_id") or 0),
+                        name=str(body.get("name") or ""),
+                        memory_ids=body.get("memory_ids") or [],
+                    )
+                }
+            elif operation == "source_status":
+                result = {
+                    "saved": await service.set_source_status(
+                        int(body.get("source_id") or 0), str(body.get("status") or "")
+                    )
+                }
+            else:
+                raise ValueError("未知记忆管理操作")
+            await self.context.runtime.mark_page_status_changed("memory_center")
+            return {"result": result}
+
+        return await self.context._page_json(handler)

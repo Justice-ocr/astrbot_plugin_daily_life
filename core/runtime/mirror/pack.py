@@ -137,10 +137,19 @@ class SnapshotPackComponent:
             [max_summaries, experience_scope, session_id,
              int(getattr(getattr(self.context, "archive", None), "living_revision", 0))], ensure_ascii=False
         )
+        async def for_sender(value):
+            result = dict(value)
+            if event is not None:
+                sender = str(event.get_sender_id() or "")
+                result["expression_profiles"] = await self.context.archive.get_expression_context(
+                    scope=experience_scope, profile_id=sender, limit=16
+                )
+            return result
+
         if use_cache:
             cached = self.context._cached_injection_snapshot(cache, cache_key)
             if cached is not None:
-                return cached
+                return await for_sender(cached)
             snapshot, shared = await self._injection_snapshot_flight().run(
                 cache_key,
                 lambda: self._read_life_context_snapshot(
@@ -154,13 +163,13 @@ class SnapshotPackComponent:
             )
             if shared:
                 logger.debug(f"{LOG_PREFIX} 上下文快照合并了同键并发读取")
-            return dict(snapshot)
+            return await for_sender(snapshot)
 
-        return await self._read_life_context_snapshot(
+        return await for_sender(await self._read_life_context_snapshot(
             cache=cache,
             cache_key=cache_key,
             max_summaries=max_summaries,
             experience_scope=experience_scope,
             session_id=session_id,
             allow_cached=False,
-        )
+        ))

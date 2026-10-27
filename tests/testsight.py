@@ -65,10 +65,10 @@ class SightPipelineTest(unittest.TestCase):
             },
         )
 
-        with patch("core.sight.bridge.logger.info") as log_info:
+        with patch("core.sight.bridge.logger.debug") as log_debug:
             SightComponent._log_sight_professional_metrics(insight)
 
-        message = str(log_info.call_args.args[0])
+        message = str(log_debug.call_args.args[0])
         self.assertIn("文字=本地语音识别", message)
         self.assertIn("视觉=2.00 秒/0次/多图", message)
         self.assertIn("总耗时=7.50 秒", message)

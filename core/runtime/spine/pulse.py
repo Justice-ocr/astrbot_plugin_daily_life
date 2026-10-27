@@ -19,6 +19,7 @@ class SpinePulseComponentContext(Protocol):
 
     _proactive_idle_enabled: Any
     _settle_stale_reply_effects: Any
+    _state_refresh_in_quiet_hours: Any
     _target_datetime_for_command: Any
     _virtual_life_metrics: Any
     archive: Any
@@ -89,6 +90,9 @@ class SpinePulseComponent:
 
     async def run_memory_maintenance(self) -> None:
         today_str = life_now().strftime("%Y-%m-%d")
+        service = getattr(self.context, "memory_life", None)
+        if service is not None:
+            await service.tick()
         await self.context._settle_stale_reply_effects()
         corrections = await self.context.archive.get_memory_corrections(limit=100)
         reply_effects = await self.context.archive.get_reply_effects(limit=100)
@@ -241,6 +245,8 @@ class SpinePulseComponent:
 
     async def run_private_revisit_check(self) -> None:
         if not self.context.config.proactive.private_revisit_enabled:
+            return
+        if self.context._state_refresh_in_quiet_hours(life_now()):
             return
         await self.context.evaluate_private_revisit_candidates()
 

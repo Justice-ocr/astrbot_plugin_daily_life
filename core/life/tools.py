@@ -1,6 +1,5 @@
 import datetime
 import json
-import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -454,21 +453,14 @@ def analyze_weather(weather_data: Any) -> dict:
             or idx_map.get("ultraviolet")
             or idx_map.get("sunglasses")
         )
-        if uv and "弱" not in str(uv.get("level", "")):
+        if uv:
             outfit_hints.append(f"防晒：{uv.get('description', '')}")
         if "sports" in idx_map:
             activity_hints.append(f"运动：{idx_map['sports'].get('description', '')}")
-        if "umbrella" in idx_map:
-            if "不带" not in idx_map["umbrella"].get("level", ""):
-                activity_hints.append(
-                    f"携带雨具：{idx_map['umbrella'].get('description', '')}"
-                )
-        chill = idx_map.get("chill")
-        cold = idx_map.get("cold")
-        if chill and "冷" in str(chill.get("level", "")):
-            activity_hints.append(f"注意：{chill.get('description', '')}")
-        elif cold and "易发" in str(cold.get("level", "")):
-            activity_hints.append(f"健康：{cold.get('description', '')}")
+        for key, label in (("umbrella", "雨具"), ("chill", "体感"), ("cold", "健康")):
+            item = idx_map.get(key)
+            if item and item.get("description"):
+                activity_hints.append(f"{label}：{item['description']}")
 
         result["outfit_hint"] = "；".join(outfit_hints)
         result["activity_hint"] = "；".join(activity_hints)
@@ -480,124 +472,34 @@ def get_weather_outfit_constraint(weather_info: dict, enabled: bool = True) -> s
         return ""
     constraints = []
     if weather_info.get("is_hot"):
-        constraints.append(
-            "高温建议优先考虑轻薄透气材质（雪纺/棉麻/真丝），颜色可多样化"
-        )
+        constraints.append("炎热时评估散热、日晒和实际户外暴露时长")
     elif weather_info.get("is_cold"):
-        constraints.append(
-            "低温建议优先考虑保暖衣物（毛衣/厚外套/羽绒服），颜色可多样化，可配围巾手套"
-        )
+        constraints.append("低温时评估保暖、防风和室内外温差")
     elif weather_info.get("is_cool"):
-        constraints.append("凉爽天气穿薄外套/卫衣/长袖，颜色多样化，可内搭短袖备用")
+        constraints.append("凉爽时结合体感、活动强度和室内外温差选择衣物")
     if weather_info.get("is_rainy"):
-        constraints.append("雨天建议考虑耐脏面料、防水鞋和雨具")
-    if weather_info.get("is_sunny") and weather_info.get("is_hot"):
-        constraints.append("晴热天气注意防晒，可戴帽子墨镜")
-    return "；".join(constraints) if constraints else ""
+        constraints.append("降雨时考虑淋湿风险与现有雨具")
+    return "；".join(constraints)
 
 
 def get_weather_activity_constraint(weather_info: dict, enabled: bool = True) -> str:
     if not enabled:
         return ""
     constraints = []
-    if weather_info.get("is_hot") and weather_info.get("temp", 0) >= 35:
-        constraints.append("高温预警，避免户外活动")
+    temp = weather_info.get("temp")
+    if isinstance(temp, (int, float)) and temp >= 35:
+        constraints.append("高温下避免长时间暴晒或剧烈户外运动，安排补水和休息")
     elif weather_info.get("is_hot"):
-        constraints.append("天气炎热，户外活动选择清晨或傍晚")
-    if weather_info.get("is_rainy"):
-        if "大雨" in weather_info.get("condition", "") or "暴雨" in weather_info.get(
-            "condition", ""
-        ):
-            constraints.append("暴雨天气，取消户外活动，待在室内")
-        else:
-            constraints.append("雨天优先室内活动（商场、咖啡厅、电影院）")
+        constraints.append("炎热会增加活动负担，结合时段、强度和遮蔽条件评估")
+    if isinstance(temp, (int, float)) and temp <= 5:
+        constraints.append("低温下控制受寒暴露，确认保暖与交通条件")
+    if weather_info.get("is_severe"):
+        constraints.append("恶劣天气下核实预警、路线和交通安全，缺乏安全条件时调整出行")
+    elif weather_info.get("is_rainy"):
+        constraints.append("降雨对活动的影响取决于场地遮蔽、路况和出行方式")
     if weather_info.get("is_foggy"):
-        constraints.append("雾霾天气，减少户外，优先室内活动")
-    return "；".join(constraints) if constraints else ""
-
-
-def get_matching_hairstyle(
-    style_name: str,
-    style_map: dict[str, list[str]],
-    night_styles: list[str],
-    is_night=False,
-):
-    """根据穿搭风格获取匹配的发型"""
-    if is_night:
-        return random.choice(night_styles) if night_styles else "自然披发"
-
-    def normalize(value: str) -> str:
-        text = "".join(str(value or "").strip().lower().split())
-        return text.replace("（", "(").replace("）", ")")
-
-    def pick(items: list[str]) -> str:
-        return random.choice(items) if items else ""
-
-    raw_name = str(style_name or "").strip()
-    if not raw_name:
-        return "自然披发"
-
-    exact = style_map.get(raw_name) or []
-    if exact:
-        return pick(exact)
-
-    normalized_name = normalize(raw_name)
-    if not normalized_name:
-        return "自然披发"
-
-    normalized_items: list[tuple[str, list[str]]] = []
-    for key, hairstyles in style_map.items():
-        if not hairstyles:
-            continue
-        normalized_key = normalize(key)
-        if not normalized_key:
-            continue
-        normalized_items.append((normalized_key, hairstyles))
-
-    for normalized_key, hairstyles in normalized_items:
-        if normalized_key == normalized_name:
-            return pick(hairstyles)
-
-    contains_matches: list[list[str]] = []
-    for normalized_key, hairstyles in normalized_items:
-        if normalized_name in normalized_key or normalized_key in normalized_name:
-            contains_matches.append(hairstyles)
-    if contains_matches:
-        return pick(random.choice(contains_matches))
-
-    best_overlap = 0
-    best_matches: list[list[str]] = []
-    name_parts = [
-        part
-        for part in normalized_name.replace("·", " ").replace("-", " ").split()
-        if part
-    ]
-    if not name_parts:
-        name_parts = [normalized_name]
-    for normalized_key, hairstyles in normalized_items:
-        key_parts = [
-            part
-            for part in normalized_key.replace("·", " ").replace("-", " ").split()
-            if part
-        ]
-        if not key_parts:
-            key_parts = [normalized_key]
-        overlap = sum(
-            1
-            for part in name_parts
-            if any(part in key_part or key_part in part for key_part in key_parts)
-        )
-        if overlap <= 0:
-            continue
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_matches = [hairstyles]
-        elif overlap == best_overlap:
-            best_matches.append(hairstyles)
-    if best_matches:
-        return pick(random.choice(best_matches))
-
-    return "自然披发"
+        constraints.append("低能见度时核实路线与交通条件；空气质量以 AQI 为准")
+    return "；".join(constraints)
 
 
 def get_week_id(date=None):

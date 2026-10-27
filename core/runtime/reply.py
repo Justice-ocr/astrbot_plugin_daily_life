@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from itertools import accumulate
 from typing import Any, Protocol
@@ -21,6 +22,7 @@ from .delivery import (
 from .expression import expression_context_for_event, expression_context_has_message
 from .markers import LOG_PREFIX
 from .voice.modality import VoiceExpressionPlan, VoiceExpressionPlanner
+from .voice.utterance import preserve_voice_reply_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,6 +853,10 @@ class SemanticSegmentRuntimeComponent:
         return True
 
     async def apply_semantic_segment_before_send(self, event: Any) -> bool:
+        with preserve_voice_reply_text(event, self.context._semantic_segment_text):
+            return await self._prepare_semantic_reply(event)
+
+    async def _prepare_semantic_reply(self, event: Any) -> bool:
         expression_needed = self._voice_expression_enabled(event)
         segmentation_enabled = self.context._semantic_segment_enabled()
         if event is None or not (segmentation_enabled or expression_needed):
@@ -1196,6 +1202,26 @@ class SemanticSegmentRuntimeComponent:
             source=source,
         )
 
+    async def send_share_expression(
+        self, text: str, *, target_umo: str, source_event: Any = None
+    ) -> dict:
+        """复用后台表达管线的分段、停顿和中断规则，不改写事实正文。"""
+        sent_texts: list[str] = []
+        try:
+            await self.send_background_text(
+                target_umo,
+                text,
+                mode=BackgroundTextMode.EXPRESSIVE,
+                source_event=source_event,
+                source="share",
+                on_sent=sent_texts.append,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(f"{LOG_PREFIX} 外部表达发送未完成，保留已送达分段回执")
+        return {"sent_texts": sent_texts}
+
     async def send_background_text(
         self,
         target_scope: str,
@@ -1208,6 +1234,7 @@ class SemanticSegmentRuntimeComponent:
         raise_delivery_errors: bool = False,
         user_message: str = "",
         length_hint: int | None = None,
+        on_sent: Callable[[str], None] | None = None,
     ) -> bool:
         """通过统一发送管线投递后台可见文字。"""
         if not isinstance(mode, BackgroundTextMode):
@@ -1233,6 +1260,7 @@ class SemanticSegmentRuntimeComponent:
                 source_message_id=source_message_id,
                 source=source,
                 raise_delivery_errors=raise_delivery_errors,
+                on_sent=on_sent,
             )
 
         source_text = (
@@ -1251,6 +1279,7 @@ class SemanticSegmentRuntimeComponent:
                 source_message_id=source_message_id,
                 source=source,
                 raise_delivery_errors=raise_delivery_errors,
+                on_sent=on_sent,
             )
 
         if length_hint is None:
@@ -1284,6 +1313,7 @@ class SemanticSegmentRuntimeComponent:
                 source_message_id=source_message_id,
                 source=source,
                 raise_delivery_errors=raise_delivery_errors,
+                on_sent=on_sent,
             )
 
         splitter = getattr(self.context, "_plan_chat_style_natural_segments", None)
@@ -1328,6 +1358,7 @@ class SemanticSegmentRuntimeComponent:
                 source_message_id=source_message_id,
                 source=source,
                 raise_delivery_errors=raise_delivery_errors,
+                on_sent=on_sent,
             )
 
         self.context._semantic_segment_metrics["fallback_single"] = (
@@ -1356,6 +1387,7 @@ class SemanticSegmentRuntimeComponent:
             source_message_id=source_message_id,
             source=source,
             raise_delivery_errors=raise_delivery_errors,
+            on_sent=on_sent,
         )
 
     async def _send_background_plan(
@@ -1368,6 +1400,7 @@ class SemanticSegmentRuntimeComponent:
         source_message_id: str = "",
         source: str = "background",
         raise_delivery_errors: bool = False,
+        on_sent: Callable[[str], None] | None = None,
     ) -> bool:
         current_media_turn = getattr(self.context, "media_request_is_current_turn", None)
         media_followup = source in {
@@ -1414,6 +1447,18 @@ class SemanticSegmentRuntimeComponent:
             return False
         reply_to_id = str(source_message_id or "").strip()
         service = getattr(self.context, "reply_delivery", None) or ReplyDeliveryService(self.context)
+
+        def record_sent(index: int, text: str) -> None:
+            # 先记录实际送达内容，后续日志或状态回写失败也不能丢失回执。
+            if on_sent is not None:
+                on_sent(text)
+            self.context.note_structured_bot_message(
+                scope,
+                text,
+                source_event=source_event if index == 0 else None,
+                reply_to_id=reply_to_id if index == 0 else "",
+            )
+
         outcome = await service.send_scope(
             ScopeDeliveryRequest(
                 scope=scope,
@@ -1446,12 +1491,7 @@ class SemanticSegmentRuntimeComponent:
                     raise_delivery_errors=raise_delivery_errors,
                     log_outbound=False,
                 ),
-                on_sent=lambda index, text: self.context.note_structured_bot_message(
-                    scope,
-                    text,
-                    source_event=source_event if index == 0 else None,
-                    reply_to_id=reply_to_id if index == 0 else "",
-                ),
+                on_sent=record_sent,
                 source_event=source_event,
                 source_message_id=source_message_id,
                 source=source,
@@ -1463,7 +1503,7 @@ class SemanticSegmentRuntimeComponent:
             metrics = getattr(self.context, "_semantic_segment_metrics", None)
             if isinstance(metrics, dict):
                 metrics["cancelled"] += 1
-            logger.info(
+            logger.debug(
                 f"{LOG_PREFIX} 后台文字后续分段已取消：已发送 "
                 f"{outcome.sent_count}/{len(segments)} 条。"
             )

@@ -18,6 +18,12 @@ class DailyLifeDashboardComponentContext(Protocol):
     _external_runtime_lease: Any
     _page_request_method: Any
     context: Any
+    runtime: Any
+    _page_json: Any
+    _page_json_body: Any
+    _page_query_args: Any
+    page_browsing_list: Any
+    page_browsing_control: Any
     page_character_reference_delete: Any
     page_character_reference_preview: Any
     page_character_reference_upload: Any
@@ -61,8 +67,48 @@ class DailyLifeDashboardComponent:
     def __init__(self, context: DailyLifeDashboardComponentContext) -> None:
         self.context = context
 
+    async def page_browsing_list(self):
+        async def read():
+            query = self.context._page_query_args()
+            status = str(query.get("status") or "")
+            from ..browsing.bookmarks import STATES
+
+            if status and status not in STATES:
+                raise ValueError("无效的浏览筛选条件")
+            offset = max(0, min(10000, int(query.get("offset") or 0)))
+            service = self.context.runtime.bili_browsing
+            records = await service.archive.list(limit=41, offset=offset, status=status)
+            state = await service.archive.state()
+            enabled = self.context.runtime.config.browsing.enabled
+            error = state.get("last_error", "")
+            reason = state.get("last_reason", "")
+            if enabled:
+                from ..browsing.feed import BiliReadError
+
+                try:
+                    await service.reader.require_login()
+                    if state.get("login_required"):
+                        error = ""
+                except BiliReadError as exc:
+                    error, reason = str(exc), ""
+            return {"items": [service.card(item) for item in records[:40]], "has_more": len(records) > 40,
+                    "enabled": enabled, "reason": reason,
+                    "error": error, "interests": state.get("taste", {}),
+                    "activities": await service.social.context(None),
+                    "creators": state.get("creators", {})}
+        return await self.context._page_json(read)
+
+    async def page_browsing_control(self):
+        async def act():
+            body = await self.context._page_json_body()
+            record = await self.context.runtime.bili_browsing.control(str(body.get("id") or ""), str(body.get("operation") or ""))
+            return {"item": record}
+        return await self.context._page_json(act)
+
     def _register_page_web_apis(self) -> None:
         dashboard_routes = (
+            ("page/browsing/list", self.context.page_browsing_list, ["GET"], "B站浏览记录"),
+            ("page/browsing/control", self.context.page_browsing_control, ["POST"], "暂停或继续浏览视频"),
             ("page/status", self.context.page_status, ["GET"], "日常生活工作台状态"),
             (
                 "page/status/wait",
@@ -77,6 +123,8 @@ class DailyLifeDashboardComponent:
                 "刷新日常生活状态",
             ),
             ("page/action/reset-day", self.context.page_reset_day, ["POST"], "重生成日常生活"),
+            ("page/memory/center", self.context.page_memory_center, ["GET"], "记忆中心"),
+            ("page/memory/manage", self.context.page_memory_manage, ["POST"], "整理记忆与资料"),
             ("page/timeline/save", self.context.page_timeline_save, ["POST"], "保存时间轴"),
             ("page/config", self.context.page_config, ["GET", "POST"], "日常生活设置"),
             (

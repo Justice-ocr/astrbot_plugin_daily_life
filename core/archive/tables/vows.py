@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS commitments (
             source_message TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             activated_at TEXT NOT NULL DEFAULT '',
-            completed_at TEXT NOT NULL DEFAULT ''
+            completed_at TEXT NOT NULL DEFAULT '',
+            follow_up_json TEXT NOT NULL DEFAULT '{}'
         );
 CREATE TABLE IF NOT EXISTS commitment_people (
             commitment_id INTEGER NOT NULL,

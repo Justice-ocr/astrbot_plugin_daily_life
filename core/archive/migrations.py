@@ -12,7 +12,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 32
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -72,9 +72,10 @@ PREVIOUS_V26_SCHEMA_FINGERPRINT = (
 PREVIOUS_V27_SCHEMA_FINGERPRINT = (
     "4cc377da1c900fc3f7c36666665b888512c6203a61b9076d1c9684df7c8c30f2"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V28_SCHEMA_FINGERPRINT = (
     "6431c08ea940c9eb9c175f009b6cf52d2e9e90282aba0ae643f2fae4ffa98682"
 )
+PREVIOUS_V29_SCHEMA_FINGERPRINT = "48ee0b885783bac1e045b015f50491ac8d2eb64011580691840be0b83519aee7"
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -125,6 +126,10 @@ ON style_catalog_feedback(item_id, id DESC);
 
 # 指纹只覆盖表、字段和索引，无法区分仅修改 CHECK 约束的 v12/v13。
 # 因此相同指纹选择最早的安全版本，再执行后续幂等迁移完成校准。
+PREVIOUS_V30_SCHEMA_FINGERPRINT = "1fe1e4051077cf590c5f041544ea9f660c58bad83ff46759b90083d35eb9cbed"
+PREVIOUS_V31_SCHEMA_FINGERPRINT = "c2f8770ba6987c5c89a0da4944a9a2fdbea69ea1be02334b24b844d16ec5b486"
+CURRENT_SCHEMA_FINGERPRINT = "7518fd42746c412efc726df5fb035090127c5ed2e19ae1715650d0b88dfeee8a"
+
 KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     LEGACY_BASELINE_SCHEMA_FINGERPRINT: 1,
     BASELINE_SCHEMA_FINGERPRINT: 1,
@@ -136,7 +141,7 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V9_SCHEMA_FINGERPRINT: 9,
     PREVIOUS_V10_SCHEMA_FINGERPRINT: 10,
     PREVIOUS_V11_SCHEMA_FINGERPRINT: 11,
-    # v13 旧结构没有聊天记忆重试字段；启动时会由 schema 校准补齐。
+    # v13 旧结构没有聊天记忆重试字段，由版本迁移补齐。
     "86365a73b9bb947feab3191007402f5cf72cfed879215b9416d671c5a33a4eb2": 12,
     PREVIOUS_V12_SCHEMA_FINGERPRINT: 12,
     PREVIOUS_V14_SCHEMA_FINGERPRINT: 14,
@@ -150,7 +155,11 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V22_SCHEMA_FINGERPRINT: 22,
     PREVIOUS_V26_SCHEMA_FINGERPRINT: 23,
     PREVIOUS_V27_SCHEMA_FINGERPRINT: 27,
-    CURRENT_SCHEMA_FINGERPRINT: 28,
+    PREVIOUS_V28_SCHEMA_FINGERPRINT: 28,
+    PREVIOUS_V29_SCHEMA_FINGERPRINT: 29,
+    PREVIOUS_V30_SCHEMA_FINGERPRINT: 30,
+    PREVIOUS_V31_SCHEMA_FINGERPRINT: 31,
+    CURRENT_SCHEMA_FINGERPRINT: 32,
 }
 
 
@@ -956,6 +965,64 @@ def _migrate_conversation_arrivals(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_commitment_follow_up(conn: sqlite3.Connection) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(commitments)")}
+    if "follow_up_json" not in columns:
+        conn.execute("ALTER TABLE commitments ADD COLUMN follow_up_json TEXT NOT NULL DEFAULT '{}'")
+
+
+def _migrate_current_storage_boundaries(conn: sqlite3.Connection) -> None:
+    """统一版本边界中的历史修复，废弃数据原样归档后清理旧列。"""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(chat_memory_batches)")}
+    for name in ("next_attempt_at", "failed_at"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE chat_memory_batches ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    from types import SimpleNamespace
+    from .garments import GarmentArchiveComponent
+    previous_row_factory = conn.row_factory
+    try:
+        conn.row_factory = sqlite3.Row
+        GarmentArchiveComponent(SimpleNamespace(_conn=conn))._synchronize_wardrobe_unlocked(repair_legacy=True)
+    finally:
+        conn.row_factory = previous_row_factory
+    retired = ("decision_category", "decision_source", "decision_stage", "decision_outcome")
+    present = {str(row[1]) for row in conn.execute("PRAGMA table_info(action_decisions)")}
+    fields = [name for name in retired if name in present]
+    if fields:
+        rows = conn.execute("SELECT id," + ",".join(fields) + " FROM action_decisions").fetchall()
+        history = [dict(zip(("id", *fields), row)) for row in rows if any(row[1:])]
+        if history:
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (
+                "retired_action_decisions_v30", json.dumps(history, ensure_ascii=False),
+            ))
+        for name in fields:
+            conn.execute(f"ALTER TABLE action_decisions DROP COLUMN {name}")
+
+
+def _migrate_expression_evolution(conn: sqlite3.Connection) -> None:
+    """保留已有档案，增加可追溯且可撤回的表达学习。"""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(expression_profiles)")}
+    if "learning_json" not in columns:
+        conn.execute("ALTER TABLE expression_profiles ADD COLUMN learning_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute("""CREATE TABLE IF NOT EXISTS expression_learning_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL REFERENCES expression_profiles(id) ON DELETE CASCADE,
+        event_key TEXT NOT NULL, kind TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'neutral',
+        source_scope TEXT NOT NULL DEFAULT '', evidence_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(profile_id, event_key)
+    )""")
+
+
+def _migrate_memory_life(conn: sqlite3.Connection) -> None:
+    from .tables.memorylife import MEMORY_LIFE_V32_SQL
+    # 逐条执行以保留外层升级事务。
+    for statement in MEMORY_LIFE_V32_SQL.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    conn.execute("INSERT OR IGNORE INTO conversation_originals SELECT session_id,event_key,role,sender_name,occurred_at,message_text FROM memory_source_messages")
+    conn.execute("INSERT OR IGNORE INTO conversation_originals SELECT session_id,event_key,role,sender_name,occurred_at,message_text FROM chat_memory_messages WHERE role IN ('user','assistant') AND message_text<>''")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -985,6 +1052,10 @@ MIGRATIONS: dict[int, MigrationStep] = {
     26: _migrate_expression_feedback_mirrors,
     27: _migrate_memory_recollection,
     28: _migrate_conversation_arrivals,
+    29: _migrate_commitment_follow_up,
+    30: _migrate_current_storage_boundaries,
+    31: _migrate_expression_evolution,
+    32: _migrate_memory_life,
 }
 
 

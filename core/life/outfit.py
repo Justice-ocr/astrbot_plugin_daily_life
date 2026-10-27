@@ -722,7 +722,7 @@ class OutfitComponent:
                 reference_ids, **selection_kwargs,
             )
             if resolved_ids != reference_ids:
-                logger.info(
+                logger.debug(
                     "[穿搭更新] 模型未提供完整衣橱编号，已自动采用候选："
                     + ",".join(str(item) for item in resolved_ids)
                 )
@@ -1026,7 +1026,7 @@ class OutfitComponent:
             and claims_completed
             and not verified_change_source
         ):
-            logger.info("[穿搭更新] 已保留当前穿搭：声称完成的换装没有执行证据")
+            logger.debug("[穿搭更新] 已保留当前穿搭：声称完成的换装没有执行证据")
             return old_data
         if (
             user_confirmed
@@ -1035,7 +1035,7 @@ class OutfitComponent:
             and appearance_changed
             and not verified_change_source
         ):
-            logger.info("[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据")
+            logger.debug("[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据")
             return old_data
         style_pool = resolve_outfit_style_pool(
             scene_category,
@@ -1171,7 +1171,7 @@ class OutfitComponent:
                 extra=generation_instruction,
             )
 
-        logger.info(
+        logger.debug(
             f"[穿搭更新] 开始：日期={date_str}；"
             f"时段={get_time_period_cn(target_period)}"
         )
@@ -1233,7 +1233,7 @@ class OutfitComponent:
                         should_abort=should_abort,
                     )
                     if updated is not None:
-                        logger.info(
+                        logger.debug(
                             f"[穿搭更新] 完成：日期={date_str}；日程保持不变；"
                             f"耗时={time.monotonic() - started_at:.2f} 秒"
                         )

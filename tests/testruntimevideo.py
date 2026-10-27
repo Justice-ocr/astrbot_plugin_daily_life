@@ -1,5 +1,6 @@
 import unittest
 
+from core.runtime.voice.modality import VoiceExpressionPlan
 from core.sight.flight import SightFlight
 from core.sight.note import (
     PROFESSIONAL_NOTE_CACHE_SCHEMA,
@@ -40,9 +41,6 @@ from runtimehelpers import (
     tempfile,
     types,
 )
-
-
-from core.runtime.voice.modality import VoiceExpressionPlan
 
 
 class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
@@ -175,17 +173,23 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             return "captured-for-this-request.png"
 
         async def generate_video_asset(event, prompt, reference_image, **_kwargs):
-            video_calls.append(reference_image)
+            video_calls.append((prompt, reference_image))
             return types.SimpleNamespace(url="https://example.com/life.mp4")
 
         runtime._resolve_life_image_reference_async = resolve_reference
         runtime._part_runtime_video_media_component._generate_life_video_first_frame = generate_first_frame
         runtime.generate_life_video_asset = generate_video_asset
+        runtime._direct_life_video_plan = lambda event, prompt: async_return(
+            types.SimpleNamespace(
+                first_frame="画面：沙发边刚坐下的静止瞬间。",
+                video_prompt="从坐下开始，人物随后轻轻抬头看向镜头。",
+            )
+        )
         request = types.SimpleNamespace(
             subject_route="free",
             participants=(),
             initial_reference_image="",
-            prompt="沙发边的晚安短视频",
+            prompt="沙发边的晚安短视频，先坐下，再抬头看向镜头",
             current_appearance="",
             source_request="",
             person_fact_context="",
@@ -193,6 +197,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             friend_look={},
             friend_look_persist=False,
             direct_prompt=True,
+            duration=0,
             scope="aiocqhttp:FriendMessage:10001",
             event=Event(unified_msg_origin="aiocqhttp:FriendMessage:10001"),
             request_id="video-request",
@@ -202,7 +207,18 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         self.assertEqual(resolver_calls, [])
         self.assertEqual(len(first_frame_calls), 1)
-        self.assertEqual(video_calls, ["captured-for-this-request.png"])
+        self.assertEqual(
+            first_frame_calls[0][1], "画面：沙发边刚坐下的静止瞬间。"
+        )
+        self.assertEqual(
+            video_calls,
+            [
+                (
+                    "从坐下开始，人物随后轻轻抬头看向镜头。",
+                    "captured-for-this-request.png",
+                )
+            ],
+        )
         self.assertEqual(execution.first_frame, "captured-for-this-request.png")
 
     async def test_life_video_request_after_image_restart_uses_original_source(self):
@@ -599,14 +615,9 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertIn("动态：手里的纸袋轻轻晃动", video_calls[0][0])
         self.assertIn("continuity", provider.prompts[0])
         self.assertIn("camera", provider.prompts[0])
-        self.assertIn("根据剧情、用户要求和画面内容决定", provider.prompts[0])
-        self.assertIn("保持原图主体", provider.prompts[0])
-        self.assertIn("嘴唇轻微自然开合", provider.prompts[0])
-        self.assertIn("不要为了字段完整强行添加背景声或人声", provider.prompts[0])
-        self.assertIn(
-            "只有用户要求、原始剧情或人物互动确实需要时才写台词", provider.prompts[0]
-        )
-        self.assertIn("旁白、画外音和解说只有用户明确要求", provider.prompts[0])
+        self.assertIn("按时间推进的动作和变化", provider.prompts[0])
+        self.assertIn("已有参考对象的身份、外观和场景连续性", provider.prompts[0])
+        self.assertIn("台词、口型与声音保持自然一致", provider.prompts[0])
         self.assertIn("近期情绪脉络（短期状态参考）", provider.prompts[0])
         self.assertIn("有点疲惫但心情不错", provider.prompts[0])
         self.assertIn("视频动作更适合轻微、缓慢、生活化", provider.prompts[0])
@@ -668,7 +679,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         await scheduled[0][2]
         self.assertEqual(loaded_refs, ["https://example.com/quoted.png"])
         self.assertEqual(
-            video_calls, [("把这张转成视频", quoted_frame, {"aspect_ratio": "9:16"})]
+            video_calls,
+            [("动态视频描述：把这张转成视频", quoted_frame, {"aspect_ratio": "9:16"})],
         )
 
     async def test_life_video_generate_prompt_ratio_overrides_reference_image_ratio(
@@ -725,13 +737,31 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         await scheduled[0][2]
         self.assertEqual(
             video_calls,
-            [("把这张转成横版 16:9 视频", quoted_frame, {"aspect_ratio": "16:9"})],
+            [
+                (
+                    "动态视频描述：把这张转成横版 16:9 视频",
+                    quoted_frame,
+                    {"aspect_ratio": "16:9"},
+                )
+            ],
         )
 
-    async def test_life_video_generate_prompt_duration_overrides_config(self):
+    async def _generate_life_video_with_reference(
+        self, user_text, tool_prompt, *, duration=0
+    ):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
         self._stub_media_director(runtime)
+        director_inputs = []
+        runtime._direct_life_video_plan = lambda event, prompt: (
+            director_inputs.append(prompt)
+            or async_return(
+                types.SimpleNamespace(
+                    first_frame="单张首帧",
+                    video_prompt="模型整理后的连贯动态画面",
+                )
+            )
+        )
         quoted_frame = (
             b"\x89PNG\r\n\x1a\n"
             + (13).to_bytes(4, "big")
@@ -773,45 +803,69 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             )
         ]
         event.message_obj.message = event.message_items
+        event.message_str = user_text
 
         result = await runtime.life_video_generate(
-            event, "把这张转成横版 16:9，做成5秒视频"
+            event, tool_prompt, duration=duration
         )
 
         self.assertEqual(json.loads(result)["status"], "pending")
         await scheduled[0][2]
+        return video_calls, quoted_frame, director_inputs
+
+    async def test_generated_prompt_duration_does_not_override_config(self):
+        video_calls, quoted_frame, director_inputs = await self._generate_life_video_with_reference(
+            "把这张转成横版 16:9 视频",
+            "把这张转成横版 16:9 视频，画面自然，约8秒",
+        )
+
         self.assertEqual(
             video_calls,
             [
                 (
-                    "把这张转成横版 16:9，做成5秒视频",
+                    "模型整理后的连贯动态画面",
+                    quoted_frame,
+                    {"aspect_ratio": "16:9"},
+                )
+            ],
+        )
+        self.assertIn("约8秒", director_inputs[0])
+
+    async def test_explicit_user_duration_overrides_config(self):
+        video_calls, quoted_frame, director_inputs = await self._generate_life_video_with_reference(
+            "把这张转成横版 16:9 视频，时长5秒",
+            "把这张转成横版 16:9 视频，画面自然，约8秒",
+            duration=5,
+        )
+
+        self.assertEqual(
+            video_calls,
+            [
+                (
+                    "模型整理后的连贯动态画面",
                     quoted_frame,
                     {"aspect_ratio": "16:9", "duration": 5},
                 )
             ],
         )
+        self.assertIn("约8秒", director_inputs[0])
 
-    def test_video_prompt_duration_seconds_parses_common_forms(self):
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+    async def test_duration_text_does_not_override_video_setting(self):
+        video_calls, quoted_frame, _ = await self._generate_life_video_with_reference(
+            "把这张转成横版 16:9 视频，时长5秒",
+            "把这张转成横版 16:9 视频，画面自然，约8秒",
+        )
 
-        self.assertEqual(runtime._video_prompt_duration_seconds("5 秒视频"), 5)
-        self.assertEqual(runtime._video_prompt_duration_seconds("8s短视频"), 8)
-        self.assertEqual(runtime._video_prompt_duration_seconds("12秒"), 12)
-        self.assertEqual(runtime._video_prompt_duration_seconds("60秒视频"), 15)
-        self.assertEqual(runtime._video_prompt_duration_seconds("时长：12"), 0)
         self.assertEqual(
-            runtime._video_prompt_duration_seconds(
-                "第1格【0-1.5秒】开场\n第2格【1.5-3秒】奔跑"
-            ),
-            3,
+            video_calls,
+            [
+                (
+                    "模型整理后的连贯动态画面",
+                    quoted_frame,
+                    {"aspect_ratio": "16:9"},
+                )
+            ],
         )
-        self.assertEqual(
-            runtime._video_prompt_duration_seconds(
-                "第9格【12.5-15秒】：坐在电车里微笑"
-            ),
-            15,
-        )
-        self.assertEqual(runtime._video_prompt_duration_seconds("普通短视频"), 0)
 
     async def test_life_video_generate_uses_full_event_storyboard_directly(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -876,7 +930,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         await scheduled[0][2]
         self.assertEqual(
             video_calls,
-            [(full_prompt, quoted_frame, {"aspect_ratio": "9:16", "duration": 15})],
+            [(full_prompt, quoted_frame, {"aspect_ratio": "9:16"})],
         )
 
     async def test_life_video_first_frame_uses_character_reference_route(self):
@@ -924,8 +978,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime._character_appearance_profile = lambda event: async_return(
             "成年女性，整体纤细匀称，上半身曲线自然丰满"
         )
-        runtime._direct_life_video_prompt = lambda event, prompt: async_return(
-            f"视频导演：{prompt}"
+        runtime._direct_life_video_plan = lambda event, prompt: async_return(
+            types.SimpleNamespace(
+                first_frame=prompt,
+                video_prompt=f"视频导演：{prompt}",
+            )
         )
         runtime._rewrite_life_image_prompt_for_policy_retry = (
             lambda event, prompt, **kwargs: (
@@ -999,19 +1056,27 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_life_video_prompt_allows_optional_director_fields(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
 
-        prompt = runtime._part_stage_voice_component._media_video_prompt_from_payload(
+        plan = runtime._part_stage_voice_component._media_video_plan_from_payload(
             {
                 "image": "雨夜窗边半身镜头",
+                "camera": "镜头缓慢靠近",
                 "motion": "雨滴在玻璃上缓慢滑落，人物轻轻眨眼",
             }
         )
 
         self.assertEqual(
-            prompt,
-            "画面：雨夜窗边半身镜头。动态：雨滴在玻璃上缓慢滑落，人物轻轻眨眼。",
+            plan.first_frame,
+            "画面：雨夜窗边半身镜头。",
         )
-        self.assertNotIn("连续性：", prompt)
-        self.assertNotIn("声音：", prompt)
+        self.assertNotIn("镜头：", plan.first_frame)
+        self.assertNotIn("动态：", plan.first_frame)
+        self.assertEqual(
+            plan.video_prompt,
+            "画面：雨夜窗边半身镜头。镜头：镜头缓慢靠近。"
+            "动态：雨滴在玻璃上缓慢滑落，人物轻轻眨眼。",
+        )
+        self.assertNotIn("连续性：", plan.video_prompt)
+        self.assertNotIn("声音：", plan.video_prompt)
 
     async def test_life_video_generate_ignores_previous_image_when_message_has_no_image(
         self,
@@ -1075,7 +1140,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_life_video_generate_reports_error_when_video_fails(self):
         provider = Provider(
             [
-                '{"subject":"窗边的人","scene":"雨夜窗边","composition":"半身生活照"}',
                 (
                     '{"image":"雨夜窗边",'
                     '"continuity":"保持首帧里的人物、睡衣和窗边构图",'
@@ -1083,6 +1147,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                     '"motion":"人物轻轻眨眼，雨滴沿玻璃滑落",'
                     '"sound":"窗外雨声和很轻的室内背景声"}'
                 ),
+                '{"subject":"窗边的人","scene":"雨夜窗边","composition":"半身生活照"}',
                 '{"reply_text":"这段视频没跑出来，我先不硬凑了。"}',
             ]
         )
@@ -1169,8 +1234,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
     async def test_life_video_generate_accepts_image_only_director_result(self):
         provider = Provider(
             [
-                '{"subject":"窗边的人","scene":"雨夜窗边","composition":"半身生活照"}',
                 '{"image":"雨夜窗边"}',
+                '{"subject":"窗边的人","scene":"雨夜窗边","composition":"半身生活照"}',
                 '{"reply_text":"拍好了，雨夜窗边这一段还挺安静的。"}',
             ]
         )
@@ -2397,10 +2462,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
         video_path = str(Path(tempfile.mkdtemp()) / "quoted.mp4")
+        Path(video_path).write_bytes(b"quoted-video")
 
         class QuotedVideo:
             type = "Video"
-            file = "file-id-placeholder"
+            file = "d88921b0-d680-4811-9350-c133eeeafc4c.mp4"
             path = ""
             name = "quoted.mp4"
 
@@ -2410,7 +2476,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         class Reply:
             type = "Reply"
             id = "quoted-message-id"
-            chain = [QuotedVideo()]
+
+            class InvalidVideo:
+                type = "Video"
+                file = "d88921b0-d680-4811-9350-c133eeeafc4c.mp4"
+                path = ""
+                name = "quoted.mp4"
+
+            chain = [QuotedVideo(), InvalidVideo()]
 
         event = Event(
             sender_name="阿林",
@@ -2428,6 +2501,23 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(clips[0].source, video_path)
         self.assertEqual(clips[0].origin, "quote")
         self.assertEqual(clips[0].text, "这是什么？")
+
+    def test_sight_clip_source_requires_resolvable_location(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        inaccessible = "d88921b0-d680-4811-9350-c133eeeafc4c.mp4"
+        local_video = Path(tempfile.mkdtemp()) / "accessible.mp4"
+        local_video.write_bytes(b"video")
+
+        self.assertFalse(runtime._sight_clip_source_is_usable(inaccessible))
+        self.assertTrue(runtime._sight_clip_source_is_usable(str(local_video)))
+        self.assertFalse(
+            runtime._sight_clip_can_resolve(SightClip(source=inaccessible))
+        )
+        self.assertTrue(
+            runtime._sight_clip_can_resolve(
+                SightClip(source=inaccessible, file_id="platform-file-id")
+            )
+        )
 
     def test_sight_clip_cache_key_ignores_message_id_for_same_video(self):
         first = SightClip(

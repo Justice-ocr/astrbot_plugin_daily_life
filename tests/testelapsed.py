@@ -199,7 +199,28 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.record_conversation_delivery(self.scope, self.sent)
         for versioned in (True, False):
             with self.subTest(versioned=versioned):
+                # 真正还原 v27，而不是保留 v31/v32 扩展后伪装成无版本旧库。
+                for table in ("knowledge_readings", "knowledge_passages", "knowledge_sources", "memory_identity_redirects", "memory_associations", "memory_enrichments", "memory_chapters", "conversation_originals", "expression_learning_events"):
+                    self.archive._conn.execute(f"DROP TABLE {table}")
+                self.archive._conn.execute("ALTER TABLE expression_profiles DROP COLUMN learning_json")
                 self.archive._conn.execute("DROP TABLE conversation_arrivals")
+                self.archive._conn.execute("ALTER TABLE commitments DROP COLUMN follow_up_json")
+                # 还原 v27 的已发布字段，不能把当前版本删列后的结构冒充旧库。
+                table_sql = self.archive._conn.execute("SELECT sql FROM sqlite_master WHERE name='action_decisions'").fetchone()[0]
+                index_sql = [row[0] for row in self.archive._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name='action_decisions' AND type='index' AND sql IS NOT NULL"
+                )]
+                columns = [row[1] for row in self.archive._conn.execute("PRAGMA table_info(action_decisions)")]
+                additions = "".join(f"{name} TEXT NOT NULL DEFAULT '',\n" for name in (
+                    "decision_category", "decision_source", "decision_stage", "decision_outcome"
+                ))
+                self.archive._conn.execute("ALTER TABLE action_decisions RENAME TO current_decisions")
+                self.archive._conn.execute(table_sql.replace("created_at TEXT", additions + "created_at TEXT"))
+                column_list = ",".join(columns)
+                self.archive._conn.execute(f"INSERT INTO action_decisions({column_list}) SELECT {column_list} FROM current_decisions")
+                self.archive._conn.execute("DROP TABLE current_decisions")
+                for statement in index_sql:
+                    self.archive._conn.execute(statement)
                 if versioned:
                     self.archive._conn.execute(
                         "UPDATE meta SET value = '27' WHERE key = 'schema_version'"

@@ -3,6 +3,7 @@ import datetime
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from support import DailyLifeRuntime, Event, LifeSettings
 from core.archive import LifeArchive
@@ -14,6 +15,7 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         self.runtime.config = LifeSettings.from_dict({})
+        self.runtime.get_persona_text = AsyncMock(return_value="温和，有自己的想法")
         self.runtime.archive = LifeArchive(Path(self.temp.name) / "life.db")
         self.batch = {
             "id": 1,
@@ -88,6 +90,17 @@ class ExpressionLearningTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     self.normalize(self.profile(**changes))["expression_profiles"], []
                 )
+
+    def test_own_voice_can_start_from_real_sent_expression_without_user_feedback(self):
+        profile = self.profile(profile_id="", breadth="voice", basis="experience",
+                               persona_fit="符合温和而有想法的人设", confidence=0.65,
+                               source_message_ids=[], reply_message_ids=["m3"])
+        result = self.normalize(profile)["expression_profiles"]
+        self.assertEqual(len(result), 1)
+        self.assertEqual((result[0]["scope"], result[0]["profile_id"]), ("self", ""))
+        self.assertEqual(result[0]["_learning_event"]["kind"], "observation")
+        profile["reply_message_ids"] = ["invented"]
+        self.assertEqual(self.normalize(profile)["expression_profiles"], [])
 
     def test_ordinary_continued_turns_do_not_prove_style_approval(self):
         batch = copy.deepcopy(self.batch)

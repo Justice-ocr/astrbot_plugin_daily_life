@@ -154,6 +154,14 @@ def serialize_outfit_components(value: object) -> str:
     )
 
 
+def outfit_action_issue(value: object) -> str:
+    """计划与执行共用换装结果契约，不把未知的穿戴状态结算为完成。"""
+    for component, item in normalize_outfit_components(value).items():
+        if item.get("state") == "unknown" and item.get("description"):
+            return f"换装后的穿戴状态尚未明确：{component}"
+    return ""
+
+
 def merge_outfit_components(base: object, updates: object) -> dict[str, dict[str, str]]:
     """合并局部组成记录，优先保留已确认事实而非不确定信息。"""
     merged = normalize_outfit_components(base)
@@ -348,26 +356,19 @@ def decision_for_occurred_outfit(
 
 
 OUTFIT_CONTINUITY_RULES = (
-    f"scene_category 只能写 {OUTFIT_SCENE_CATEGORY_ENUM}，只描述当前真实场景；"
-    f"style_pool 只能写 {OUTFIT_STYLE_POOL_ENUM}，描述身上实际穿着，地点与衣着不能强制绑定。\n"
-    "outfit 只写此刻实际穿在身上或实际携带的组成；不属于当前场景的组成进入备用状态，不写进当前穿搭。"
-    "场景变化时分别维护主体服装、鞋履、外层和随身配饰的状态，不把整套造型当成不可拆分的文字。\n"
-    "outfit_components 是当前穿搭的组成账本：worn 表示穿在身上，carried 表示随身携带，staged 表示已准备但尚未穿戴/携带，removed 表示已脱下或放下，unknown 只在事实不足时使用。"
-    "main_clothing 只包含主体上衣、下装或连衣裙，不得重复鞋履、外套或配饰；各 description 只写物品名称和外观，不写已脱下等状态，状态只填 state。"
-    "每次更新都要让账本与 scene_category、当前活动和 outfit 同步；没有变化的组成沿用原状态，不要凭空清空或新增。\n"
-    "决定 keep 前分别审视主体服装、鞋履、外层和随身配饰是否适合当前活动；不能因为主体衣物仍舒适，就忽略其他组成对居住、家务、休息、睡眠、天气或公共场景的不适配。\n"
-    "回家、进入室内或时段变化不等于已经换衣；衣服仍舒适干净且适合当前场合与天气时继续穿，"
-    "需要时只调整不适配的鞋履、外层或配饰。\n"
-    "换装采用事件驱动：普通相邻活动、用餐、聊天、阅读、办公或单纯时段推进时，应延续同一套合适衣服；"
-    "起床本身不要求换衣，在家阅读、用餐或轻家务时可以延续舒适睡衣；准备外出且当前衣物不适合公共场景、睡前/洗澡、运动或出汗、淋湿弄脏、明显冷热不适、正式程度确实变化时，才考虑更换主体服装。"
-    "同一天再次更换主体服装必须有上一次换装之后新发生的依据，不能为了丰富生活记录反复换衣。\n"
-    "短暂停留且很快再次切换场景时可以保持当前组成；进入持续居家、家务、休息或睡眠节奏时，"
-    "应按实际舒适度和活动需要局部调整，不得仅因之后还有安排就忽略眼前状态。\n"
-    "keep 延续当前 outfit、style、hair_style、hair、makeup、nails；partial_change 是穿戴组成的局部调整，不是完整换装，"
-    "只调整有事实依据且不适配的鞋履、外层或随身配饰，主体衣物保持连续。"
-    "换衣、换鞋或改变发型不会自动改变妆容和美甲，美甲尤其应保持跨场景连续，直到有明确护理、卸除或重做事实。\n"
-    "淋雨、出汗、弄脏、明显不舒服或准备长时间放松/做家务时才考虑 change；"
-    "洗澡或明确进入睡前状态时使用 sleepwear，转向外出且当前穿搭不合适时使用 outdoor。"
+    f"scene_category 只能写 {OUTFIT_SCENE_CATEGORY_ENUM}，描述实际场景；"
+    f"style_pool 只能写 {OUTFIT_STYLE_POOL_ENUM}，描述实际衣着，地点与衣着不能强制绑定。\n"
+    "outfit_components 分别记录 main_clothing、footwear、outer_layer、carried_accessories。"
+    "worn=已穿戴，carried=随身携带，staged=备好但未使用，removed=已脱下或放下，unknown=事实不足；"
+    "description 只写物品外观，状态只写 state；主体服装不重复鞋履、外层与配饰。"
+    "账本、当前场景与 outfit 同步，outfit 仅含已经穿戴或携带的组成，其他组成保留实际状态。\n"
+    "决定 keep 前分别审视主体服装、鞋履、外层和随身配饰，依据舒适、清洁、天气与眼前活动取舍；"
+    "适合当前场合与天气时继续穿，局部不适配时只调整对应组成。回家、进入室内或时段变化不等于已经换衣；"
+    "未来安排不能替代眼前需要，短暂停留可自然延续，进入持续居家、家务、休息或睡眠节奏时重新判断舒适与清洁需要。\n"
+    "keep 延续当前 outfit、style、hair_style、hair、makeup、nails；partial_change 保留主体服装，只调整确有依据的其他组成。"
+    "change 须有上次换装后新出现的实际需要；sleepwear 表示洗澡或睡前的适配选择，outdoor 表示外出适配。"
+    "普通相邻活动和起床不要求换主体衣物，也不为丰富记录频繁换装。换衣、换鞋或改发型不自动改变妆容、美甲，"
+    "后两者持续到明确护理、卸除或重做的事实出现。"
 )
 
 

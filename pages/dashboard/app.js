@@ -851,20 +851,6 @@ function setView(view) {
   lifeSelectControls.syncSelects(currentViewElement());
 }
 
-function timelineProgress(day = {}, status = {}) {
-  const timeline = Array.isArray(day.timeline) ? day.timeline : [];
-  if (!timeline.length) return null;
-  const first = parseTimeMinutes(timeline[0]?.time);
-  const last = parseTimeMinutes(timeline[timeline.length - 1]?.time);
-  const parsedNow = parseStatusNow(status.now);
-  const nowMinutes = parsedNow
-    ? parsedNow.getHours() * 60 + parsedNow.getMinutes()
-    : firstClockMinutes(status.now);
-  if (first === null || last === null || nowMinutes === null) return null;
-  const span = Math.max(1, last - first);
-  return clampPercent(((nowMinutes - first) / span) * 100);
-}
-
 function appendMeter(label, value, options = {}) {
   const percent = clampPercent(value);
   const item = node("div", "meter");
@@ -886,7 +872,7 @@ function appendInfoBox(label, value) {
   el.stateMeters.append(item);
 }
 
-function renderMeters(day = {}, status = {}) {
+function renderMeters(day = {}) {
   el.stateMeters.replaceChildren();
   const lifeState = day.state || {};
   const sleep = lifeState.sleep || {};
@@ -921,11 +907,6 @@ function renderMeters(day = {}, status = {}) {
   if (meta.energy_carryover) {
     appendMeter("体力延续", meta.energy_carryover);
   }
-  const progress = timelineProgress(day, status);
-  if (progress !== null) {
-    appendMeter("日程进度", progress);
-  }
-
   const mood = clean(lifeState.mood, "");
   appendInfoBox("心情", mood);
   appendInfoBox("睡眠影响", sleep.summary);
@@ -1431,7 +1412,7 @@ function renderDay(status) {
     renderMemo(status);
     el.timelineList.replaceChildren(empty(emptyState.timeline));
     setTimelineButtons(false);
-    renderMeters({}, status);
+    renderMeters({});
     renderStateLogs({});
     return;
   }
@@ -1448,7 +1429,7 @@ function renderDay(status) {
   renderFactPair(el.outfitDecisionText, outfitDecisionText(meta), TODAY_FACT_EMPTY_TEXT.outfitDecisionText);
   renderMemo(status);
   scheduleTodayFactsLayout();
-  renderMeters(day, status);
+  renderMeters(day);
 
   const timeline = Array.isArray(day.timeline) ? day.timeline : [];
   setTimelineButtons(true);

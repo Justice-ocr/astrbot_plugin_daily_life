@@ -111,6 +111,11 @@ class LifeMemoryService:
                         limit=min(24, limit * 2),
                     )
                     hits = fuse_memory_routes([(1.0, hits), (0.35, related)], limit)
+                associations = getattr(archive, "memory_life", None)
+                if include_related and associations is not None:
+                    graph = await associations.graph(scopes, memory_ids=[item.id for item in hits], limit=12)
+                    graph_hits = [LongTermMemoryRecord.from_value(r) for r in graph["memories"] if not categories or r["category"] in categories]
+                    hits = fuse_memory_routes([(1.0, hits), (0.25, [r for r in graph_hits if r])], limit)
                 checker = getattr(archive, "get_memory_recall_context", None)
                 if callable(checker):
                     notes = await checker([item.id for item in hits], scopes=scopes)
@@ -161,7 +166,7 @@ class LifeMemoryService:
                     if semantic is not None:
                         logger.debug(f"{LOG_PREFIX} 长期记忆语义召回：{len(semantic)} 条")
                         return await self._complete_recall(
-                            semantic, scopes=scopes, categories=categories, limit=limit,
+                            semantic, scopes=scopes, categories=categories, limit=limit, include_related=True,
                         )
                 except Exception as exc:
                     logger.debug(
@@ -189,6 +194,30 @@ class LifeMemoryService:
         memory_id: int = 0,
         offset: int = 0,
     ) -> str:
+        if mode in {"graph", "chapters", "diary", "originals"}:
+            service = getattr(self._archive(), "memory_life", None)
+            scopes = self._event_memory_scopes(event)
+            if service is None or not scopes:
+                return "当前会话没有可用的记忆范围。"
+            visible = list(dict.fromkeys(scopes))
+            if mode == "graph":
+                result = await service.graph(visible, memory_ids=[memory_id] if memory_id else None, limit=min(30, max(1, limit)))
+            elif mode == "chapters":
+                values = await service.chapters(visible, 0)
+                if query:
+                    seeds = await self.search(query, event=event, limit=5)
+                    ids = {r.id for r in seeds}
+                    values = [r for r in values if ids.intersection(r["memory_ids"])]
+                count = max(1,min(12,limit))
+                result = {"chapters":values[max(0,offset):max(0,offset)+count], "next_offset":max(0,offset)+count if len(values)>max(0,offset)+count else None}
+            elif mode == "diary":
+                values = await service.diaries(visible, 0)
+                count = max(1,min(12,limit))
+                result = {"diaries":values[max(0,offset):max(0,offset)+count], "next_offset":max(0,offset)+count if len(values)>max(0,offset)+count else None}
+            else:
+                # 日期由显式工具参数传入；不从用户话语中猜测或关键词分流。
+                result = await service.originals(scopes, start=query, offset=offset, limit=limit)
+            return json.dumps(result, ensure_ascii=False)
         if mode == "evidence":
             reader = getattr(self._archive(), "read_memory_evidence", None)
             if not callable(reader) or memory_id <= 0:

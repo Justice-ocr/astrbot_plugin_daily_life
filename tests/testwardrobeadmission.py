@@ -53,6 +53,7 @@ class WardrobeAdmissionTest(unittest.IsolatedAsyncioTestCase):
                 ).rowcount
             )
         )
+        await self.archive._run_db(lambda: self.archive._synchronize_wardrobe_unlocked(repair_legacy=True))
         first = (await self.archive.get_wardrobe_snapshot())["items"][str(item.id)]
         second = (await self.archive.get_wardrobe_snapshot())["items"][str(item.id)]
         self.assertEqual(first, second)
@@ -93,6 +94,7 @@ class WardrobeAdmissionTest(unittest.IsolatedAsyncioTestCase):
                 ).rowcount
             )
         )
+        await self.archive._run_db(lambda: self.archive._synchronize_wardrobe_unlocked(repair_legacy=True))
         state = (await self.archive.get_wardrobe_snapshot())["items"]
         self.assertEqual(state[str(top.id)]["ownership"], "owned")
         self.assertEqual(state[str(top.id)]["condition"], "clean")

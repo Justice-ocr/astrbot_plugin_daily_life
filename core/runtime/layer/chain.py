@@ -8,13 +8,15 @@ from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import ProviderRequest
 
-from ...contextbudget import budget_context
+from ...life.appearance import format_current_appearance_context
+from ...life.tools import timeline_item_datetime
 from ...epistemic import knowledge_label
 from ...life.surroundings import (
     format_hidden_group_awareness,
     format_hidden_world_context,
 )
 from ..expression import remember_expression_context
+from ..expressionlearning import bounded_profiles, expose_profiles, general_profiles
 from ..markers import LOG_PREFIX
 
 
@@ -308,20 +310,21 @@ class LayerChainComponent:
                 or record_date(item, "date") >= residence_boundary
             ]
         world_limits = {
-            "relationships": 5,
-            "places": 8,
-            "events": 8,
-            "summaries": self.context.config.memory.max_injection_items,
+            "relationships": 2,
+            "places": 2,
+            "events": 2,
+            "summaries": min(2, self.context.config.memory.max_injection_items),
         }
         experience_limits = {
+            "expression_profiles": 3,
             "episodes": 2,
-            "feedback": 2,
-            "reply_effects": 2,
-            "expression_reviews": 1,
-            "behavior_patterns": 2,
-            "behavior_scenes": 2,
-            "mid_summaries": 2,
-            "terms": 3,
+            "feedback": 0,
+            "reply_effects": 0,
+            "expression_reviews": 0,
+            "behavior_patterns": 0,
+            "behavior_scenes": 0,
+            "mid_summaries": 1,
+            "terms": 2,
         }
         groups = {
             "relationships": self._semantic_snapshot_group(
@@ -339,28 +342,50 @@ class LayerChainComponent:
                 for key in experience_limits
             }
         )
-        query = "\n".join(
-            str(value or "").strip()
-            for value in (
-                event_message,
-                data.memo,
-                meta.get("theme", ""),
-                meta.get("mood", ""),
-                meta.get("schedule_intent", ""),
-                data.state.summary if data.state else "",
-            )
-            if str(value or "").strip()
+        # 用当前交流找资料，不用自己的日程与困意作检索词引回更多同类状态。
+        query = event_message.strip()
+        details = []
+        if str(meta.get("residence_context_stale") or "").lower() != "true":
+            for key, label, value in (
+                ("appearance", "当前外观", format_current_appearance_context(data)),
+                ("wardrobe", "已有衣物", meta.get("wardrobe_context")),
+                ("weather", "当前天气", data.weather),
+                ("memo", "尚未完成的备忘", data.memo),
+                ("domains", "生活资料", snapshot.get("chat_domain_context")),
+            ):
+                text = f"{label}：{str(value or '').strip()}"
+                # 超长资料仍可用工具读取；不截断否定句或整份记录后送去排序。
+                if value and len(text) <= 800:
+                    details.append((key, text, text))
+            for index, item in enumerate(data.timeline[:32]):
+                # 明确保留时间、计划或完成性质，避免用时间流逝替代执行证据。
+                state = getattr(item, "execution_state", "planned")
+                label = {"completed": "已完成", "cancelled": "已取消", "skipped": "已跳过", "expired": "已过期"}.get(state, "计划，完成尚未确认")
+                at = timeline_item_datetime(item, data.date, meta=meta)
+                if at is None:
+                    continue
+                text = f"{at:%Y-%m-%d %H:%M} {item.activity}（{label}）"
+                if len(text) <= 800:
+                    details.append((f"schedule:{index}", text, text))
+        groups["chat_details"] = details
+        limits = {**world_limits, **experience_limits, "chat_details": 2}
+        universal = [item for item in snapshot.get("expression_profiles", [])
+                     if item.learning.get("breadth") in {"voice", "relationship"}]
+        # 共同风格与对象偏好不依赖话题相似度；具体场景才参与语义选择。
+        groups["expression_profiles"] = self._semantic_snapshot_group(
+            "expression_profiles", [item for item in snapshot.get("expression_profiles", [])
+                                    if item not in universal]
         )
-        limits = {**world_limits, **experience_limits}
+        groups = {kind: values if limits[kind] else [] for kind, values in groups.items()}
         try:
             selected = await asyncio.wait_for(
-                self.context.rank_semantic_groups(query, groups, limits),
+                self.context.rank_semantic_groups(query, groups, limits, optional_groups={"chat_details"}),
                 timeout=self.context._CHAT_MEMORY_RANK_BUDGET_SECONDS,
             )
         except TimeoutError:
             # 普通聊天不等远端向量/排序模型；保留原有顺序与独立的长期记忆召回。
             selected = {
-                kind: [item for _, _, item in values[: max(0, limits[kind])]]
+                kind: [] if kind == "chat_details" else [item for _, _, item in values[: max(0, limits[kind])]]
                 for kind, values in groups.items()
             }
             logger.debug("[上下文注入] 记忆语义排序超时，本轮使用已有记录顺序")
@@ -370,6 +395,9 @@ class LayerChainComponent:
             selected["events"],
             selected["summaries"],
         )
+        selected["expression_profiles"] = bounded_profiles(general_profiles(universal) + list(selected.get("expression_profiles") or []))
+        snapshot["selected_expression_profiles"] = selected["expression_profiles"]
+        snapshot["selected_chat_details"] = "\n".join(selected.get("chat_details") or [])
         experience_context = self._format_selected_experience_context(
             snapshot, selected
         )
@@ -416,7 +444,7 @@ class LayerChainComponent:
             physiological_rhythm_trend={},
             reply_effects=selected["reply_effects"],
             memory_corrections=list(snapshot.get("memory_corrections") or [])[:2],
-            expression_profiles=list(snapshot.get("expression_profiles") or [])[:2],
+            expression_profiles=list(selected.get("expression_profiles") or []),
             expression_reviews=selected["expression_reviews"],
             behavior_patterns=selected["behavior_patterns"],
             behavior_scenes=selected["behavior_scenes"],
@@ -442,15 +470,21 @@ class LayerChainComponent:
         """
 
         sections: list[str] = []
-        from ...life.entities import living_context
+        from ...life.entities import ACTIVITY_LABELS, OBJECT_LABELS
 
-        living = living_context(
-            [item for item in list(snapshot.get("living_entities") or []) if isinstance(item, dict)]
-        )
-        if living:
-            sections.append(living)
+        living_lines = []
+        for item in list(snapshot.get("living_entities") or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("kind") == "correction":
+                living_lines.append(f"已确认纠正：{item.get('title', '')}；{item.get('content', '')}")
+            else:
+                labels = ACTIVITY_LABELS if item.get("kind") == "shared_activity" else OBJECT_LABELS
+                living_lines.append(f"{item.get('title', '')}（{labels.get(item.get('state'), '进展待确认')}）；{item.get('progress') or item.get('detail') or ''}")
+        if living_lines:
+            sections.append("\n".join(living_lines))
         fact_lines = []
-        for item in list(snapshot.get("temporal_facts") or [])[:12]:
+        for item in list(snapshot.get("temporal_facts") or [])[:4]:
             if str(getattr(item, "predicate", "") or "").strip() == "interaction_mode":
                 continue
             value = json.dumps(
@@ -464,7 +498,7 @@ class LayerChainComponent:
             fact_lines.append(
                 f"- {getattr(item, 'subject', '')}.{getattr(item, 'predicate', '')}="
                 f"{value}；有效期 {valid_from} 至 {valid_to}；"
-                + knowledge_label(item)
+                + knowledge_label(item).partition("；")[0]
             )
         if fact_lines:
             sections.append("当前事实与待确认认识（推测不能代替事实或授权）：\n" + "\n".join(fact_lines))
@@ -473,7 +507,7 @@ class LayerChainComponent:
         persona_assertions = list(snapshot.get("persona_assertions") or []) + list(
             snapshot.get("scoped_persona_assertions") or []
         )
-        for item in persona_assertions[:6]:
+        for item in persona_assertions[:2]:
             value = json.dumps(
                 getattr(item, "object_value", None),
                 ensure_ascii=False,
@@ -482,7 +516,7 @@ class LayerChainComponent:
             )
             assertion_lines.append(
                 f"- {getattr(item, 'subject', '')}.{getattr(item, 'predicate', '')}="
-                f"{value}；置信度 {float(getattr(item, 'confidence', 0.0) or 0.0):.2f}"
+                f"{value}"
             )
         if assertion_lines:
             sections.append("已晋升人格认识：\n" + "\n".join(assertion_lines))
@@ -496,20 +530,18 @@ class LayerChainComponent:
         affective_states = list(snapshot.get("affective_states") or []) + list(
             snapshot.get("scoped_affective_states") or []
         )
-        for item in affective_states[:6]:
+        for item in affective_states[:2]:
             layer = str(getattr(item, "layer", "") or "")
             affect_lines.append(
                 f"- {layer_labels.get(layer, '情绪状态')}："
-                f"{getattr(item, 'label', '')}；效价 "
-                f"{float(getattr(item, 'valence', 0.0) or 0.0):.2f}；强度 "
-                f"{float(getattr(item, 'intensity', 0.0) or 0.0):.2f}"
+                f"{getattr(item, 'label', '')}"
             )
         if affect_lines:
-            sections.append("可衰减情绪状态：\n" + "\n".join(affect_lines))
+            sections.append("\n".join(affect_lines))
 
         diary_lines = [
             f"- {getattr(item, 'date', '')}：{getattr(item, 'summary', '')}"
-            for item in list(snapshot.get("grounded_diary_entries") or [])[:2]
+            for item in list(snapshot.get("grounded_diary_entries") or [])[:1]
             if str(getattr(item, "summary", "") or "").strip()
         ]
         if diary_lines:
@@ -570,6 +602,7 @@ class LayerChainComponent:
         environments, decisions, visibility = self._scope_snapshot_items(
             snapshot, event
         )
+        snapshot["chat_domain_context"] = domain_context
         person_facts, memory_contexts = await asyncio.gather(
             self.context._build_person_fact_injection_context(
                 event,
@@ -588,7 +621,7 @@ class LayerChainComponent:
             event,
             relationships=world_context,
             preferences=self.context._format_hidden_experience_context(
-                expression_profiles=list(snapshot.get("expression_profiles") or [])[:2],
+                expression_profiles=list(snapshot.get("selected_expression_profiles") or []),
                 temporary_expression_states=list(snapshot.get("temporary_expression_states") or []),
                 boundaries=list(snapshot.get("boundaries") or [])[:2],
             ),
@@ -596,6 +629,7 @@ class LayerChainComponent:
             if event is not None else "",
             interaction=interaction_context.format_for_generation(),
         )
+        expose_profiles(event, list(snapshot.get("selected_expression_profiles") or []))
         return (
             self.context.build_hidden_life_context(
                 data,
@@ -614,12 +648,12 @@ class LayerChainComponent:
                 recent_video=recent_video,
                 expression_event=event,
                 include_rules=False,
+                detail_context=snapshot.get("selected_chat_details", ""),
             )
             + heuristic_memory
             + person_facts
             + cognition_context
             + interaction_context.format_for_generation()
-            + (f"\n\n[HiddenLifeDomains]\n{domain_context}" if domain_context else "")
         )
 
     async def inject_life_context(
@@ -689,7 +723,7 @@ class LayerChainComponent:
             )
             if self.context._voice_expression_channel_enabled(event):
                 self.context.mark_voice_switch_available(event)
-            self.context._apply_life_request_context(req, budget_context(missing_context + timing_context))
+            self.context._apply_life_request_context(req, missing_context + timing_context)
             self._append_visual_input_anchor(req)
             self.context._append_video_input_anchor(req, event)
             logger.debug("[上下文注入] 当前暂无日常生活记录，已注入防编造约束")
@@ -706,7 +740,7 @@ class LayerChainComponent:
         remember_expression_context(event, timing=timing_context)
         if self.context._voice_expression_channel_enabled(event):
             self.context.mark_voice_switch_available(event)
-        self.context._apply_life_request_context(req, budget_context(hidden_context + timing_context))
+        self.context._apply_life_request_context(req, hidden_context + timing_context)
         self._append_visual_input_anchor(req)
         self.context._append_video_input_anchor(req, event)
         logger.debug("[上下文注入] 已注入日常生活背景上下文")

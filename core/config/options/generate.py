@@ -12,6 +12,19 @@ from .cast import (
     as_str,
 )
 
+DEFAULT_RTC_MODEL_NAME = "Doubao-Seed-1.6｜250615"
+
+
+def normalize_rtc_model_name(value: object) -> str:
+    """旧配置只在载入边界归一化，实际请求读取规范化后的值。"""
+    configured = as_str(value).strip()
+    if configured in {"1.2.6.1", "doubao-seed-1.6"}:
+        from astrbot.api import logger
+        logger.info("[日常生活] RTC 配置迁移：%s → %s", configured, DEFAULT_RTC_MODEL_NAME)
+        return DEFAULT_RTC_MODEL_NAME
+    return configured or DEFAULT_RTC_MODEL_NAME
+
+
 DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
 DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
@@ -327,7 +340,7 @@ class RealtimeVoiceCallSettings:
     official_music_enabled: bool = False
     tool_call_timeout_seconds: int = 60
     short_url_enabled: bool = True
-    rtc_model_name: str = "Doubao-Seed-1.6｜250615"
+    rtc_model_name: str = DEFAULT_RTC_MODEL_NAME
     rtc_app_id: str = ""
     rtc_app_key: str = ""
     rtc_access_key: str = ""
@@ -406,10 +419,7 @@ class RealtimeVoiceCallSettings:
                 data.get("tool_call_timeout_seconds", 60), 60, 1, 300
             ),
             short_url_enabled=as_bool(data.get("short_url_enabled", True), True),
-            rtc_model_name=as_str(
-                data.get("rtc_model_name", "Doubao-Seed-1.6｜250615")
-            ).strip()
-            or "Doubao-Seed-1.6｜250615",
+            rtc_model_name=normalize_rtc_model_name(data.get("rtc_model_name", "")),
             rtc_app_id=as_str(data.get("rtc_app_id", "")).strip(),
             rtc_app_key=as_str(data.get("rtc_app_key", "")).strip(),
             rtc_access_key=as_str(data.get("rtc_access_key", "")).strip(),

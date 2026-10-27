@@ -377,7 +377,10 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(options["json"]["response_format"], "b64_json")
                             self.assertEqual(options["json"]["model"], model)
                             if mode == "edit":
-                                image_url = options["json"]["images"][0]["image_url"]
+                                image_url = (
+                                    options["json"]["image"] if model == "gpt-image-2"
+                                    else options["json"]["images"][0]["image_url"]
+                                )
                                 self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), b"reference")
                             else:
                                 self.assertNotIn("images", options["json"])

@@ -630,7 +630,7 @@ class LifecycleComponent:
 - 根据 state.sleep、sleep_debt 和时间轴判断睡眠债增减；不要用固定文本匹配活动文字。
 - reflection_score 必须按四个数值维度独立评分；低价值日常允许 reflection 留空，系统会在阈值以下跳过模型反思沉淀。
 - affect_updates 和 relationship_updates 只能引用“可引用证据编号”，没有证据就返回空数组；关系数值只能小步变化。
-- grounded_diary 必须使用第一人称“我”，只能写可引用证据明确支持的内容；证据不足就返回空对象。
+- grounded_diary 由角色决定是否有想留下的片段；不想写或证据不足可返回空对象。写时用第一人称，事实须有可引用证据，感受属于自己的回想。
 - 不得从活动文案的词语、标点或固定句式猜测情绪、关系和执行结果。
 """
         evidence_lines = []

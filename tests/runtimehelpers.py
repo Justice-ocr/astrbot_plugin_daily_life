@@ -239,3 +239,9 @@ class RuntimeAsyncHelpers:
             )
         )
         runtime._direct_life_video_prompt = lambda event, prompt: async_return(prompt)
+        runtime._direct_life_video_plan = lambda event, prompt: async_return(
+            types.SimpleNamespace(
+                first_frame="静态首帧：" + prompt,
+                video_prompt="动态视频描述：" + prompt,
+            )
+        )

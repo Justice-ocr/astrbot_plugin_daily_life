@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from ..initiative import proactive_decision_contract
+from ...expressionlearning import expose_profiles, select_profiles
 from ....facts import person_fact_context_from_relationships
 from ....config.options.basis import format_chat_style_prompt
 from ....life.condition import format_state_prompt, normalize_state
@@ -10,8 +12,6 @@ from ....life.calendar import format_calendar_context, format_season_context
 from ....life.tools import format_timeline_to_text
 from ....prompts import (
     CORE_EMOJI_DELIVERY_RULES,
-    CORE_PROACTIVE_VOICE_RULES,
-    CORE_PROACTIVE_CONTINUITY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -116,9 +116,9 @@ class ProactivePromptComponent:
         relationships = await self.context.archive.get_recent_relationships(6)
         summaries = await self.context.archive.get_recent_chat_summaries(6)
         focus_targets = await self.context.archive.get_focus_targets(5)
-        expression_profiles = await self.context.archive.get_expression_profiles(
-            limit=5, scope=expression_scope
-        )
+        expression_profiles = await select_profiles(self.context, scope=expression_scope,
+            profile_id=str(event.get_sender_id() or ""), query=message)
+        expose_profiles(event, expression_profiles)
         behavior_patterns = await self.context.archive.get_behavior_patterns(
             limit=5, scope=expression_scope
         )
@@ -361,8 +361,8 @@ class ProactivePromptComponent:
         }
 
     def _proactive_prompt_fixed(self) -> str:
-        return f"""我在心里掂量：这段聊天安静了一会儿，我要不要自然续一句。
-这不是被点名后的必答，也不是普通聊天回复；普通聊天机制已经优先处理过我最近看到的内容。这里只裁定沉默期后的主动性：可以轻轻续一句，也可以继续观察。
+        return f"""我继续过着自己的生活，也会想起正在联系的人。结合当下经历、关系和近期交流，决定是否想找对方说话、接着聊或一起做点什么。
+联系意愿由当前主动程度、生活余力和真实互动反馈共同决定；选择适合此刻的一件事表达，也可以暂时观察。
 
 隐藏上下文规则：
 {CORE_HIDDEN_CONTEXT_RULES}
@@ -375,43 +375,7 @@ JSON 输出要求：
 
 {CORE_EMOJI_DELIVERY_RULES}
 
-只输出 JSON 对象：
-{{
-  "should_reply": true,
-  "confidence": 0.0,
-  "benefit": 0,
-  "timeliness": 0,
-  "continuity": 0,
-  "disruption": 0,
-  "uncertainty": 0,
-  "decision": "reply|observe|wait|skip",
-  "reason": "为什么此刻适合或不适合自然回应",
-  "target_message_id": "如果回复，写最自然承接的消息ID；没有明确目标则空字符串",
-  "target_topic": "如果回复，写自然承接的话题；没有明确目标则空字符串",
-  "reply_text": "如果 should_reply=true，写简短自然、意思完整的回复；否则空字符串",
-  "expression_review": {{"passed": true, "risk": "具体表达风险或空字符串", "suggestion": "必要的调整或空字符串", "reason": "结合本轮话题和已学习表达习惯的检查依据"}},
-  "voice_call_intent": {{
-    "should_invite": false,
-    "greeting": "如果邀请被接受，角色想先说的上下文相关短句；没有自然开场就留空",
-    "reason": "为什么此刻适合或不适合主动邀请实时语音通话"
-  }},
-  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|soft|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
-}}
-
-裁定方式：
-- 先看本地门控与候选消息，再判断 reply、observe 或 wait。
-- benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
-- 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
-- reply_text 优先写简短自然的回复，必要的意思说完整，不刻意扩写；口吻跟随角色人设和本轮表达约束。
-- 在同一次生成中检查 reply_text 是否接住当前话题、是否重复关心或追问、是否符合当前关系和适用的表达习惯，填写 expression_review；短句自然与否由语境决定，不按关键词、句型或字数判断。发现问题先修改 reply_text，再对最终文本给出检查结果；无法自然承接则 passed=false 并选择 observe。
-- voice_call_intent 默认 should_invite=false。只有私聊、实时通话能力明确可用、角色此刻确实想听对方声音且邀请比继续文字更自然时才设 true；不要因为想延长聊天、模型不知道说什么或为了展示功能而邀请。
-- 主动邀请时，reply_text 要先自然表达想通话的意愿，不要伪装成系统通知；执行层会另外发送邀请提示和链接。greeting 只在这次接通后确实适合先开口时填写，不要固定写“你好，听得到吗”。
-- 群聊、双方可能同处现场、刚刚已经邀请过、深夜打扰风险高或通话能力不可用时，voice_call_intent 必须保持 false。
-{CORE_PROACTIVE_VOICE_RULES}
-{CORE_PROACTIVE_CONTINUITY_RULES}
-- voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
-- reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
-- 只输出上面列出的字段，不添加内部过程或发送控制字段。
+{proactive_decision_contract(include_target=True, include_call=True)}
 """
 
     def _proactive_prompt_dynamic(self, scene: dict[str, Any]) -> str:

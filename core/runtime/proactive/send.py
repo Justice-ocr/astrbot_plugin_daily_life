@@ -24,6 +24,7 @@ except ImportError:
 from ...clock import now as life_now
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
 from ...sources.dispatch import ScopeDeliveryError
+from ..contact import contact_rhythm
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
@@ -207,6 +208,10 @@ class ProactiveSendComponent:
                 source_message_id=source_message_id,
             ):
                 return False
+            if (send_payload or {}).get("source") in {"private_revisit", "proactive_reply"}:
+                rhythm = await contact_rhythm(self.context, target_scope, life_now())
+                if rhythm.get("ready") is False:
+                    return False
             if await self._send_proactive_voice_if_enabled(
                 target_scope,
                 reply_text,

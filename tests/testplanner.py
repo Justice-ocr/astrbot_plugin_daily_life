@@ -132,6 +132,87 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("main_clothing", json.loads(action["payload"]["outfit_components"]))
         self.assertEqual(action["target"], "原来的上衣和长裤；白色板鞋")
 
+    async def test_planned_unknown_main_clothing_resolves_catalog_before_settlement(self):
+        composer, _, _, archive = make_composer([])
+        outfit = await archive.upsert_style_catalog_item({
+            "kind": "outfit", "description": "米白衬衫和白色百褶裙",
+            "source_image_hash": "b" * 64,
+        })
+        await archive.adopt_wardrobe_items(
+            [outfit.id], event_id="own-day-clothes", at="2026-10-03 07:00:00",
+            reason="已有日常衣物",
+        )
+        for component in (
+            {"state": "unknown", "description": "米白衬衫和白色百褶裙"},
+            {"description": "米白衬衫和白色百褶裙"},
+            "米白衬衫和白色百褶裙",
+        ):
+            with self.subTest(component=component):
+                day = DayRecord(date="2026-10-03", outfit="旧睡衣", meta={
+                    "hair_style": "湿发披散", "hair": "发尾还湿着",
+                    "outfit_components": json.dumps({
+                        "main_clothing": {"state": "worn", "description": "旧睡衣"},
+                    }),
+                })
+                await archive.save_day(day)
+                action = {
+                    "action_id": "morning-change", "action_type": "change_outfit",
+                    "target": "换下睡衣，换衬衫和百褶裙，扎起头发",
+                    "payload": {
+                        "scene_category": "outdoor",
+                        "catalog_reference_ids": [outfit.id],
+                        "outfit_components": {"main_clothing": component},
+                        "hair_style": "低马尾", "hair": "头发低低扎起",
+                    },
+                }
+                issue = await _resolve_planned_outfit_catalog(composer, {
+                    "planned_actions": [action],
+                    "outfit_components": day.meta["outfit_components"],
+                }, manual_extra=False)
+                self.assertEqual(issue, "")
+                self.assertEqual(day.outfit, "旧睡衣")
+                self.assertEqual(json.loads(action["payload"]["outfit_components"])[
+                    "main_clothing"
+                ]["state"], "worn")
+                outcome = await composer.settle_and_persist_life_action(
+                    day, action, now=datetime.datetime(2026, 10, 3, 8, 40),
+                )
+                self.assertEqual(outcome.status, "committed")
+                saved = await archive.get_day(day.date)
+                self.assertIn("米白衬衫和白色百褶裙", saved.outfit)
+                self.assertNotIn("旧睡衣", saved.outfit)
+                self.assertEqual(saved.meta["hair_style"], "低马尾")
+                self.assertEqual(saved.meta["hair"], "头发低低扎起")
+                self.assertEqual(saved.meta["style_catalog_reference_ids"], str(outfit.id))
+
+    async def test_catalog_appearance_does_not_replace_explicit_grooming(self):
+        composer, _, _, _ = make_composer([])
+        action = {"action_type": "change_outfit", "target": "换日常衣物", "payload": {
+            "catalog_reference_ids": [1], "hair_style": "低马尾",
+        }}
+        with patch.object(composer, "_style_catalog_new_outfit_selection", AsyncMock(
+            return_value=({"outfit": "衬衫与短裙", "hair_style": "披发", "hair": "长发披散"}, ""),
+        )):
+            self.assertEqual(await _resolve_planned_outfit_catalog(
+                composer, {"planned_actions": [action]}, manual_extra=False,
+            ), "")
+        self.assertEqual(action["payload"]["hair_style"], "低马尾")
+        self.assertNotIn("hair", action["payload"])
+
+    async def test_unresolved_wearing_state_requires_plan_repair(self):
+        composer, _, _, _ = make_composer([])
+        action = {"action_type": "change_outfit", "target": "换鞋", "payload": {
+            "catalog_reference_ids": [1], "scene_category": "outdoor",
+            "outfit_components": {"footwear": {"state": "unknown", "description": "板鞋"}},
+        }}
+        with patch.object(composer, "_style_catalog_reference_appearance", AsyncMock(
+            return_value={"outfit_components": {"footwear": {"state": "unknown", "description": "板鞋"}}},
+        )):
+            issue = await _resolve_planned_outfit_catalog(
+                composer, {"planned_actions": [action]}, manual_extra=False,
+            )
+        self.assertIn("footwear", issue)
+
     def test_catalog_display_reference_only_normalizes_explicit_ids(self):
         composer, _, _, _ = make_composer([])
         self.assertEqual(

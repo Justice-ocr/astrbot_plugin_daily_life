@@ -117,6 +117,26 @@ class ChatMemoryQueueArchiveComponent:
 
         return await self.context._run_db(read)
 
+    async def get_conversation_contact_state(self, scope: str, now: float) -> dict:
+        """读取同一对象的收发事实；跨插件共享，重启后仍能恢复。"""
+        if not scope or not math.isfinite(now) or now <= 0:
+            raise ValueError("联系记录需要有效会话与时间")
+        arrival = await self.get_conversation_arrival_before(scope, now + 0.001)
+        sent = await self.get_conversation_receipt_before(scope, now)
+
+        def read() -> dict:
+            rows = self.context._conn.execute(
+                "SELECT sent_at FROM conversation_receipts WHERE scope = ? "
+                "AND sent_at > ? AND sent_at <= ? ORDER BY sent_at",
+                (scope, max(arrival, now - 6 * 3600), now),
+            ).fetchall()
+            receipts = [float(row["sent_at"]) for row in rows]
+            if not receipts and sent > max(arrival, now - 6 * 3600):
+                receipts = [sent]
+            return {"last_received_at": arrival, "last_sent_at": sent, "receipts": receipts}
+
+        return await self.context._run_db(read)
+
     def _purge_completed_chat_memory_messages_unlocked(
         self, *, cutoff: str = "", keep_recent: int = 200
     ) -> int:
@@ -147,6 +167,13 @@ class ChatMemoryQueueArchiveComponent:
         self, snapshot: dict[str, Any]
     ) -> tuple[int, bool]:
         def write() -> tuple[int, bool]:
+            # 在摘要、队列清理和上游会话压缩之前持久保留实际消息。
+            if snapshot.get("role") in {"user", "assistant"} and snapshot.get("message_text"):
+                self.context._conn.execute(
+                    "INSERT OR IGNORE INTO conversation_originals VALUES(?,?,?,?,?,?)",
+                    tuple(str(snapshot.get(k) or "") for k in
+                          ("session_id", "event_key", "role", "sender_name", "occurred_at", "message_text")),
+                )
             cursor = self.context._conn.execute(
                 """
                 INSERT OR IGNORE INTO chat_memory_messages(

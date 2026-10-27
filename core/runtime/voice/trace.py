@@ -112,8 +112,7 @@ class VoiceSwitchRecordComponent:
         reason: str,
         result: str,
     ) -> None:
-        log = logger.info if source == "普通聊天" else logger.debug
-        log(
+        logger.debug(
             f"{LOG_PREFIX} {self.context._voice_expression_log_title(channel, source)}；"
             f"结果：{result or '已裁定'}；原因：{reason or '未提供额外原因'}"
         )

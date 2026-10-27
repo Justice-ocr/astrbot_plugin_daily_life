@@ -694,18 +694,10 @@ class StyleCatalogComponent:
                     result["outing_reserve"].append(reserve_description)
                 if kind == "outfit":
                     profiles = self.context._style_catalog_component_profiles(item)
-                    has_structured_home_split = bool(
-                        not home_scene
-                        or self.context._style_catalog_attributes(item).get(
-                            "home_description"
-                        )
-                        or profiles
-                    )
-                    if has_structured_home_split:
-                        component_values["main_clothing"] = {
-                            "state": "worn" if current_description else "removed",
-                            "description": current_description,
-                        }
+                    component_values["main_clothing"] = {
+                        "state": "worn" if current_description else "removed",
+                        "description": current_description,
+                    }
                     for profile in profiles:
                         component_key = (
                             "footwear"

@@ -695,8 +695,10 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         invite.active = True
         invite.state = "active"
         invite.accepted_at = time.time() - 2
-        invite.user_transcript = "不应写入摘要的原始内容"
-        invite.bot_transcript = "不应写入摘要的原始内容"
+        invite.transcript_turns = [
+            VoiceCallTranscriptTurn(role="user", text="不应写入摘要的原始内容"),
+            VoiceCallTranscriptTurn(role="assistant", text="不应写入摘要的原始内容"),
+        ]
         manager._invites[invite.token_id] = invite
 
         await manager.finish_invite(invite, reason="用户结束通话")
@@ -705,8 +707,8 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(saved), 1)
         self.assertIn("实时语音通话状态", saved[0].detail)
         self.assertNotIn("不应写入摘要", saved[0].detail)
-        self.assertEqual(invite.user_transcript, "")
-        self.assertEqual(invite.bot_transcript, "")
+        self.assertEqual(invite.user_transcript, invite.transcript_turns[0].text)
+        self.assertEqual(invite.bot_transcript, invite.transcript_turns[1].text)
 
     async def test_finished_call_keeps_a_short_read_only_transcript_window(self):
         manager = VoiceCallManager(_Runtime(LifeSettings.from_dict({})))
@@ -780,8 +782,10 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         invite.active = True
         invite.state = "active"
         invite.accepted_at = time.time() - 2
-        invite.user_transcript = "用户的通话内容"
-        invite.bot_transcript = "角色的通话回复"
+        invite.transcript_turns = [
+            VoiceCallTranscriptTurn(role="user", text="用户的通话内容"),
+            VoiceCallTranscriptTurn(role="assistant", text="角色的通话回复"),
+        ]
         manager._invites[invite.token_id] = invite
 
         await manager.finish_invite(invite, reason="用户结束通话")

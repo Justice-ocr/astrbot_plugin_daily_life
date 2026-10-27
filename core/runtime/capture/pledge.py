@@ -18,6 +18,7 @@ from ...prompts import (
 from ..markers import LOG_PREFIX
 from .boundary import format_speaker_boundary
 from .jsonclean import STRICT_JSON_REPLY_RULE, call_pure_json
+from .actioncontract import COMMITMENT_ACTION_CONTRACT
 
 from typing import Protocol
 
@@ -49,6 +50,7 @@ class CapturePledgeComponentContext(Protocol):
     get_text_provider: Any
     schedule_commitment_photo: Any
     schedule_commitment_video: Any
+    schedule_proactive_commitment: Any
     schedule_memos_selected_items: Any
 
 
@@ -111,16 +113,16 @@ JSON 输出要求：
   "time_window": "morning|daytime|night|weekend|next_chat|next_time 或空字符串",
   "owner": "当前角色|说话人|共同|未定",
   "media_kind": "none|photo|video",
-  "execution_mode": "immediate|future",
+  "execution_mode": "immediate|future|standing",
+  "follow_up": {{"action":"none|contact_person|remind_person", "execute_at":"", "condition":"", "check_after_minutes":10, "message_goal":""}},
   "people": ["相关人物名"],
   "place": "相关地点或空",
   "confidence": 0.0
 }}
 
 规则：
-- “明天提醒我...” kind=reminder，trigger_date 填明天。
-- “周末一起...” kind=plan，trigger_date 优先填本周六，time_window=weekend。
-- “下次再聊这个/回头继续说” kind=followup，trigger_date 为空，time_window=next_chat。
+{COMMITMENT_ACTION_CONTRACT}
+- kind 按目的选择 reminder、plan 或 followup；日期、时段只记录原话支持的确定程度。
 - “现在拍/发给我看看/重新试下”等即时媒体请求由当前工具执行，不属于未来承诺；即使尚未发送成功，也输出 {{"has_commitment": false}}。只有明确留到稍后或另一天的约定才记录。
 - 媒体约定只有明确属于未来安排才填 execution_mode=future；即时请求填 immediate，不能保存为承诺。
 - confidence 低于 0.7 时也可以输出，但系统不会自动保存。
@@ -205,6 +207,8 @@ JSON 输出要求：
                 fallback={"has_commitment": False, "commitments": []},
             )
             if not isinstance(payload, dict) or not payload.get("has_commitment"):
+                return None
+            if str(payload.get("execution_mode") or "future").strip().lower() != "future":
                 return None
             fact_context = PersonFactContext(
                 persona=await self.context._current_persona_text(event),
@@ -305,6 +309,14 @@ JSON 输出要求：
                 final_commitment = await get_commitment(saved.id)
                 if final_commitment is not None:
                     saved = final_commitment
+            scheduler = getattr(self.context, "schedule_proactive_commitment", None)
+            if callable(scheduler):
+                try:
+                    await scheduler(
+                        saved, owner=saved.owner, follow_up=saved.follow_up, observed_at=now
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 主动承诺任务登记失败：{exc}")
             photo_scheduler = getattr(self.context, "schedule_commitment_photo", None)
             if callable(photo_scheduler):
                 try:
@@ -381,7 +393,7 @@ JSON 输出要求：
                 user_message=message,
                 marker=f"commitment:{saved.id}",
             )
-            logger.info(f"{LOG_PREFIX} 已记录聊天承诺：编号={saved.id}")
+            logger.debug(f"{LOG_PREFIX} 已记录聊天承诺：编号={saved.id}")
             return saved
         except Exception as e:
             logger.warning(f"{LOG_PREFIX} 自动识别承诺失败：{e}")

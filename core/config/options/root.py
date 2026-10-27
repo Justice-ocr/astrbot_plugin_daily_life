@@ -25,6 +25,7 @@ from .basis import (
     VisionSettings,
     WeatherSettings,
 )
+from .viewing import BiliBrowseSettings
 from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
 from .generate import (
     ImageGenerationSettings,
@@ -63,6 +64,7 @@ class LifeSettings:
     emoji_vision: VisionSettings = field(default_factory=VisionSettings)
     emoji: EmojiSettings = field(default_factory=EmojiSettings)
     sight: SightSettings = field(default_factory=SightSettings)
+    browsing: BiliBrowseSettings = field(default_factory=BiliBrowseSettings)
     image_generation: ImageGenerationSettings = field(
         default_factory=ImageGenerationSettings
     )
@@ -150,6 +152,7 @@ class LifeSettings:
         config.emoji_vision = VisionSettings.from_dict(emoji_vision_conf)
         config.emoji = EmojiSettings.from_dict(emoji_conf)
         config.sight = SightSettings.from_dict(sight_conf)
+        config.browsing = BiliBrowseSettings.from_dict(dict_section(data, "bili_browse_config"))
         config.image_generation = ImageGenerationSettings.from_dict(
             image_generation_conf
         )

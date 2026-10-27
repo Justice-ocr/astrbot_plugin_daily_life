@@ -43,7 +43,6 @@ class BackgroundTaskScheduler:
         durable_backlog_limit: int = 1,
         reply_backlog_limit: int = 16,
         chat_label: str = "聊天记忆提炼",
-        slow_task_seconds: float = 30.0,
     ):
         self.tasks: set[asyncio.Task] = set()
         self.keys: set[str] = set()
@@ -75,7 +74,6 @@ class BackgroundTaskScheduler:
         self._failed_counts = dict.fromkeys(self._concurrency_limits, 0)
         self._overflow_logged_at: dict[str, float] = {}
         self.chat_label = chat_label
-        self.slow_task_seconds = max(0.0, float(slow_task_seconds or 0.0))
 
     async def cancel_all(self) -> None:
         tasks = list(self.tasks)
@@ -317,10 +315,7 @@ class BackgroundTaskScheduler:
                 getattr(done_task, _TASK_TOTAL_SECONDS_ATTR, run_seconds) or run_seconds
             )
             message = self._completion_message(task_name, run_seconds, total_seconds)
-            if run_seconds >= self.slow_task_seconds:
-                logger.info(message)
-            else:
-                logger.debug(message)
+            logger.debug(message)
 
     @staticmethod
     def _task_name(label: str, key: str) -> str:

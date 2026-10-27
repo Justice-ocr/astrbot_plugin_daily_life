@@ -775,7 +775,7 @@
   "proactive_config": {
     "description": "闲时回复",
     "type": "object",
-    "hint": "让角色在会话沉默一段时间后，根据生活状态、注意力开放度、会话氛围、关系印象和近期记忆自主判断是否自然续一句。群聊和私聊均默认关闭，开启后会增加额外模型调用。",
+    "hint": "让角色持续留意生活与正在联系的人，自主选择续话、分享或共同活动；结合真实收发记录、生活余力和明确反馈调整节奏。群聊和私聊均默认关闭，开启后会增加模型调用。",
     "items": {
       "group_enabled": {
         "description": "群聊闲时回复",
@@ -787,7 +787,7 @@
         "description": "私聊闲时回复",
         "type": "bool",
         "default": false,
-        "hint": "允许私聊在沉默一段时间后，由模型判断是否自然续一句；不会拦截正常聊天回复。"
+        "hint": "允许角色持续留意私聊，一轮主动联系后继续观察生活与交流变化，自主决定是否再找对方说话。"
       },
       "adaptive_feedback_enabled": {
         "description": "普通回复效果学习",
@@ -840,7 +840,7 @@
           "max": 1,
           "step": 0.05
         },
-        "hint": "私聊沉默后的闲时回应倾向。数值越高越愿意自然回应，仍由模型结合关系、状态和消息内容裁定。"
+        "hint": "角色主动联系与分享的意愿，daily_share 和 B站账号活动共用。越高越愿意把在意的小事告诉对方；结合生活余力、关系和真实互动反馈裁定。"
       },
       "idle_minutes": {
         "description": "群聊沉默(分钟)",
@@ -884,7 +884,7 @@
           "max": 240,
           "step": 1
         },
-        "hint": "同一个私聊会话闲时回应后的最短间隔，避免连续打扰。"
+        "hint": "同一私聊对象的基本联系间隔，生活续话、daily_share 与已绑定身份的 B站私信共用收发记录；连续联系未获回应时逐步放缓，对方回应后重新计算。"
       },
       "min_message_length": {
         "description": "最短消息长度",
@@ -1013,22 +1013,38 @@
         "description": "单条消息识别上限",
         "type": "int",
         "default": 3,
-        "slider": {"min": 1, "max": 10, "step": 1},
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
         "hint": "每条消息按附件顺序理解前几张图片，与表情素材识别上限独立。"
       },
       "detail_level": {
         "description": "理解详细程度",
         "type": "string",
         "default": "auto",
-        "options": ["auto", "brief", "detailed"],
-        "option_labels": {"auto": "自动", "brief": "简要", "detailed": "详细"},
+        "options": [
+          "auto",
+          "brief",
+          "detailed"
+        ],
+        "option_labels": {
+          "auto": "自动",
+          "brief": "简要",
+          "detailed": "详细"
+        },
         "hint": "自动模式结合本条消息的问题决定重点与详略；也可固定为简要或详细。"
       },
       "gif_sample_frames": {
         "description": "GIF 采样帧数",
         "type": "int",
         "default": 8,
-        "slider": {"min": 2, "max": 16, "step": 1},
+        "slider": {
+          "min": 2,
+          "max": 16,
+          "step": 1
+        },
         "hint": "GIF 理解最多采样的画面数，包含首尾帧；帧数越多，画面越密集。"
       },
       "timeout_seconds": {
@@ -1075,14 +1091,14 @@
     "hint": "配置图片理解与表情收集、识别和发送。",
     "items": {
       "selection_provider": {
-        "description": "自动表情选择",
+        "description": "表情选择",
         "type": "string",
         "_special": "select_provider",
         "default": "",
         "hint": "指定从表情库中选择合适表情使用的模型；留空使用当前默认模型。"
       },
       "collect_chat_emojis": {
-        "description": "自动收集表情",
+        "description": "收集表情",
         "type": "bool",
         "default": false,
         "hint": "开启后会从聊天里的表情、贴纸和确认可复用的图片中收集素材；关闭后仍可在前台手动导入。"
@@ -1843,7 +1859,7 @@
                 "description": "接口地址",
                 "type": "string",
                 "default": "",
-                "hint": "GPT Image 图片接口地址。"
+                "hint": "GPT Image 图片接口根地址，插件自动补全对应的生成或编辑端点。"
               },
               "api_key": {
                 "description": "接口密钥",
@@ -1866,7 +1882,7 @@
                   "2K",
                   "4K"
                 ],
-                "hint": "gpt-image-2 使用固定尺寸映射。"
+                "hint": "按接口文档换算为合法图片尺寸。"
               },
               "aspect_ratio": {
                 "description": "图片比例",
@@ -1884,7 +1900,7 @@
                   "16:9",
                   "21:9"
                 ],
-                "hint": "gpt-image-2 仅使用支持的比例；请求会映射到固定合法尺寸。"
+                "hint": "按接口支持的比例与尺寸范围生成图片。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",
@@ -2065,7 +2081,7 @@
                 "description": "接口地址",
                 "type": "string",
                 "default": "",
-                "hint": "GPT Image 图片接口地址。"
+                "hint": "GPT Image 图片接口根地址，插件自动补全对应的生成或编辑端点。"
               },
               "api_key": {
                 "description": "接口密钥",
@@ -2088,7 +2104,7 @@
                   "2K",
                   "4K"
                 ],
-                "hint": "gpt-image-2 使用固定尺寸映射。"
+                "hint": "按接口文档换算为合法图片尺寸。"
               },
               "aspect_ratio": {
                 "description": "图片比例",
@@ -2106,7 +2122,7 @@
                   "16:9",
                   "21:9"
                 ],
-                "hint": "gpt-image-2 仅使用支持的比例；请求会映射到固定合法尺寸。"
+                "hint": "按接口支持的比例与尺寸范围生成图片。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",
@@ -2209,7 +2225,7 @@
         "hint": "开启后，模型可以调用工具生成并发送视频。"
       },
       "prompt_provider": {
-        "description": "视频提示词提取",
+        "description": "视频提示词",
         "type": "string",
         "_special": "select_provider",
         "default": "",
@@ -2310,7 +2326,7 @@
         "hint": "指定视频识别使用的模型，Gemini 自动理解完整视频及声音，留空则使用当前默认模型。"
       },
       "bili_auto_summary": {
-        "description": "B站自动总结",
+        "description": "自动总结",
         "type": "bool",
         "default": false,
         "hint": "收到 B 站长链接、短链接或小程序卡片时，后台自动生成专业视频总结。"
@@ -2698,7 +2714,7 @@
         "hint": "关闭后保留已有数据，但不再写入新的领域记录。"
       },
       "action_provider": {
-        "description": "自主生活行动规划",
+        "description": "生活行动规划",
         "type": "string",
         "_special": "select_provider",
         "default": "",
@@ -2984,6 +3000,97 @@
         "type": "text",
         "default": "- 人物称呼、性别、亲疏和关系以明确资料为准：参考对象人设线索、用户自述、已保存人设线索或稳定关系记忆。\n- 多份资料冲突时，优先使用最新且最具体的参考对象线索或用户自述；不确定的旧叙事只作为背景，不沿用冲突称谓。\n- 性别和关系称谓需要明确证据；昵称、头像、平台、语气、表情或刻板印象不能单独作为依据。\n- 证据不足时，使用昵称、对方、这个人、这位群友等中性称呼。",
         "hint": "控制最近聊天历史与人设人物关系的使用方式。"
+      }
+    }
+  },
+  "bili_browse_config": {
+    "description": "B站",
+    "type": "object",
+    "hint": "需要有效B站登录态。角色结合生活、真实浏览经历和自己形成的兴趣选择视频、收藏重看、评论、私信、直播与空间动态；允许不互动，不设每天必做任务。私信需先验证同一用户身份，发送结果不明不会自动重发。",
+    "items": {
+      "enabled": {
+        "description": "自主浏览",
+        "type": "bool",
+        "default": true,
+        "hint": "只在当前生活安排允许时评估，没有每天必刷或必发任务。"
+      },
+      "natural_link_reply": {
+        "description": "自然回应分享的视频",
+        "type": "bool",
+        "default": true,
+        "hint": "用户分享视频后，理解真实内容并进入正常聊天；明确要求专业总结时保留总结流程。"
+      },
+      "provider": {
+        "description": "决策与感受",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定B站自主浏览决策、视频片段感受与兴趣判断使用的模型；留空使用当前默认模型。"
+      },
+      "discovery_enabled": {
+        "description": "偶遇兴趣之外的视频",
+        "type": "bool",
+        "default": true
+      },
+      "max_daily_minutes": {
+        "description": "每天自主浏览时长上限（分钟）",
+        "type": "int",
+        "default": 90,
+        "hint": "仅为资源上限，不是浏览目标；未观察的离线时间不计入。"
+      },
+      "audience_enabled": {
+        "description": "参考评论与弹幕",
+        "type": "bool",
+        "default": true,
+        "hint": "仅作观众观点，弹幕按已理解片段筛选；不把评论当成视频事实。"
+      },
+      "enhanced_vision": {
+        "description": "故事板、场景帧与字幕区域理解",
+        "type": "bool",
+        "default": true,
+        "hint": "按真实时间采样；故事板不等于完整看完，其他分P使用实际解码。"
+      },
+      "favorites_enabled": {
+        "description": "自主收藏与收藏重看",
+        "type": "bool",
+        "default": true,
+        "hint": "使用登录账号真实收藏夹，不新增兴趣或UP主填写项。"
+      },
+      "comments_enabled": {
+        "description": "评论、回复与读取@通知",
+        "type": "bool",
+        "default": true,
+        "hint": "只对已理解视频或核实的楼层交流；不是每条都回复。"
+      },
+      "dm_enabled": {
+        "description": "私信交流",
+        "type": "bool",
+        "default": true,
+        "hint": "仅与通过 /B站绑定 本人验证的同一会话身份交流。"
+      },
+      "live_enabled": {
+        "description": "顺路看直播与发弹幕",
+        "type": "bool",
+        "default": true,
+        "hint": "从关注的开播列表选择，理解有限真实画面和音频后才形成经历。"
+      },
+      "dynamics_enabled": {
+        "description": "发布空间动态",
+        "type": "bool",
+        "default": true,
+        "hint": "仅表达角色自己的公开浏览经历，不将私聊内容公开发布。"
+      },
+      "max_daily_interactions": {
+        "description": "每天账号互动上限（次）",
+        "type": "int",
+        "default": 12,
+        "hint": "仅为资源上限，不是活跃目标；已发送或结果不明的请求都计入。"
+      },
+      "max_live_minutes": {
+        "description": "每天直播实际理解时长上限（分钟）",
+        "type": "int",
+        "default": 20,
+        "hint": "仅为资源上限，不是活跃目标；已发送或结果不明的请求都计入。"
       }
     }
   }

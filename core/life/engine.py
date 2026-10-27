@@ -28,6 +28,7 @@ from .wardrobe import (
     normalize_outfit_decision,
     normalize_outfit_scene_category,
     outfit_action_components,
+    outfit_action_issue,
     reconcile_outfit_components_for_scene,
     resolve_outfit_style_pool,
     scene_category_for_place_kind,
@@ -166,6 +167,14 @@ async def _resolve_planned_outfit_catalog(
         _, full_change = outfit_action_components(
             current_components, action_components, str(raw_action.get("target") or "")
         )
+        # 计划中的未知状态仍需由衣橱补全，不能据此认定主体衣物没有变化。
+        main = action_components.get("main_clothing") or {}
+        full_change = full_change or bool(
+            main.get("state") == "unknown"
+            and main.get("description")
+            and main.get("description")
+            != (current_components.get("main_clothing") or {}).get("description")
+        )
         partial_action = bool(action_components and not full_change)
         if manual_extra or partial_action:
             action_appearance = await host._style_catalog_reference_appearance(
@@ -211,13 +220,23 @@ async def _resolve_planned_outfit_catalog(
                 ),
             )
         )
+        component_issue = outfit_action_issue(component_ledger)
+        if component_issue:
+            host._set_validation_issue("style_catalog_required")
+            return component_issue
         if component_ledger:
             payload["outfit_components"] = component_ledger
         payload["scene_category"] = action_scene_category
         payload["catalog_reference_ids"] = action_reference_ids
-        for field in ("style", "hair_style", "hair", "makeup_style", "makeup", "nails_style", "nails"):
-            if action_appearance.get(field):
-                payload[field] = action_appearance[field]
+        for fields in (
+            ("style",), ("hair_style", "hair"),
+            ("makeup_style", "makeup"), ("nails_style", "nails"),
+        ):
+            if any(field in payload for field in fields):
+                continue
+            for field in fields:
+                if action_appearance.get(field):
+                    payload[field] = action_appearance[field]
         if action_appearance.get("outfit"):
             action_visible_outfit = format_outfit_components(
                 json.loads(component_ledger) if component_ledger else {}

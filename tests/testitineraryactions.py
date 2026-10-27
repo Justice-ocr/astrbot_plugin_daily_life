@@ -52,6 +52,48 @@ class ItineraryActionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([step["duration_minutes"] for step in steps], [20, 15])
         self.assertEqual(timeline[0].duration_minutes, 35)
 
+    async def test_edited_outfit_resolves_unknown_clothing_and_preserves_grooming(self):
+        composer, _, _, archive = make_composer([])
+        outfit = await archive.upsert_style_catalog_item({
+            "kind": "outfit", "description": "米白衬衫和白色百褶裙",
+            "source_image_hash": "e" * 64,
+        })
+        await archive.adopt_wardrobe_items(
+            [outfit.id], event_id="own-outfit", at="2026-10-20 07:00:00", reason="已有衣物",
+        )
+        day = DayRecord(date="2026-10-20", outfit="睡衣", meta={
+            "hair_style": "披发", "hair": "头发披散",
+            "outfit_components": json.dumps({"main_clothing": {"state": "worn", "description": "睡衣"}}),
+        })
+        await archive.save_day(day)
+        timeline = [TimelineItem(time="08:30", activity="换出门衣服，扎起头发", duration_minutes=10)]
+        result = {
+            "timeline_edits": [{"operation": "insert", "item": timeline[0].as_dict()}],
+            "planned_actions": [{
+                "edit_index": 0, "action_type": "change_outfit", "target": timeline[0].activity,
+                "duration_minutes": 10, "payload": {
+                    "catalog_reference_ids": [outfit.id], "scene_category": "outdoor",
+                    "outfit_components": {"main_clothing": {"state": "unknown", "description": "米白衬衫和白色百褶裙"}},
+                    "hair_style": "低马尾", "hair": "头发低低扎起",
+                },
+            }],
+        }
+        self.assertEqual(await compile_edited_actions(
+            composer, result, timeline, date_str=day.date, source="invite",
+        ), "")
+        apply_edited_timeline(day, timeline, result)
+        await archive.save_day(day)
+        self.assertEqual(day.outfit, "睡衣")
+        self.assertEqual(day.meta["hair_style"], "披发")
+        outcome = await composer.settle_and_persist_life_action(
+            day, result["_planned_life_actions"][0], now=datetime.datetime(2026, 10, 20, 8, 40),
+        )
+        self.assertEqual(outcome.status, "committed")
+        saved = await archive.get_day(day.date)
+        self.assertEqual(saved.outfit, "米白衬衫和白色百褶裙")
+        self.assertEqual(saved.meta["hair_style"], "低马尾")
+        self.assertEqual(saved.timeline[0].execution_state, "completed")
+
     async def test_edit_keeps_timed_followup_outside_current_action_target(self):
         composer, _, _, archive = make_composer([])
         day = DayRecord(date="2026-10-14", timeline=[TimelineItem(time="15:40", activity="坐下喝水")])

@@ -195,14 +195,14 @@ class ReplyDeliveryService:
                         sent_count,
                         RuntimeError("消息发送未完成"),
                     )
+                sent_count += 1
+                request.on_sent(index, text)
                 await self._log_sent(
                     message,
                     scope=request.scope,
                     source_event=request.source_event,
                     source=request.source,
                 )
-                request.on_sent(index, text)
-                sent_count += 1
         except Exception as exc:
             return DeliveryResult("failed", sent_count, exc)
         return DeliveryResult("sent", sent_count)

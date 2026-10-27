@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
@@ -16,8 +16,13 @@ from ...paths import expand_path, path_is_file
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
-
-from typing import Protocol
+from .perspective import (
+    MEDIA_REPLY_PERSPECTIVE_RULE,
+    bind_media_reply_context,
+    group_participants_required,
+    media_reply_context_text,
+    resolve_group_participants,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +39,7 @@ class LifeVideoRequest:
     event: Any
     request_id: str
     direct_prompt: bool
+    duration: int
     subject_route: str
     participants: tuple[str, ...]
     identity_profiles: dict[str, str]
@@ -73,6 +79,7 @@ class RuntimeVideoMediaComponentContext(Protocol):
     _current_character_identity_profiles: Any
     _current_life_appearance_snapshot: Any
     _direct_life_image_payload: Any
+    _direct_life_video_plan: Any
     _direct_life_video_prompt: Any
     _edit_life_image_with_policy_retry: Any
     _event_current_image_request_text: Any
@@ -109,7 +116,6 @@ class RuntimeVideoMediaComponentContext(Protocol):
     _resolve_life_video_commitment_future: Any
     _schedule_background_task: Any
     _snapshot_media_event: Any
-    _video_prompt_duration_seconds: Any
     call_text_model: Any
     cancel_tool_reaction: Any
     finalize_durable_media_delivery: Any
@@ -137,7 +143,6 @@ class RuntimeVideoMediaComponent:
         self.context = context
 
     _VIDEO_REFERENCE_SOURCE_ATTR = "_daily_life_video_reference_source"
-
     def note_life_video_reference_source(
         self, event: Any, *, continue_last_result: bool = False, replace: bool = False
     ) -> LifeVideoReferenceSource:
@@ -181,97 +186,6 @@ class RuntimeVideoMediaComponent:
                 batch.video_reference_source = source
         return source
 
-    @staticmethod
-    def _video_prompt_duration_seconds(text: str) -> int:
-        compact = str(text or "").strip()
-        if not compact:
-            return 0
-        seconds: list[int] = []
-        index = 0
-        while index < len(compact):
-            number, end = RuntimeVideoMediaComponent._video_read_number(compact, index)
-            if end <= index:
-                index += 1
-                continue
-            cursor = RuntimeVideoMediaComponent._video_skip_spaces(compact, end)
-            if cursor < len(compact) and compact[cursor] in "-–—~到至":
-                right_start = RuntimeVideoMediaComponent._video_skip_spaces(
-                    compact, cursor + 1
-                )
-                right, right_end = RuntimeVideoMediaComponent._video_read_number(
-                    compact, right_start
-                )
-                unit_at = RuntimeVideoMediaComponent._video_skip_spaces(compact, right_end)
-                if (
-                    right_end > right_start
-                    and RuntimeVideoMediaComponent._video_has_duration_unit(
-                        compact, unit_at
-                    )
-                ):
-                    seconds.append(RuntimeVideoMediaComponent._video_clamp_seconds(right))
-                    index = unit_at + 1
-                    continue
-            if RuntimeVideoMediaComponent._video_has_duration_unit(compact, cursor):
-                seconds.append(RuntimeVideoMediaComponent._video_clamp_seconds(number))
-                index = cursor + 1
-                continue
-            index = end
-        return max(seconds) if seconds else 0
-
-    @staticmethod
-    def _video_read_number(text: str, start: int) -> tuple[float, int]:
-        if start >= len(text) or not text[start].isdigit():
-            return 0.0, start
-        end = start
-        dot_seen = False
-        while end < len(text):
-            char = text[end]
-            if char.isdigit():
-                end += 1
-                continue
-            if (
-                char == "."
-                and not dot_seen
-                and end + 1 < len(text)
-                and text[end + 1].isdigit()
-            ):
-                dot_seen = True
-                end += 1
-                continue
-            break
-        try:
-            return float(text[start:end]), end
-        except ValueError:
-            return 0.0, start
-
-    @staticmethod
-    def _video_skip_spaces(text: str, start: int) -> int:
-        while start < len(text) and text[start].isspace():
-            start += 1
-        return start
-
-    @staticmethod
-    def _video_has_duration_unit(text: str, start: int) -> bool:
-        if start >= len(text):
-            return False
-        if text.startswith("秒钟", start) or text[start] == "秒":
-            return True
-        if text[start] in {"s", "S"}:
-            next_index = start + 1
-            return (
-                next_index >= len(text)
-                or not text[next_index].isascii()
-                or not text[next_index].isalnum()
-            )
-        return False
-
-    @staticmethod
-    def _video_clamp_seconds(value: float) -> int:
-        if value <= 0:
-            return 0
-        seconds = int(value) if value.is_integer() else int(value) + 1
-        return max(1, min(15, seconds))
-
     def _event_video_prompt_text(self, event: Any) -> str:
         resolver = getattr(self.context, "_event_image_prompt_text", None)
         text = str(resolver(event) if callable(resolver) else "").strip()
@@ -306,6 +220,8 @@ class RuntimeVideoMediaComponent:
         prompt: str,
         reference_image: str = "",
         *,
+        aspect_ratio: str = "",
+        duration: int = 0,
         direct_prompt: bool = False,
         group_video: bool = False,
     ) -> Any:
@@ -314,6 +230,8 @@ class RuntimeVideoMediaComponent:
                 event,
                 prompt,
                 reference_image,
+                aspect_ratio=aspect_ratio,
+                duration=duration,
                 direct_prompt=direct_prompt,
                 group_video=group_video,
             )
@@ -324,6 +242,8 @@ class RuntimeVideoMediaComponent:
         prompt: str,
         reference_image: str = "",
         *,
+        aspect_ratio: str = "",
+        duration: int = 0,
         direct_prompt: bool = False,
         group_video: bool = False,
     ) -> Any:
@@ -359,8 +279,11 @@ class RuntimeVideoMediaComponent:
                 "视频中的本轮服装、配饰和发型以首帧已经呈现的双方造型为准，保持前后连续。"
                 "具体站位、距离、互动、遮挡、动作幅度、转身和镜头运动服从当前剧情与镜头设计。"
             )
-        aspect_ratio = self.context._image_prompt_aspect_ratio(prompt) or reference_aspect_ratio
-        duration = self.context._video_prompt_duration_seconds(prompt)
+        aspect_ratio = (
+            str(aspect_ratio or "").strip()
+            or self.context._image_prompt_aspect_ratio(prompt)
+            or reference_aspect_ratio
+        )
         if aspect_ratio or duration:
             kwargs: dict[str, Any] = {}
             if aspect_ratio:
@@ -381,6 +304,7 @@ class RuntimeVideoMediaComponent:
         event: Any,
         prompt: str,
         *,
+        duration: int = 0,
         subject_route: str = "free",
         participants: list[str] | None = None,
         friend_outfit: str = "",
@@ -403,7 +327,7 @@ class RuntimeVideoMediaComponent:
         route = self.context._normalize_image_subject_route(subject_route)
         participant_ids = self.context._normalize_image_participants(participants)
         if route == "group" and len(participant_ids) > 1:
-            return "当前合影视频只能选择一位好友。"
+            return group_participants_required(self.context, media="video")
         reference_source = self.context.note_life_video_reference_source(
             event,
             continue_last_result=continue_last_result,
@@ -415,7 +339,7 @@ class RuntimeVideoMediaComponent:
             allow_last_generated=reference_source.continue_last_result,
             prefer_last_generated=reference_source.continue_last_result,
         )
-        logger.info(
+        logger.debug(
             f"{LOG_PREFIX} 视频首帧来源已锁定："
             f"消息={self.context._event_message_id(reference_source.event)}；"
             f"续话沿用={'否' if reference_source.event in self.context._event_sources(event) else '是'}；"
@@ -424,8 +348,11 @@ class RuntimeVideoMediaComponent:
         friend_look: dict[str, str] = {}
         friend_look_persist = False
         if route == "group" and not initial_reference_image:
+            participant_ids = await resolve_group_participants(
+                self.context, event, participant_ids
+            )
             if len(participant_ids) != 1:
-                return "没有现成合影首帧，请选择一位已配置参考图的好友。"
+                return group_participants_required(self.context, media="video")
             friend_look, look_source, missing = await self.context._prepare_friend_daily_look(
                 event,
                 participant_ids[0],
@@ -464,12 +391,16 @@ class RuntimeVideoMediaComponent:
         request_id = self._register_life_video_request(scope, prompt, event)
         source_event = event
         event = self.context._snapshot_media_event(event)
+        await bind_media_reply_context(
+            self.context, event, route, participant_ids, source_request=source_request
+        )
         request = LifeVideoRequest(
             scope=scope,
             prompt=prompt,
             event=event,
             request_id=request_id,
             direct_prompt=direct_prompt,
+            duration=max(0, min(15, int(duration or 0))),
             subject_route=route,
             participants=tuple(participant_ids),
             identity_profiles=await self.context._resolve_life_identity_profiles(event, route),
@@ -588,33 +519,64 @@ class RuntimeVideoMediaComponent:
             source_request=request.source_request,
         )
         generation_prompt += request.person_fact_context
+        video_prompt = generation_prompt
+        first_frame_prompt = generation_prompt
+        planned = not request.direct_prompt or not reference_image
+        if planned:
+            plan = await self.context._direct_life_video_plan(
+                request.event, generation_prompt
+            )
+            video_prompt = str(getattr(plan, "video_prompt", "") or "").strip()
+            if not video_prompt:
+                raise ValueError("视频导演没有生成有效的动态描述。")
+            if not reference_image:
+                first_frame_prompt = str(
+                    getattr(plan, "first_frame", "") or ""
+                ).strip()
+                if not first_frame_prompt:
+                    raise ValueError("视频导演没有生成有效的首帧画面。")
+        aspect_ratio = (
+            self.context._image_prompt_aspect_ratio(request.source_request)
+            or self.context._image_prompt_aspect_ratio(request.prompt)
+            or self.context._image_prompt_aspect_ratio(generation_prompt)
+        )
         if not reference_image:
             if route == "group":
                 if len(participant_ids) != 1:
-                    raise ValueError("没有现成合影首帧，请选择一位已配置参考图的好友。")
+                    raise ValueError("合影视频缺少已锁定的唯一好友档案 ID。")
                 first_frame = await self._generate_life_group_video_first_frame(
-                    generation_prompt,
+                    first_frame_prompt,
                     request.event,
                     list(participant_ids),
                     friend_look=request.friend_look,
                     identity_profiles=request.identity_profiles,
+                    aspect_ratio=aspect_ratio,
                 )
             else:
                 first_frame = await self._generate_life_video_first_frame(
                     request.scope,
-                    generation_prompt,
+                    first_frame_prompt,
                     request.event,
                     identity_profiles=request.identity_profiles,
+                    aspect_ratio=aspect_ratio,
                 )
             self._update_life_video_request(
                 request.request_id, first_frame_path=first_frame
             )
+        video_kwargs: dict[str, Any] = {
+            "direct_prompt": True,
+            "group_video": route == "group",
+        }
+        if aspect_ratio:
+            video_kwargs["aspect_ratio"] = aspect_ratio
+        duration = int(getattr(request, "duration", 0) or 0)
+        if duration:
+            video_kwargs["duration"] = duration
         generated = await self.context.generate_life_video_asset(
             request.event,
-            generation_prompt,
+            video_prompt,
             reference_image or first_frame,
-            direct_prompt=request.direct_prompt,
-            group_video=route == "group",
+            **video_kwargs,
         )
         return LifeVideoExecution(
             generated=generated,
@@ -739,6 +701,7 @@ class RuntimeVideoMediaComponent:
         event: Any,
         *,
         identity_profiles: dict[str, str] | None = None,
+        aspect_ratio: str = "",
     ) -> str:
         image_service = getattr(getattr(self.context, "media", None), "image", None)
         if image_service is None:
@@ -747,9 +710,11 @@ class RuntimeVideoMediaComponent:
         image_prompt = str(getattr(directed, "prompt", "") or "").strip()
         if not image_prompt:
             raise RuntimeError("视频首帧图片提示词为空。")
-        aspect_ratio = self.context._image_prompt_aspect_ratio(
-            prompt
-        ) or self.context._image_prompt_aspect_ratio(image_prompt)
+        aspect_ratio = (
+            str(aspect_ratio or "").strip()
+            or self.context._image_prompt_aspect_ratio(prompt)
+            or self.context._image_prompt_aspect_ratio(image_prompt)
+        )
         character_reference = (
             self.context._life_character_reference_image()
             if getattr(directed, "needs_character_reference", False) is True
@@ -804,6 +769,7 @@ class RuntimeVideoMediaComponent:
         *,
         friend_look: dict[str, str] | None = None,
         identity_profiles: dict[str, str] | None = None,
+        aspect_ratio: str = "",
     ) -> str:
         image_service = getattr(getattr(self.context, "media", None), "image", None)
         generator = getattr(image_service, "generate_group_image", None)
@@ -818,9 +784,11 @@ class RuntimeVideoMediaComponent:
             f"{image_prompt}\n双人视频首帧：{GROUP_IDENTITY_CONTINUITY_RULE}"
             "具体站位、距离、互动、遮挡与构图服从当前剧情和镜头设计。"
         )
-        aspect_ratio = self.context._image_prompt_aspect_ratio(
-            prompt
-        ) or self.context._image_prompt_aspect_ratio(image_prompt)
+        aspect_ratio = (
+            str(aspect_ratio or "").strip()
+            or self.context._image_prompt_aspect_ratio(prompt)
+            or self.context._image_prompt_aspect_ratio(image_prompt)
+        )
         options = {"reference_context": "合影首帧"}
         current_profiles = self.context._current_character_identity_profiles(identity_profiles)
         if current_profiles:
@@ -1064,12 +1032,14 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
                 "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
             )
             dynamic = (
-                f"角色口吻参考：{persona[:800] if persona else '按当前对话中的角色口吻自然回复。'}\n"
+                f"{media_reply_context_text(event, persona)}\n"
                 f"用户的视频要求：{str(prompt or '').strip()}\n"
                 f"视频发送结果：{str(summary or '').strip()}"
             )
             prompt_text = cache_friendly_prompt(
-                fixed, dynamic, dynamic_title="已发送视频"
+                fixed + "\n" + MEDIA_REPLY_PERSPECTIVE_RULE,
+                dynamic,
+                dynamic_title="已发送视频",
             )
             text = await call_llm(
                 provider,
@@ -1117,13 +1087,15 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
                 "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
             )
             dynamic = (
-                f"角色口吻参考：{persona[:800] if persona else '按当前对话中的角色口吻自然回复。'}\n"
+                f"{media_reply_context_text(event, persona)}\n"
                 f"用户的视频要求：{str(prompt or '').strip()}\n"
                 f"内部失败原因（只用于理解，不要复述）：{detail or '未知'}\n"
                 f"失败图片状态：{'已经发送一张图片' if photo_sent else '没有可发送的图片'}"
             )
             prompt_text = cache_friendly_prompt(
-                fixed, dynamic, dynamic_title="视频未发送"
+                fixed + "\n" + MEDIA_REPLY_PERSPECTIVE_RULE,
+                dynamic,
+                dynamic_title="视频未发送",
             )
             text = await call_llm(
                 provider,

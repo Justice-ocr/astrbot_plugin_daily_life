@@ -1,6 +1,5 @@
 import datetime
 import json
-import random
 import unittest
 
 from core.life.appearance import normalize_appearance_fact, strip_hair_from_outfit
@@ -8,7 +7,6 @@ from core.life.future import future_outfit_timing_issue
 from core.life.surroundings import normalize_event_items, normalize_place_names
 from core.life.tools import (
     format_timeline_to_text,
-    get_matching_hairstyle,
     reconcile_timeline_execution,
 )
 from core.life.wardrobe import (
@@ -396,32 +394,3 @@ class LifeToolsTest(unittest.TestCase):
             ],
         )
 
-    def test_get_matching_hairstyle_accepts_normalized_style_name(self):
-        old_choice = random.choice
-        random.choice = lambda items: items[0]
-        try:
-            style_map = {
-                "甜美制服风": ["高马尾"],
-                "元气休闲风": ["半扎发"],
-            }
-            self.assertEqual(
-                get_matching_hairstyle(" 甜美 制服风 ", style_map, [], False),
-                "高马尾",
-            )
-        finally:
-            random.choice = old_choice
-
-    def test_get_matching_hairstyle_uses_containment_before_fallback(self):
-        old_choice = random.choice
-        random.choice = lambda items: items[0]
-        try:
-            style_map = {
-                "奶油黄·慵懒": ["低丸子头"],
-                "薄荷绿·治愈": ["侧边编发"],
-            }
-            self.assertEqual(
-                get_matching_hairstyle("奶油黄", style_map, [], False),
-                "低丸子头",
-            )
-        finally:
-            random.choice = old_choice

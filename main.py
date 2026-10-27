@@ -418,6 +418,14 @@ class DailyLifePlugin(Star):
                 timeout_seconds=timeout_seconds,
             )
 
+    page_browsing_list = ComponentCall(
+        "_part_daily_life_dashboard_component", DailyLifeDashboardComponent, "page_browsing_list"
+    )
+
+    page_browsing_control = ComponentCall(
+        "_part_daily_life_dashboard_component", DailyLifeDashboardComponent, "page_browsing_control"
+    )
+
     async def get_share_context(self, target_umo: str = "") -> dict:
         """为分享类插件返回目标隔离且已提炼的生活上下文。"""
         async with self._external_runtime_lease() as runtime:
@@ -547,6 +555,15 @@ class DailyLifePlugin(Star):
                 str(text or "").strip(), **voice_kwargs
             )
             return str(getattr(result, "path", "") or "").strip()
+
+    async def send_share_expression(
+        self, text: str, *, target_umo: str, source_event: AstrMessageEvent | None = None
+    ) -> dict:
+        """按当前聊天设置分段发送外部自然表达，返回实际送达的各段。"""
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.send_share_expression(
+                text, target_umo=target_umo, source_event=source_event
+            )
 
     async def prepare_share_expression(
         self, text: str, *, scene: str = "", requirements: dict | None = None
@@ -1192,7 +1209,7 @@ class DailyLifePlugin(Star):
         检索当前角色已经沉淀的长期生活记忆，用于回答用户追问、确认偏好、查找纠偏、人物关系、生活事件或最近影响判断的依据。
         Args:
             query(string): 自然语言检索内容，例如“最近别总出门”“他喜欢什么生活节奏”“好友相关记忆”。
-            mode(string): search 按内容检索；recent 查看近期记忆；evidence 按记忆编号查看原话。
+            mode(string): search 内容检索；recent 近期；evidence 记忆原话；graph 关联路径；chapters 阶段回忆；diary 日记；originals 压缩前原话（query 可填起始 ISO 日期时间，offset 分页）。
             category(string): 可选分类过滤，例如 correction、short_term、relationship、chat_summary、feedback、expression。
             limit(int): 返回条数，默认 5，最多 12。
             memory_id(int): evidence 模式使用检索返回的记忆编号，禁止猜测。
@@ -1207,6 +1224,28 @@ class DailyLifePlugin(Star):
             memory_id=self._tool_int(memory_id, 0),
             offset=self._tool_int(offset, 0),
         )
+
+    @filter.llm_tool(name="life_knowledge")
+    @guard_tool_arguments
+    @_runtime_guard
+    async def tool_life_knowledge(self, event: AstrMessageEvent, action: str = "list", query: str = "", offset: int = 0, source_id: int = 0, passage_id: int = 0, title: str = "", content: str = "", origin: str = "", quote: str = "", summary: str = "", reflection: str = "", question: str = ""):
+        """读取有来源的学习资料，保留理解、疑问和看法变化；资料不等于亲历。
+
+        Args:
+            action(string): list 列表；search 语义选资料；read 读原文；note 记录已读理解；notes 阅读手记；import 保存用户提供的原文到本会话资料库。
+            query(string): search 对原文片段的自然语言问题。
+            offset(int): list/search 分页起点；资料未扫描完时按 next_offset 继续。
+            source_id(int): 已返回的资料编号，不可猜测。
+            passage_id(int): 已返回的片段编号；read 留零续读，note 必填。
+            title(string): import 的原文标题。
+            content(string): import 的实际原文，不能虚构、用摘要冒充原文。
+            origin(string): 原文来源，未知可留空。
+            quote(string): note 的逐字原文依据。
+            summary(string): note 对该片段的理解。
+            reflection(string): 自己的感受或看法变化，可为空。
+            question(string): 尚未弄清的问题，可为空。
+        """
+        return await self.runtime.memory_life.knowledge_tool(event, action=action, query=query, offset=self._tool_int(offset, 0), source_id=self._tool_int(source_id, 0), passage_id=self._tool_int(passage_id, 0), title=title, content=content, origin=origin, quote=quote, summary=summary, reflection=reflection, question=question)
 
     @filter.llm_tool(name="life_web_search")
     @guard_tool_arguments
@@ -1510,46 +1549,27 @@ class DailyLifePlugin(Star):
         historical_period: str = "",
         historical_time: str = "",
     ):
-        """
-        根据当前角色生活场景生成并发送一张图片。
-        适合用户想看当前状态、穿搭、环境、自拍/生活照，或普通聊天里用画面展示此刻更自然的时候。
-        普通聊天里角色自己自然产生“想让对方看看这个瞬间”的分享意愿时，用户没有先索要也可以主动调用；画面应能传达文字之外的状态、气氛、细节或情绪，不能为了展示工具而生成，也不要先询问用户是否想看。
-        用户明确要图片时默认调用本工具，并先用角色口吻说一句简短、自然的行动确认；只有真实限制才说明或改约，不因轻微不便反复拒绝，也不能提前声称图片已经完成，
-        也不要提及模型、任务、缓存、图片导演、文生图或图生图等内部过程。图片发送后再根据结果自然补一句，也可以不补。
-        返回 pending 表示已受理，尚未送达；结束本次工具轮次，后续消息正常聊天，不要等待、重复调用或提前声称照片已发送。
-        如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
-        使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
-        current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
-        回现过去日期或节日时段的本人照片，prompt 要保留日期、节日和时段；只复现该时刻记录的造型，不要用当前穿搭补写历史照片。
-        历史回现必须填写 historical_target，日期由完整对话语义换算成 YYYY-MM-DD；“上次那套”填 last。历史时段和精确时间分别填专用字段；不能从画面主题推断成过去。
-        用户明确要求当前角色实际换装、改发型、化妆/卸妆或更换美甲时，设置 current_outfit_change=true，并把用户原始外观要求放入 current_outfit_instruction；如果用户选择视觉衣橱中的整组造型，允许把同图识别出的服装、发型、妆容、美甲和配饰一起展开为本轮要求，工具会先更新真实生活外观状态，再使用更新后的同一造型生图。展开候选属于可变造型，角色人设中明确的稳定外观事实（例如自然发色）优先；只有用户原始话语明确要求改变，或已有可靠生活事实确认变化时，才允许覆盖人设。
-        仅要求生成、查看、试穿效果或创作某种穿搭图片时，不得设置 current_outfit_change；这类画面不会改变当前角色的真实生活穿搭状态。
-        current_outfit_change=true 时，subject_route 只能填 current_character 或 group，prompt 只描述场景、动作、构图等画面要求，不要另外编造一套当前角色服装；插件会把已保存造型锁定到画面中。
-        合影时 participants 必须填写系统上下文“可用于合影的好友参考档案”中对应的关系档案 ID，只选择一位好友；不要按姓名猜测或编造 ID。
-        合影提示词中把当前角色作为人物 A、好友作为人物 B，分别描述两人的服装、发型、体态和外观呈现；未明确归属的单套穿搭默认只属于人物 A。
-        人物 B 应根据好友参考图保持独立外观并选择符合场景的独立穿搭；不要根据姓名或昵称猜测性别。只有用户明确要求同款、情侣装或统一造型时才共享穿搭风格。
-        group 模式每次都填写 friend_scene_category。好友已有当天造型且服装属性适合当前场景时，friend_outfit 和 friend_hair 留空以继续沿用；场景不适用时工具会要求更新。
-        没有当天造型时必须同时填写人物 B 的完整穿搭和发型。人物 B 换装时填写 friend_outfit，改变发型时填写 friend_hair；服装属性和造型决定由插件根据场景推导。
-        不能只把人物 B 的新造型写进 prompt，否则不会更新当天造型。外出服回家后可以继续穿，居家/睡眠服进入公共或外出场景时不能直接沿用。
-        没有当前消息、引用消息或显式 reference_image 可作为真实参考图时，新增画面请求使用本工具，不要调用 edit_life_image。
-        如果用户要求使用上一条图片反推结果生成，设置 use_last_reverse_prompt=true；插件会从本会话缓存读取上一条反推提示词原文，不会自动把反推原图作为图生图参考。
-        有真实参考图时，如果用户明确要求按原图或参考图生成、改图或保持原图人物/构图，请调用 edit_life_image。
+        """生成并发送单张生活图片，用于明确图片请求或角色自然想分享的瞬间。
+        完整画面提示词原样保留；默认是画面创作，只有明确要求实际改变当前外观时才更新生活状态。
+        当前外观来自当前事实，历史回现来自对应时刻记录；稳定人物特征以人设和档案为准，不由昵称猜性别。合影人物 A 是角色、B 是所选好友，外观分别归属，单套服装默认属于 A。
+        有真实参考图且要求保留或修改原图时使用 edit_life_image；反推提示词可由 use_last_reverse_prompt 读取。
+        调用前自然确认行动；pending 表示受理，结束本轮工具调用，实际送达后才谈结果。
 
         Args:
-            prompt(string): 图片画面要求；用户给出完整提示词时必须保留完整画面内容，例如“雨夜沙发上随手拍的一张生活照，暖色台灯，慵懒居家感，半身生活照”；协议选择单独填写 provider，use_last_reverse_prompt=true 时此参数不参与生成。
-            subject_route(string): 图片主体路线，只能填 current_character、group、scene、object 或 free；用户想看当前角色本人、自拍、生活照或穿搭照时填 current_character，想与已配置好友合影时填 group。
-            participants(list[string]): 合影参与者的关系档案 ID；subject_route=group 时必须且只能填写一位已配置好友，其他路线留空。
-            friend_outfit(string): 人物 B 本次完整穿搭；首次合影必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
-            friend_hair(string): 人物 B 本次发型；首次合影必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
-            friend_scene_category(string): 人物 B 当前画面场景，可填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写，其他路线省略此参数。
-            current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实外观变化写入生活状态；实际换装、改发型、化妆/卸妆或更换美甲时设为 true，仅看效果图时必须为 false。
-            current_outfit_instruction(string): 当前角色真实外观变化要求；current_outfit_change=true 时填写用户原始要求，选择视觉衣橱整组造型时可以附带同图识别出的相关妆发、美甲和配饰，但不得覆盖人设明确的稳定外观事实；其他情况留空。
-            use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
-            resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
-            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
-            historical_target(string): 历史回现日期 YYYY-MM-DD，或 last 表示上次不同于当前的造型；当前照片留空。
-            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night；不明确留空。
-            historical_time(string): 明确历史钟点 HH:MM；不明确留空。
+            prompt(string): 完整画面要求；实际换装时只描述动作、场景和构图，由已保存造型补足外观；其他完整提示词原样保留。
+            subject_route(string): 主体枚举 current_character、group、scene、object、free；角色本人用 current_character，角色与好友同框用 group。
+            participants(list[string]): 好友关系档案 ID；group 合影选择一位好友，省略时仅采用与当前私聊身份唯一匹配的档案，其他主体留空。
+            friend_outfit(string): 好友完整穿搭；首次建立造型时与 friend_hair 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_hair(string): 好友发型；首次建立造型时与 friend_outfit 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_scene_category(string): 合影时按画面真实场景填写 home、sleep、outdoor、public 或 mixed。
+            current_outfit_change(bool): 是否明确要求实际改变角色当前外观；仅看效果图为 false，true 时主体限 current_character 或 group。
+            current_outfit_instruction(string): 实际外观变化的用户原始要求；可附所选衣橱整组细节，稳定人设特征仅在明确要求改变时更新。
+            use_last_reverse_prompt(bool): 是否读取本会话上次反推提示词原文；不自动沿用原图。
+            resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
+            provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
+            historical_target(string): 历史日期 YYYY-MM-DD 或 last（上次不同造型）；当前创作留空。
+            historical_period(string): 历史时段 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
+            historical_time(string): 明确历史钟点 HH:MM，否则留空。
         """
         if str(subject_route or "free").strip() == "group":
             denial = self._life_permission_denial(
@@ -1627,41 +1647,28 @@ class DailyLifePlugin(Star):
         historical_period: str = "",
         historical_time: str = "",
     ):
-        """
-        仅当用户明确要求“拍一套”“来组照片”“多拍几张”等一组独立照片时调用；普通单张图片仍调用 life_image_generate。
-        以本轮用户要求为准；不同消息明确请求一组照片，即使主题或说法相同，也可以调用。后续感谢、亲昵回应、催进度或普通接话不能沿用旧要求再次调用。
-        默认生成 3 张，可按用户要求生成 2 到 6 张。调用前必须先用角色口吻说一句简短、自然的行动确认；
-        不能提前声称整组已经拍好，也不要提及模型、任务、并发、缓存或生成流程。工具会在后台规划并生成整组照片，
-        一次发送成功图片，交付后再按实际结果自然补一句。不要为了生成套图而自行连续调用多次单图工具。
-        同一组会保持人物身份、人数、发型、服装、场景、时间、光线和画面风格一致，只让景别、机位、姿势和动作产生变化。
-        套图工具只使用这里声明的参数：数量参数名是 count，不要传 photo_count 或 suite_count；套图工具不接受 current_outfit_change 或 current_outfit_instruction，生成套图不会修改当前生活穿搭状态。
-        current_character 套图中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态；用户本轮明确要求始终优先。
-        回现过去日期或节日时段的一组照片时，prompt 要保留日期、节日和时段；整组统一采用该时刻记录的造型，不要混入当前穿搭。
-        历史回现须把对话中的日期换算为 historical_target=YYYY-MM-DD，或填 last；时段和钟点使用专用字段，不按提示词字面词匹配。
-        current_character 用于当前角色本人套图；group 用于当前角色与一位已配置好友的合影套图，participants 必须且只能填写系统给出的关系档案 ID。
-        合影套图中把当前角色作为人物 A、好友作为人物 B，分别固定两人的服装、发型、体态和外观呈现，不能把一人的穿搭复制给另一人。
-        未明确归属的单套穿搭默认只属于人物 A；好友参考图只用于确认人物 B 的身份，人物 B 的本轮穿搭和发型通过结构化参数独立确定，不根据姓名或昵称猜测性别。只有明确要求同款、情侣装或统一造型时才共享穿搭风格。
-        新合影套图每次填写 friend_scene_category。好友已有当天造型且适合当前场景时，friend_outfit 和 friend_hair 留空；没有当天造型时必须同时填写完整穿搭和发型，整组保持一致。
-        人物 B 换装时填写 friend_outfit，改变发型时填写 friend_hair；服装属性和造型决定由插件根据场景推导。不能只把新造型写进 prompt。
-        有当前消息或引用图片时，reference_image 可留空，插件会自动读取；需要沿用当前会话上一张生成结果时设置 continue_last_result=true。
-        用户要求重拍上一组中的某几张时，retry_indexes 填写从 1 开始的位置序号；重拍不需要任务编号，也不要重复规划或重做其他成功照片。
+        """用户明确请求一组照片时生成 2 至 6 张，默认 3 张；普通接话、感谢和催进度不构成新拍摄请求。
+        同组保持人物、造型、场景与光线连续，以景别和动作形成变化；使用 retry_indexes 仅重拍指定照片。
+        合影人物 A 是角色、B 是所选好友，外观独立；当前事实与历史回现分别使用对应时间的资料。
+        当前消息或引用中的图片自动作为参考；明确沿用上一张成功图片时设置 continue_last_result。
+        调用前自然确认行动；pending 表示已受理，结束本轮工具调用，由后台交付后按结果自然回应。
 
         Args:
-            prompt(string): 整组照片的主题、人物、场景和氛围要求；重拍指定位置时可以留空。
-            count(int): 照片数量，默认 3，范围 2 到 6。
-            reference_image(string): 可选参考图片路径或 URL；留空时自动尝试当前消息或引用消息里的图片。
-            continue_last_result(bool): 没有新参考图时，是否把当前会话上一张成功生成结果作为整组画面参考。
-            subject_route(string): 主体路线，只能填 current_character、group、scene、object 或 free。
-            participants(list[string]): 合影好友的关系档案 ID；subject_route=group 时必须且只能填写一位，其他路线留空。
-            friend_outfit(string): 人物 B 本次完整穿搭；首次合影套图必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
-            friend_hair(string): 人物 B 本次发型；首次合影套图必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
-            friend_scene_category(string): 人物 B 当前画面场景，可填 home、sleep、outdoor、public 或 mixed；新合影套图每次填写，非合影或重拍沿用清单时省略此参数。
-            retry_indexes(list[int]): 可选重拍位置，使用从 1 开始的序号，例如 [2, 4]；普通新套图留空。
-            resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求整组照片的输出分辨率时填写，“高清”等模糊描述不要推断。
-            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
-            historical_target(string): 历史回现日期 YYYY-MM-DD 或 last；当前照片留空。
-            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
-            historical_time(string): 明确历史钟点 HH:MM。
+            prompt(string): 完整画面要求；完整提示词、分镜或时间轴原样保留。
+            count(int): 本组张数，2 至 6，默认 3。
+            reference_image(string): 参考图片路径或 URL；留空读取当前消息或引用图。
+            continue_last_result(bool): 没有新图且明确沿用会话上一张成功图片时为 true；新拍摄为 false。
+            subject_route(string): 主体枚举 current_character、group、scene、object、free；角色本人用 current_character，角色与好友同框用 group。
+            participants(list[string]): 好友关系档案 ID；group 合影选择一位好友，省略时仅采用与当前私聊身份唯一匹配的档案，其他主体留空。
+            friend_outfit(string): 好友完整穿搭；首次建立造型时与 friend_hair 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_hair(string): 好友发型；首次建立造型时与 friend_outfit 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_scene_category(string): 合影时按画面真实场景填写 home、sleep、outdoor、public 或 mixed。
+            retry_indexes(list[int]): 重拍上一组的位置序号，从 1 开始；其他情况留空。
+            resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
+            provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
+            historical_target(string): 历史日期 YYYY-MM-DD 或 last（上次不同造型）；当前创作留空。
+            historical_period(string): 历史时段 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
+            historical_time(string): 明确历史钟点 HH:MM，否则留空。
         """
         if str(subject_route or "free").strip() == "group":
             denial = self._life_permission_denial(
@@ -1725,29 +1732,20 @@ class DailyLifePlugin(Star):
         resolution: str = "",
         provider: str = "",
     ):
-        """
-        根据参考图生成并发送一张新的生活图片；适合用户发图、引用图或明确给出图片链接/路径后再改图。
-        用户已经明确要修改图片时，调用前必须先用角色口吻说一句简短、自然的行动确认；不能提前声称已经改好，
-        也不要说明参考图解析、模型调用或生成流程。图片发送后再根据结果自然补一句，也可以不补。
-        返回 pending 表示已受理，尚未送达；结束本次工具轮次，后续消息正常聊天，不要等待、重复调用或提前声称图片已改好。
-        reference_image 留空时会自动尝试当前消息或引用消息里的图片。
-        用户说“继续改”“再改一下”“修改上一张”或要求在刚生成的版本上继续调整，并且本轮没有发送或引用新图片时，
-        continue_last_result 必须设为 true，让工具使用当前会话上一张成功生成的图片；不要复用历史消息里的 AstrBot 临时图片路径。
-        只有真实参考图存在时才优先使用本工具；如果没有真实参考图，默认只提醒用户先发送或引用图片。
-        generate_without_reference 仅当已确定这次不是继续改图、而是允许按同一画面要求生成新图时才设为 true；
-        连续修改失败时不能用它重新生成，否则会丢失上一张图片的画面连续性，通常应直接调用 life_image_generate。
-        用户要求当前角色与已配置好友参考某张场景图合影时，participants 填写系统上下文给出的一个关系档案 ID；用户图片只作为场景、构图或姿态参考，不作为好友身份图。
-        合影改图仍须把当前角色作为人物 A、好友作为人物 B，分别保持两人的服装、发型、体态和外观呈现；未归属的单套穿搭默认只属于人物 A，不得自动复制给人物 B。
-        改图工具不接受 subject_route；主体路线只在 life_image_generate、life_photo_suite_generate 和 life_video_generate 中使用。
+        """依据真实参考图片改图、保持人物或构图，支持继续修改会话上一张成功结果。
+        reference_image 留空时读取当前消息或引用图；无新图且明确继续上次修改时设置 continue_last_result，不复用历史临时路径。
+        无参考图时告知缺少素材；只有明确允许独立新创作才设置 generate_without_reference，不能以重生成替代连续改图。
+        合影参与者只用已给出的关系档案 ID；用户图片是画面参考，好友档案是身份依据，人物 A、B 的外观独立。
+        调用前自然确认行动；pending 表示已受理，结束本轮工具调用，实际送达后才谈结果。
 
         Args:
-            prompt(string): 想要的图片效果，例如“保留人物姿势，改成午后咖啡店随手拍，暖色自然光，生活抓拍感”。
-            reference_image(string): 可选参考图片路径或 URL；留空时会尝试使用当前消息或引用消息里的图片。
-            continue_last_result(bool): 是否在没有新参考图时继续修改当前会话上一张成功生成的图片。
-            generate_without_reference(bool): 未找到真实参考图时，是否允许改走 life_image_generate 生成新图。
-            participants(list[string]): 可选合影好友的关系档案 ID，只能填写一位；普通改图留空。
-            resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求修改后图片的输出分辨率时填写，“高清”等模糊描述不要推断，不能把原图或画面内容里的分辨率当成输出要求。
-            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
+            prompt(string): 完整画面要求；完整提示词、分镜或时间轴原样保留。
+            reference_image(string): 参考图片路径或 URL；留空读取当前消息或引用图。
+            continue_last_result(bool): 没有新图且明确沿用会话上一张成功图片时为 true；新拍摄为 false。
+            generate_without_reference(bool): 明确允许无参考图的新创作时才为 true；连续改图保持 false。
+            participants(list[string]): 已提供的关系档案 ID；合影选择一位好友，无需新建好友首帧或普通创作时留空。
+            resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
+            provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
         """
         if participants:
             denial = self._life_permission_denial(
@@ -1977,6 +1975,7 @@ class DailyLifePlugin(Star):
         self,
         event: AstrMessageEvent,
         prompt: str = "",
+        duration: int = 0,
         subject_route: str = "free",
         participants: list[str] | None = None,
         friend_outfit: str = "",
@@ -1988,39 +1987,25 @@ class DailyLifePlugin(Star):
         historical_period: str = "",
         historical_time: str = "",
     ):
-        """
-        根据当前角色生活场景生成并发送一段短视频。
-        视频生成较慢且成本更高，只适合用户明确要视频、引用图转视频，或动作/镜头变化非常强的场景。
-        用户明确要视频时默认调用本工具，并先用角色口吻说一句简短、自然的行动确认；只有真实限制才说明或改约，不因轻微不便反复拒绝，也不能提前声称视频已经完成，
-        也不要播报生成任务、首帧、模型或等待进度。工具调用后保持安静，真实视频发送后再自然补一句。
-        原始视频请求或引用消息里带图片时会自动作为视频首帧/参考图；拍摄开始后的闲聊图片、表情包不会替换首帧。
-        结合完整对话语义判断后补图片的用途。只有用户明确要求更换视频参考图或用新图重新制作视频时，才设置 replace_reference_image=true。
-        闲聊图片、表情回应和没有明确更换意图的补充消息保持 replace_reference_image=false；普通看状态、看穿搭、发照片应优先使用图片。
-        用户明确要求当前角色与一位已配置好友拍同框视频时，subject_route 填 group，participants 必须填写系统给出的一个关系档案 ID。
-        group 模式会优先把当前消息或引用消息里的现成合影直接作为首帧；没有现成合影时，才使用双方参考图生成双人首帧。
-        普通“一起拍个视频”“拍段视频看看”属于新的拍摄：即使上一轮刚发送过合影，也不要设置 continue_last_result，插件会重新生成适合视频剧情的双人首帧。
-        只有用户明确说“让刚才那张动起来”“用上一张照片生成视频”“继续拍上一张”等沿用上一张图片的要求时，才设置 continue_last_result=true。
-        没有现成首帧时，把当前角色作为人物 A、好友作为人物 B，分别描述并保持两人的服装、发型、体态和外观呈现；未归属的单套穿搭默认只属于人物 A。
-        好友参考图只用于确认人物 B 的身份；需要新生成首帧时，人物 B 的本轮穿搭和发型通过结构化参数独立确定，不根据姓名或昵称猜测性别。只有明确要求同款、情侣装或统一造型时才共享穿搭风格。视频必须沿用首帧中两人的独立属性。
-        没有现成首帧时每次填写 friend_scene_category；已有好友当天造型且适合当前场景就让 friend_outfit 和 friend_hair 留空，没有当天造型时必须同时填写完整穿搭和发型。
-        人物 B 换装时填写 friend_outfit，改变发型时填写 friend_hair；服装属性和造型决定由插件根据场景推导。不能只把新造型写进 prompt。使用现成合影首帧时所有好友造型参数均留空。
-        用户要求让当前会话上一张已生成合影动起来，并且本轮没有发送或引用新图片时，设置 continue_last_result=true。
-        当前或引用图片会被视为已经包含最终人物的完整首帧；如果只是空场景，应先生成合影图片，再基于生成结果制作视频。
-        如果用户本轮已经给出完整视频提示词、分镜脚本或时间轴，prompt 必须原样保留用户全文，不要改写、摘要或翻译。
-        回现历史时根据完整对话把目标日期写入 historical_target，时段和钟点写专用字段；普通视频留空。
+        """用户明确请求视频时生成并发送短视频。
+        用户给出的完整提示词、分镜和时间轴原样保留。只有用户明确指定总时长时填写 duration，否则为 0 并沿用视频设置。当前或引用图片自动作为完整首帧；无首帧时按主体路线生成。
+        新拍摄默认 continue_last_result=false；明确沿用会话上一张成功图片才设 true。后补图片仅在明确更换参考来源时使用 replace_reference_image。
+        合影人物 A 是角色、B 是所选好友，分别保持身份与造型。现成首帧沿用画面属性，无首帧时通过好友参数确定独立外观；历史回现使用对应时刻事实。
+        调用前自然确认行动；pending 表示受理，结束本轮工具调用，视频实际送达后才谈结果。
 
         Args:
-            prompt(string): 视频画面要求；用户给出完整分镜或时间轴时必须填完整原文，例如“第1格【0-1.5秒】...第2格【1.5-3秒】...”。
-            subject_route(string): 视频主体路线，只能填 current_character、group、scene、object 或 free；当前角色与一位好友同框时填 group。
-            participants(list[string]): 合影好友的关系档案 ID；subject_route=group 且没有现成合影首帧时必须且只能填写一位，其他路线留空。
-            friend_outfit(string): 人物 B 本次完整穿搭；新生成首帧且没有当天造型时必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写，现成首帧时留空。
-            friend_hair(string): 人物 B 本次发型；新生成首帧且没有当天造型时必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写，现成首帧时留空。
-            friend_scene_category(string): 新生成合影首帧时人物 B 的当前场景，可填 home、sleep、outdoor、public 或 mixed；非合影或使用现成首帧时省略此参数。
-            continue_last_result(bool): 本轮没有新图片且用户明确要求沿用上一张时，是否使用当前会话上一张成功生成的图片作为视频首帧；不能仅因上一轮刚发送过图片就设为 true。
-            replace_reference_image(bool): 根据完整对话语义确认用户明确要用后补图片替换首帧或重新制作视频时才填 true；默认 false，保留原视频请求的参考来源，普通聊天图片和表情包不能替换。
-            historical_target(string): 历史回现日期 YYYY-MM-DD 或 last；普通视频留空。
-            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
-            historical_time(string): 明确历史钟点 HH:MM。
+            prompt(string): 完整画面要求；完整提示词、分镜或时间轴原样保留。
+            duration(int): 用户明确要求的视频总时长，单位秒，范围 1-15；未明确要求时填 0，使用视频设置默认值。
+            subject_route(string): 主体枚举 current_character、group、scene、object、free；角色本人用 current_character，角色与好友同框用 group。
+            participants(list[string]): 好友关系档案 ID；新建合影首帧选择一位好友，省略时仅采用与当前私聊身份唯一匹配的档案；现成首帧或普通创作可留空。
+            friend_outfit(string): 好友完整穿搭；首次建立造型时与 friend_hair 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_hair(string): 好友发型；首次建立造型时与 friend_outfit 同填，已有适用造型则留空，仅实际变化时更新。
+            friend_scene_category(string): 新建合影画面时填写 home、sleep、outdoor、public 或 mixed；现成首帧时留空。
+            continue_last_result(bool): 没有新图且明确沿用会话上一张成功图片时为 true；新拍摄为 false。
+            replace_reference_image(bool): 明确用后补图片替换视频参考来源或重新制作时为 true，否则 false。
+            historical_target(string): 历史日期 YYYY-MM-DD 或 last（上次不同造型）；当前创作留空。
+            historical_period(string): 历史时段 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
+            historical_time(string): 明确历史钟点 HH:MM，否则留空。
         """
         if str(subject_route or "free").strip() == "group" or participants:
             denial = self._life_permission_denial(
@@ -2031,6 +2016,7 @@ class DailyLifePlugin(Star):
             if denial:
                 return denial
         options = {
+            "duration": max(0, min(15, int(duration or 0))),
             "subject_route": str(subject_route or "free").strip(),
             "continue_last_result": self._tool_bool(continue_last_result),
         }
@@ -2052,6 +2038,65 @@ class DailyLifePlugin(Star):
             str(prompt or "").strip(),
             **options,
         )
+
+    @filter.llm_tool(name="life_bili_browse")
+    @guard_tool_arguments
+    @_runtime_guard
+    async def life_bili_browse(self, event: AstrMessageEvent, operation: str = "history", record_id: str = "") -> str:
+        """查看真实的B站浏览经历，或继续了解用户分享的视频；不会主动发送消息。
+
+        Args:
+            operation(string): history 查看记录；understand 理解本轮分享的视频；pause 暂停；resume 续看；abandon 不再看；continue_later 留待以后；favorite 收藏；unfavorite 取消收藏；revisit 重看收藏。
+            record_id(string): 记录 id；history 与 understand 可留空。仅允许访问当前会话或角色自己的记录。
+        """
+        import json
+
+        service = self.runtime.bili_browsing
+        scope = self.runtime._event_session_id(event)
+        if operation == "understand":
+            from .core.sight.bili import find_bili_target
+
+            target = find_bili_target(event)
+            if not target:
+                return "本轮没有识别到B站视频链接。"
+            await service._shared_video(event, target, scope)
+            error = getattr(event, "_daily_life_bili_error", "")
+            if error:
+                return error
+            return await service.prompt(event) or "视频内容暂时无法确认，不要凭标题猜测。"
+        if operation == "history":
+            records = await service.archive.list(scope=scope, limit=12)
+            return json.dumps([service.card(item) for item in records], ensure_ascii=False)
+        if operation in {"favorite", "unfavorite", "revisit"}:
+            denial = self._life_permission_denial(event, "bilibili:" + operation, LifeActionScope.ADMIN)
+            if denial:
+                return denial
+        record = await service.archive.get(record_id)
+        if not record or record.get("scope") not in {"global", scope}:
+            return "当前会话没有这条浏览记录。"
+        return json.dumps(await service.control(record_id, operation), ensure_ascii=False)
+
+    @filter.llm_tool(name="life_bili_message")
+    @guard_tool_arguments
+    @_runtime_guard
+    async def life_bili_message(self, event: AstrMessageEvent, operation: str = "history", text: str = "") -> str:
+        """与当前私聊中已经验证为同一人的B站身份交流，发送必须以真实回执为准。
+
+        Args:
+            operation(string): history 查看同一人的B站私信；send 向此人的B站账号发送私信。
+            text(string): send 时要发送的自然话语；不会发送给未验证的陌生账号。
+        """
+        import json
+        if event.get_group_id():
+            return "请在自己的私聊中使用B站私信。"
+        from .core.browsing.feed import BiliReadError
+        try:
+            result = await self.runtime.bili_browsing.social.message(
+                self.runtime._event_session_id(event), operation, text,
+                str(getattr(event.message_obj, "message_id", "") or ""))
+            return json.dumps(result, ensure_ascii=False)
+        except (ValueError, BiliReadError) as exc:
+            return str(exc)
 
     @filter.llm_tool(name="life_video_understand")
     @guard_tool_arguments
@@ -2766,6 +2811,7 @@ class DailyLifePlugin(Star):
             outbound_result = outbound_logger(event, source="reply")
             if inspect.isawaitable(outbound_result):
                 await outbound_result
+        await self._runtime_hook_apply("note_bili_browse_delivered", event, is_async=True)
         voice_receipt = self._runtime_hook("note_voice_switch_message_sent")
         if voice_receipt:
             await voice_receipt(event)
@@ -2810,6 +2856,7 @@ class DailyLifePlugin(Star):
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
         self._runtime_hook_call("note_conversation_incoming", event)
+        await self._runtime_hook_apply("note_bili_browse_incoming", event, is_async=True)
         enrich_location_message(event)
         self._runtime_hook_call("note_continuous_turn_incoming", event)
         try:
@@ -2867,6 +2914,29 @@ class DailyLifePlugin(Star):
     async def life_command(self, event: AstrMessageEvent):
         async for result in self.commands.dispatch(event):
             yield result
+
+    @filter.command("B站绑定")
+    @_runtime_guard
+    async def bili_binding_command(self, event: AstrMessageEvent, uid: str = ""):
+        if event.get_group_id():
+            yield event.plain_result("请在自己的私聊中绑定B站身份。")
+            return
+        try:
+            result = await self.runtime.bili_browsing.social.binding(self.runtime._event_session_id(event), str(uid or "").strip())
+        except Exception as exc:
+            from .core.browsing.feed import BiliReadError
+            if not isinstance(exc, (ValueError, BiliReadError)):
+                raise
+            result = str(exc)
+        yield event.plain_result(result)
+
+    @filter.command("B站解绑")
+    @_runtime_guard
+    async def bili_unbinding_command(self, event: AstrMessageEvent):
+        if event.get_group_id():
+            yield event.plain_result("请在原私聊会话中解绑。")
+            return
+        yield event.plain_result(await self.runtime.bili_browsing.social.binding(self.runtime._event_session_id(event), remove=True))
 
     @filter.command("B站登录")
     @_runtime_guard
@@ -3511,6 +3581,9 @@ class DailyLifePlugin(Star):
     page_timeline_save = ComponentCall(
         "_part_portal_line_component", PortalLineComponent, "page_timeline_save"
     )
+
+    page_memory_center = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_memory_center")
+    page_memory_manage = ComponentCall("_part_portal_memory_component", PortalMemoryComponent, "page_memory_manage")
 
     page_experience_episode_correct = ComponentCall(
         "_part_portal_memory_component",

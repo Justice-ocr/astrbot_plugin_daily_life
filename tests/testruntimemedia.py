@@ -341,8 +341,8 @@ class RuntimeMediaTest(unittest.TestCase):
             unified_msg_origin="aiocqhttp:FriendMessage:123456", sender_id="123456"
         )
 
-        old_info = logger.info
-        logger.info = lambda message, *args, **kwargs: messages.append(
+        old_debug = logger.debug
+        logger.debug = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
@@ -356,7 +356,7 @@ class RuntimeMediaTest(unittest.TestCase):
             self.assertTrue(runtime.note_voice_switch_text_result(event))
             self.assertFalse(runtime.note_voice_switch_text_result(event))
         finally:
-            logger.info = old_info
+            logger.debug = old_debug
 
         self.assertEqual(len(messages), 1)
         self.assertIn("语音智能切换裁定：文字", messages[0])
@@ -1898,7 +1898,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             participants=["friend-1", "friend-2"],
         )
 
-        self.assertEqual(result, "当前合影视频只能选择一位好友。")
+        payload = json.loads(result)
+        self.assertEqual(payload["status"], "needs_parameters")
+        self.assertEqual(payload["required_parameters"], ["participants"])
         self.assertEqual(scheduled, [])
 
     async def test_life_group_video_failure_sends_generated_group_photo_first(self):
@@ -2210,8 +2212,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        old_info = logger.info
-        logger.info = lambda message, *args, **kwargs: messages.append(
+        old_debug = logger.debug
+        logger.debug = lambda message, *args, **kwargs: messages.append(
             str(message)
         )
         try:
@@ -2223,7 +2225,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                 decision_reason="这句更适合小声说出来。",
             )
         finally:
-            logger.info = old_info
+            logger.debug = old_debug
 
         self.assertFalse(any("语音智能切换裁定：语音" in item for item in messages))
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])

@@ -24,6 +24,7 @@ from ..models import (
     timeline_item_minutes,
 )
 from .lookback import record_appearance_snapshot
+from .outfitstate import normalize_outfit_appearance
 from .actionchain import preceding_actions, committed_ids, timeline_complete
 from .body import ContinuousBody, project_body
 from .presence import record_action_outcome
@@ -32,6 +33,7 @@ from .tools import parse_life_datetime, timeline_item_datetime
 from .wardrobe import (
     format_outfit_components,
     outfit_action_components,
+    outfit_action_issue,
     normalize_outfit_scene_category,
     resolve_outfit_style_pool,
     serialize_outfit_components,
@@ -226,6 +228,12 @@ class LifeActionComponent:
             return "action_type 不在受支持的生活动作集合中"
         if rule.get("requires_target") and not action.target:
             return "该动作需要明确 target"
+        if action.action_type == "change_outfit":
+            issue = outfit_action_issue(
+                action.payload.get("outfit_components")
+            )
+            if issue:
+                return issue
         if action.action_type in {"move", "travel"}:
             origin = str(action.payload.get("origin") or "").strip()
             destination = action_place(day, action)
@@ -418,6 +426,7 @@ class LifeActionComponent:
             state.updated_at = committed_at
             state.source = f"life_action:{action.action_type}"
 
+        appearance = normalize_outfit_appearance(action.payload)
         if action.action_type == "change_outfit" and not preserve_outfit_fact:
             components, full_change = outfit_action_components(
                 day.meta.get("outfit_components"),
@@ -442,21 +451,12 @@ class LifeActionComponent:
             if scene:
                 day.meta["outfit_scene_category"] = scene
                 day.meta["outfit_style_pool"] = resolve_outfit_style_pool(scene)
-            for field in (
-                "style",
-                "hair_style",
-                "hair",
-                "makeup_style",
-                "makeup",
-                "nails_style",
-                "nails",
-            ):
-                if field in action.payload:
-                    value = str(action.payload[field] or "").strip()
-                    if value:
-                        day.meta[field] = value
-                    else:
-                        day.meta.pop(field, None)
+            if "style" in action.payload:
+                value = appearance["style"]
+                if value:
+                    day.meta["style"] = value
+                else:
+                    day.meta.pop("style", None)
             if "style" not in action.payload and (
                 full_change or (scene and scene != previous_scene)
             ):
@@ -483,9 +483,27 @@ class LifeActionComponent:
                 )
             elif full_change or "catalog_reference_ids" in action.payload:
                 day.meta.pop("style_catalog_reference_ids", None)
-            record_appearance_snapshot(
-                day, datetime.datetime.fromisoformat(committed_at)
-            )
+        if action.action_type in {"change_outfit", "groom"} and not preserve_outfit_fact:
+            # 仅提交本次明确发生的仪容变化，成对字段同步，避免新发型配旧描述。
+            appearance_changed = action.action_type == "change_outfit"
+            for fields in (
+                ("hair_style", "hair"),
+                ("makeup_style", "makeup"),
+                ("nails_style", "nails"),
+            ):
+                if not any(field in action.payload for field in fields):
+                    continue
+                for field in fields:
+                    value = appearance[field]
+                    if value:
+                        day.meta[field] = value
+                    else:
+                        day.meta.pop(field, None)
+                appearance_changed = True
+            if appearance_changed:
+                record_appearance_snapshot(
+                    day, datetime.datetime.fromisoformat(committed_at)
+                )
         commit_place(day, action, committed_at)
         if action.timeline_index is not None:
             item = day.timeline[action.timeline_index]
@@ -1206,33 +1224,7 @@ class LifeActionComponent:
             ):
                 continue
             timeline_item = day.timeline[action.timeline_index]
-            legacy_expiration = expirations.get(action.action_id)
-            repair_outfit_expiration = (
-                action.action_type == "change_outfit"
-                and timeline_item.execution_state == "expired"
-                and isinstance(legacy_expiration, dict)
-                and str(legacy_expiration.get("status") or "").strip().lower()
-                == "expired"
-            )
-            if repair_outfit_expiration:
-                # 旧版过期动作只负责补齐执行终态，保留当天已经保存的详细穿搭。
-                current_outfit = str(day.outfit or "").strip()
-                if current_outfit:
-                    action.target = current_outfit
-                expirations.pop(action.action_id, None)
-                timeline_item.execution_state = "completed"
-                timeline_item.execution_reason = "已有当前穿搭事实，修复旧版过期结算"
-                timeline_item.execution_evidence = (
-                    timeline_item.execution_evidence
-                    or action.evidence
-                    or action.action_id
-                )
-                timeline_item.execution_updated_at = (now or life_now()).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                confirmed_nodes.add(action.timeline_index)
-                changed = True
-            elif action.action_id in expirations:
+            if action.action_id in expirations:
                 continue
             if action.timeline_index not in confirmed_nodes:
                 continue

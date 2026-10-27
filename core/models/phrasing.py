@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +45,7 @@ class ExpressionProfileRecord:
     source: str = "chat_memory"
     created_at: str = ""
     updated_at: str = ""
+    learning: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def from_value(
@@ -78,6 +81,7 @@ class ExpressionProfileRecord:
             source=_text(raw.get("source") or source, 40) or source,
             created_at=_text(raw.get("created_at"), 40),
             updated_at=_text(raw.get("updated_at"), 40),
+            learning=dict(raw["learning"]) if isinstance(raw.get("learning"), dict) else {},
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -94,7 +98,15 @@ class ExpressionProfileRecord:
             "source": self.source,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "learning": dict(self.learning),
         }
+
+
+def expression_revision(profile: ExpressionProfileRecord) -> str:
+    """内容版本用于拒绝对已改写经验的迟到反馈。"""
+    data = [profile.scope, profile.profile_id, profile.tone, profile.habits, profile.avoid,
+            profile.learning.get("breadth", "situation")]
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
 @dataclass(slots=True)

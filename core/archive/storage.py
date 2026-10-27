@@ -315,6 +315,14 @@ class StorageArchiveComponent:
                 ("DELETE FROM session_mid_summaries WHERE updated_at < ?", (cutoff,)),
             )
         )
+        # 普通原话遵循会话保留期；有长期记忆证据引用的原话继续保留。
+        deleted += self.context._conn.execute(
+            "DELETE FROM conversation_originals WHERE occurred_at < ? AND NOT EXISTS ("
+            "SELECT 1 FROM memory_source_messages s JOIN long_term_memories m "
+            "ON m.source_table='chat_summaries' AND m.source_id=CAST(s.summary_id AS TEXT) "
+            "WHERE s.session_id=conversation_originals.session_id AND s.event_key=conversation_originals.event_key)",
+            (cutoff,),
+        ).rowcount
         deleted += self.context._purge_completed_chat_memory_messages_unlocked(
             cutoff=cutoff,
             keep_recent=200,

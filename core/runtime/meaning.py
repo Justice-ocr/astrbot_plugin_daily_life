@@ -275,7 +275,7 @@ class MeaningService:
                         if not self._closed:
                             saved_count += await archive.upsert_memory_vectors([row])
                             if saved_count and saved_count % 200 == 0:
-                                logger.info(f"{LOG_PREFIX} 长期记忆历史索引本轮已保存 {saved_count} 条")
+                                logger.debug(f"{LOG_PREFIX} 长期记忆历史索引本轮已保存 {saved_count} 条")
                     if interrupted:
                         break
 
@@ -289,7 +289,7 @@ class MeaningService:
 
                 remaining_count = await asyncio.to_thread(count_missing)
                 if not remaining_count:
-                    logger.info(f"{LOG_PREFIX} 长期记忆历史索引全部补齐：{len(memories)} 条有效记忆；本轮保存 {saved_count} 条")
+                    logger.debug(f"{LOG_PREFIX} 长期记忆历史索引全部补齐：{len(memories)} 条有效记忆；本轮保存 {saved_count} 条")
                     return
                 # 有实际进度就继续补齐；仅连续多轮毫无进展时暂停。
                 # 总轮数限制会让大量历史在接口已恢复后仍提前停止。
@@ -309,6 +309,7 @@ class MeaningService:
     def _score_vectors(cls, query_vector, groups, vectors, limits, minimum_similarity):
         ranked = {}
         for kind, values in groups.items():
+            minimum = minimum_similarity.get(kind) if isinstance(minimum_similarity, dict) else minimum_similarity
             scored = [
                 (cls._meaning_cosine(query_vector, vectors.get((kind, target_id), [])), index, item)
                 for index, (target_id, _, item) in enumerate(values)
@@ -316,7 +317,7 @@ class MeaningService:
             scored.sort(key=lambda row: (-row[0], row[1]))
             ranked[kind] = [
                 item for score, _, item in scored
-                if minimum_similarity is None or score >= minimum_similarity
+                if minimum is None or score >= minimum
             ][:max(0, limits.get(kind, 0))]
         return ranked
 
@@ -326,7 +327,7 @@ class MeaningService:
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
         *,
-        minimum_similarity: float | None = None,
+        minimum_similarity: float | dict[str, float] | None = None,
         cached_only: bool = False,
     ) -> dict[str, list[Any]] | None:
         provider = self._meaning_embedding_provider()
@@ -547,15 +548,21 @@ JSON 输出要求：
         query: str,
         groups: dict[str, list[tuple[str, str, Any]]],
         limits: dict[str, int],
+        *,
+        optional_groups: set[str] | None = None,
     ) -> dict[str, list[Any]]:
         if self._closed:
             raise RuntimeError("语义检索服务已关闭")
+        optional_groups = optional_groups or set()
         fallback = {
-            kind: [item for _, _, item in values[: max(0, limits.get(kind, 0))]]
+            kind: [] if kind in optional_groups else [item for _, _, item in values[: max(0, limits.get(kind, 0))]]
             for kind, values in groups.items()
         }
         try:
-            embedded = await self._meaning_rank_with_embeddings(query, groups, limits)
+            embedded = await self._meaning_rank_with_embeddings(
+                query, groups, limits,
+                minimum_similarity={kind: 0.62 for kind in optional_groups},
+            )
             if embedded is not None:
                 return embedded
         except Exception as exc:

@@ -51,7 +51,7 @@ class SightCleanupComponent:
             deleted_dirs += dirs
 
         if deleted_files or deleted_dirs:
-            logger.info(
+            logger.debug(
                 f"{LOG_PREFIX} 视听缓存清理完成：清理文件 {deleted_files} 个，清理目录 {deleted_dirs} 个"
             )
         return {"deleted_files": deleted_files, "deleted_dirs": deleted_dirs}

@@ -300,16 +300,19 @@ class ImprintDepositComponent:
             record = ExpressionProfileRecord.from_value(
                 {
                     **raw_expression,
-                    "scope": scope,
-                    "profile_id": raw_expression.get("profile_id")
-                    or meta.get("sender_profile_id", ""),
+                    "scope": raw_expression.get("scope", scope) if raw_expression.get("_learning_event") else scope,
+                    "profile_id": raw_expression.get("profile_id", "") if raw_expression.get("_learning_event") else (raw_expression.get("profile_id") or meta.get("sender_profile_id", "")),
                     "label": raw_expression.get("label") or meta.get("sender_name", ""),
                     "source": raw_expression.get("source") or "chat_memory",
                 }
             )
             if not record:
                 continue
-            if record.source == "chat_expression":
+            if record.source == "chat_expression" and isinstance(raw_expression.get("_learning_event"), dict):
+                saved_profile = await self.context.archive.apply_expression_learning(
+                    record, raw_expression["_learning_event"]
+                )
+            elif record.source == "chat_expression":
                 saved_profile = await self.context.archive.upsert_expression_profile(
                     record, replace=True
                 )
@@ -317,6 +320,10 @@ class ImprintDepositComponent:
                 saved_profile = await self.context.archive.upsert_expression_profile(record)
             if saved_profile:
                 saved_records["expression_profiles"].append(saved_profile)
+                saved_records.setdefault("expression_profile_sources", []).append(raw_expression)
+                if saved_profile.learning:
+                    # 结构化表达档案独立召回，避免旧摘要绕过降权、对象隔离或状态变化。
+                    continue
                 content = "；".join(
                     item
                     for item in (

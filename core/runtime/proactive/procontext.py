@@ -18,6 +18,7 @@ from ...sources.history import SavedHistoryReader
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 from ..expressionweight import expression_weight
+from ..expressionlearning import profile_hint
 
 from typing import Protocol
 
@@ -488,11 +489,14 @@ JSON 输出要求：
         living_reader = getattr(self.context, "living_context_for_scope", None)
         if callable(living_reader):
             text += "\n" + await living_reader(target_scope)
+        browsing_reader = getattr(self.context, "bili_browse_share_context", None)
+        if callable(browsing_reader):
+            text += await browsing_reader(target_scope)
         return text
 
     def _format_expression_profiles_for_proactive(self, profiles: list[Any]) -> str:
         lines: list[str] = []
-        for item in list(profiles or [])[:4]:
+        for item in list(profiles or [])[:5]:
             label = str(
                 getattr(item, "label", "") or getattr(item, "scope", "") or ""
             ).strip()
@@ -512,7 +516,7 @@ JSON 输出要求：
             if label and body:
                 profile_id = str(getattr(item, "profile_id", "") or "").strip()
                 owner = f"（适用对象：{profile_id}）" if profile_id else ""
-                lines.append(f"- {label}{owner}: {body}；经验权重 {expression_weight(item):.2f}")
+                lines.append(f"- {label}{owner}（{profile_hint(item)}）: {body}；经验权重 {expression_weight(item):.2f}")
         return "\n".join(lines) if lines else "暂无稳定表达习惯。"
 
     def _format_behavior_patterns_for_proactive(self, patterns: list[Any]) -> str:

@@ -5,6 +5,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..markers import LOG_PREFIX
+from .utterance import voice_reply_text
 
 from . import limit as _part_voice_switch_gate_component
 from . import preface as _part_silent_tool_preface_component
@@ -53,6 +54,7 @@ class VoiceSwitchComponent:
         ):
             return False
         reply_text = self.context._voice_switch_reply_text_from_event(event)
+        reply_text = voice_reply_text(event, reply_text)
         if not reply_text:
             return False
         voice_config = getattr(self.context.config, "voice_generation", None)

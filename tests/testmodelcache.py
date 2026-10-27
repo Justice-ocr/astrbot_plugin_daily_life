@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from runtimehelpers import DailyLifeRuntime, LifeSettings, ProviderRequest
 from astrbot.core.agent.message import TextPart
 from core.facts import PersonFactContext, build_person_fact_audit_prompt
+from core.contextbudget import budget_chat_context
 from componentfixtures import DailyContractComponent
 from componentfixtures import DailyLocationGenerationComponent
 from componentfixtures import SnapshotPackComponent
@@ -33,7 +34,7 @@ class PrefixTest(unittest.TestCase):
             requests.append(req)
             self.assertEqual(req.contexts, history)
             self.assertEqual(req.prompt, "现在穿什么？")
-            self.assertEqual(req.extra_user_content_parts[-1].text, facts)
+            self.assertEqual(req.extra_user_content_parts[-1].text, budget_chat_context(facts))
             self.assertTrue(req.extra_user_content_parts[-1].model_dump_for_context()["_no_save"])
         self.assertEqual(requests[0].system_prompt, requests[1].system_prompt)
         self.assertNotIn("蓝裙", requests[0].system_prompt)
@@ -46,7 +47,7 @@ class PrefixTest(unittest.TestCase):
         self.runtime._apply_life_request_context(req, "旧生活背景")
         req.system_prompt += "\n其他插件新增规则"
         self.runtime._apply_life_request_context(req, "新生活背景")
-        self.assertEqual([part.text for part in req.extra_user_content_parts], [other.text, "新生活背景"])
+        self.assertEqual([part.text for part in req.extra_user_content_parts], [other.text, budget_chat_context("新生活背景")])
         self.assertEqual(req.system_prompt.count("<daily_life_policy>"), 1)
         self.assertIn("其他插件新增规则", req.system_prompt)
 
@@ -54,7 +55,7 @@ class PrefixTest(unittest.TestCase):
         req = types.SimpleNamespace(system_prompt="原规则")
         self.runtime._apply_life_request_context(req, "旧背景")
         self.runtime._apply_life_request_context(req, "新背景")
-        self.assertEqual([part.text for part in req.extra_user_content_parts], ["新背景"])
+        self.assertEqual([part.text for part in req.extra_user_content_parts], [budget_chat_context("新背景")])
         self.assertTrue(req.extra_user_content_parts[0].model_dump_for_context()["_no_save"])
         self.assertNotIn("新背景", req.system_prompt)
         self.assertNotIn("旧背景", req.system_prompt)
