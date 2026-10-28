@@ -20,13 +20,10 @@ def _peer(runtime: Any, event: Any) -> Any:
     meta = getter(PLUGIN_NAME) if callable(getter) else None
     if meta is None or not getattr(meta, "activated", False):
         return None
-    plugins = getattr(event, "plugins_name", None)
-    if plugins is not None and plugins != ["*"] and PLUGIN_NAME not in plugins:
-        return None
     peer = getattr(meta, "star_cls", None)
-    if not callable(getattr(peer, "_get_unified_splitter_config", None)) or not callable(
-        getattr(peer, "_build_unified_segments", None)
-    ) or not callable(getattr(peer, "_post_clean_segments", None)):
+    if not callable(getattr(peer, "external_reply_policy", None)) or not callable(
+        getattr(peer, "process_external_reply", None)
+    ):
         return None
     return peer
 
@@ -35,110 +32,10 @@ def external_text_available(runtime: Any, event: Any, result: Any = None) -> boo
     try:
         peer = _peer(runtime, event)
         result = result if result is not None else event.get_result()
-        policy = _legacy_policy(peer, event, result) if peer is not None else {}
-        return policy.get("accepted") is True
+        policy = peer.external_reply_policy(event, result) if peer is not None else {}
+        return policy.get("api_version") == 1 and policy.get("accepted") is True
     except Exception:
         return False
-
-
-def _legacy_policy(peer: Any, event: Any, result: Any) -> dict:
-    settings = peer._get_unified_splitter_config(event)
-    reason = ""
-    if not result or not getattr(result, "chain", None):
-        reason = "empty"
-    elif not settings.get("enable", True):
-        reason = "disabled"
-    else:
-        plugins = getattr(event, "plugins_name", None)
-        if plugins is not None and plugins != ["*"] and PLUGIN_NAME not in plugins:
-            reason = "plugin_scope"
-        umo = str(getattr(event, "unified_msg_origin", "") or "")
-        blacklist = settings.get("conversation_blacklist", []) or []
-        whitelist = settings.get("conversation_whitelist", []) or []
-        if umo in blacklist or (whitelist and umo not in whitelist):
-            reason = "conversation_scope"
-        group = getattr(getattr(event, "message_obj", None), "group_id", None)
-        if (group or ":GroupMessage:" in umo) and not settings.get("enable_group_split", True):
-            reason = "group_disabled"
-        is_model = getattr(peer, "_is_model_result", None)
-        if settings.get("split_scope", "llm_only") == "llm_only" and callable(is_model):
-            if not is_model(event, result):
-                reason = "result_scope"
-    return {"accepted": not bool(reason), "reason": reason or "applicable"}
-
-
-async def _legacy_process(
-    peer: Any, event: Any, result: Any, *, send: Any, is_current: Any,
-    on_sent: Any = None,
-) -> dict:
-    policy = _legacy_policy(peer, event, result)
-    if not policy["accepted"]:
-        return {"status": "not_handled", "sent_count": 0, "segment_count": 0,
-                "reason": policy["reason"]}
-    settings = peer._get_unified_splitter_config(event)
-    hook = getattr(peer, "unified_on_decorating_result")
-    globals_ = getattr(getattr(hook, "__func__", hook), "__globals__", {})
-    plain_type = globals_.get("Plain")
-    filter_output = globals_.get("filter_output")
-    chain = [copy.copy(item) for item in result.chain]
-    is_model = getattr(peer, "_is_model_result", lambda *_: False)
-    if settings.get("output_filter_enabled", False) and is_model(event, result) and callable(filter_output):
-        merged = peer._merge_adjacent_plain(chain)
-        chain = []
-        for component in merged:
-            if plain_type and isinstance(component, plain_type):
-                component.text = filter_output(component.text, settings)
-            if not plain_type or not isinstance(component, plain_type) or component.text.strip():
-                chain.append(component)
-    try:
-        segments = await peer._build_unified_segments(event, chain, settings)
-        peer._post_clean_segments(segments, settings)
-        segments = [segment for segment in segments if peer._segment_has_content(segment)]
-    except Exception:
-        return {"status": "failed", "sent_count": 0, "segment_count": 0,
-                "reason": "preparation_failed"}
-    globals_ = getattr(getattr(hook, "__func__", hook), "__globals__", {})
-    reply_type = globals_.get("Reply")
-    source_id = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
-    if segments and settings.get("enable_reply", True) and source_id and reply_type:
-        if not any(isinstance(component, reply_type) for component in segments[0]):
-            segments[0].insert(0, reply_type(id=source_id))
-    count = 0
-    attempted = False
-    reason = "complete"
-    try:
-        for index, segment in enumerate(segments):
-            if not is_current() or not _legacy_policy(peer, event, result)["accepted"]:
-                reason = "stale_or_disabled"
-                return {"status": "cancelled", "sent_count": count,
-                        "segment_count": len(segments), "reason": reason}
-            if index:
-                delay = peer._unified_delay(segment, settings, event)
-                if delay > 0:
-                    await asyncio.sleep(delay)
-            if not is_current() or not _legacy_policy(peer, event, result)["accepted"]:
-                reason = "stale_or_disabled"
-                return {"status": "cancelled", "sent_count": count,
-                        "segment_count": len(segments), "reason": reason}
-            message = MessageChain()
-            message.chain = segment
-            attempted = True
-            sent = await send(message)
-            if sent is False:
-                raise RuntimeError("delivery refused")
-            count += 1
-            if on_sent is not None:
-                value = on_sent(message)
-                if inspect.isawaitable(value):
-                    await value
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        return {"status": "partial" if count else "failed", "sent_count": count,
-                "segment_count": len(segments),
-                "reason": "send_or_receipt_failed" if attempted else "preparation_failed"}
-    return {"status": "handled", "sent_count": count, "segment_count": len(segments),
-            "reason": reason}
 
 
 async def handoff_reply(
@@ -146,13 +43,8 @@ async def handoff_reply(
     on_sent: Any = None,
 ) -> dict:
     messages = []
-    try:
-        peer = _peer(runtime, event)
-        applicable = peer is not None and external_text_available(runtime, event, result)
-    except Exception:
-        peer, applicable = None, False
-    if not applicable:
-        logger.info("[日常生活] owner=daily_life segments=0 sent=0 reason=external_unavailable_or_inapplicable")
+    peer = _peer(runtime, event)
+    if peer is None or not external_text_available(runtime, event, result):
         return {"status": "not_handled", "sent_count": 0, "messages": messages}
 
     def current():
@@ -165,20 +57,32 @@ async def handoff_reply(
             if inspect.isawaitable(value):
                 await value
 
+    attempted = False
+
+    async def guarded_send(message):
+        nonlocal attempted
+        attempted = True
+        return await send(message)
+
     try:
-        outcome = await _legacy_process(
-            peer, event, result, send=send, is_current=current, on_sent=noted,
+        outcome = await peer.process_external_reply(
+            event, result, send=guarded_send, is_current=current,
+            on_sent=noted, allow_tts=False,
         )
-        valid = isinstance(outcome, dict) and outcome.get("status") in {
+        if not isinstance(outcome, dict) or outcome.get("status") not in {
             "not_handled", "handled", "partial", "failed", "cancelled"
-        }
-        if not valid:
+        }:
             outcome = {"status": "failed", "segment_count": 0, "reason": "invalid_receipt"}
+        if outcome.get("reason") == "preparation_failed" and not attempted:
+            outcome = dict(outcome, status="not_handled")
         if messages and outcome["status"] == "not_handled":
-            outcome = {"status": "partial", "segment_count": 0, "reason": "invalid_receipt"}
+            outcome = dict(outcome, status="partial", reason="invalid_receipt")
     except Exception:
-        # An exception after acceptance must not trigger a whole-message replay.
-        outcome = {"status": "partial" if messages else "failed", "segment_count": 0, "reason": "external_error"}
+        outcome = {
+            "status": "partial" if messages or attempted else "not_handled",
+            "segment_count": 0,
+            "reason": "external_error_after_send" if attempted else "preparation_failed",
+        }
     outcome = dict(outcome, messages=messages, sent_count=len(messages))
     logger.info(
         "[日常生活] owner=unified_splitter "

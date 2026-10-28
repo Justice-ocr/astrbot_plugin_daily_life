@@ -116,27 +116,11 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         calls = []
 
         class Splitter:
-            def _get_unified_splitter_config(self, event=None):
-                return {"enable": True, "enable_split": True, "split_scope": "llm_only"}
+            def external_reply_policy(self, event, result):
+                return {"api_version": 1, "accepted": True}
 
-            @staticmethod
-            def _is_model_result(event, result):
-                return True
-
-            async def _build_unified_segments(self, event, chain, settings):
-                return [[item] for item in chain]
-
-            @staticmethod
-            def _post_clean_segments(segments, settings):
-                return None
-
-            @staticmethod
-            def _segment_has_content(segment):
-                return bool(segment)
-
-            @staticmethod
-            def _unified_delay(segment, settings, event):
-                return 0
+            async def process_external_reply(self, *args, **kwargs):
+                return {"status": "handled", "sent_count": 1, "segment_count": 1}
 
         peer = Splitter()
         runtime = types.SimpleNamespace(
@@ -171,38 +155,24 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(owner_only, calls)
         self.assertTrue(getattr(event, "_daily_life_external_text_owner"))
 
-    async def test_external_handoff_adapts_legacy_splitter_methods_without_tts(self):
+    async def test_external_handoff_uses_splitter_v1_api_without_tts(self):
         from astrbot_plugin_daily_life.core.runtime.textdelivery import handoff_reply
 
         sent = []
 
         class Splitter:
-            def _get_unified_splitter_config(self, event=None):
-                return {"enable": True, "enable_split": True, "split_scope": "llm_only"}
+            def external_reply_policy(self, event, result):
+                return {"api_version": 1, "accepted": True}
 
-            @staticmethod
-            def _is_model_result(event, result):
-                return True
-
-            async def _build_unified_segments(self, event, chain, settings):
-                return [[types.SimpleNamespace(text=part)] for part in "".join(
-                    item.text for item in chain
-                ).split("|") if part]
-
-            @staticmethod
-            def _post_clean_segments(segments, settings):
-                return None
-
-            @staticmethod
-            def _segment_has_content(segment):
-                return bool(segment)
-
-            @staticmethod
-            def _unified_delay(segment, settings, event):
-                return 0
-
-            async def unified_on_decorating_result(self, event):
-                return None
+            async def process_external_reply(self, event, result, *, send, is_current, on_sent, allow_tts):
+                parts = "".join(item.text for item in result.chain).split("|")
+                for part in parts:
+                    if not is_current():
+                        return {"status": "cancelled", "sent_count": 0, "segment_count": len(parts)}
+                    message = types.SimpleNamespace(chain=[types.SimpleNamespace(text=part)])
+                    await send(message)
+                    await on_sent(message)
+                return {"status": "handled", "sent_count": len(parts), "segment_count": len(parts)}
 
         peer = Splitter()
         runtime = types.SimpleNamespace(context=types.SimpleNamespace(
@@ -222,6 +192,30 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [message.chain[0].text for message in sent], ["第一句", "第二句"]
         )
+
+    async def test_external_handoff_preparation_failure_keeps_original_for_fallback(self):
+        from astrbot_plugin_daily_life.core.runtime.textdelivery import handoff_reply
+
+        class Splitter:
+            def external_reply_policy(self, event, result):
+                return {"api_version": 1, "accepted": True}
+
+            async def process_external_reply(self, *args, **kwargs):
+                raise RuntimeError("synthetic preparation failure")
+
+        peer = Splitter()
+        runtime = types.SimpleNamespace(context=types.SimpleNamespace(
+            get_registered_star=lambda name: types.SimpleNamespace(activated=True, star_cls=peer)
+        ))
+        event = set_llm_result(Event(), "原始完整回复")
+        attempted = []
+        outcome = await handoff_reply(
+            runtime, event, event.get_result(),
+            send=lambda message: attempted.append(message), is_current=lambda: True,
+        )
+        self.assertEqual(outcome["status"], "not_handled")
+        self.assertEqual(attempted, [])
+        self.assertEqual(event.get_result().chain[0].text, "原始完整回复")
 
     async def test_webchat_keeps_delivery_inside_its_request_lifetime(self):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
