@@ -112,6 +112,117 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.get_result().chain[0].text, "正常回复")
         plugin._send_pipeline_apply.assert_not_awaited()
 
+    async def test_external_splitter_owns_text_but_daily_life_keeps_voice_stage(self):
+        calls = []
+
+        class Splitter:
+            def _get_unified_splitter_config(self, event=None):
+                return {"enable": True, "enable_split": True, "split_scope": "llm_only"}
+
+            @staticmethod
+            def _is_model_result(event, result):
+                return True
+
+            async def _build_unified_segments(self, event, chain, settings):
+                return [[item] for item in chain]
+
+            @staticmethod
+            def _post_clean_segments(segments, settings):
+                return None
+
+            @staticmethod
+            def _segment_has_content(segment):
+                return bool(segment)
+
+            @staticmethod
+            def _unified_delay(segment, settings, event):
+                return 0
+
+        peer = Splitter()
+        runtime = types.SimpleNamespace(
+            context=types.SimpleNamespace(get_registered_star=lambda name: types.SimpleNamespace(
+                activated=True, star_cls=peer
+            )),
+            _semantic_segment_enabled=lambda: True,
+        )
+        for name, is_async in DailyLifePlugin._SEND_PIPELINE_APPLY_HOOKS:
+            if is_async:
+                async def async_hook(event, _name=name):
+                    calls.append(_name)
+                setattr(runtime, name, async_hook)
+            else:
+                def sync_hook(event, _name=name):
+                    calls.append(_name)
+                setattr(runtime, name, sync_hook)
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = runtime
+        event = set_llm_result(Event())
+        await plugin._send_pipeline_apply(event)
+
+        self.assertIn("apply_semantic_segment_before_send", calls)
+        self.assertIn("apply_voice_switch_before_send", calls)
+        for owner_only in (
+            "apply_chat_plain_text_cleanup_before_send",
+            "apply_chat_style_before_send",
+            "send_semantic_segments_if_needed",
+            "send_chat_style_segments_if_needed",
+        ):
+            self.assertNotIn(owner_only, calls)
+        self.assertTrue(getattr(event, "_daily_life_external_text_owner"))
+
+    async def test_external_handoff_adapts_legacy_splitter_methods_without_tts(self):
+        from astrbot_plugin_daily_life.core.runtime.textdelivery import handoff_reply
+
+        sent = []
+
+        class Splitter:
+            def _get_unified_splitter_config(self, event=None):
+                return {"enable": True, "enable_split": True, "split_scope": "llm_only"}
+
+            @staticmethod
+            def _is_model_result(event, result):
+                return True
+
+            async def _build_unified_segments(self, event, chain, settings):
+                return [[types.SimpleNamespace(text=part)] for part in "".join(
+                    item.text for item in chain
+                ).split("|") if part]
+
+            @staticmethod
+            def _post_clean_segments(segments, settings):
+                return None
+
+            @staticmethod
+            def _segment_has_content(segment):
+                return bool(segment)
+
+            @staticmethod
+            def _unified_delay(segment, settings, event):
+                return 0
+
+            async def unified_on_decorating_result(self, event):
+                return None
+
+        peer = Splitter()
+        runtime = types.SimpleNamespace(context=types.SimpleNamespace(
+            get_registered_star=lambda name: types.SimpleNamespace(activated=True, star_cls=peer)
+        ))
+        event = set_llm_result(Event(), "第一句|第二句")
+
+        async def send(message):
+            sent.append(message)
+
+        outcome = await handoff_reply(
+            runtime, event, event.get_result(), send=send, is_current=lambda: True
+        )
+        self.assertEqual(outcome["status"], "handled")
+        self.assertEqual(outcome["sent_count"], 2)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(
+            [message.chain[0].text for message in sent], ["第一句", "第二句"]
+        )
+
     async def test_webchat_keeps_delivery_inside_its_request_lifetime(self):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace()

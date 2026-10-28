@@ -20,12 +20,14 @@ class ReplyPreparationService:
         delivered: Callable[[Any], Awaitable[None]],
         is_current: Callable[[Any], bool],
         complete: Callable[[Any], None],
+        deliver: Callable[[Any], Awaitable[bool]] | None = None,
     ) -> None:
         self._schedule = schedule
         self._prepare = prepare
         self._delivered = delivered
         self._is_current = is_current
         self._complete = complete
+        self._deliver = deliver
 
     def defer(self, event: Any) -> bool:
         if getattr(event, "_daily_life_reply_deferred", False):
@@ -70,8 +72,13 @@ class ReplyPreparationService:
                 return
             result = event.get_result()
             if result is not None and getattr(result, "chain", None):
-                await event.send(result)
-                await self._delivered(event)
+                if self._deliver is not None:
+                    delivered = await self._deliver(event)
+                else:
+                    await event.send(result)
+                    delivered = True
+                if delivered:
+                    await self._delivered(event)
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 回复投递未完成：{type(exc).__name__}")
         finally:
