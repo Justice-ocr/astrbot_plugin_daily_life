@@ -21,6 +21,7 @@ from .delivery import (
 )
 from .expression import expression_context_for_event, expression_context_has_message
 from .markers import LOG_PREFIX
+from .textdelivery import EXTERNAL_OWNER_ATTR, try_send_background
 from .voice.modality import VoiceExpressionPlan, VoiceExpressionPlanner
 from .voice.utterance import preserve_voice_reply_text
 
@@ -858,7 +859,8 @@ class SemanticSegmentRuntimeComponent:
 
     async def _prepare_semantic_reply(self, event: Any) -> bool:
         expression_needed = self._voice_expression_enabled(event)
-        segmentation_enabled = self.context._semantic_segment_enabled()
+        external_owner = bool(getattr(event, EXTERNAL_OWNER_ATTR, False))
+        segmentation_enabled = self.context._semantic_segment_enabled() and not external_owner
         if event is None or not (segmentation_enabled or expression_needed):
             return False
         if self.context._is_active_agent_intermediate_result(event):
@@ -937,6 +939,9 @@ class SemanticSegmentRuntimeComponent:
                 setattr(event, "_daily_life_expression_unavailable_reason", expression.reason)
         else:
             plan = await plan_layout()
+        if external_owner:
+            # Keep voice planning, but leave text boundaries/cleanup to the peer.
+            return False
         if not plan.valid or not plan.segments:
             if segmentation_enabled and self._semantic_segment_try_natural_fallback(event, source_text):
                 self.context._semantic_segment_metrics["fallback_natural"] = (
@@ -1263,6 +1268,14 @@ class SemanticSegmentRuntimeComponent:
                 on_sent=on_sent,
             )
 
+        if mode is BackgroundTextMode.EXPRESSIVE:
+            external = await try_send_background(
+                self.context, scope, raw_text, source_event=source_event,
+                source_message_id=source_message_id, source=source,
+                raise_delivery_errors=raise_delivery_errors, on_sent=on_sent,
+            )
+            if external is not None:
+                return external
         source_text = (
             self.context._semantic_segment_normalize_source_text(raw_text)
             if self.context._semantic_segment_enabled()
