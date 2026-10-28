@@ -43,11 +43,6 @@ from .core.runtime.external import generate_text, model_route
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.preparation import ReplyPreparationService
 from .core.runtime.sender import install_expressive_send_message_tool
-from .core.runtime.textdelivery import (
-    EXTERNAL_OWNER_ATTR,
-    external_text_available,
-    handoff_reply,
-)
 from .core.runtime.tooling import (
     ArgumentCheckedTool,
     guard_tool_arguments,
@@ -2730,17 +2725,7 @@ class DailyLifePlugin(Star):
         )
 
     async def _send_pipeline_apply(self, event: AstrMessageEvent) -> None:
-        external_owner = external_text_available(self.runtime, event)
-        setattr(event, EXTERNAL_OWNER_ATTR, external_owner)
-        external_text_hooks = {
-            "apply_chat_plain_text_cleanup_before_send",
-            "apply_chat_style_before_send",
-            "send_semantic_segments_if_needed",
-            "send_chat_style_segments_if_needed",
-        }
         for name, is_async in self._SEND_PIPELINE_APPLY_HOOKS:
-            if external_owner and name in external_text_hooks:
-                continue
             current = getattr(event, "_daily_life_reply_is_current", None)
             if callable(current) and not current():
                 event.clear_result()
@@ -2755,56 +2740,6 @@ class DailyLifePlugin(Star):
                 return
             if self._send_pipeline_should_stop(event):
                 return
-
-    def _reply_delivery_current(self, event, runtime) -> bool:
-        if self.runtime is not runtime or getattr(self, "_terminating", False):
-            return False
-        if getattr(event, "is_stopped", lambda: False)():
-            return False
-        if callable(getattr(runtime, "event_was_recalled", None)) and runtime.event_was_recalled(event):
-            return False
-        for name in ("continuous_turn_event_is_current", "media_request_is_current_turn"):
-            check = getattr(runtime, name, None)
-            if callable(check) and not check(event):
-                return False
-        return True
-
-    async def _deliver_external_reply(self, event) -> bool:
-        result = event.get_result()
-        if result is None or not getattr(result, "chain", None):
-            return False
-        runtime = self.runtime
-
-        async def send(message):
-            await event.send(message)
-
-        outcome = await handoff_reply(
-            runtime, event, result, send=send,
-            is_current=lambda: self._reply_delivery_current(event, runtime),
-        )
-        if outcome["status"] == "not_handled":
-            return False
-        event._daily_life_external_delivery_recorded = True
-        # Delivery bookkeeping sees only components with confirmed sends, not
-        # unsent tails. Keep completion/voice receipts at one per reply.
-        try:
-            result.chain[:] = [item for message in outcome["messages"] for item in message.chain]
-            if result.chain:
-                await self._record_reply_delivery(event)
-            else:
-                self._runtime_hook_call("complete_continuous_turn", event)
-        finally:
-            event.clear_result()
-        return True
-
-    async def _deliver_prepared_reply(self, event) -> bool:
-        if await self._deliver_external_reply(event):
-            return False  # external path already recorded confirmed delivery
-        current = getattr(event, "_daily_life_reply_is_current", None)
-        if callable(current) and not current():
-            return False
-        await event.send(event.get_result())
-        return True
 
     def _defer_reply_preparation(self, event: AstrMessageEvent) -> bool:
         # WebChat 在当前流水线结束时关闭请求队列，须在请求内完成投递。
@@ -2825,7 +2760,12 @@ class DailyLifePlugin(Star):
         runtime = self.runtime
 
         def current(snapshot):
-            return self._reply_delivery_current(snapshot, runtime)
+            return (
+                not snapshot.is_stopped()
+                and not runtime.event_was_recalled(snapshot)
+                and runtime.continuous_turn_event_is_current(snapshot)
+                and runtime.media_request_is_current_turn(snapshot)
+            )
 
         ReplyPreparationService(
             schedule=schedule,
@@ -2833,7 +2773,6 @@ class DailyLifePlugin(Star):
             delivered=self._record_reply_delivery,
             is_current=current,
             complete=runtime.complete_continuous_turn,
-            deliver=self._deliver_prepared_reply,
         ).defer(event)
         # 队列满时保留原文字交给框架发送，不在前台等待模型或 TTS。
         return True
@@ -2854,17 +2793,13 @@ class DailyLifePlugin(Star):
         if self._defer_reply_preparation(event):
             return
         await self._send_pipeline_apply(event)
-        if await self._deliver_external_reply(event):
-            return
         if getattr(event, "get_result", lambda: None)() is None:
             self._runtime_hook_call("complete_continuous_turn", event)
 
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
-        if getattr(event, "_daily_life_reply_deferred", False) or getattr(
-            event, "_daily_life_external_delivery_recorded", False
-        ):
+        if getattr(event, "_daily_life_reply_deferred", False):
             return
         await self._record_reply_delivery(event)
 
