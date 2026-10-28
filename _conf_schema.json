@@ -1243,8 +1243,32 @@
   "voice_generation_config": {
     "description": "语音",
     "type": "object",
-    "hint": "语音设置分为普通语音和语音通话两组。普通语音使用火山引擎语音合成 2.0；语音通话使用 WebSocket 全双工接口，声音复刻仍在火山引擎控制台完成。",
+    "hint": "普通语音可选择火山引擎语音合成 2.0 或已安装的 MiMo TTS 音色克隆插件；实时语音通话仍使用火山 WebSocket 全双工接口。",
     "items": {
+      "backend": {
+        "description": "语音合成后端",
+        "type": "string",
+        "default": "volcengine",
+        "options": ["volcengine", "mimo"],
+        "option_labels": {
+          "volcengine": "火山引擎",
+          "mimo": "MiMo TTS 插件联动"
+        },
+        "hint": "MiMo 模式复用 astrbot_plugin_mimo_tts_clone 的合成接口。请先在该插件配置 Key 和授权音色，并关闭其自动语音化以避免重复发送；语音时机与发送仍由生活插件管理。失败不自动切换其他后端。"
+      },
+      "mimo_voice": {
+        "description": "MiMo 音色名称或 ID",
+        "type": "string",
+        "default": "",
+        "hint": "仅 MiMo 后端使用；留空沿用 MiMo 的用户、会话、情绪和全局默认音色路由。"
+      },
+      "mimo_timeout_seconds": {
+        "description": "MiMo 合成总超时（秒）",
+        "type": "int",
+        "default": 180,
+        "slider": {"min": 5, "max": 600, "step": 5},
+        "hint": "包含 MiMo 音频导演、分段和合并的总等待上限。限流、重试与熔断由 MiMo 插件管理，生活插件不重复重试。"
+      },
       "enabled": {
         "description": "启用语音生成",
         "type": "bool",
@@ -1296,7 +1320,7 @@
         "description": "接口密钥",
         "type": "string",
         "default": "",
-        "hint": "火山引擎控制台中的 API Key。插件固定调用火山引擎语音合成 2.0，不需要填写接口地址。"
+        "hint": "仅火山后端及火山实时通话使用。填写火山引擎控制台中的 API Key；MiMo 的密钥在 MiMo 插件中配置。"
       },
       "speaker_source": {
         "description": "音色类型",

@@ -4,6 +4,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...media.voice import synthesize_voice
 from ..markers import LOG_PREFIX
 from .utterance import voice_reply_text
 
@@ -100,7 +101,10 @@ class VoiceSwitchComponent:
             }
             if voice_style and voice_style != "neutral":
                 voice_kwargs["voice_style"] = voice_style
-            generated = await self.context.media.voice.synthesize(reply_text, **voice_kwargs)
+            generated = await synthesize_voice(
+                self.context.media.voice, reply_text,
+                target_umo=scope, source_event=event, **voice_kwargs
+            )
             current = getattr(self.context, "continuous_turn_event_is_current", None)
             recalled = getattr(self.context, "event_was_recalled", None)
             if (

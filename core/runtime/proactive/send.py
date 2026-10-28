@@ -22,6 +22,7 @@ except ImportError:
     File = None
 
 from ...clock import now as life_now
+from ...media.voice import synthesize_voice
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
 from ...sources.dispatch import ScopeDeliveryError
 from ..contact import contact_rhythm
@@ -382,7 +383,10 @@ class ProactiveSendComponent:
             }
             if voice_style:
                 voice_kwargs["voice_style"] = voice_style
-            generated = await voice_service.synthesize(reply_text, **voice_kwargs)
+            generated = await synthesize_voice(
+                voice_service, reply_text,
+                target_umo=target_scope, source_event=source_event, **voice_kwargs
+            )
             if not self.context._proactive_send_is_current(source_event):
                 return False
             if not await self.context.send_message_if_not_recalled(

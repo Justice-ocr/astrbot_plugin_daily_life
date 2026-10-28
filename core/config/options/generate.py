@@ -278,6 +278,9 @@ class VideoGenerationSettings:
 @dataclass(slots=True)
 class VoiceGenerationSettings:
     enabled: bool = False
+    backend: str = "volcengine"
+    mimo_voice: str = ""
+    mimo_timeout_seconds: int = 180
     smart_switch_enabled: bool = True
     expression_provider: str = ""
     expression_timeout_seconds: float = 8.0
@@ -295,8 +298,14 @@ class VoiceGenerationSettings:
     def from_dict(data: Any) -> VoiceGenerationSettings:
         if not isinstance(data, dict):
             return VoiceGenerationSettings()
+        backend = as_str(data.get("backend", "volcengine")).strip().lower()
         return VoiceGenerationSettings(
             enabled=as_bool(data.get("enabled", False), False),
+            backend=backend if backend in {"volcengine", "mimo"} else "volcengine",
+            mimo_voice=as_str(data.get("mimo_voice", "")).strip(),
+            mimo_timeout_seconds=as_int(
+                data.get("mimo_timeout_seconds", 180), 180, 5, 600
+            ),
             smart_switch_enabled=as_bool(data.get("smart_switch_enabled", True), True),
             expression_provider=as_str(data.get("expression_provider", "")).strip(),
             expression_timeout_seconds=as_float(

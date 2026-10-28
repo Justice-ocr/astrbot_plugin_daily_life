@@ -536,7 +536,9 @@ class SpineBootComponent:
     def _build_runtime_services(
         self, config: LifeSettings, raw_config: Any | None = None
     ) -> RuntimeServices:
-        media = LifeMediaService(config, self.context._runtime_data_path())
+        media = LifeMediaService(
+            config, self.context._runtime_data_path(), context=self.context.context
+        )
         memos = self.context._create_memos_service(config)
         contact_resolver = ContactNameResolver(
             self.context.context,

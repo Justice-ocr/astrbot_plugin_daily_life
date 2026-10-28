@@ -4,6 +4,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...media.voice import synthesize_voice
 from ..markers import LOG_PREFIX
 
 from typing import Protocol
@@ -102,7 +103,10 @@ class RuntimeVoiceMediaComponent:
             }
             if voice_style:
                 voice_kwargs["voice_style"] = voice_style
-            generated = await self.context.media.voice.synthesize(text, **voice_kwargs)
+            generated = await synthesize_voice(
+                self.context.media.voice, text,
+                target_umo=scope, source_event=event, **voice_kwargs
+            )
             if not await self.context.send_message_if_not_recalled(
                 scope,
                 self.context._record_message_chain(generated.path),

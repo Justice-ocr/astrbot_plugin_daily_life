@@ -384,6 +384,9 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       hint: "控制日常语音消息生成、智能切换和语音音色。",
       fields: [
         "voice_generation_config.enabled",
+        "voice_generation_config.backend",
+        "voice_generation_config.mimo_voice",
+        "voice_generation_config.mimo_timeout_seconds",
         "voice_generation_config.smart_switch_enabled",
         "voice_generation_config.expression_provider",
         "voice_generation_config.expression_timeout_seconds",
